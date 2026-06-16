@@ -1,0 +1,28 @@
+[package]
+name = "sysknife-brain"
+version = "0.2.5"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "LLM planning core for SysKnife — typed action proposals with formal risk levels"
+keywords = ["llm", "ai-agent", "linux", "system-administration", "planning"]
+categories = ["command-line-utilities", "os::linux-apis"]
+
+[dependencies]
+async-trait = { workspace = true }
+futures = "0.3"
+sysknife-core = { path = "../sysknife-core" }
+sysknife-types = { path = "../sysknife-types" }
+async-openai = { version = "0.36", features = ["chat-completion"] }
+rig-core = "0.35.0"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true, features = ["sync"] }
+tracing = "0.1"
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }

@@ -1,0 +1,78 @@
+name: 🐛 Bug report
+description: Something is broken or behaves unexpectedly.
+title: "bug: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. The more specific you
+        can be, the faster we can fix it. **For privilege-escalation,
+        auth-bypass, or audit-chain forgery issues, follow
+        [SECURITY.md](../../SECURITY.md) instead — do not file a public
+        issue.**
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the unexpected behaviour. Include the exact command, the output you got, and what you expected instead.
+      placeholder: "I ran `sysknife \"install vim\"` and …"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. `sysknife --dry-run "show disk usage"`
+        2. Approve the plan with `y`
+        3. Observe …
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Distro + version
+      description: Output of `cat /etc/os-release | grep -E 'PRETTY_NAME|VERSION_ID'`
+      placeholder: "Fedora Silverblue 41 / Ubuntu 24.04"
+    validations:
+      required: true
+  - type: input
+    id: sysknife-version
+    attributes:
+      label: SysKnife version
+      description: Output of `sysknife --version`
+      placeholder: "0.1.0 (commit abc123)"
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: LLM provider
+      options:
+        - Ollama (local)
+        - Anthropic
+        - OpenAI
+        - Gemini
+        - Groq
+        - DeepSeek
+        - Mistral
+        - xAI
+        - Other / not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Daemon log (`journalctl -u sysknife-daemon`), CLI stderr, or shell console.
+      render: shell
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Self-checks
+      options:
+        - label: I checked existing issues for duplicates.
+          required: true
+        - label: I'm running a recent SysKnife (within the last 4 weeks of `main`).
+          required: true

@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package sysknife.v1;
+
+enum CallerRole {
+  CALLER_ROLE_UNSPECIFIED = 0;
+  CALLER_ROLE_OBSERVER = 1;
+  CALLER_ROLE_DEV = 2;
+  CALLER_ROLE_ADMIN = 3;
+  CALLER_ROLE_BOOT = 4;
+}
+
+enum RiskLevel {
+  RISK_LEVEL_UNSPECIFIED = 0;
+  RISK_LEVEL_LOW = 1;
+  RISK_LEVEL_MEDIUM = 2;
+  RISK_LEVEL_HIGH = 3;
+}
+
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_QUEUED = 1;
+  JOB_STATE_RUNNING = 2;
+  JOB_STATE_SUCCEEDED = 3;
+  JOB_STATE_FAILED = 4;
+  JOB_STATE_CANCELED = 5;
+  JOB_STATE_ROLLED_BACK = 6;
+  JOB_STATE_NEEDS_REBOOT = 7;
+}
+
+message RequestEnvelope {
+  string action_name = 1;
+  string request_id = 2;
+  string params_json = 3;
+  CallerRole caller_role = 4;
+  string request_hash = 5;
+}
+
+message PreviewEnvelope {
+  string summary = 1;
+  RiskLevel risk_level = 2;
+  string current_state_json = 3;
+  string proposed_change_json = 4;
+  repeated string expected_side_effects = 5;
+  bool reboot_required = 6;
+  bool rollback_available = 7;
+  repeated string warnings = 8;
+  string request_hash = 9;
+}
+
+message ResultEnvelope {
+  JobState status = 1;
+  string summary = 2;
+  repeated string warnings = 3;
+  string job_id = 4;
+  bool needs_reboot = 5;
+  string rollback_ref = 6;
+  string transaction_id = 7;
+}
+
+message TransactionRecord {
+  string transaction_id = 1;
+  string request_id = 2;
+  string request_hash = 3;
+  string action_name = 4;
+  RiskLevel risk_level = 5;
+  JobState status = 6;
+  string approval_id = 7;
+  string summary = 8;
+  repeated string warnings = 9;
+}
+
+enum FailureCategory {
+  FAILURE_CATEGORY_UNSPECIFIED = 0;
+  FAILURE_CATEGORY_VALIDATION_FAILURE = 1;
+  FAILURE_CATEGORY_AUTHORIZATION_FAILURE = 2;
+  FAILURE_CATEGORY_POLICY_DENIED = 3;
+  FAILURE_CATEGORY_STALE_APPROVAL = 4;
+  FAILURE_CATEGORY_EXECUTION_FAILURE = 5;
+  FAILURE_CATEGORY_TRANSIENT_INFRASTRUCTURE_FAILURE = 6;
+  FAILURE_CATEGORY_CANCELLATION = 7;
+  FAILURE_CATEGORY_STUCK_EXECUTION = 8;
+  FAILURE_CATEGORY_REBOOT_REQUIRED = 9;
+  FAILURE_CATEGORY_ROLLBACK_FAILURE = 10;
+}

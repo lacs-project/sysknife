@@ -1,0 +1,68 @@
+/* SysKnife docs — custom styles */
+
+/* Logo centred on the intro page */
+.sysknife-logo {
+  display: block;
+  margin: 2rem auto 1rem;
+  max-width: 140px;
+}
+
+/* Hero tagline */
+.sysknife-tagline {
+  text-align: center;
+  font-size: 1.15rem;
+  color: var(--fg);
+  opacity: 0.75;
+  margin-bottom: 2rem;
+}
+
+/* Demo GIF — full width, rounded corners, subtle shadow */
+.sysknife-demo {
+  display: block;
+  width: 100%;
+  max-width: 860px;
+  margin: 1.5rem auto;
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.35);
+}
+
+/* CTA button row */
+.cta-row {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin: 1.5rem 0;
+}
+
+.cta-btn {
+  display: inline-block;
+  padding: 0.55rem 1.2rem;
+  border-radius: 6px;
+  font-weight: 600;
+  text-decoration: none !important;
+  font-size: 0.95rem;
+  transition: opacity 0.15s;
+}
+
+.cta-btn:hover { opacity: 0.85; }
+
+.cta-btn-primary {
+  background: #4a9eff;
+  color: #fff !important;
+}
+
+.cta-btn-secondary {
+  background: transparent;
+  border: 2px solid #4a9eff;
+  color: #4a9eff !important;
+}
+
+/* Risk level badges */
+.risk-low    { color: #4caf50; font-weight: 700; }
+.risk-medium { color: #ff9800; font-weight: 700; }
+.risk-high   { color: #f44336; font-weight: 700; }
+
+/* Slightly wider content area on large screens */
+@media (min-width: 1200px) {
+  .content { max-width: 860px; }
+}

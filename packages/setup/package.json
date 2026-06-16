@@ -1,0 +1,29 @@
+{
+  "name": "sysknife-setup",
+  "version": "0.2.5",
+  "description": "Zero-friction setup for SysKnife MCP server — Claude Code, Cursor, and Codex CLI",
+  "bin": {
+    "sysknife-setup": "./index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "index.js",
+    "install-binary.js",
+    "install-daemon.js"
+  ],
+  "keywords": [
+    "sysknife",
+    "mcp",
+    "claude",
+    "linux"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepublishOnly": "node index.js --help"
+  }
+}

@@ -1,0 +1,161 @@
+---
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref (saves runner minutes). Pushes to
+# main are never cancelled mid-flight; only PR iterations supersede each other.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  docs-and-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install lint tools
+        run: |
+          npm install --global markdownlint-cli2 markdown-link-check
+          python -m pip install --upgrade pip
+          pip install yamllint
+
+      - name: Check required repository files
+        run: bash scripts/check_repo_completeness.sh
+
+      - name: Lint markdown
+        run: |
+          markdownlint-cli2 \
+            README.md \
+            CONTRIBUTING.md \
+            SECURITY.md \
+            CODE_OF_CONDUCT.md \
+            ROADMAP.md \
+            docs/architecture.md \
+            docs/developer-guide.md \
+            docs/adr/*.md
+
+      - name: Check markdown links
+        run: |
+          for file in \
+            README.md \
+            CONTRIBUTING.md \
+            SECURITY.md \
+            CODE_OF_CONDUCT.md \
+            ROADMAP.md \
+            docs/architecture.md \
+            docs/developer-guide.md \
+            docs/adr/0001-system-boundaries.md \
+            docs/adr/0002-brain-provider-layer.md \
+            docs/adr/0003-ipc-wire-protocol.md
+          do
+            markdown-link-check --config .markdown-link-check.json "$file"
+          done
+
+      - name: Lint GitHub issue templates
+        run: yamllint .github/ISSUE_TEMPLATE/*.yml .github/workflows/*.yml
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/sysknife-shell
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: ./node_modules/.bin/tsc --noEmit
+
+      - name: Test
+        run: ./node_modules/.bin/vitest run
+
+  rust:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_HOME: /home/runner/.cargo
+      CARGO_INCREMENTAL: 0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-features --locked -- -D warnings
+
+      - name: Doc check (broken intra-doc links)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --workspace --locked
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
+
+      - name: Test workspace
+        run: cargo nextest run --workspace --locked
+
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Audit dependencies for known RustSec advisories
+        # Fails the build on any unignored vulnerability. Unmaintained-crate
+        # warnings are reported but non-fatal (default cargo-audit behaviour).
+        #
+        # RUSTSEC-2026-0097 (rand 0.7.3) is ignored: it is pulled transitively
+        # only by the Tauri desktop shell's webview deps (kuchikiki/selectors),
+        # is not reachable from the privileged daemon, brain, or CLI, and has
+        # no fixed upstream release yet. Re-evaluate when Tauri bumps the chain.
+        run: cargo audit --ignore RUSTSEC-2026-0097

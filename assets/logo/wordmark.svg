@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 200" width="720" height="200" role="img" aria-labelledby="wm-title wm-desc">
+  <title id="wm-title">SysKnife</title>
+  <desc id="wm-desc">SysKnife wordmark with German Shepherd puppy mascot and tagline: AI-managed Linux. Plan. Approve. Audit.</desc>
+
+  <defs>
+    <linearGradient id="coatGradWM" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#FFB45A"/>
+      <stop offset="100%" stop-color="#E8943A"/>
+    </linearGradient>
+    <linearGradient id="saddleGradWM" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#2B3440"/>
+      <stop offset="100%" stop-color="#0F1419"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ══════════════════════════════════
+       COMPACT MASCOT  (dog at ~0.55 scale,
+       left-anchored, vertically centred)
+       ══════════════════════════════════ -->
+  <g transform="translate(12, 0) scale(0.735)">
+
+    <!-- Tail -->
+    <path d="M 148 192 Q 185 168 178 140 Q 174 126 165 130 Q 160 148 155 162 Z"
+          fill="url(#coatGradWM)"/>
+    <!-- Tail tip dark stripe -->
+    <path d="M 165 130 Q 174 126 178 140 Q 175 133 168 136 Z"
+          fill="url(#saddleGradWM)" opacity="0.7"/>
+
+    <!-- Haunches -->
+    <ellipse cx="128" cy="195" rx="46" ry="22" fill="url(#coatGradWM)"/>
+    <ellipse cx="128" cy="192" rx="28" ry="14" fill="url(#saddleGradWM)" opacity="0.55"/>
+
+    <!-- Torso -->
+    <rect x="88" y="140" width="80" height="58" rx="18" ry="18"
+          fill="url(#coatGradWM)"/>
+    <ellipse cx="128" cy="150" rx="30" ry="16" fill="url(#saddleGradWM)" opacity="0.60"/>
+
+    <!-- Front legs -->
+    <rect x="94" y="188" width="20" height="36" rx="10" ry="10"
+          fill="url(#coatGradWM)"/>
+    <ellipse cx="104" cy="222" rx="10" ry="7" fill="#C87830"/>
+    <rect x="142" y="188" width="20" height="36" rx="10" ry="10"
+          fill="url(#coatGradWM)"/>
+    <ellipse cx="152" cy="222" rx="10" ry="7" fill="#C87830"/>
+
+    <!-- Neck -->
+    <rect x="106" y="118" width="44" height="34" rx="14" ry="14"
+          fill="url(#coatGradWM)"/>
+
+    <!-- Skull -->
+    <ellipse cx="128" cy="100" rx="38" ry="36" fill="url(#coatGradWM)"/>
+    <ellipse cx="128" cy="88" rx="26" ry="20" fill="url(#saddleGradWM)" opacity="0.65"/>
+
+    <!-- Left ear -->
+    <path d="M 96 78 L 84 34 L 108 62 Z" fill="url(#coatGradWM)"/>
+    <path d="M 96 75 L 89 44 L 106 64 Z" fill="#FF6B1A" opacity="0.70"/>
+    <!-- Right ear -->
+    <path d="M 160 78 L 172 34 L 148 62 Z" fill="url(#coatGradWM)"/>
+    <path d="M 160 75 L 167 44 L 150 64 Z" fill="#FF6B1A" opacity="0.70"/>
+
+    <!-- Muzzle -->
+    <ellipse cx="128" cy="114" rx="20" ry="15" fill="url(#saddleGradWM)"/>
+    <ellipse cx="128" cy="118" rx="14" ry="10" fill="#C87830" opacity="0.80"/>
+    <ellipse cx="128" cy="107" rx="8" ry="6" fill="#0F1419"/>
+    <ellipse cx="125" cy="105" rx="2.5" ry="2" fill="#fff" opacity="0.35"/>
+
+    <!-- Eyes -->
+    <ellipse cx="112" cy="97" rx="8" ry="8" fill="#fff"/>
+    <ellipse cx="113" cy="97" rx="5.5" ry="5.5" fill="#5A3010"/>
+    <ellipse cx="113" cy="97" rx="3" ry="3" fill="#0F1419"/>
+    <ellipse cx="115" cy="94" rx="1.8" ry="1.8" fill="#fff" opacity="0.80"/>
+
+    <ellipse cx="144" cy="97" rx="8" ry="8" fill="#fff"/>
+    <ellipse cx="143" cy="97" rx="5.5" ry="5.5" fill="#5A3010"/>
+    <ellipse cx="143" cy="97" rx="3" ry="3" fill="#0F1419"/>
+    <ellipse cx="145" cy="94" rx="1.8" ry="1.8" fill="#fff" opacity="0.80"/>
+
+    <!-- Eyebrow dots -->
+    <ellipse cx="112" cy="88" rx="4" ry="3" fill="#FFB45A" opacity="0.90"/>
+    <ellipse cx="144" cy="88" rx="4" ry="3" fill="#FFB45A" opacity="0.90"/>
+
+    <!-- Smile -->
+    <path d="M 120 121 Q 128 128 136 121" stroke="#0F1419" stroke-width="2.2"
+          fill="none" stroke-linecap="round"/>
+
+    <!-- Collar -->
+    <rect x="104" y="137" width="48" height="12" rx="6" ry="6" fill="#FF6B1A"/>
+    <rect x="124" y="136" width="8" height="14" rx="3" ry="3" fill="#FFB45A"/>
+
+    <!-- Collar tag -->
+    <path d="M 120 150 L 136 150 L 136 162 Q 128 168 120 162 Z" fill="#5EEAD4"/>
+    <text x="122" y="162" font-family="ui-monospace, monospace" font-size="11"
+          font-weight="700" fill="#0F1419">&#62;</text>
+
+  </g>
+
+  <!-- ══════════════════
+       WORDMARK + TAGLINE
+       ══════════════════ -->
+
+  <!-- "SysKnife" wordmark — system-ui stack, no external font dep -->
+  <g transform="translate(182 122)">
+    <text font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Inter, sans-serif"
+          font-size="92" font-weight="800" letter-spacing="-2" fill="#0F1419">
+      Sys<tspan fill="#FF6B1A">Knife</tspan>
+    </text>
+  </g>
+
+  <!-- Tagline — monospace, matching existing style -->
+  <g transform="translate(186 160)">
+    <text font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="18" fill="#475569">
+      &gt; AI-managed Linux. Plan. Approve. Audit.
+    </text>
+  </g>
+
+</svg>

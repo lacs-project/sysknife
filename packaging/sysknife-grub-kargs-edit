@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+# sysknife-grub-kargs-edit — privileged GRUB kernel argument editor.
+#
+# Install to: /usr/lib/sysknife/grub-kargs-edit
+# Mode:       0755
+# Owner:      root:root
+#
+# This script is invoked exclusively by the sysknife-daemon via:
+#   sudo /usr/lib/sysknife/grub-kargs-edit --append <kargs> --delete <kargs>
+#
+# The sudoers entry grants NOPASSWD only on this exact helper path, replacing
+# the previous unconstrained grants for python3, cp, and update-grub
+# (red-team findings HI1, HI2, HI3).
+#
+# Usage:
+#   sysknife-grub-kargs-edit --append karg1,karg2 --delete karg3,karg4
+#
+# Both --append and --delete accept a comma-separated list. Either may be an
+# empty string, but at least one must be non-empty (exit 2 otherwise).
+#
+# Behaviour:
+#   1. Validates every karg token against the allowed-character pattern.
+#   2. Backs up /etc/default/grub to /etc/default/grub.sysknife.bak.
+#   3. Edits GRUB_CMDLINE_LINUX_DEFAULT="..." in-place.
+#   4. Calls /usr/sbin/update-grub. On failure, restores the backup and exits
+#      non-zero so the daemon can surface the error.
+
+import argparse
+import re
+import shutil
+import subprocess
+import sys
+
+# ---------------------------------------------------------------------------
+# Constants — must match the values in grub.rs
+# ---------------------------------------------------------------------------
+
+GRUB_DEFAULT = "/etc/default/grub"
+GRUB_BACKUP = "/etc/default/grub.sysknife.bak"
+
+# Defense-in-depth: each karg token is validated independently.
+# Matches the same allowlist as validated_safe_arg in validate.rs:
+#   ASCII alphanumeric, '.', '_', ':', '/', '+', '@', '=', '-'
+# No leading dash (kernel args may contain '=' but cannot start with '-').
+KARG_PATTERN = re.compile(r"^[A-Za-z0-9_.+@:/=-]+$")
+
+UPDATE_GRUB = "/usr/sbin/update-grub"
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+
+def validate_kargs(tokens: list[str], label: str) -> None:
+    """Raise SystemExit(1) if any token fails the allowlist check."""
+    for tok in tokens:
+        if not KARG_PATTERN.match(tok):
+            print(
+                f"sysknife-grub-kargs-edit: invalid {label} karg {tok!r} "
+                "(only [A-Za-z0-9_.+@:/=-] allowed)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# GRUB file edit
+# ---------------------------------------------------------------------------
+
+
+def edit_grub_cmdline(lines: list[str], append: list[str], delete: list[str]) -> list[str]:
+    """Return a new line list with GRUB_CMDLINE_LINUX_DEFAULT updated."""
+    out = []
+    for line in lines:
+        if line.startswith("GRUB_CMDLINE_LINUX_DEFAULT="):
+            m = re.match(r'^(GRUB_CMDLINE_LINUX_DEFAULT=")([^"]*)(".*)', line)
+            if m:
+                value = m.group(2).strip()
+                for d in delete:
+                    # Remove the exact token (word-boundary match).
+                    escaped = re.escape(d)
+                    value = re.sub(r"(?<!\S)" + escaped + r"(?!\S)\s*", "", value)
+                value = value.strip()
+                if append:
+                    value = (value + " " + " ".join(append)).strip()
+                line = f'GRUB_CMDLINE_LINUX_DEFAULT="{value}"\n'
+        out.append(line)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Edit GRUB_CMDLINE_LINUX_DEFAULT in /etc/default/grub."
+    )
+    parser.add_argument(
+        "--append",
+        default="",
+        help="Comma-separated kargs to add (may be empty).",
+    )
+    parser.add_argument(
+        "--delete",
+        default="",
+        help="Comma-separated kargs to remove (may be empty).",
+    )
+    args = parser.parse_args()
+
+    append_tokens = [t for t in args.append.split(",") if t]
+    delete_tokens = [t for t in args.delete.split(",") if t]
+
+    if not append_tokens and not delete_tokens:
+        print(
+            "sysknife-grub-kargs-edit: at least one of --append or --delete must be non-empty",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    validate_kargs(append_tokens, "--append")
+    validate_kargs(delete_tokens, "--delete")
+
+    # Read grub config.
+    try:
+        with open(GRUB_DEFAULT, "r") as fh:
+            original_lines = fh.readlines()
+    except OSError as exc:
+        print(f"sysknife-grub-kargs-edit: cannot read {GRUB_DEFAULT}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # Back up the original.
+    try:
+        shutil.copy2(GRUB_DEFAULT, GRUB_BACKUP)
+    except OSError as exc:
+        print(f"sysknife-grub-kargs-edit: cannot write backup {GRUB_BACKUP}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # Apply edits.
+    new_lines = edit_grub_cmdline(original_lines, append_tokens, delete_tokens)
+
+    # Write updated config.
+    try:
+        with open(GRUB_DEFAULT, "w") as fh:
+            fh.writelines(new_lines)
+    except OSError as exc:
+        print(f"sysknife-grub-kargs-edit: cannot write {GRUB_DEFAULT}: {exc}", file=sys.stderr)
+        # Restore backup before exiting.
+        try:
+            shutil.copy2(GRUB_BACKUP, GRUB_DEFAULT)
+        except OSError:
+            pass
+        sys.exit(1)
+
+    # Regenerate GRUB config.
+    result = subprocess.run([UPDATE_GRUB], check=False)
+    if result.returncode != 0:
+        print(
+            f"sysknife-grub-kargs-edit: {UPDATE_GRUB} failed (exit {result.returncode}); "
+            "restoring backup",
+            file=sys.stderr,
+        )
+        try:
+            shutil.copy2(GRUB_BACKUP, GRUB_DEFAULT)
+        except OSError as exc:
+            print(
+                f"sysknife-grub-kargs-edit: WARNING: backup restore failed: {exc}",
+                file=sys.stderr,
+            )
+        sys.exit(result.returncode)
+
+
+if __name__ == "__main__":
+    main()

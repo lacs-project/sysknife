@@ -1,0 +1,38 @@
+[Unit]
+Description=LACS privileged daemon
+Documentation=https://github.com/lacs-project/sysknife
+After=network.target
+
+[Service]
+Type=simple
+User=sysknife
+Group=sysknife
+
+# Production socket and database paths (overridable via drop-in).
+Environment="SYSKNIFE_LISTEN_URI=unix:///run/sysknife/daemon.sock"
+Environment="SYSKNIFE_DATABASE_PATH=/var/lib/sysknife/daemon.sqlite"
+
+ExecStart=/usr/local/bin/sysknife-daemon
+Restart=on-failure
+RestartSec=5s
+
+# Harden the service:
+# - ProtectSystem=yes protects /usr, /boot, and /efi from modification.
+#   Strict mode is intentionally avoided: it would make /etc and /home
+#   read-only in the service's mount namespace, preventing sudo-privileged
+#   child processes (useradd, usermod, sh) from writing /etc/passwd, /etc/group,
+#   and user ~/.ssh/authorized_keys files — breaking all user management actions.
+# - ProtectHome is intentionally absent. SSH key operations require write
+#   access to real user home directories via sudo. ProtectHome=yes would mount
+#   an empty tmpfs over /home, hiding real home dirs from all child processes.
+# NOTE: NoNewPrivileges is intentionally absent. Setting PR_SET_NO_NEW_PRIVS
+# is inherited by all child processes and prevents setuid executables
+# (including sudo) from gaining elevated privileges — breaking every
+# privileged action that relies on sudoers + sudo-prefixed commands.
+ProtectSystem=yes
+ReadWritePaths=/var/lib/sysknife /run/sysknife
+RuntimeDirectory=sysknife
+StateDirectory=sysknife
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[package]
+name = "sysknife-proto"
+version = "0.2.5"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+prost = { workspace = true }
+prost-types = { workspace = true }
+
+[build-dependencies]
+protoc-bin-vendored = "3"
+prost-build = "0.14"

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Discussion / question
+    url: https://github.com/lacs-project/sysknife/discussions
+    about: Anything that isn't a bug or a feature request — design questions, war stories, "is this a bug or am I holding it wrong?"
+  - name: 🔐 Security issue
+    url: https://github.com/lacs-project/sysknife/blob/main/SECURITY.md
+    about: Privilege escalation, auth bypass, audit-chain forgery, data exposure — follow SECURITY.md, do not open a public issue.
+  - name: 📖 Protocol question (LACS spec)
+    url: https://github.com/lacs-project/specification
+    about: SysKnife is the reference implementation; protocol questions live in the specification repo.

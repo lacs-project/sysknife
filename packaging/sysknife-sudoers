@@ -1,0 +1,121 @@
+# sudoers fragment for the SysKnife privileged daemon.
+#
+# Deploy to: /etc/sudoers.d/sysknife
+# Permissions: 0440  (sudo refuses files that are world-writable)
+#
+# These commands are not controllable via D-Bus / polkit and therefore
+# require a direct sudo invocation by the daemon process.
+# Only the exact commands listed here are allowed — no shell or wildcard.
+#
+# IMPORTANT: test with `visudo -cf /etc/sudoers.d/sysknife` before deploying.
+#
+# Note: `Defaults:sysknife !requiretty` was removed. The requiretty token was
+# dropped from sudo in 1.9.13 (Ubuntu 26.04 ships 1.9.15+). The sysknife daemon
+# runs as a non-interactive service so no tty is involved anyway.
+
+# User management — create and delete system/human accounts.
+# useradd: called by CreateUser  (sudo useradd --create-home ...)
+# userdel: called by DeleteUser  (sudo userdel <username>)
+sysknife ALL=(root) NOPASSWD: /usr/sbin/useradd
+sysknife ALL=(root) NOPASSWD: /usr/sbin/userdel
+
+# Group membership — add/remove users to/from groups.
+# usermod: called by AddUserToGroup  (sudo usermod --append --groups <grp> <user>)
+# gpasswd: called by RemoveUserFromGroup  (sudo gpasswd --delete <user> <grp>)
+sysknife ALL=(root) NOPASSWD: /usr/sbin/usermod
+sysknife ALL=(root) NOPASSWD: /usr/bin/gpasswd
+
+# Group management — create, delete, and modify groups.
+sysknife ALL=(root) NOPASSWD: /usr/sbin/groupadd
+sysknife ALL=(root) NOPASSWD: /usr/sbin/groupdel
+sysknife ALL=(root) NOPASSWD: /usr/sbin/groupmod
+
+# Service management — start, stop, restart, reload, enable, disable, mask, unmask,
+# daemon-reload. All systemctl write operations require root on Fedora.
+sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl
+
+# Identity configuration — hostname, timezone, locale, NTP all require root via
+# hostnamectl/timedatectl/localectl (polkit "interactive auth" fails for system users).
+sysknife ALL=(root) NOPASSWD: /usr/bin/hostnamectl
+sysknife ALL=(root) NOPASSWD: /usr/bin/timedatectl
+sysknife ALL=(root) NOPASSWD: /usr/bin/localectl
+
+# Network configuration — resolvectl dns requires root; firewall-cmd --permanent
+# writes to /etc/firewalld/ which requires root.
+sysknife ALL=(root) NOPASSWD: /usr/bin/resolvectl
+
+# OS deployment management — rpm-ostree upgrade/install/rollback/cleanup/rebase/kargs
+# communicate with rpm-ostreed via D-Bus and require root authorization.
+# rpm-ostree status/kargs (read-only) still work without root but sudo does not hurt.
+sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree
+
+# OSTree admin operations — pin/unpin deployments require root filesystem access.
+sysknife ALL=(root) NOPASSWD: /usr/bin/ostree
+
+# Shell for multi-step operations that require root and involve piping or conditional
+# logic (firewall --permanent + --reload, group membership ensure + usermod/gpasswd).
+# Restricted to NOPASSWD invocations only — sysknife cannot launch an interactive shell.
+# ME1 audit (2026-04-26): /usr/bin/sh is used by ConfigureFirewall (network.rs) for the
+# compound `firewall-cmd --permanent ... && firewall-cmd --reload` operation. No direct
+# argv alternative exists for firewalld's two-step permanent+reload flow. This entry is
+# kept and documented here rather than silently present with no explanation.
+sysknife ALL=(root) NOPASSWD: /usr/bin/sh
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ubuntu / Debian-family binaries
+# ─────────────────────────────────────────────────────────────────────────────
+
+# `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get …`
+# Apt actions wrap apt-get in env to set non-interactive flags past sudo's
+# default env-stripping. The grant is restricted to the exact env-var prefix
+# that apt.rs produces — no other env-var combinations or binaries are reachable.
+# (Red-team HI1 fix: previously granted unrestricted /usr/bin/env NOPASSWD.)
+sysknife ALL=(root) NOPASSWD: /usr/bin/env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get *
+
+# Apt write operations:
+#   apt-mark hold/unhold             → AptHold / AptUnhold
+#   apt-get install/remove/purge/…   → invoked via sudo env apt-get
+sysknife ALL=(root) NOPASSWD: /usr/bin/apt-mark
+sysknife ALL=(root) NOPASSWD: /usr/bin/apt-get
+
+# add-apt-repository — provided by software-properties-common.
+# AddPpa / RemovePpa.
+sysknife ALL=(root) NOPASSWD: /usr/bin/add-apt-repository
+
+# Snap write operations (install / remove / refresh / hold / revert).
+sysknife ALL=(root) NOPASSWD: /usr/bin/snap
+
+# UFW firewall — every mutating subcommand requires root.
+sysknife ALL=(root) NOPASSWD: /usr/sbin/ufw
+
+# Netplan — apply/generate/set rewrite /etc/netplan/ + reload interfaces.
+# Path varies between releases: /usr/sbin/netplan on jammy/noble, but the
+# binary may also live at /usr/bin/netplan on some installs. Allow both.
+sysknife ALL=(root) NOPASSWD: /usr/sbin/netplan
+sysknife ALL=(root) NOPASSWD: /usr/bin/netplan
+
+# AppArmor — aa-status (apparmor base), aa-enforce/aa-complain (apparmor-utils).
+sysknife ALL=(root) NOPASSWD: /usr/sbin/aa-status
+sysknife ALL=(root) NOPASSWD: /usr/sbin/aa-enforce
+sysknife ALL=(root) NOPASSWD: /usr/sbin/aa-complain
+
+# fail2ban-client — Fail2banStatus (read-only) / BanIp / UnbanIp.
+sysknife ALL=(root) NOPASSWD: /usr/bin/fail2ban-client
+
+# Ubuntu Pro CLI — ProAttach / ProDetach (mutating). ProStatus is read-only and
+# does not require root, but `pro` itself is allowed for symmetry.
+sysknife ALL=(root) NOPASSWD: /usr/bin/pro
+
+# Canonical Livepatch — LivepatchStatus shells through sudo.
+sysknife ALL=(root) NOPASSWD: /usr/bin/canonical-livepatch
+
+# do-release-upgrade — UbuntuReleaseUpgrade.
+# Long-running (20-45 min) and reboot-required; preview-profile carries the
+# warning for operators.
+sysknife ALL=(root) NOPASSWD: /usr/bin/do-release-upgrade
+
+# GRUB karg edit — GrubSetKargs delegates to this root-owned helper script.
+# The helper encapsulates the backup, in-place edit, and update-grub steps,
+# eliminating the previous unconstrained grants for cp, python3, and
+# update-grub (red-team findings HI2 and HI3).
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/grub-kargs-edit *

@@ -1,0 +1,90 @@
+# Pre-commit hooks for LACS.
+#
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+#
+# Hooks intentionally omitted from pre-commit (run in CI instead):
+#   cargo clippy  -- 20-30s per run; too slow for interactive commits
+#   cargo test    -- minutes; belongs in CI
+#   vitest run    -- belongs in CI
+---
+repos:
+  # ── General file hygiene ──────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: "Cargo.lock"
+      - id: end-of-file-fixer
+        exclude: "Cargo.lock"
+      - id: check-yaml
+        args: ["--unsafe"]
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        # 500 KB is right for source code, but assets/demo/*.gif and
+        # assets/social-preview.png legitimately run larger. The 3000 KB
+        # ceiling matches the GitHub mobile-render limit documented in
+        # assets/demo/README.md — anything over that breaks rendering.
+        args: ["--maxkb=3000"]
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+      - id: no-commit-to-branch
+        args: ["--branch", "main"]
+
+  # ── Secrets detection ─────────────────────────────────────────────────────
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.24.2
+    hooks:
+      - id: gitleaks
+
+  # ── Rust ──────────────────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-check
+        name: cargo check
+        entry: cargo check --workspace --locked
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+  # ── TypeScript / React ────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: tsc
+        name: TypeScript type check
+        entry: bash -c 'cd apps/sysknife-shell && npx tsc --noEmit'
+        language: system
+        types_or: [ts, tsx]
+        pass_filenames: false
+
+  # ── Markdown ──────────────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: markdownlint
+        name: markdownlint
+        entry: bash -c 'npx --yes markdownlint-cli2 "$@"' --
+        language: system
+        types: [markdown]
+        # docs/superpowers/ contains planning-tool artifacts.
+        # .github/ templates use ## headings intentionally (GitHub form format).
+        exclude: "(Cargo.lock|node_modules|target|docs/superpowers/|\\.github/)"
+
+  # ── YAML lint ─────────────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: yamllint
+        name: yamllint
+        entry: yamllint
+        language: system
+        types: [yaml]
+        exclude: "(node_modules|pnpm-lock\\.yaml|Cargo\\.lock|package-lock\\.json)"

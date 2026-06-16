@@ -1,0 +1,41 @@
+---
+name: scorecard
+
+# OpenSSF Scorecard: grades the repo against ~18 supply-chain security
+# heuristics (branch protection, pinned deps, token permissions, CI tests, …)
+# and publishes results so the README can carry a Scorecard badge. Advisory —
+# it produces a report and SARIF alerts, never a hard pass/fail gate.
+
+on:
+  branch_protection_rule:
+  schedule:
+    - cron: '20 7 * * 1'  # weekly
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write  # upload SARIF to code scanning
+      id-token: write  # OIDC, required by publish_results
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif

@@ -1,0 +1,62 @@
+// polkit JavaScript rules for LACS — grant the lacs daemon permission to
+// call specific privileged D-Bus interfaces on behalf of users in the
+// "sysknife" Unix group.
+//
+// Deploy to: /usr/share/polkit-1/rules.d/50-sysknife.rules
+//
+// These rules authorize the sysknife *daemon process* (running as the "sysknife"
+// system user) to invoke system management actions without an interactive
+// password prompt, provided the action is in the approved list below.
+//
+// Actions NOT in this list require normal polkit authentication and will
+// block the daemon until the user confirms at the desktop — this is
+// intentional for destructive or rarely-needed operations.
+
+polkit.addRule(function(action, subject) {
+    // Allow the sysknife system user (the daemon process) to call these actions
+    // without further authentication.
+    var lacsDaemonUser = "sysknife";
+
+    var allowedActions = [
+        // ── rpm-ostree (Fedora Silverblue / Kinoite) ─────────────────────
+        "org.projectatomic.rpmostree1.install-uninstall-packages",
+        "org.projectatomic.rpmostree1.install-packages",
+        "org.projectatomic.rpmostree1.uninstall-packages",
+        "org.projectatomic.rpmostree1.upgrade",
+        "org.projectatomic.rpmostree1.rebase",
+        "org.projectatomic.rpmostree1.rollback",
+        "org.projectatomic.rpmostree1.deploy",
+        "org.projectatomic.rpmostree1.override-remove-packages",
+        "org.projectatomic.rpmostree1.override-reset-packages",
+        "org.projectatomic.rpmostree1.cleanup",
+        // ── systemd / systemctl ───────────────────────────────────────────
+        "org.freedesktop.systemd1.manage-units",
+        "org.freedesktop.systemd1.manage-unit-files",
+        "org.freedesktop.systemd1.reload-daemon",
+        // ── hostname ─────────────────────────────────────────────────────
+        // set-hostname: transient hostname (DHCP/network-provided, non-persistent)
+        // set-static-hostname: persistent hostname written to /etc/hostname
+        // set-pretty-hostname: UTF-8 display name in /etc/machine-info
+        "org.freedesktop.hostname1.set-hostname",
+        "org.freedesktop.hostname1.set-static-hostname",
+        "org.freedesktop.hostname1.set-pretty-hostname",
+        // ── date/time ────────────────────────────────────────────────────
+        "org.freedesktop.timedate1.set-time",
+        "org.freedesktop.timedate1.set-timezone",
+        "org.freedesktop.timedate1.set-ntp",
+        // ── locale ───────────────────────────────────────────────────────
+        "org.freedesktop.locale1.set-locale",
+        "org.freedesktop.locale1.set-keyboard",
+        // ── firewalld ────────────────────────────────────────────────────
+        "org.fedoraproject.FirewallD1.config",
+        "org.fedoraproject.FirewallD1.all",
+        // ── NetworkManager ────────────────────────────────────────────────
+        "org.freedesktop.NetworkManager.network-control",
+        "org.freedesktop.NetworkManager.wifi.shared.open"
+    ];
+
+    if (subject.user === lacsDaemonUser &&
+        allowedActions.indexOf(action.id) !== -1) {
+        return polkit.Result.YES;
+    }
+});

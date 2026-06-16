@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-labelledby="sp-title sp-desc">
+  <title id="sp-title">SysKnife — AI-managed Linux. Plan. Approve. Audit.</title>
+  <desc id="sp-desc">Open Graph card for the SysKnife repo, featuring the German Shepherd mascot mark identical to the README hero.</desc>
+
+  <defs>
+    <!-- Card background gradient -->
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"  stop-color="#0F1419"/>
+      <stop offset="100%" stop-color="#1B232B"/>
+    </linearGradient>
+    <!-- Mascot palette (mirrors assets/logo/sysknife.svg exactly) -->
+    <linearGradient id="coatGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#FFB45A"/>
+      <stop offset="100%" stop-color="#E8943A"/>
+    </linearGradient>
+    <linearGradient id="saddleGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#2B3440"/>
+      <stop offset="100%" stop-color="#0F1419"/>
+    </linearGradient>
+    <filter id="dogShadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.20"/>
+    </filter>
+  </defs>
+
+  <!-- Backdrop -->
+  <rect width="1280" height="640" fill="url(#bgGrad)"/>
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       MASCOT — verbatim copy of the body of assets/logo/sysknife.svg,
+       wrapped in a <g> with translate+scale to land at 80,80 sized 480×480.
+       Native viewBox 256×256 → scale 1.875.
+       Plate is omitted (the dark backdrop replaces it).
+       ════════════════════════════════════════════════════════════════════ -->
+  <g transform="translate(80 80) scale(1.875)" filter="url(#dogShadow)">
+    <!-- Tail -->
+    <path d="M 148 192 Q 185 168 178 140 Q 174 126 165 130 Q 160 148 155 162 Z"
+          fill="url(#coatGrad)"/>
+    <path d="M 165 130 Q 174 126 178 140 Q 175 133 168 136 Z"
+          fill="url(#saddleGrad)" opacity="0.7"/>
+    <!-- Haunches -->
+    <ellipse cx="128" cy="195" rx="46" ry="22" fill="url(#coatGrad)"/>
+    <ellipse cx="128" cy="192" rx="28" ry="14" fill="url(#saddleGrad)" opacity="0.55"/>
+    <!-- Torso -->
+    <rect x="88" y="140" width="80" height="58" rx="18" ry="18" fill="url(#coatGrad)"/>
+    <ellipse cx="128" cy="150" rx="30" ry="16" fill="url(#saddleGrad)" opacity="0.60"/>
+    <!-- Front legs -->
+    <rect x="94"  y="188" width="20" height="36" rx="10" ry="10" fill="url(#coatGrad)"/>
+    <ellipse cx="104" cy="222" rx="10" ry="7" fill="#C87830"/>
+    <rect x="142" y="188" width="20" height="36" rx="10" ry="10" fill="url(#coatGrad)"/>
+    <ellipse cx="152" cy="222" rx="10" ry="7" fill="#C87830"/>
+    <!-- Neck -->
+    <rect x="106" y="118" width="44" height="34" rx="14" ry="14" fill="url(#coatGrad)"/>
+    <!-- Head -->
+    <ellipse cx="128" cy="100" rx="38" ry="36" fill="url(#coatGrad)"/>
+    <ellipse cx="128" cy="88"  rx="26" ry="20" fill="url(#saddleGrad)" opacity="0.65"/>
+    <!-- Ears -->
+    <path d="M 96 78 L 84 34 L 108 62 Z" fill="url(#coatGrad)"/>
+    <path d="M 96 75 L 89 44 L 106 64 Z" fill="#FF6B1A" opacity="0.70"/>
+    <path d="M 160 78 L 172 34 L 148 62 Z" fill="url(#coatGrad)"/>
+    <path d="M 160 75 L 167 44 L 150 64 Z" fill="#FF6B1A" opacity="0.70"/>
+    <!-- Muzzle -->
+    <ellipse cx="128" cy="114" rx="20" ry="15" fill="url(#saddleGrad)"/>
+    <ellipse cx="128" cy="118" rx="14" ry="10" fill="#C87830" opacity="0.80"/>
+    <!-- Nose -->
+    <ellipse cx="128" cy="107" rx="8"  ry="6" fill="#0F1419"/>
+    <ellipse cx="125" cy="105" rx="2.5" ry="2" fill="#fff" opacity="0.35"/>
+    <!-- Eyes -->
+    <ellipse cx="112" cy="97" rx="8" ry="8" fill="#fff"/>
+    <ellipse cx="113" cy="97" rx="5.5" ry="5.5" fill="#5A3010"/>
+    <ellipse cx="113" cy="97" rx="3"   ry="3"   fill="#0F1419"/>
+    <ellipse cx="115" cy="94" rx="1.8" ry="1.8" fill="#fff" opacity="0.80"/>
+    <ellipse cx="144" cy="97" rx="8" ry="8" fill="#fff"/>
+    <ellipse cx="143" cy="97" rx="5.5" ry="5.5" fill="#5A3010"/>
+    <ellipse cx="143" cy="97" rx="3"   ry="3"   fill="#0F1419"/>
+    <ellipse cx="145" cy="94" rx="1.8" ry="1.8" fill="#fff" opacity="0.80"/>
+    <ellipse cx="112" cy="88" rx="4" ry="3" fill="#FFB45A" opacity="0.90"/>
+    <ellipse cx="144" cy="88" rx="4" ry="3" fill="#FFB45A" opacity="0.90"/>
+    <!-- Mouth -->
+    <path d="M 120 121 Q 128 128 136 121" stroke="#0F1419" stroke-width="2.2"
+          fill="none" stroke-linecap="round"/>
+    <!-- Collar -->
+    <rect x="104" y="137" width="48" height="12" rx="6" ry="6" fill="#FF6B1A"/>
+    <rect x="124" y="136" width="8"  height="14" rx="3" ry="3" fill="#FFB45A"/>
+    <!-- Tag with > prompt -->
+    <path d="M 120 150 L 136 150 L 136 162 Q 128 168 120 162 Z" fill="#5EEAD4"/>
+    <text x="122" y="162" font-family="ui-monospace, monospace" font-size="11"
+          font-weight="700" fill="#0F1419">&gt;</text>
+  </g>
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       RIGHT-SIDE TYPOGRAPHY
+       ════════════════════════════════════════════════════════════════════ -->
+
+  <!-- Wordmark -->
+  <g transform="translate(600 230)">
+    <text font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Inter, sans-serif"
+          font-size="120" font-weight="800" letter-spacing="-3" fill="#FFFFFF">
+      Sys<tspan fill="#FF6B1A">Knife</tspan>
+    </text>
+  </g>
+
+  <!-- Tagline -->
+  <g transform="translate(600 290)">
+    <text font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="26" fill="#5EEAD4">
+      &gt; AI-managed Linux. Plan. Approve. Audit.
+    </text>
+  </g>
+
+  <!-- Distro stickers row — generous gaps, single line each -->
+  <g transform="translate(600 360)" font-family="ui-sans-serif, system-ui, sans-serif"
+     font-size="20" font-weight="600">
+    <!-- Fedora -->
+    <rect x="0"   y="0" width="140" height="40" rx="8" fill="#294172"/>
+    <text x="70"  y="27" text-anchor="middle" fill="#FFFFFF">Fedora 41+</text>
+    <!-- Ubuntu -->
+    <rect x="156" y="0" width="280" height="40" rx="8" fill="#E95420"/>
+    <text x="296" y="27" text-anchor="middle" fill="#FFFFFF">Ubuntu 22.04 / 24.04 / 26.04</text>
+    <!-- License -->
+    <rect x="452" y="0" width="80"  height="40" rx="8" fill="#475569"/>
+    <text x="492" y="27" text-anchor="middle" fill="#FFFFFF">MIT</text>
+  </g>
+
+  <!-- Repo URL — larger, cleaner spacing -->
+  <g transform="translate(600 470)">
+    <text font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="26" fill="#94A3B8" letter-spacing="0.2">
+      github.com/lacs-project/sysknife
+    </text>
+  </g>
+</svg>

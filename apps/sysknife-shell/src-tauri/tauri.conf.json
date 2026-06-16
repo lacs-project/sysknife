@@ -1,0 +1,47 @@
+{
+  "identifier": "org.lacsfoundation.LacsShell",
+  "productName": "SysKnife Shell",
+  "version": "0.2.0",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "SysKnife",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["appimage", "rpm"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "category": "Utility",
+    "shortDescription": "AI agent for Linux — preview, approve, execute.",
+    "longDescription": "SysKnife (Linux Agent Control Standard) is an AI agent for Linux system administration. Every action is shown to you as a typed plan before execution. No command runs without your explicit approval. Full audit trail included.",
+    "linux": {
+      "deb": {
+        "depends": []
+      },
+      "rpm": {
+        "depends": ["polkit"]
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    }
+  }
+}

@@ -1,0 +1,55 @@
+name: 💡 Feature request
+description: Propose a new action, command, or capability.
+title: "feat: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We love feature ideas. The faster you can convince us this is
+        worth the maintenance cost, the faster it lands. New actions
+        especially: tell us the polkit rule, the risk level, and the
+        rollback story — that's the SysKnife trust-boundary checklist.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem you're hitting
+      description: What can't you do today, or what is annoying that you wish were better?
+      placeholder: "When I run … I have to fall back to manual shell because …"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What does the "good" version look like? CLI shape, MCP tool input/output, action semantics — be concrete.
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: What kind of change is this?
+      options:
+        - New typed action (privileged daemon path)
+        - New CLI subcommand
+        - New MCP tool
+        - New distro / family
+        - Configuration / integration (Postgres / SIEM / vsock / …)
+        - Documentation
+        - GUI / shell UX
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      placeholder: "We could just use ansible, but …"
+  - type: checkboxes
+    id: trust
+    attributes:
+      label: Trust-boundary checklist (only if this is a new action)
+      options:
+        - label: I have considered the risk level (Low / Medium / High).
+        - label: I have considered the polkit rule and minimum role.
+        - label: I have considered whether this action needs rollback metadata.

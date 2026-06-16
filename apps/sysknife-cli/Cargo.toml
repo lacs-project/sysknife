@@ -1,0 +1,38 @@
+[package]
+name = "sysknife-cli"
+version = "0.2.5"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "sysknife"
+path = "src/main.rs"
+
+[dependencies]
+sysknife-brain = { path = "../../crates/sysknife-brain" }
+sysknife-core = { path = "../../crates/sysknife-core" }
+sysknife-daemon = { path = "../../crates/sysknife-daemon" }
+sysknife-types = { path = "../../crates/sysknife-types" }
+
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+strip-ansi-escapes = "0.2"
+
+indicatif  = "0.18"
+owo-colors = { version = "4", features = ["supports-colors"] }
+rustyline = { version = "18", features = ["with-file-history"] }
+
+rmcp = { version = "1.4", features = ["transport-io"] }
+serde_json = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "signal", "net", "io-util", "io-std", "sync"] }
+thiserror = { workspace = true }
+vsock = "0.5.4"
+tokio-vsock = "0.7.2"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util"] }

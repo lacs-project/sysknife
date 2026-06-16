@@ -1,0 +1,219 @@
+---
+# Release workflow for SysKnife.
+#
+# Triggered by pushing a version tag (v*.*.*).
+# Builds sysknife and sysknife-daemon for Linux x86_64 and aarch64,
+# then creates a GitHub release with the binaries as assets.
+#
+# Binary naming convention:
+#   sysknife-v0.1.0-linux-x86_64
+#   sysknife-daemon-v0.1.0-linux-x86_64
+#   sysknife-v0.1.0-linux-aarch64
+#   sysknife-daemon-v0.1.0-linux-aarch64
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+# Group per tag so distinct release tags never cancel each other, and never
+# cancel a release mid-flight (a half-uploaded release leaves a broken tag).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            arch: x86_64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            arch: aarch64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y cmake
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binaries
+        run: |
+          cargo build --release --locked \
+            -p sysknife-cli \
+            -p sysknife-daemon
+
+      - name: Rename and stage binaries
+        env:
+          VERSION: ${{ github.ref_name }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          cp target/release/sysknife        "sysknife-${VERSION}-linux-${ARCH}"
+          cp target/release/sysknife-daemon "sysknife-daemon-${VERSION}-linux-${ARCH}"
+          chmod +x "sysknife-${VERSION}-linux-${ARCH}"
+          chmod +x "sysknife-daemon-${VERSION}-linux-${ARCH}"
+          sha256sum \
+            "sysknife-${VERSION}-linux-${ARCH}" \
+            "sysknife-daemon-${VERSION}-linux-${ARCH}" \
+            > "sha256sums-linux-${ARCH}.txt"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: binaries-${{ matrix.arch }}
+          path: |
+            sysknife-*-linux-${{ matrix.arch }}
+            sysknife-daemon-*-linux-${{ matrix.arch }}
+            sha256sums-linux-${{ matrix.arch }}.txt
+          retention-days: 1
+
+  publish-npm:
+    name: Publish sysknife-setup to npm
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Smoke-test the package
+        run: node packages/setup/index.js --help
+
+      - name: Publish to npm (or skip if NPM_TOKEN absent)
+        # Secrets cannot be referenced directly in `if:` expressions, so
+        # surface NPM_TOKEN through env and gate inside the script.
+        # Empty token → log a notice and exit 0 (workflow stays green).
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::notice title=npm publish skipped::NPM_TOKEN secret is not set."
+            exit 0
+          fi
+          cd packages/setup && npm publish --access public
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y cmake
+
+      - name: Publish in dependency order (or skip if token absent)
+        # CARGO_REGISTRY_TOKEN must be set as a repository secret.
+        # If absent, log a notice and exit 0 so the release still succeeds.
+        # Publish order follows the internal dependency graph:
+        #   types → proto, core → brain → daemon → daemon-test → cli
+        # --no-verify skips the redundant pre-publish rebuild; the build job
+        # already verified the workspace compiles cleanly.
+        # sleep 30 lets crates.io index each crate before its dependents publish.
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::notice title=crates.io publish skipped::CARGO_REGISTRY_TOKEN secret is not set."
+            exit 0
+          fi
+          for crate in sysknife-types sysknife-proto sysknife-core sysknife-brain \
+                       sysknife-daemon sysknife-daemon-test; do
+            cargo publish -p "$crate" --token "$CARGO_REGISTRY_TOKEN" --no-verify
+            sleep 30
+          done
+          cargo publish -p sysknife-cli --token "$CARGO_REGISTRY_TOKEN" --no-verify
+
+  release:
+    name: Create GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # gh release create/upload
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+          path: dist/
+
+      - name: List dist contents
+        run: ls -lh dist/
+
+      - name: Create GitHub release (metadata only)
+        # Split create from upload: a single gh release create with assets
+        # that fails partway deletes the release object, which then 404s on
+        # subsequent uploads (observed on v0.2.0). Two-phase avoids the race.
+        # All env vars are server-controlled (github.ref_name = tag name,
+        # github.repository = static repo path) — no user input is shelled.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release create "$VERSION" \
+            --repo "$REPO" \
+            --title "$VERSION" \
+            --generate-notes
+
+      - name: Upload release assets
+        # `dist/sysknife-*-linux-x86_64` matches BOTH `sysknife-v…-x86_64`
+        # AND `sysknife-daemon-v…-x86_64` (the latter starts with the same
+        # prefix). Listing `sysknife-daemon-*` separately on the same line
+        # produces a duplicate file argument that breaks `gh release upload`.
+        # Enumerate explicit paths instead — no globs, no duplicates.
+        # --clobber allows the workflow to be re-run on the same tag.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release upload "$VERSION" \
+            --repo "$REPO" \
+            --clobber \
+            "dist/sysknife-${VERSION}-linux-x86_64" \
+            "dist/sysknife-daemon-${VERSION}-linux-x86_64" \
+            "dist/sysknife-${VERSION}-linux-aarch64" \
+            "dist/sysknife-daemon-${VERSION}-linux-aarch64" \
+            "dist/sha256sums-linux-x86_64.txt" \
+            "dist/sha256sums-linux-aarch64.txt"

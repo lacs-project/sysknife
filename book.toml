@@ -1,0 +1,19 @@
+[book]
+title = "SysKnife"
+description = "AI sysadmin co-pilot for Linux — plan, approve, audit"
+authors = ["Vladimir Rotariu"]
+language = "en"
+src = "docs"
+
+[output.html]
+site-url = "/sysknife/"
+git-repository-url = "https://github.com/lacs-project/sysknife"
+edit-url-template = "https://github.com/lacs-project/sysknife/edit/main/docs/{path}"
+default-theme = "navy"
+preferred-dark-theme = "navy"
+no-section-label = false
+additional-css = ["theme/custom.css"]
+
+[output.html.fold]
+enable = true
+level = 1

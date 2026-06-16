@@ -1,0 +1,167 @@
+---
+# End-to-end tests for SysKnife.
+#
+# Two jobs:
+#
+# 1. `scripts-lint`: always runs. ShellCheck on tests/e2e/, and compile
+#    sysknife-cli. Fast (~1 min), safe on every PR. This is a CI gate.
+#
+# 2. `container-smoke`: developer guidance only — NOT a CI gate. Runs
+#    on workflow_dispatch only. Boots Ollama and the daemon directly in
+#    the runner, pulls llama3.2:3b, and runs the 14 read-only user stories.
+#    User stories test LLM planning behavior against a probabilistic system;
+#    they are development guidance, not merge criteria.
+#
+# The full high-fidelity flow — real Fedora Silverblue in QEMU/KVM via
+# quickemu — is documented for local runs (see docs/contributing/testing.md).
+# GitHub-hosted Linux runners do not support nested virtualization, so
+# booting a Silverblue VM is not practical in this workflow.
+
+name: e2e
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scripts-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: ShellCheck story scripts, harness, and silverblue-vm helper
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: tests/e2e
+          severity: warning
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build sysknife-cli
+        run: cargo build -p sysknife-cli --locked
+
+  container-smoke:
+    # Developer guidance only — NOT a CI gate.
+    # Runs on workflow_dispatch only (manual trigger).
+    if: github.event_name == 'workflow_dispatch'
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            curl jq firewalld podman systemd-container \
+            libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:11434/api/tags > /dev/null; then
+              echo "Ollama reachable after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Pull tool-capable model
+        run: ollama pull llama3.2:3b
+
+      - name: Build sysknife-daemon and sysknife
+        run: |
+          cargo build --release -p sysknife-daemon -p sysknife-cli --locked
+          sudo cp target/release/sysknife-daemon /usr/local/bin/
+          sudo cp target/release/sysknife /usr/local/bin/
+
+      - name: Set up daemon socket directory
+        run: |
+          sudo mkdir -p /run/sysknife
+          sudo chmod 0755 /run/sysknife
+
+      - name: Start sysknife-daemon
+        env:
+          SYSKNIFE_LISTEN_URI: unix:///run/sysknife/daemon.sock
+          SYSKNIFE_DATABASE_PATH: /tmp/sysknife-daemon.sqlite
+        run: |
+          sudo -E nohup sysknife-daemon > /tmp/sysknife-daemon.log 2>&1 &
+          for i in $(seq 1 30); do
+            if [ -S /run/sysknife/daemon.sock ]; then
+              echo "Daemon socket ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          sudo chmod 0666 /run/sysknife/daemon.sock
+
+      - name: Pre-seed test user and SSH key
+        run: |
+          sudo useradd -m -s /bin/bash lacsdev || true
+          sudo -u lacsdev mkdir -p /home/lacsdev/.ssh
+          # Test-only canned public key, not a real secret
+          echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeTestKeyForE2ETesting testkey@example" \
+            | sudo tee /home/lacsdev/.ssh/authorized_keys
+          sudo chown -R lacsdev:lacsdev /home/lacsdev/.ssh
+          sudo chmod 700 /home/lacsdev/.ssh
+          sudo chmod 600 /home/lacsdev/.ssh/authorized_keys
+
+      - name: Start firewalld
+        run: |
+          sudo systemctl start firewalld || true
+          sudo firewall-cmd --state || true
+          sudo firewall-cmd --add-service=ssh --permanent || true
+          sudo firewall-cmd --reload || true
+
+      - name: Write ready marker
+        run: |
+          sudo mkdir -p /var/lib/sysknife-e2e
+          sudo touch /var/lib/sysknife-e2e/ready
+
+      - name: Run read-only stories (1-7)
+        env:
+          SYSKNIFE_LISTEN_URI: unix:///run/sysknife/daemon.sock
+          SYSKNIFE_LLM_PROVIDER: ollama
+          SYSKNIFE_LLM_MODEL: llama3.2:3b
+          SYSKNIFE_OLLAMA_URL: http://127.0.0.1:11434
+          SYSKNIFE_STORY_TIMEOUT: "180"
+        run: bash tests/e2e/run-stories.sh
+
+      - name: Dump daemon log on failure
+        if: failure()
+        run: |
+          echo "=== sysknife-daemon log ==="
+          sudo cat /tmp/sysknife-daemon.log || true
+          echo "=== ollama log ==="
+          cat /tmp/ollama.log || true
+
+      - name: Upload story logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-story-logs
+          path: tests/e2e/logs/
+          retention-days: 7

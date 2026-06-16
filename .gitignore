@@ -1,0 +1,30 @@
+target/
+node_modules/
+.mcp.json
+dist/
+/.pnpm-store/
+/.turbo/
+*.swp
+*.swo
+.DS_Store
+
+# quickemu VM artifacts (Silverblue ISO + .qcow2 + logs)
+tests/e2e/vm/
+/*.iso
+/*.qcow2
+
+# Ubuntu LTS VM runtime artifacts (per-release subdirectories)
+# overlay.qcow2, seed.iso, vm.pid, cloud-init/ are generated at runtime.
+tests/e2e/ubuntu-vm/jammy/
+tests/e2e/ubuntu-vm/noble/
+tests/e2e/ubuntu-vm/resolute/
+
+# E2E test logs (generated at runtime)
+tests/e2e/logs/*.log
+tests/e2e/exec/logs/*.log
+
+# mdBook build output
+book/
+
+# Local private docs (strategy, planning, personal notes — not for public repo)
+docs/local/

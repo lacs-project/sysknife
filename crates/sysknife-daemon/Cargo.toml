@@ -1,0 +1,54 @@
+[package]
+name = "sysknife-daemon"
+version = "0.2.5"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sysknife-core = { path = "../sysknife-core" }
+sysknife-types = { path = "../sysknife-types" }
+rusqlite = { version = "0.39", features = ["bundled"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = "0.1"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["serde", "v4"] }
+sha2 = "0.11"
+hmac = "0.13"
+hex = "0.4"
+subtle = "2"
+zeroize = { version = "1", features = ["derive"] }
+tokio-vsock = "0.7.2"
+
+# Postgres backend (#147). Cloud-provider compatible via rustls + webpki-roots.
+# Audit-log writes use the same wire-format-compatible URL across AWS RDS,
+# GCP Cloud SQL, Azure Database for PostgreSQL Flexible Server, Supabase,
+# Neon, CockroachDB Cloud, and self-hosted. Statement cache is configurable
+# so the same binary works behind transaction-mode PgBouncer (Supabase
+# pooler) and CockroachDB.
+# We pull `sqlx-postgres` and `sqlx-core` directly (not the umbrella `sqlx`
+# crate) so we don't drag in the `sqlx-sqlite` transitive dep — its
+# `libsqlite3-sys ^0.30` clashes with `rusqlite 0.39`'s `libsqlite3-sys ^0.37`
+# at the cargo `links = "sqlite3"` level.
+sqlx-core = { version = "0.8.6", default-features = false, features = [
+    "_rt-tokio",
+    "_tls-rustls-ring-webpki",
+    "json",
+    "uuid",
+    "chrono",
+] }
+sqlx-postgres = { version = "0.8.6", default-features = false, features = [
+    "json",
+    "uuid",
+    "chrono",
+] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+sysknife-brain = { path = "../sysknife-brain" }
+serde_json = { workspace = true }
+syslog_loose = "0.23"
+tempfile = "3"

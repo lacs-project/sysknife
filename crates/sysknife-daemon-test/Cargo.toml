@@ -1,0 +1,18 @@
+[package]
+name = "sysknife-daemon-test"
+version = "0.2.5"
+publish = false
+edition.workspace = true
+license.workspace = true
+
+# This binary is for in-VM integration testing only.
+# It is never installed on user machines and is excluded from release artifacts.
+# Run via: tests/e2e/atomic-vm.sh test-daemon
+[[bin]]
+name = "sysknife-daemon-test"
+path = "src/main.rs"
+
+[dependencies]
+sysknife-daemon = { path = "../sysknife-daemon" }
+serde_json = { workspace = true }
+tokio = { workspace = true }

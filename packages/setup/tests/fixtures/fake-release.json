@@ -1,0 +1,29 @@
+{
+  "tag_name": "v0.2.4",
+  "assets": [
+    {
+      "name": "sysknife-v0.2.4-linux-x86_64",
+      "browser_download_url": "https://example.invalid/sysknife-v0.2.4-linux-x86_64"
+    },
+    {
+      "name": "sysknife-daemon-v0.2.4-linux-x86_64",
+      "browser_download_url": "https://example.invalid/sysknife-daemon-v0.2.4-linux-x86_64"
+    },
+    {
+      "name": "sha256sums-linux-x86_64.txt",
+      "browser_download_url": "https://example.invalid/sha256sums-linux-x86_64.txt"
+    },
+    {
+      "name": "sysknife-v0.2.4-linux-aarch64",
+      "browser_download_url": "https://example.invalid/sysknife-v0.2.4-linux-aarch64"
+    },
+    {
+      "name": "sysknife-daemon-v0.2.4-linux-aarch64",
+      "browser_download_url": "https://example.invalid/sysknife-daemon-v0.2.4-linux-aarch64"
+    },
+    {
+      "name": "sha256sums-linux-aarch64.txt",
+      "browser_download_url": "https://example.invalid/sha256sums-linux-aarch64.txt"
+    }
+  ]
+}

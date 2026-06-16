@@ -1,0 +1,32 @@
+[package]
+name = "sysknife-shell"
+version = "0.2.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Enable the hardcoded Silverblue fixture state client.
+# Active by default until a real daemon IPC client is implemented.
+default = ["demo"]
+demo = []
+
+[dependencies]
+sysknife-brain = { path = "../../../crates/sysknife-brain" }
+sysknife-core = { path = "../../../crates/sysknife-core" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tauri = { version = "2.5.6" }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+# Async I/O for the daemon execute path (net + io-util for UnixStream,
+# time for connection timeouts). Workspace provides rt/rt-multi-thread/macros.
+tokio = { workspace = true, features = ["net", "io-util", "time"] }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+
+[build-dependencies]
+tauri-build = "2.5.6"

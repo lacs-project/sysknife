@@ -1,0 +1,46 @@
+{
+  "app-id": "org.lacsfoundation.LacsShell",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "47",
+  "sdk": "org.gnome.Sdk",
+  "sdk-extensions": ["org.freedesktop.Sdk.Extension.rust-stable"],
+  "command": "sysknife-shell",
+  "finish-args": [
+    "--share=ipc",
+    "--socket=fallback-x11",
+    "--socket=wayland",
+    "--device=dri",
+    "--share=network",
+    "--filesystem=/run/sysknife:ro",
+    "--env=SYSKNIFE_LISTEN_URI=unix:///run/sysknife/daemon.sock"
+  ],
+  "build-options": {
+    "append-path": "/usr/lib/sdk/rust-stable/bin",
+    "env": {
+      "CARGO_HOME": "/run/build/sysknife-shell/.cargo",
+      "RUSTFLAGS": ""
+    }
+  },
+  "modules": [
+    {
+      "name": "sysknife-shell",
+      "buildsystem": "simple",
+      "build-commands": [
+        "cargo build --release --locked -p sysknife-shell",
+        "install -Dm755 target/release/sysknife-shell /app/bin/sysknife-shell"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "../../"
+        },
+        {
+          "type": "file",
+          "path": "cargo-sources.json",
+          "dest": ".cargo",
+          "dest-filename": "config.toml"
+        }
+      ]
+    }
+  ]
+}
