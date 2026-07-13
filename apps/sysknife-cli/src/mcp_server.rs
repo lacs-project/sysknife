@@ -261,9 +261,10 @@ pub struct AuditVerifyReport {
     /// Transaction ID of the first broken row. Only set when
     /// `status == "broken"`.
     pub first_broken_transaction_id: Option<String>,
-    /// HMAC the verifier expected for the first broken row.
+    /// What verification expected for the first broken row (the literal
+    /// `"valid ed25519 signature"`).
     pub expected: Option<String>,
-    /// HMAC actually stored for the first broken row.
+    /// The hex Ed25519 signature actually stored for the first broken row.
     pub actual: Option<String>,
     /// Human-readable explanation. Only set when `status == "cannot_verify"`.
     pub reason: Option<String>,
@@ -379,7 +380,7 @@ impl SysknifeMcpServer {
     /// Read-only and safe to call without first calling `sysknife_plan`;
     /// it never mutates system state. Mirrors `sysknife audit verify`.
     #[tool(
-        description = "Verify the tamper-evident HMAC-SHA256 hash chain over the audit log. Returns status (intact/broken/cannot_verify), rows_checked, and — on broken — the first offending row. Read-only and safe to call without prior sysknife_plan."
+        description = "Verify the tamper-evident Ed25519-signed hash chain over the audit log. Returns status (intact/broken/cannot_verify), rows_checked, and, on broken, the first offending row. Read-only and safe to call without prior sysknife_plan."
     )]
     async fn sysknife_audit_verify(&self) -> Result<Json<AuditVerifyReport>, ErrorData> {
         Ok(Json(audit_verify_inner().await))

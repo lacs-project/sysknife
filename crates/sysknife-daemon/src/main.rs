@@ -319,7 +319,7 @@ async fn build_postgres_audit(
     }
 
     // The Postgres backend uses the same on-disk audit key as SQLite for
-    // chain HMAC computation. Resolution mirrors `TransactionStore::open`:
+    // chain signature computation. Resolution mirrors `TransactionStore::open`:
     // env var > sibling of `database_path` > production default.
     let key_path = std::env::var("SYSKNIFE_AUDIT_KEY_PATH")
         .map(std::path::PathBuf::from)

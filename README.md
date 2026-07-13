@@ -55,8 +55,8 @@
 SysKnife never runs a shell command. Every action is a **typed operation**
 with a formal risk level. The AI cannot touch your system directly. A
 privileged daemon executes only what you approve, writes a tamper-evident
-HMAC-SHA256 audit chain, and rolls back automatically if a high-risk step
-fails.
+Ed25519-signed audit chain, and rolls back atomic-host (rpm-ostree) changes
+automatically on failure.
 
 ---
 
@@ -182,7 +182,7 @@ milestone.
 | Live IPC + streaming + atomic-host rollback (rpm-ostree) | ✅ |
 | Tauri shell — intent, plan, approval gate | ✅ |
 | MCP server (Claude Code / Cursor / any MCP client) | ✅ |
-| Tamper-evident HMAC-SHA256 audit chain | ✅ |
+| Tamper-evident Ed25519-signed audit chain | ✅ |
 | RFC 5424 syslog forwarding (Splunk / Sentinel / QRadar) | ✅ |
 | Postgres backend (RDS / Cloud SQL / Neon / Supabase) | ✅ |
 | **Ubuntu 24.04 support** — 65/65 stories pass on a live VM with gpt-4.1 | ✅ |

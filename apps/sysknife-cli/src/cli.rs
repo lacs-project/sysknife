@@ -153,7 +153,7 @@ pub struct AuditVerifyArgs {
     /// without the private key. This is the third-party / auditor path: it
     /// proves the chain is intact and unforged without trusting the verifier
     /// with the ability to sign. Without this flag, verification loads the
-    /// private key.
+    /// private key. Currently supported only for the SQLite backend.
     #[arg(long, value_name = "FILE")]
     pub pubkey: Option<std::path::PathBuf>,
 }
@@ -162,11 +162,13 @@ pub struct AuditVerifyArgs {
 #[derive(Args, Debug, Clone)]
 pub struct AuditCheckpointArgs {
     /// Postgres URL of the external append-only checkpoint database, e.g.
-    /// `postgres://user:pass@host/dbname`. The chain tip is signed and
-    /// appended here; anchoring off-box is what makes truncation/rewrite of
-    /// the local chain detectable.
+    /// `postgres://user@host/dbname`. Prefer the `SYSKNIFE_CHECKPOINT_DB`
+    /// environment variable over this flag so credentials are not exposed on
+    /// the command line (visible via `ps` and shell history). Anchoring the
+    /// tip off-box is what makes truncation/rewrite of the local chain
+    /// detectable.
     #[arg(long, value_name = "URL")]
-    pub db: String,
+    pub db: Option<String>,
 }
 
 /// Arguments for `sysknife history`.

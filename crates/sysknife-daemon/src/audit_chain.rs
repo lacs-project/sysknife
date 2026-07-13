@@ -25,13 +25,16 @@
 //!   anyone with the exported public key (`<key>.pub`) can verify but not
 //!   forge. A compromise of the verifier does not enable forgery.
 //! - **Compromised host / root.** An attacker who reads the private key file
-//!   can forge *future* entries. Mitigation is to forward signed tips to an
-//!   append-only external sink so past entries stay unforgeable and the tamper
-//!   window is bounded to "after compromise" (see `audit_forward`).
-//! - **Tail truncation is undetectable** by chain walk alone — an attacker
-//!   who deletes the last K rows leaves a still-consistent chain. A separate
-//!   watermark sink (periodic syslog/journald forward, or a network-pinned
-//!   tip-of-chain) is required to detect it (see `audit_watermark`).
+//!   can forge *future* entries. Mitigation is to anchor signed checkpoints to
+//!   an append-only external sink (see `checkpoint_sink`) so that later
+//!   tampering with past entries becomes *detectable* and the tamper window is
+//!   bounded to "after compromise".
+//! - **Tail truncation** is undetectable by the chain walk alone: an attacker
+//!   who deletes the last K rows leaves a still-consistent chain. It is caught
+//!   by anchoring signed checkpoints to an independent append-only sink, since
+//!   a truncated chain can no longer reproduce a previously anchored
+//!   `(seq, chain_tip)` (see `verify_checkpoints` and `checkpoint_sink`). The
+//!   best-effort `audit_watermark` journald forward is a lighter complement.
 //! - **In-flight modification** between insert and read is mitigated by
 //!   computing the signature *before* INSERT and writing it in the same SQL
 //!   statement.
@@ -215,9 +218,14 @@ impl AuditKey {
     }
 }
 
-/// Message signed for a row: `canonical(content) || prev_chain_hash`.
+/// Message signed for a row: `ROW_DOMAIN || canonical(content) || prev_chain_hash`.
+///
+/// The leading domain tag separates row signatures from checkpoint signatures
+/// so a signature produced in one context can never verify in the other, even
+/// if the framed fields were ever to overlap.
 fn chain_message(content: &ChainContent, prev_chain_hash: &str) -> Vec<u8> {
-    let mut msg = content.canonical_bytes();
+    let mut msg = b"sysknife-audit-row-v1\x1f".to_vec();
+    msg.extend_from_slice(&content.canonical_bytes());
     msg.extend_from_slice(prev_chain_hash.as_bytes());
     msg
 }
@@ -292,7 +300,7 @@ fn fill_random(buf: &mut [u8]) -> std::io::Result<()> {
 /// # Security contract — chain-content immutability
 ///
 /// Every field in this struct is captured **once** at INSERT time and baked
-/// into `chain_hash = HMAC-SHA256(canonical(self) || prev_chain_hash, key)`.
+/// into `chain_hash = ed25519_sign(canonical(self) || prev_chain_hash, key)`.
 /// After the row is written the hash is a one-time commitment: **no field
 /// in this struct may ever be mutated in place**.
 ///
@@ -308,8 +316,8 @@ fn fill_random(buf: &mut [u8]) -> std::io::Result<()> {
 ///    the correction are auditable.
 ///
 /// Any other approach silently breaks chain integrity: `verify_chain` will
-/// flag the modified row as `Broken` because the recomputed HMAC no longer
-/// matches the stored `chain_hash`.
+/// flag the modified row as `Broken` because the stored signature will no
+/// longer verify against the row's content.
 ///
 /// The canonical serialisation is stable across SQLite/Postgres backends.
 /// Each field is emitted as
@@ -403,7 +411,7 @@ impl<'a> ChainContent<'a> {
 ///
 /// The `\\` escape MUST come first: without it, a field value containing the
 /// literal two-byte sequence `\` + `0` would canonicalise to the same bytes
-/// as a raw NUL and produce an HMAC collision.
+/// as a raw NUL and produce a chain-signature collision.
 fn push_field(buf: &mut Vec<u8>, tag: &str, value: &str) {
     buf.extend_from_slice(tag.as_bytes());
     buf.push(0x1E); // tag/value separator (ASCII RS byte, but used inversely — see ChainContent doc)
@@ -578,6 +586,10 @@ fn verify_rows(vk: &VerifyingKey, expect_key_id: Option<&str>, rows: &[ChainRow]
 /// This is the Certificate-Transparency "signed checkpoint" idiom. The
 /// signature is Ed25519 over the canonical `(seq, chain_tip, created_at)`, so
 /// an auditor verifies it with only the public key.
+///
+/// A `Checkpoint` value carries no validity guarantee on its own: validity is
+/// established solely by [`verify_checkpoints`] under the public key. A
+/// checkpoint loaded from a sink is untrusted input until verified.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Checkpoint {
     /// `seq` of the chain tip this checkpoint commits to (the last row at
@@ -594,7 +606,9 @@ pub struct Checkpoint {
 /// Canonical message signed into a checkpoint. Reuses the prefix-free field
 /// framing so the encoding is unambiguous and stable across backends.
 fn checkpoint_message(seq: u64, chain_tip: &str, created_at: &str) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(160);
+    // Leading domain tag: separates checkpoint signatures from row signatures
+    // (see `chain_message`) so the two contexts can never cross-verify.
+    let mut buf = b"sysknife-checkpoint-v1\x1f".to_vec();
     push_field(&mut buf, "seq", &seq.to_string());
     push_field(&mut buf, "chain_tip", chain_tip);
     push_field(&mut buf, "created_at", created_at);
@@ -686,6 +700,20 @@ pub fn verify_checkpoints(
     }
     CheckpointOutcome::Consistent {
         checkpoints_checked: checked,
+    }
+}
+
+/// Process exit code for `sysknife audit checkpoint` verification, mirroring
+/// [`outcome_to_exit_code`]: `0` consistent, `1` a detected tamper (bad
+/// signature / truncation / rewrite), `2` cannot-verify (e.g. malformed public
+/// key). The 1-vs-2 split matters for CI exactly as it does for chain verify.
+pub fn checkpoint_outcome_to_exit_code(outcome: &CheckpointOutcome) -> i32 {
+    match outcome {
+        CheckpointOutcome::Consistent { .. } => 0,
+        CheckpointOutcome::BadSignature { .. }
+        | CheckpointOutcome::Truncated { .. }
+        | CheckpointOutcome::TipMismatch { .. } => 1,
+        CheckpointOutcome::CannotVerify { .. } => 2,
     }
 }
 
@@ -821,7 +849,7 @@ mod tests {
         assert_ne!(
             key.chain_hash(&a, ""),
             key.chain_hash(&b, ""),
-            "HMAC must distinguish escape from raw byte"
+            "chain signature must distinguish escape from raw byte"
         );
     }
 
@@ -930,7 +958,7 @@ mod tests {
             created_at: "2026-04-25T13:00:00Z".to_string(),
             // Plausible prev_chain_hash chosen to look intact at boundary.
             prev_chain_hash: rows[0].chain_hash.clone(),
-            // Not a real HMAC — verification must reject this.
+            // Not a valid signature; verification must reject this.
             chain_hash: "0".repeat(HASH_HEX_LEN),
         };
 
@@ -1115,7 +1143,7 @@ mod tests {
 
     // ── Debug redaction (HI-17 secret hygiene) ────────────────────────────
 
-    /// `Debug` must never expose the HMAC key material — neither raw bytes,
+    /// `Debug` must never expose the Ed25519 private key material, neither raw bytes,
     /// nor their hex encoding. A derived `Debug` would dump the bytes the
     /// moment anyone wrote `tracing::debug!("{key:?}")`.
     #[test]
@@ -1247,6 +1275,98 @@ mod tests {
         assert!(matches!(
             outcome,
             CheckpointOutcome::BadSignature { seq: 2 }
+        ));
+    }
+
+    #[test]
+    fn pubkey_verify_detects_tampered_middle_row() {
+        // The core auditor claim: with only the public key, a mutated field in
+        // a non-first row is detected at that exact seq.
+        let key = fixed_key();
+        let mut rows = build_chain(&key, 4);
+        rows[2].summary = "TAMPERED".to_string();
+        let outcome = verify_chain_with_pubkey(&key.verifying_key_hex(), &rows);
+        assert!(matches!(
+            outcome,
+            VerifyOutcome::Broken {
+                first_broken_seq: 3,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn multiple_checkpoints_all_consistent() {
+        let key = fixed_key();
+        let rows = build_chain(&key, 5);
+        let cps = vec![
+            key.sign_checkpoint(2, &rows[1].chain_hash, "2026-04-24T12:00:00Z"),
+            key.sign_checkpoint(3, &rows[2].chain_hash, "2026-04-24T12:05:00Z"),
+            key.sign_checkpoint(5, &rows[4].chain_hash, "2026-04-24T12:10:00Z"),
+        ];
+        assert_eq!(
+            verify_checkpoints(&key.verifying_key_hex(), &rows, &cps),
+            CheckpointOutcome::Consistent {
+                checkpoints_checked: 3
+            }
+        );
+    }
+
+    #[test]
+    fn middle_checkpoint_failure_is_reported() {
+        // Earlier-consistent checkpoints must not mask a later failure.
+        let key = fixed_key();
+        let mut rows = build_chain(&key, 5);
+        let cps = vec![
+            key.sign_checkpoint(2, &rows[1].chain_hash, "2026-04-24T12:00:00Z"),
+            key.sign_checkpoint(3, &rows[2].chain_hash, "2026-04-24T12:05:00Z"),
+            key.sign_checkpoint(5, &rows[4].chain_hash, "2026-04-24T12:10:00Z"),
+        ];
+        rows[2].chain_hash = "0".repeat(HASH_HEX_LEN); // rewrite what cp #2 commits to
+        assert!(matches!(
+            verify_checkpoints(&key.verifying_key_hex(), &rows, &cps),
+            CheckpointOutcome::TipMismatch { seq: 3, .. }
+        ));
+    }
+
+    #[test]
+    fn checkpoint_created_at_is_signed() {
+        // created_at is inside the signed message: backdating invalidates it.
+        let key = fixed_key();
+        let rows = build_chain(&key, 3);
+        let mut cp = key.sign_checkpoint(3, &rows[2].chain_hash, "2026-04-24T12:00:00Z");
+        cp.created_at = "2020-01-01T00:00:00Z".to_string();
+        assert!(matches!(
+            verify_checkpoints(&key.verifying_key_hex(), &rows, &[cp]),
+            CheckpointOutcome::BadSignature { .. }
+        ));
+    }
+
+    #[test]
+    fn checkpoint_seq_is_signed() {
+        // seq is inside the signed message: moving it invalidates the signature.
+        let key = fixed_key();
+        let rows = build_chain(&key, 3);
+        let mut cp = key.sign_checkpoint(3, &rows[2].chain_hash, "2026-04-24T12:00:00Z");
+        cp.seq = 2;
+        assert!(matches!(
+            verify_checkpoints(&key.verifying_key_hex(), &rows, &[cp]),
+            CheckpointOutcome::BadSignature { seq: 2 }
+        ));
+    }
+
+    #[test]
+    fn checkpoint_detects_full_wipe() {
+        // The whole chain deleted: the anchored tip cannot be reproduced.
+        let key = fixed_key();
+        let full = build_chain(&key, 3);
+        let cp = key.sign_checkpoint(3, &full[2].chain_hash, "2026-04-24T12:00:00Z");
+        assert!(matches!(
+            verify_checkpoints(&key.verifying_key_hex(), &[], &[cp]),
+            CheckpointOutcome::Truncated {
+                checkpoint_seq: 3,
+                current_max_seq: 0
+            }
         ));
     }
 }

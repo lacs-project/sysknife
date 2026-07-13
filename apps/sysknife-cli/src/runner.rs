@@ -531,9 +531,29 @@ pub async fn run_audit_checkpoint(
     args: crate::cli::AuditCheckpointArgs,
     _log: &Logger,
 ) -> Result<(), CliError> {
-    use sysknife_daemon::audit_chain::{verify_checkpoints, AuditKey, CheckpointOutcome};
+    use sysknife_daemon::audit_chain::{
+        checkpoint_outcome_to_exit_code, outcome_to_exit_code, verify_chain, verify_checkpoints,
+        AuditKey, CheckpointOutcome, VerifyOutcome,
+    };
     use sysknife_daemon::checkpoint_sink::{CheckpointSink, PostgresCheckpointSink};
     use sysknife_daemon::transactions::TransactionStore;
+
+    // Resolve the checkpoint database URL. Prefer the env var so credentials
+    // are not exposed on the command line (visible via `ps` / shell history).
+    let db_url = match args
+        .db
+        .clone()
+        .or_else(|| std::env::var("SYSKNIFE_CHECKPOINT_DB").ok())
+    {
+        Some(u) => u,
+        None => {
+            eprintln!(
+                "no checkpoint database configured; pass --db <URL> or set \
+                 SYSKNIFE_CHECKPOINT_DB (preferred, keeps credentials off argv)"
+            );
+            return Err(CliError::Exit(2));
+        }
+    };
 
     let db_path = sysknife_core::default_database_path();
 
@@ -576,11 +596,21 @@ pub async fn run_audit_checkpoint(
         }
     };
 
+    // Refuse to anchor a chain that does not verify: anchoring the tip of a
+    // tampered chain would launder it into a signed checkpoint.
+    match verify_chain(&key, &rows) {
+        VerifyOutcome::Intact { .. } => {}
+        broken => {
+            eprintln!("refusing to anchor: local audit chain does not verify: {broken:?}");
+            return Err(CliError::Exit(outcome_to_exit_code(&broken)));
+        }
+    }
+
     let created_at = chrono::Utc::now().to_rfc3339();
     let checkpoint = key.sign_checkpoint(tip.seq, &tip.chain_hash, &created_at);
 
     // Anchor to the external append-only database.
-    let sink = PostgresCheckpointSink::connect(&args.db)
+    let sink = PostgresCheckpointSink::connect(&db_url)
         .await
         .map_err(|e| {
             eprintln!("connecting to checkpoint database failed: {e}");
@@ -596,11 +626,23 @@ pub async fn run_audit_checkpoint(
         checkpoint.seq
     );
 
-    // Verify every anchored checkpoint against the local chain.
+    // Read the anchored checkpoints back and confirm our write is actually
+    // present, guarding against a lagging read replica or a wrong database
+    // silently returning an empty/stale set (which would otherwise render as a
+    // misleading "consistent (0 verified)").
     let anchored = sink.load_all().await.map_err(|e| {
         eprintln!("loading anchored checkpoints failed: {e}");
         CliError::Exit(2)
     })?;
+    if !anchored.contains(&checkpoint) {
+        eprintln!(
+            "anchored checkpoint not found on read-back; the checkpoint database \
+             may be a lagging replica or a different database than the write hit"
+        );
+        return Err(CliError::Exit(2));
+    }
+
+    // Verify every anchored checkpoint against the local chain.
     match verify_checkpoints(&key.verifying_key_hex(), &rows, &anchored) {
         CheckpointOutcome::Consistent {
             checkpoints_checked,
@@ -610,7 +652,7 @@ pub async fn run_audit_checkpoint(
         }
         other => {
             eprintln!("checkpoint verification FAILED: {other:?}");
-            Err(CliError::Exit(1))
+            Err(CliError::Exit(checkpoint_outcome_to_exit_code(&other)))
         }
     }
 }
@@ -756,7 +798,10 @@ fn emit_verify_outcome(
                 "backend": backend_label,
             }),
         };
-        log.println(&serde_json::to_string_pretty(&payload).unwrap_or_default());
+        log.println(
+            &serde_json::to_string_pretty(&payload)
+                .expect("verify outcome payload is serializable"),
+        );
     } else {
         match outcome {
             VerifyOutcome::Intact { rows_checked } => {

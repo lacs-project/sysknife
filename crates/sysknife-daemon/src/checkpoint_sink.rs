@@ -96,8 +96,10 @@ impl PostgresCheckpointSink {
     /// Connect to `url`, create the append-only `audit_checkpoints` table if it
     /// does not exist, and return the sink.
     pub async fn connect(url: &str) -> Result<Self, CheckpointSinkError> {
-        let opts = PgConnectOptions::from_str(url)
-            .map_err(|e| CheckpointSinkError::Connect(format!("invalid postgres URL: {e}")))?;
+        // Do not echo the URL/DSN into the error (it can carry credentials).
+        let opts = PgConnectOptions::from_str(url).map_err(|_| {
+            CheckpointSinkError::Connect("invalid checkpoint database URL".to_string())
+        })?;
         let pool = PgPoolOptions::new()
             .max_connections(4)
             .acquire_timeout(Duration::from_secs(10))
@@ -110,6 +112,22 @@ impl PostgresCheckpointSink {
     }
 
     async fn initialize(&self) -> Result<(), CheckpointSinkError> {
+        // Only CREATE when the table is absent. This lets a hardened,
+        // least-privilege role (INSERT/SELECT only, no DDL, per the module
+        // docs) connect to an already-provisioned table; the one-time CREATE
+        // is an admin/bootstrap step that a DDL-capable role performs once.
+        let row = sqlx_core::query::query(
+            "SELECT to_regclass('audit_checkpoints') IS NOT NULL AS present",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| CheckpointSinkError::Query(e.to_string()))?;
+        let present: bool = row
+            .try_get("present")
+            .map_err(|e| CheckpointSinkError::Query(e.to_string()))?;
+        if present {
+            return Ok(());
+        }
         sqlx_core::query::query(
             "CREATE TABLE IF NOT EXISTS audit_checkpoints (\
                  seq BIGINT NOT NULL, \
@@ -132,7 +150,9 @@ impl CheckpointSink for PostgresCheckpointSink {
             "INSERT INTO audit_checkpoints (seq, chain_tip, created_at, signature) \
              VALUES ($1, $2, $3, $4)",
         )
-        .bind(checkpoint.seq as i64)
+        .bind(i64::try_from(checkpoint.seq).map_err(|_| {
+            CheckpointSinkError::Query("checkpoint seq exceeds i64 range".to_string())
+        })?)
         .bind(&checkpoint.chain_tip)
         .bind(&checkpoint.created_at)
         .bind(&checkpoint.signature)
@@ -157,7 +177,9 @@ impl CheckpointSink for PostgresCheckpointSink {
                 .try_get("seq")
                 .map_err(|e| CheckpointSinkError::Query(e.to_string()))?;
             out.push(Checkpoint {
-                seq: seq as u64,
+                seq: u64::try_from(seq).map_err(|e| {
+                    CheckpointSinkError::Query(format!("negative checkpoint seq: {e}"))
+                })?,
                 chain_tip: row
                     .try_get("chain_tip")
                     .map_err(|e| CheckpointSinkError::Query(e.to_string()))?,
