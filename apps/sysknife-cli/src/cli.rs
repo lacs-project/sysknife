@@ -135,6 +135,11 @@ pub enum AuditCommand {
     /// unreadable database, etc.). The 1/2 split matters: a CI pipeline
     /// expecting 0 or 1 must not silently pass on a missing key file.
     Verify(AuditVerifyArgs),
+
+    /// Anchor the current chain tip as a signed checkpoint into an external
+    /// append-only database, then verify all anchored checkpoints against the
+    /// local chain (detects tail-truncation and rewrite).
+    Checkpoint(AuditCheckpointArgs),
 }
 
 /// Arguments for `sysknife audit verify`.
@@ -151,6 +156,17 @@ pub struct AuditVerifyArgs {
     /// private key.
     #[arg(long, value_name = "FILE")]
     pub pubkey: Option<std::path::PathBuf>,
+}
+
+/// Arguments for `sysknife audit checkpoint`.
+#[derive(Args, Debug, Clone)]
+pub struct AuditCheckpointArgs {
+    /// Postgres URL of the external append-only checkpoint database, e.g.
+    /// `postgres://user:pass@host/dbname`. The chain tip is signed and
+    /// appended here; anchoring off-box is what makes truncation/rewrite of
+    /// the local chain detectable.
+    #[arg(long, value_name = "URL")]
+    pub db: String,
 }
 
 /// Arguments for `sysknife history`.

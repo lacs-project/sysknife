@@ -80,6 +80,9 @@ async fn dispatch(
             crate::cli::AuditCommand::Verify(args) => {
                 runner::run_audit_verify(args.clone(), log).await
             }
+            crate::cli::AuditCommand::Checkpoint(args) => {
+                runner::run_audit_checkpoint(args.clone(), log).await
+            }
         },
 
         // --- sysknife <intent words ...> ---

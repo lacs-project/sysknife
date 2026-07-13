@@ -13,6 +13,7 @@ path = "src/main.rs"
 sysknife-brain = { path = "../../crates/sysknife-brain" }
 sysknife-core = { path = "../../crates/sysknife-core" }
 sysknife-daemon = { path = "../../crates/sysknife-daemon" }
+chrono = "0.4"
 sysknife-types = { path = "../../crates/sysknife-types" }
 
 clap = { version = "4", features = ["derive"] }

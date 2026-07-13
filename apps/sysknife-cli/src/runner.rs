@@ -523,6 +523,98 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
     }
 }
 
+/// `sysknife audit checkpoint`: sign the current chain tip and anchor it to an
+/// external append-only database, then verify all anchored checkpoints against
+/// the local chain. Anchoring off-box is what makes truncation/rewrite of the
+/// local chain detectable.
+pub async fn run_audit_checkpoint(
+    args: crate::cli::AuditCheckpointArgs,
+    _log: &Logger,
+) -> Result<(), CliError> {
+    use sysknife_daemon::audit_chain::{verify_checkpoints, AuditKey, CheckpointOutcome};
+    use sysknife_daemon::checkpoint_sink::{CheckpointSink, PostgresCheckpointSink};
+    use sysknife_daemon::transactions::TransactionStore;
+
+    let db_path = sysknife_core::default_database_path();
+
+    // Load the private signing key (same location rules as `verify`).
+    let key_path = std::env::var("SYSKNIFE_AUDIT_KEY_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            db_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("audit-key")
+        });
+    if !key_path.exists() {
+        eprintln!("audit key not found at {}", key_path.display());
+        return Err(CliError::Exit(2));
+    }
+    let key = AuditKey::load_or_generate(&key_path).map_err(|e| {
+        eprintln!("audit key load failed: {e}");
+        CliError::Exit(2)
+    })?;
+
+    // Read the current chain tip from the local sqlite store.
+    if !db_path.exists() {
+        eprintln!("audit database not found at {}", db_path.display());
+        return Err(CliError::Exit(2));
+    }
+    let store = TransactionStore::open_read_only(&db_path).map_err(|e| {
+        eprintln!("opening audit database failed: {e}");
+        CliError::Exit(2)
+    })?;
+    let rows = store.fetch_chain_rows().map_err(|e| {
+        eprintln!("reading audit chain failed: {e}");
+        CliError::Exit(2)
+    })?;
+    let tip = match rows.last() {
+        Some(t) => t,
+        None => {
+            eprintln!("audit chain is empty; nothing to checkpoint");
+            return Err(CliError::Exit(2));
+        }
+    };
+
+    let created_at = chrono::Utc::now().to_rfc3339();
+    let checkpoint = key.sign_checkpoint(tip.seq, &tip.chain_hash, &created_at);
+
+    // Anchor to the external append-only database.
+    let sink = PostgresCheckpointSink::connect(&args.db)
+        .await
+        .map_err(|e| {
+            eprintln!("connecting to checkpoint database failed: {e}");
+            CliError::Exit(2)
+        })?;
+    sink.append(&checkpoint).await.map_err(|e| {
+        eprintln!("anchoring checkpoint failed: {e}");
+        CliError::Exit(2)
+    })?;
+    let tip_prefix = &checkpoint.chain_tip[..checkpoint.chain_tip.len().min(12)];
+    println!(
+        "anchored checkpoint: seq={} tip={tip_prefix}… -> external database",
+        checkpoint.seq
+    );
+
+    // Verify every anchored checkpoint against the local chain.
+    let anchored = sink.load_all().await.map_err(|e| {
+        eprintln!("loading anchored checkpoints failed: {e}");
+        CliError::Exit(2)
+    })?;
+    match verify_checkpoints(&key.verifying_key_hex(), &rows, &anchored) {
+        CheckpointOutcome::Consistent {
+            checkpoints_checked,
+        } => {
+            println!("checkpoints consistent ({checkpoints_checked} verified)");
+            Ok(())
+        }
+        other => {
+            eprintln!("checkpoint verification FAILED: {other:?}");
+            Err(CliError::Exit(1))
+        }
+    }
+}
+
 /// What the audit chain is verified against.
 pub(crate) enum Verifier {
     /// The private signing key (also derives the public key used to verify).
