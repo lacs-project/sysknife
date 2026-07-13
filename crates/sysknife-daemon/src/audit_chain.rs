@@ -74,6 +74,13 @@ pub const CURRENT_KEY_ID: &str = "v1";
 /// Hex-encoded length of an Ed25519 signature (64 raw bytes → 128 hex chars).
 pub const HASH_HEX_LEN: usize = 128;
 
+/// Domain-separation tags for the two Ed25519 signing contexts (rows vs
+/// checkpoints). They MUST stay distinct and prefix-free so a signature made
+/// in one context can never verify in the other. Enforced by the
+/// `domain_tags_are_distinct_and_prefix_free` test.
+const ROW_DOMAIN: &[u8] = b"sysknife-audit-row-v1\x1f";
+const CHECKPOINT_DOMAIN: &[u8] = b"sysknife-checkpoint-v1\x1f";
+
 /// Loaded Ed25519 signing key + its identifier. Construct via
 /// [`AuditKey::load_or_generate`].
 ///
@@ -224,10 +231,26 @@ impl AuditKey {
 /// so a signature produced in one context can never verify in the other, even
 /// if the framed fields were ever to overlap.
 fn chain_message(content: &ChainContent, prev_chain_hash: &str) -> Vec<u8> {
-    let mut msg = b"sysknife-audit-row-v1\x1f".to_vec();
+    let mut msg = ROW_DOMAIN.to_vec();
     msg.extend_from_slice(&content.canonical_bytes());
     msg.extend_from_slice(prev_chain_hash.as_bytes());
     msg
+}
+
+/// Resolve the audit key file path: `$SYSKNIFE_AUDIT_KEY_PATH` if set,
+/// otherwise `<db_dir>/audit-key` (sibling of the database). This is the single
+/// definition of the key-location precedence documented in the module header;
+/// the CLI verify/checkpoint paths resolve through it so they always agree with
+/// the daemon on where the key lives.
+pub fn resolve_audit_key_path(db_path: &Path) -> PathBuf {
+    std::env::var("SYSKNIFE_AUDIT_KEY_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            db_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("audit-key")
+        })
 }
 
 /// Generate a 32-byte random key and write it to `path` with mode `0o600`.
@@ -608,7 +631,7 @@ pub struct Checkpoint {
 fn checkpoint_message(seq: u64, chain_tip: &str, created_at: &str) -> Vec<u8> {
     // Leading domain tag: separates checkpoint signatures from row signatures
     // (see `chain_message`) so the two contexts can never cross-verify.
-    let mut buf = b"sysknife-checkpoint-v1\x1f".to_vec();
+    let mut buf = CHECKPOINT_DOMAIN.to_vec();
     push_field(&mut buf, "seq", &seq.to_string());
     push_field(&mut buf, "chain_tip", chain_tip);
     push_field(&mut buf, "created_at", created_at);
@@ -673,23 +696,25 @@ pub fn verify_checkpoints(
             };
         }
     };
-    let current_max_seq = rows.iter().map(|r| r.seq).max().unwrap_or(0);
+    // `rows` is seq-sorted (ORDER BY seq ASC in the store; chain build order in
+    // tests), so the tip seq is the last element and we can binary-search below.
+    let current_max_seq = rows.last().map(|r| r.seq).unwrap_or(0);
     let mut checked = 0u64;
     for cp in checkpoints {
         let msg = checkpoint_message(cp.seq, &cp.chain_tip, &cp.created_at);
         if !signature_ok(&vk, &msg, &cp.signature) {
             return CheckpointOutcome::BadSignature { seq: cp.seq };
         }
-        match rows.iter().find(|r| r.seq == cp.seq) {
-            Some(row) if row.chain_hash == cp.chain_tip => {}
-            Some(row) => {
+        match rows.binary_search_by_key(&cp.seq, |r| r.seq) {
+            Ok(idx) if rows[idx].chain_hash == cp.chain_tip => {}
+            Ok(idx) => {
                 return CheckpointOutcome::TipMismatch {
                     seq: cp.seq,
                     anchored: cp.chain_tip.clone(),
-                    actual: row.chain_hash.clone(),
+                    actual: rows[idx].chain_hash.clone(),
                 };
             }
-            None => {
+            Err(_) => {
                 return CheckpointOutcome::Truncated {
                     checkpoint_seq: cp.seq,
                     current_max_seq,
@@ -1368,5 +1393,15 @@ mod tests {
                 current_max_seq: 0
             }
         ));
+    }
+
+    #[test]
+    fn domain_tags_are_distinct_and_prefix_free() {
+        // Security invariant: row and checkpoint signatures can never
+        // cross-verify because their signed messages start with distinct,
+        // prefix-free domain tags.
+        assert_ne!(ROW_DOMAIN, CHECKPOINT_DOMAIN);
+        assert!(!ROW_DOMAIN.starts_with(CHECKPOINT_DOMAIN));
+        assert!(!CHECKPOINT_DOMAIN.starts_with(ROW_DOMAIN));
     }
 }

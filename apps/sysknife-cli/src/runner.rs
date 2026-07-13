@@ -459,14 +459,7 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
             }
         }
     } else {
-        let key_path = std::env::var("SYSKNIFE_AUDIT_KEY_PATH")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| {
-                db_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."))
-                    .join("audit-key")
-            });
+        let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(&db_path);
 
         if !key_path.exists() {
             let reason = format!(
@@ -558,14 +551,7 @@ pub async fn run_audit_checkpoint(
     let db_path = sysknife_core::default_database_path();
 
     // Load the private signing key (same location rules as `verify`).
-    let key_path = std::env::var("SYSKNIFE_AUDIT_KEY_PATH")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            db_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .join("audit-key")
-        });
+    let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(&db_path);
     if !key_path.exists() {
         eprintln!("audit key not found at {}", key_path.display());
         return Err(CliError::Exit(2));

@@ -38,6 +38,12 @@ pub enum CheckpointSinkError {
     Query(String),
 }
 
+impl From<sqlx_core::Error> for CheckpointSinkError {
+    fn from(e: sqlx_core::Error) -> Self {
+        CheckpointSinkError::Query(e.to_string())
+    }
+}
+
 /// An append-only sink that stores signed checkpoints and hands them back for
 /// verification. Implementations must never mutate or delete a stored
 /// checkpoint.
@@ -120,11 +126,8 @@ impl PostgresCheckpointSink {
             "SELECT to_regclass('audit_checkpoints') IS NOT NULL AS present",
         )
         .fetch_one(&self.pool)
-        .await
-        .map_err(|e| CheckpointSinkError::Query(e.to_string()))?;
-        let present: bool = row
-            .try_get("present")
-            .map_err(|e| CheckpointSinkError::Query(e.to_string()))?;
+        .await?;
+        let present: bool = row.try_get("present")?;
         if present {
             return Ok(());
         }
@@ -137,8 +140,7 @@ impl PostgresCheckpointSink {
              )",
         )
         .execute(&self.pool)
-        .await
-        .map_err(|e| CheckpointSinkError::Query(e.to_string()))?;
+        .await?;
         Ok(())
     }
 }
@@ -157,8 +159,7 @@ impl CheckpointSink for PostgresCheckpointSink {
         .bind(&checkpoint.created_at)
         .bind(&checkpoint.signature)
         .execute(&self.pool)
-        .await
-        .map_err(|e| CheckpointSinkError::Query(e.to_string()))?;
+        .await?;
         Ok(())
     }
 
@@ -168,27 +169,18 @@ impl CheckpointSink for PostgresCheckpointSink {
              FROM audit_checkpoints ORDER BY seq ASC",
         )
         .fetch_all(&self.pool)
-        .await
-        .map_err(|e| CheckpointSinkError::Query(e.to_string()))?;
+        .await?;
 
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
-            let seq: i64 = row
-                .try_get("seq")
-                .map_err(|e| CheckpointSinkError::Query(e.to_string()))?;
+            let seq: i64 = row.try_get("seq")?;
             out.push(Checkpoint {
                 seq: u64::try_from(seq).map_err(|e| {
                     CheckpointSinkError::Query(format!("negative checkpoint seq: {e}"))
                 })?,
-                chain_tip: row
-                    .try_get("chain_tip")
-                    .map_err(|e| CheckpointSinkError::Query(e.to_string()))?,
-                created_at: row
-                    .try_get("created_at")
-                    .map_err(|e| CheckpointSinkError::Query(e.to_string()))?,
-                signature: row
-                    .try_get("signature")
-                    .map_err(|e| CheckpointSinkError::Query(e.to_string()))?,
+                chain_tip: row.try_get("chain_tip")?,
+                created_at: row.try_get("created_at")?,
+                signature: row.try_get("signature")?,
             });
         }
         Ok(out)
