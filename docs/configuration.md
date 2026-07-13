@@ -88,7 +88,8 @@ file's section.field path.
 | `SYSKNIFE_ANTHROPIC_URL` | `https://api.anthropic.com` | Anthropic base URL |
 | `SYSKNIFE_BRAIN_MAX_TURNS` | `10` | Planning loop turn limit |
 | `SYSKNIFE_MAX_RPM` | `20` | Rate limit (requests / 60s sliding window) |
-| `SYSKNIFE_AUDIT_KEY_PATH` | `<db_dir>/audit-key` | HMAC key path for audit chain |
+| `SYSKNIFE_AUDIT_KEY_PATH` | `<db_dir>/audit-key` | Ed25519 signing key path for the audit chain |
+| `SYSKNIFE_CHECKPOINT_DB` | — | Postgres URL for `audit checkpoint` external anchoring (keeps DB credentials off the command line) |
 | `SYSKNIFE_SOCKET` | `unix:///run/sysknife/daemon.sock` | CLI / MCP daemon address |
 | `SYSKNIFE_TOKEN` | — | Vsock auth token (when daemon runs in a VM) |
 | `XDG_CONFIG_HOME` | `~/.config` | Base path for `sysknife/config.toml` |
@@ -114,7 +115,7 @@ the CLI / shell:
 | Variable | Purpose |
 |---|---|
 | `SYSKNIFE_VSOCK_TOKEN_PATH` | Vsock auth token file (default: `/etc/sysknife/vsock-token`) |
-| `SYSKNIFE_AUDIT_KEY_PATH` | HMAC chain key path (default: alongside the database) |
+| `SYSKNIFE_AUDIT_KEY_PATH` | Ed25519 audit signing key path (default: alongside the database) |
 
 ## Validating your config
 

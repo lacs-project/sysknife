@@ -119,6 +119,52 @@ sysknife history --status succeeded --limit 5 --since 2026-04-10T00:00:00Z
 
 ---
 
+### `sysknife audit`
+
+Inspect and anchor the tamper-evident, Ed25519-signed audit chain the daemon
+writes for every executed action.
+
+#### `sysknife audit verify`
+
+Verify the audit chain. Exits `0` if intact, `1` if any row is broken
+(tampered), `2` if the chain cannot be verified (missing key, unreadable
+database).
+
+```sh
+sysknife audit verify
+sysknife audit verify --json
+sysknife audit verify --pubkey /etc/sysknife/audit-key.pub
+```
+
+| Flag | Description |
+|---|---|
+| `--json` | Machine-readable JSON report instead of human text |
+| `--pubkey FILE` | Verify with only the exported public key (`<audit-key>.pub`), no private key: the third-party / auditor path. Proves the chain without the ability to sign. SQLite backend only. |
+
+#### `sysknife audit checkpoint`
+
+Sign the current chain tip as a checkpoint and anchor it to an external
+append-only database, then verify all anchored checkpoints against the local
+chain. Anchoring the tip off-box is what makes tail-truncation and rewrite of
+the local chain detectable.
+
+```sh
+# credentials via env (preferred; keeps them off the command line)
+SYSKNIFE_CHECKPOINT_DB=postgres://user@host/db sysknife audit checkpoint
+# or explicitly
+sysknife audit checkpoint --db postgres://user@host/db
+```
+
+| Flag | Description |
+|---|---|
+| `--db URL` | Postgres URL of the append-only checkpoint database. Prefer `SYSKNIFE_CHECKPOINT_DB` so credentials are not exposed via `ps` / shell history. |
+
+Each row is signed with Ed25519; verification uses the public key, so an
+auditor can verify without the ability to forge. See
+[configuration](./configuration.md) for the key and checkpoint-DB env vars.
+
+---
+
 ### `sysknife completions <shell>`
 
 Print a shell completion script to stdout.

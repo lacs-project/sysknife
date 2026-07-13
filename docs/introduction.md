@@ -49,7 +49,7 @@ SysKnife gives you:
 - **Risk levels** — Low (read-only), Medium (reversible), High (irreversible / access-control)
 - **Preview before execution** — see the exact commands before they run
 - **Automatic rollback** — if a high-risk action fails, the daemon reverses what it can
-- **Immutable audit trail** — every execution is HMAC-SHA256 hash-chained
+- **Immutable audit trail** — every execution is Ed25519-signed and hash-chained
 
 ---
 
