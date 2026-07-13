@@ -128,7 +128,7 @@ impl Command {
 /// `sysknife audit <subcommand>` subcommands.
 #[derive(Subcommand, Debug, Clone)]
 pub enum AuditCommand {
-    /// Verify the tamper-evident HMAC-SHA256 hash chain over the audit log.
+    /// Verify the tamper-evident Ed25519-signed hash chain over the audit log.
     ///
     /// Exits 0 if the chain is intact, 1 if any row is broken, and 2 if the
     /// chain cannot be verified (missing key file, retired key not on disk,

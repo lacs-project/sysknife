@@ -255,7 +255,7 @@ impl AuditStore for SqliteStore {
         key: &AuditKey,
     ) -> Result<VerifyOutcome, TransactionStoreError> {
         // `key` is borrowed from the caller; we can't move it into a
-        // `'static` `spawn_blocking` closure. Verifying is a CPU-only HMAC
+        // `'static` `spawn_blocking` closure. Verifying is a CPU-only signature
         // walk over rows already fetched, so doing the work on the async
         // thread (after the blocking fetch) is fine — no I/O risk.
         let rows = self.fetch_chain_rows().await?;

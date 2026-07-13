@@ -24,14 +24,14 @@ pub struct NewTransaction {
     /// **Chain-hashed at INSERT; intentionally not in the mutable field set.**
     ///
     /// `summary` is captured in [`crate::audit_chain::ChainContent`] and
-    /// baked into `chain_hash = HMAC-SHA256(canonical(fields) || prev_hash, key)`
-    /// at the moment the row is written. After that point the stored hash is a
-    /// one-time commitment.
+    /// baked into `chain_hash = ed25519_sign(canonical(fields) || prev_hash, key)`
+    /// at the moment the row is written. After that point the stored signature
+    /// is a one-time commitment.
     ///
     /// **Do not add an `update_summary` API** (or any equivalent that modifies
     /// this field in an existing row). Any such change will cause
     /// `sysknife audit verify` to report `VerifyOutcome::Broken` for the
-    /// modified row, because the recomputed HMAC will no longer match the
+    /// modified row, because the signature will no longer verify against the
     /// stored `chain_hash`.
     ///
     /// If a correction is genuinely needed, use one of the two safe strategies
@@ -451,7 +451,7 @@ impl TransactionStore {
         //   seq             — monotonic ordering, 1-indexed
         //   key_id          — identifies the key generation (forward-compatible
         //                     with epoch rotation in a follow-up issue)
-        //   chain_hash      — HMAC-SHA256(canonical(immutable_fields) || prev_chain_hash, key)
+        //   chain_hash      — ed25519_sign(canonical(immutable_fields) || prev_chain_hash, key)
         //   prev_chain_hash — chain_hash of the previous row, "" for the first row
         //
         // status is intentionally absent from the chain content — it is mutable.

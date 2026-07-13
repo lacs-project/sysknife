@@ -40,8 +40,8 @@ static WARNED_JOURNALD_UNAVAILABLE: OnceLock<()> = OnceLock::new();
 
 /// Emit a structured journald entry recording the latest chain tip.
 ///
-/// `chain_hash_hex` must be the hex-encoded HMAC-SHA256 of the newly inserted
-/// chain row — exactly as stored in the `chain_hash` column. Passing a
+/// `chain_hash_hex` must be the hex-encoded Ed25519 signature of the newly
+/// inserted chain row — exactly as stored in the `chain_hash` column. Passing a
 /// pre-encoded hex string avoids a redundant decode/re-encode at the call site
 /// in `transactions.rs`, where the hash is already a `String`.
 ///

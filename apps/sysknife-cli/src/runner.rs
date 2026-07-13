@@ -435,7 +435,7 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
         _ => sysknife_core::default_database_path().display().to_string(),
     };
 
-    // Load the audit HMAC key. Its location is the same across SQLite and
+    // Load the audit signing key. Its location is the same across SQLite and
     // Postgres (sibling of the SQLite path, or `$SYSKNIFE_AUDIT_KEY_PATH`).
     let db_path = sysknife_core::default_database_path();
     let key_path = std::env::var("SYSKNIFE_AUDIT_KEY_PATH")

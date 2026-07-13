@@ -1,29 +1,39 @@
-//! Forward HMAC-SHA256 hash chain for the audit log.
+//! Forward Ed25519-signed hash chain for the audit log.
 //!
 //! Each `transactions` row stores `chain_hash` and `prev_chain_hash` columns.
 //! On insert, the daemon computes
 //!
 //! ```text
-//! chain_hash = HMAC-SHA256(canonical(immutable_fields) || prev_chain_hash, key)
+//! chain_hash = ed25519_sign(canonical(immutable_fields) || prev_chain_hash, signing_key)
 //! ```
 //!
-//! and stores both. The first row in a chain has `prev_chain_hash = ""`.
+//! and stores both (the signature is hex-encoded; the first row in a chain has
+//! `prev_chain_hash = ""`). Ed25519 signatures are deterministic (RFC 8032), so
+//! the same content always produces the same `chain_hash`.
 //!
-//! Verification (`sysknife audit verify`) walks rows in `seq` order, recomputes
-//! each hash from the immutable fields, and reports the first broken link.
+//! Verification (`sysknife audit verify`) walks rows in `seq` order and checks
+//! each row's signature **with the public key**, reporting the first broken
+//! link. Because verification needs only the public key, an auditor or a
+//! central log aggregator can verify the chain **without holding the private
+//! key** — they cannot forge entries. This is the property a symmetric MAC
+//! (the previous HMAC-SHA256 design) could not provide: with an HMAC, the
+//! verifier and the forger are the same principal.
 //!
 //! ## Threat model
 //!
-//! - **Verifier and writer share a trust principal**: root (or whoever can
-//!   read the key file) computes the chain on insert and verifies on read.
-//!   For multi-party / third-party audit, switch to digital signatures
-//!   (Ed25519); not in scope for v1.
+//! - **Non-repudiation (asymmetric).** The daemon signs with the private key;
+//!   anyone with the exported public key (`<key>.pub`) can verify but not
+//!   forge. A compromise of the verifier does not enable forgery.
+//! - **Compromised host / root.** An attacker who reads the private key file
+//!   can forge *future* entries. Mitigation is to forward signed tips to an
+//!   append-only external sink so past entries stay unforgeable and the tamper
+//!   window is bounded to "after compromise" (see `audit_forward`).
 //! - **Tail truncation is undetectable** by chain walk alone — an attacker
-//!   who deletes the last K rows leaves a still-consistent chain. Phase 2
-//!   adds a separate watermark sink (file with a witness HMAC, periodic
-//!   syslog/journald forward, or a network-pinned tip-of-chain).
+//!   who deletes the last K rows leaves a still-consistent chain. A separate
+//!   watermark sink (periodic syslog/journald forward, or a network-pinned
+//!   tip-of-chain) is required to detect it (see `audit_watermark`).
 //! - **In-flight modification** between insert and read is mitigated by
-//!   computing the hash *before* INSERT and writing it in the same SQL
+//!   computing the signature *before* INSERT and writing it in the same SQL
 //!   statement.
 //! - **Status mutations are not in the chain.** The mutable `status` field
 //!   is intentionally excluded — the chain protects the *authorisation
@@ -33,76 +43,67 @@
 //!
 //! ## Key management
 //!
-//! The HMAC key lives in a file. By default the path is `<db_dir>/audit-key`
-//! (sibling of the SQLite database, or sibling of whatever directory
-//! `sysknife_core::default_database_path` resolves to in production), and
-//! the env var `SYSKNIFE_AUDIT_KEY_PATH` overrides it for systemd unit
-//! drop-ins (typically `/etc/sysknife/audit-key`). The file is created with
-//! mode `0o600` on first daemon start if it does not exist; subsequent runs
-//! refuse to start if the file is world-readable.
+//! The Ed25519 private key (a 32-byte seed) lives in a file. By default the
+//! path is `<db_dir>/audit-key` (sibling of the SQLite database, or of
+//! whatever directory `sysknife_core::default_database_path` resolves to in
+//! production), and the env var `SYSKNIFE_AUDIT_KEY_PATH` overrides it for
+//! systemd unit drop-ins (typically `/etc/sysknife/audit-key`). The file is
+//! created with mode `0o600` on first daemon start if it does not exist;
+//! subsequent runs refuse to start if it is world-readable. The public key is
+//! written alongside as `<key>.pub` (hex) for auditors and aggregators.
 //!
 //! Future epochs (key rotation): each row already carries a `key_id`
-//! column. A planned Phase 2 rotation flow appends a checkpoint row
-//! signed with the outgoing key whose payload references both key
-//! fingerprints; verification walks the chain through epoch boundaries by
-//! looking up each row's `key_id` in a directory of retired keys (path
-//! TBD when the rotation tool ships). For now, all rows use
-//! `key_id = "v1"` and rotation is manual (delete the chain, regenerate
-//! a new key file).
+//! column. A planned rotation flow appends a checkpoint row signed with the
+//! outgoing key whose payload references both public-key fingerprints;
+//! verification walks the chain through epoch boundaries by looking up each
+//! row's `key_id` in a directory of retired public keys. For now, all rows use
+//! `key_id = "v1"` and rotation is manual (delete the chain, regenerate).
 
-use hmac::digest::KeyInit;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use std::path::{Path, PathBuf};
 use sysknife_types::RiskLevel;
-
-type HmacSha256 = Hmac<Sha256>;
+use zeroize::Zeroize;
 
 /// Stable identifier for the current key generation. Stored in every row.
 /// Tied to the schema, not the key bytes — rotation will introduce `"v2"` etc.
 pub const CURRENT_KEY_ID: &str = "v1";
 
-/// Hex-encoded HMAC length for SHA-256.
-pub const HASH_HEX_LEN: usize = 64;
+/// Hex-encoded length of an Ed25519 signature (64 raw bytes → 128 hex chars).
+pub const HASH_HEX_LEN: usize = 128;
 
-/// Loaded HMAC key + its identifier. Construct via [`AuditKey::load_or_generate`].
+/// Loaded Ed25519 signing key + its identifier. Construct via
+/// [`AuditKey::load_or_generate`].
 ///
 /// `Clone` is intentional: the audit-verify CLI needs to load the key once
 /// and share it between the SQLite read-only path and the Postgres pool.
-/// The clone is cheap (`Vec<u8>` of 32 bytes + a short `String`).
 ///
-/// `Debug` is implemented manually to redact `key_bytes`. The derived
-/// `Debug` would dump the raw HMAC bytes via any `tracing::debug!("{key:?}")`
+/// `Debug` is implemented manually to redact the signing key. A derived
+/// `Debug` would dump the private key via any `tracing::debug!("{key:?}")`
 /// or `dbg!(key)` site, which would leak the audit secret into journald.
 /// We keep `key_id` visible because operators need to identify which key
 /// generation a record belongs to when triaging chain breaks.
 #[derive(Clone)]
 pub struct AuditKey {
     key_id: String,
-    key_bytes: Vec<u8>,
+    signing: SigningKey,
 }
 
 impl std::fmt::Debug for AuditKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never render the private key. A derived `Debug` (or printing the
+        // signing key) would leak the audit secret into journald via any
+        // `tracing::debug!("{key:?}")`. `key_id` is not secret and is kept
+        // visible for triaging chain breaks.
         f.debug_struct("AuditKey")
             .field("key_id", &self.key_id)
-            .field(
-                "key_bytes",
-                &format_args!("<redacted {} bytes>", self.key_bytes.len()),
-            )
+            .field("signing", &format_args!("<redacted signing key>"))
             .finish()
     }
 }
 
-/// Zero `key_bytes` on drop so a freed allocation cannot be scraped from
-/// the heap. Pairs with the manual `Debug` impl above; together they keep
-/// the HMAC secret out of logs and out of post-free memory.
-impl Drop for AuditKey {
-    fn drop(&mut self) {
-        use zeroize::Zeroize;
-        self.key_bytes.zeroize();
-    }
-}
+// The `SigningKey` zeroizes its secret scalar on drop (ed25519-dalek `zeroize`
+// feature), so no manual `Drop` is needed to keep the private key out of
+// post-free memory.
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuditKeyError {
@@ -151,7 +152,7 @@ impl AuditKey {
             });
         }
 
-        let key_bytes = std::fs::read(path).map_err(|e| AuditKeyError::Io {
+        let mut key_bytes = std::fs::read(path).map_err(|e| AuditKeyError::Io {
             path: path.to_path_buf(),
             source: e,
         })?;
@@ -162,19 +163,29 @@ impl AuditKey {
             });
         }
 
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&key_bytes[..32]);
+        let signing = SigningKey::from_bytes(&seed);
+        seed.zeroize();
+        key_bytes.zeroize();
+
         Ok(Self {
             key_id: CURRENT_KEY_ID.to_string(),
-            key_bytes,
+            signing,
         })
     }
 
-    /// Construct a key from raw bytes. For tests only — production builds
+    /// Construct a key from a 32-byte seed. For tests only — production builds
     /// always go through [`Self::load_or_generate`] for the permission check.
     #[cfg(test)]
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&bytes[..32]);
+        let signing = SigningKey::from_bytes(&seed);
+        seed.zeroize();
         Self {
             key_id: CURRENT_KEY_ID.to_string(),
-            key_bytes: bytes,
+            signing,
         }
     }
 
@@ -183,18 +194,32 @@ impl AuditKey {
         &self.key_id
     }
 
-    /// Compute the chain hash for `content` linked to `prev_chain_hash`.
+    /// Compute the chain signature for `content` linked to `prev_chain_hash`.
     ///
-    /// Hex-encoded HMAC-SHA256 of `canonical(content) || prev_chain_hash`.
+    /// Hex-encoded Ed25519 signature over `canonical(content) || prev_chain_hash`.
+    /// Deterministic (RFC 8032): identical inputs always yield the same value.
     pub fn chain_hash(&self, content: &ChainContent, prev_chain_hash: &str) -> String {
-        let canonical = content.canonical_bytes();
-        let mut mac =
-            HmacSha256::new_from_slice(&self.key_bytes).expect("HMAC accepts any length key");
-        mac.update(&canonical);
-        mac.update(prev_chain_hash.as_bytes());
-        let tag = mac.finalize().into_bytes();
-        hex::encode(tag)
+        let sig = self.signing.sign(&chain_message(content, prev_chain_hash));
+        hex::encode(sig.to_bytes())
     }
+
+    /// The public verifying key for this audit key.
+    pub fn verifying_key(&self) -> VerifyingKey {
+        self.signing.verifying_key()
+    }
+
+    /// Hex-encoded 32-byte Ed25519 public key. Safe to publish; auditors use it
+    /// to verify the chain without the ability to forge entries.
+    pub fn verifying_key_hex(&self) -> String {
+        hex::encode(self.signing.verifying_key().to_bytes())
+    }
+}
+
+/// Message signed for a row: `canonical(content) || prev_chain_hash`.
+fn chain_message(content: &ChainContent, prev_chain_hash: &str) -> Vec<u8> {
+    let mut msg = content.canonical_bytes();
+    msg.extend_from_slice(prev_chain_hash.as_bytes());
+    msg
 }
 
 /// Generate a 32-byte random key and write it to `path` with mode `0o600`.
@@ -237,6 +262,18 @@ fn generate_key_at(path: &Path) -> Result<(), AuditKeyError> {
     })?;
     f.sync_all().map_err(|e| AuditKeyError::Io {
         path: path.to_path_buf(),
+        source: e,
+    })?;
+
+    // Write the public key alongside as `<key>.pub` (hex). Not secret: it lets
+    // an auditor or aggregator verify the chain without the private key.
+    let signing = SigningKey::from_bytes(&bytes);
+    let pub_hex = hex::encode(signing.verifying_key().to_bytes());
+    bytes.zeroize();
+    let mut pub_path = path.as_os_str().to_os_string();
+    pub_path.push(".pub");
+    std::fs::write(&pub_path, format!("{pub_hex}\n")).map_err(|e| AuditKeyError::Io {
+        path: PathBuf::from(pub_path),
         source: e,
     })?;
     Ok(())
@@ -432,22 +469,65 @@ pub struct ChainRow {
     pub chain_hash: String,
 }
 
-/// Walk `rows` in seq order and verify each row's `chain_hash` against the
-/// recomputed value. Returns the first break (or `Intact` if the chain holds).
+/// Verify a chain using the daemon's key. Verification uses the **public** key
+/// (so it proves, but cannot forge) and also asserts every row was written
+/// under this key generation (`key_id`).
 pub fn verify_chain(key: &AuditKey, rows: &[ChainRow]) -> VerifyOutcome {
+    verify_rows(&key.verifying_key(), Some(key.key_id()), rows)
+}
+
+/// Verify a chain with only the hex-encoded Ed25519 **public** key. This is the
+/// auditor / aggregator path: it proves the chain without the private key and
+/// cannot be used to forge entries. `key_id` is not checked — the public key
+/// itself identifies the signer.
+pub fn verify_chain_with_pubkey(verifying_key_hex: &str, rows: &[ChainRow]) -> VerifyOutcome {
+    match parse_verifying_key(verifying_key_hex) {
+        Some(vk) => verify_rows(&vk, None, rows),
+        None => VerifyOutcome::CannotVerify {
+            reason: format!(
+                "invalid public key hex ({} chars); expected 64 hex chars of a \
+                 32-byte Ed25519 public key",
+                verifying_key_hex.len()
+            ),
+        },
+    }
+}
+
+fn parse_verifying_key(hex_str: &str) -> Option<VerifyingKey> {
+    let bytes = hex::decode(hex_str.trim()).ok()?;
+    let arr: [u8; 32] = bytes.try_into().ok()?;
+    VerifyingKey::from_bytes(&arr).ok()
+}
+
+/// Verify a stored hex signature over a row's message. Any malformed signature
+/// (bad hex, wrong length, invalid point) is a failed check, never a panic.
+fn signature_ok(vk: &VerifyingKey, msg: &[u8], sig_hex: &str) -> bool {
+    let Ok(bytes) = hex::decode(sig_hex) else {
+        return false;
+    };
+    let Ok(arr): Result<[u8; 64], _> = bytes.try_into() else {
+        return false;
+    };
+    vk.verify_strict(msg, &Signature::from_bytes(&arr)).is_ok()
+}
+
+/// Walk `rows` in seq order, verifying each row's signature with `vk` and its
+/// `prev_chain_hash` linkage. Returns the first break (or `Intact`). When
+/// `expect_key_id` is `Some`, every row must carry that `key_id`.
+fn verify_rows(vk: &VerifyingKey, expect_key_id: Option<&str>, rows: &[ChainRow]) -> VerifyOutcome {
     let mut last_hash = String::new();
     let mut rows_checked = 0u64;
     for row in rows {
-        if row.key_id != key.key_id() {
-            return VerifyOutcome::CannotVerify {
-                reason: format!(
-                    "row seq={} uses key_id={:?} but only {:?} is loaded; \
-                     epoch keys not yet supported",
-                    row.seq,
-                    row.key_id,
-                    key.key_id()
-                ),
-            };
+        if let Some(kid) = expect_key_id {
+            if row.key_id != kid {
+                return VerifyOutcome::CannotVerify {
+                    reason: format!(
+                        "row seq={} uses key_id={:?} but only {:?} is loaded; \
+                         epoch keys not yet supported",
+                        row.seq, row.key_id, kid
+                    ),
+                };
+            }
         }
         if row.prev_chain_hash != last_hash {
             return VerifyOutcome::Broken {
@@ -458,28 +538,26 @@ pub fn verify_chain(key: &AuditKey, rows: &[ChainRow]) -> VerifyOutcome {
                 actual: format!("prev_chain_hash={}", row.prev_chain_hash),
             };
         }
-        let expected = key.chain_hash(
-            &ChainContent {
-                seq: row.seq,
-                key_id: &row.key_id,
-                transaction_id: &row.transaction_id,
-                request_id: &row.request_id,
-                request_hash: &row.request_hash,
-                action_name: &row.action_name,
-                risk_level: row.risk_level,
-                summary: &row.summary,
-                approval_id: row.approval_id.as_deref(),
-                warnings_json: &row.warnings_json,
-                created_at: &row.created_at,
-            },
-            &row.prev_chain_hash,
-        );
-        if expected != row.chain_hash {
+        let content = ChainContent {
+            seq: row.seq,
+            key_id: &row.key_id,
+            transaction_id: &row.transaction_id,
+            request_id: &row.request_id,
+            request_hash: &row.request_hash,
+            action_name: &row.action_name,
+            risk_level: row.risk_level,
+            summary: &row.summary,
+            approval_id: row.approval_id.as_deref(),
+            warnings_json: &row.warnings_json,
+            created_at: &row.created_at,
+        };
+        let msg = chain_message(&content, &row.prev_chain_hash);
+        if !signature_ok(vk, &msg, &row.chain_hash) {
             return VerifyOutcome::Broken {
                 rows_checked,
                 first_broken_seq: row.seq,
                 first_broken_transaction_id: row.transaction_id.clone(),
-                expected,
+                expected: "valid ed25519 signature".to_string(),
                 actual: row.chain_hash.clone(),
             };
         }
@@ -752,6 +830,81 @@ mod tests {
             ),
             other => panic!("expected Broken, got {other:?}"),
         }
+    }
+
+    // ── Ed25519 public-key verification / non-repudiation ─────────────────
+
+    #[test]
+    fn signature_verifies_under_exported_public_key() {
+        // The auditor path: verify with only the public key.
+        let key = fixed_key();
+        let rows = build_chain(&key, 4);
+        let outcome = verify_chain_with_pubkey(&key.verifying_key_hex(), &rows);
+        assert_eq!(outcome, VerifyOutcome::Intact { rows_checked: 4 });
+    }
+
+    #[test]
+    fn foreign_public_key_cannot_validate_chain() {
+        // Non-repudiation: a different keypair's public key neither validates
+        // the chain nor (by construction) could forge it. This is the property
+        // the old symmetric HMAC could not provide.
+        let signer = AuditKey::from_bytes(vec![0x11; 32]);
+        let rows = build_chain(&signer, 3);
+        let other = AuditKey::from_bytes(vec![0x22; 32]);
+        let outcome = verify_chain_with_pubkey(&other.verifying_key_hex(), &rows);
+        assert!(matches!(
+            outcome,
+            VerifyOutcome::Broken {
+                first_broken_seq: 1,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn verifying_key_hex_is_a_32_byte_public_key() {
+        let key = fixed_key();
+        let vk_hex = key.verifying_key_hex();
+        assert_eq!(
+            vk_hex.len(),
+            64,
+            "32-byte ed25519 public key = 64 hex chars"
+        );
+        assert!(hex::decode(&vk_hex).is_ok());
+    }
+
+    #[test]
+    fn malformed_signature_hex_is_broken_not_panic() {
+        let key = fixed_key();
+        let mut rows = build_chain(&key, 2);
+        rows[0].chain_hash = "not-valid-hex!!".to_string();
+        let outcome = verify_chain(&key, &rows);
+        assert!(matches!(
+            outcome,
+            VerifyOutcome::Broken {
+                first_broken_seq: 1,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn bad_public_key_hex_yields_cannot_verify() {
+        let key = fixed_key();
+        let rows = build_chain(&key, 1);
+        let outcome = verify_chain_with_pubkey("zz", &rows);
+        assert!(matches!(outcome, VerifyOutcome::CannotVerify { .. }));
+    }
+
+    #[test]
+    fn load_or_generate_writes_public_key_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit-key");
+        let key = AuditKey::load_or_generate(&path).unwrap();
+        let pub_path = dir.path().join("audit-key.pub");
+        assert!(pub_path.exists(), "public key sidecar must be written");
+        let pub_hex = std::fs::read_to_string(&pub_path).unwrap();
+        assert_eq!(pub_hex.trim(), key.verifying_key_hex());
     }
 
     #[test]
