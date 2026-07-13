@@ -48,8 +48,9 @@
 </p>
 
 > **Describe what you want in plain language.** Review a typed plan with risk
-> levels. Approve explicitly. Watch it execute with live output and automatic
-> rollback — every action signed and audited.
+> levels. Approve explicitly. Watch it execute with live output. Atomic-host
+> changes (rpm-ostree) roll back automatically on failure. Every action is
+> Ed25519-signed and audited.
 
 SysKnife never runs a shell command. Every action is a **typed operation**
 with a formal risk level. The AI cannot touch your system directly. A
@@ -150,8 +151,9 @@ sysknife-brain   →   sysknife-shell   →   sysknife-daemon
    trail you can verify with `sysknife audit verify`.
 
 The brain *proposes*; only the daemon is privileged. The daemon *enforces*
-policy, executes typed actions, writes the chain, and triggers rollback.
-The trust boundary is mechanical — no shell strings cross the wire.
+policy, executes typed actions, writes the signed chain, and triggers
+atomic-host rollback (rpm-ostree) on failure. The trust boundary is
+mechanical: no shell strings cross the wire.
 
 ## Why not just X?
 
@@ -164,9 +166,9 @@ The trust boundary is mechanical — no shell strings cross the wire.
 | **shell-gpt / Copilot** | Suggests raw shell commands. You still run raw shell. |
 | **Manual** | No audit trail. No rollback. One typo = lost work. |
 
-SysKnife is different by construction: typed actions, signed audit chain,
-explicit approval gate, automatic rollback for high-risk paths, polkit-mediated
-privilege boundary. The AI never holds a shell.
+SysKnife is different by construction: typed actions, an Ed25519-signed audit
+chain, explicit approval gate, automatic rollback for atomic-host (rpm-ostree)
+changes, polkit-mediated privilege boundary. The AI never holds a shell.
 
 ## Status
 
@@ -177,7 +179,7 @@ milestone.
 |---|---|
 | `sysknife-brain` — LLM planner, tool loop, safety fence | ✅ |
 | `sysknife-daemon` — 140+ typed actions, auth, preview, transactions | ✅ |
-| Live IPC + streaming + automatic rollback | ✅ |
+| Live IPC + streaming + atomic-host rollback (rpm-ostree) | ✅ |
 | Tauri shell — intent, plan, approval gate | ✅ |
 | MCP server (Claude Code / Cursor / any MCP client) | ✅ |
 | Tamper-evident HMAC-SHA256 audit chain | ✅ |
