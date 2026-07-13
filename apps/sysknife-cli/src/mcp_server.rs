@@ -54,7 +54,9 @@ use sysknife_brain::state_client::StateClient as _;
 
 use crate::client::{DaemonClient, DescribeInfo};
 use crate::error::CliError;
-use crate::runner::{build_history_params, resolve_socket_target, verify_postgres, verify_sqlite};
+use crate::runner::{
+    build_history_params, resolve_socket_target, verify_postgres, verify_sqlite, Verifier,
+};
 
 // ---------------------------------------------------------------------------
 // sysknife_plan — input / output types
@@ -835,7 +837,7 @@ async fn audit_chain_quick_check(
 
     let outcome = match lacs_config.storage.as_ref() {
         Some(s) if s.backend.eq_ignore_ascii_case("postgres") => verify_postgres(s, &key).await,
-        _ => verify_sqlite(&db_path, &key).await,
+        _ => verify_sqlite(&db_path, &Verifier::Private(key.clone())).await,
     };
 
     match outcome {
@@ -891,7 +893,7 @@ async fn audit_verify_inner() -> AuditVerifyReport {
 
     let outcome = match lacs_config.storage.as_ref() {
         Some(s) if s.backend.eq_ignore_ascii_case("postgres") => verify_postgres(s, &key).await,
-        _ => verify_sqlite(&db_path, &key).await,
+        _ => verify_sqlite(&db_path, &Verifier::Private(key.clone())).await,
     };
 
     outcome_to_report(outcome, backend_label)

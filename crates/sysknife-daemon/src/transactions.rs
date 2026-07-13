@@ -45,7 +45,7 @@ pub struct NewTransaction {
 #[derive(Clone, Debug)]
 pub struct TransactionStore {
     path: PathBuf,
-    /// HMAC key used to compute the forward audit hash chain on insert.
+    /// Ed25519 signing key used to compute the forward audit chain on insert.
     /// `None` only in legacy callers that never write rows (read-only access).
     audit_key: Option<Arc<AuditKey>>,
 }
@@ -96,7 +96,7 @@ impl TransactionStore {
     }
 
     /// Open the store and bind it to an audit chain key. Every insert
-    /// computes a forward HMAC-SHA256 chain hash linked to the previous row.
+    /// computes a forward Ed25519-signed chain hash linked to the previous row.
     ///
     /// The key path defaults to `<db_dir>/audit-key` so dev/test runs with
     /// per-tempdir databases are fully isolated. Production deployments
@@ -535,6 +535,19 @@ impl TransactionStore {
         Ok(audit_chain::verify_chain(key, &rows))
     }
 
+    /// Verify the chain with only the hex-encoded Ed25519 **public** key. The
+    /// auditor path: proves the chain without the private key and cannot forge.
+    pub fn verify_audit_chain_with_pubkey(
+        &self,
+        verifying_key_hex: &str,
+    ) -> Result<VerifyOutcome, TransactionStoreError> {
+        let rows = self.fetch_chain_rows()?;
+        Ok(audit_chain::verify_chain_with_pubkey(
+            verifying_key_hex,
+            &rows,
+        ))
+    }
+
     /// Fetch a single row's chain metadata by `transaction_id`. Used by the
     /// audit-log forwarder to construct an `AuditEvent` after insert.
     pub fn fetch_chain_row(
@@ -789,7 +802,7 @@ mod tests {
         assert_eq!(
             chain_hash.len(),
             audit_chain::HASH_HEX_LEN,
-            "chain_hash is hex-encoded HMAC-SHA256"
+            "chain_hash is a hex-encoded Ed25519 signature"
         );
     }
 
@@ -898,6 +911,34 @@ mod tests {
         let key = AuditKey::from_bytes(vec![0x42; 32]);
         let outcome = store.verify_audit_chain(&key).unwrap();
         assert!(matches!(outcome, VerifyOutcome::Intact { rows_checked: 3 }));
+    }
+
+    #[test]
+    fn verify_audit_chain_with_pubkey_intact_after_inserts() {
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        for _ in 0..3 {
+            store.record(queued_transaction()).unwrap();
+        }
+        // Auditor path: verify with ONLY the public key, no private key.
+        let key = AuditKey::from_bytes(vec![0x42; 32]);
+        let outcome = store
+            .verify_audit_chain_with_pubkey(&key.verifying_key_hex())
+            .unwrap();
+        assert!(matches!(outcome, VerifyOutcome::Intact { rows_checked: 3 }));
+    }
+
+    #[test]
+    fn verify_audit_chain_with_wrong_pubkey_is_broken() {
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        store.record(queued_transaction()).unwrap();
+        // A different keypair's public key must not validate the chain.
+        let other = AuditKey::from_bytes(vec![0x99; 32]);
+        let outcome = store
+            .verify_audit_chain_with_pubkey(&other.verifying_key_hex())
+            .unwrap();
+        assert!(matches!(outcome, VerifyOutcome::Broken { .. }));
     }
 
     #[test]

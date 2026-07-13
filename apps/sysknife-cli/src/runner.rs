@@ -435,37 +435,46 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
         _ => sysknife_core::default_database_path().display().to_string(),
     };
 
-    // Load the audit signing key. Its location is the same across SQLite and
-    // Postgres (sibling of the SQLite path, or `$SYSKNIFE_AUDIT_KEY_PATH`).
     let db_path = sysknife_core::default_database_path();
-    let key_path = std::env::var("SYSKNIFE_AUDIT_KEY_PATH")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            db_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .join("audit-key")
-        });
 
-    if !key_path.exists() {
-        let reason = format!(
-            "audit key not found at {}; the daemon generates this on first run, \
-             or set $SYSKNIFE_AUDIT_KEY_PATH",
-            key_path.display()
-        );
-        emit_verify_outcome(
-            &args,
-            log,
-            &VerifyOutcome::CannotVerify { reason },
-            &label_for_diag,
-        );
-        return Err(CliError::Exit(2));
-    }
+    // Build the verifier. With `--pubkey`, verify using only the exported
+    // public key (the auditor path, no private key). Otherwise load the private
+    // signing key from its file (sibling of the SQLite path, or
+    // `$SYSKNIFE_AUDIT_KEY_PATH`).
+    let verifier = if let Some(pubkey_path) = args.pubkey.as_ref() {
+        match std::fs::read_to_string(pubkey_path) {
+            Ok(contents) => Verifier::Public(contents.trim().to_string()),
+            Err(e) => {
+                let reason = format!(
+                    "public key file {} could not be read: {e}",
+                    pubkey_path.display()
+                );
+                emit_verify_outcome(
+                    &args,
+                    log,
+                    &VerifyOutcome::CannotVerify { reason },
+                    &label_for_diag,
+                );
+                return Err(CliError::Exit(2));
+            }
+        }
+    } else {
+        let key_path = std::env::var("SYSKNIFE_AUDIT_KEY_PATH")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                db_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join("audit-key")
+            });
 
-    let key = match AuditKey::load_or_generate(&key_path) {
-        Ok(k) => k,
-        Err(e) => {
-            let reason = format!("audit key load failed: {e}");
+        if !key_path.exists() {
+            let reason = format!(
+                "audit key not found at {}; the daemon generates this on first run, \
+                 set $SYSKNIFE_AUDIT_KEY_PATH, or pass --pubkey <FILE> to verify with \
+                 the exported public key",
+                key_path.display()
+            );
             emit_verify_outcome(
                 &args,
                 log,
@@ -474,13 +483,35 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
             );
             return Err(CliError::Exit(2));
         }
+
+        match AuditKey::load_or_generate(&key_path) {
+            Ok(k) => Verifier::Private(k),
+            Err(e) => {
+                let reason = format!("audit key load failed: {e}");
+                emit_verify_outcome(
+                    &args,
+                    log,
+                    &VerifyOutcome::CannotVerify { reason },
+                    &label_for_diag,
+                );
+                return Err(CliError::Exit(2));
+            }
+        }
     };
 
     // Branch on storage backend. SQLite: open the local file read-only.
     // Postgres: connect via sqlx and verify against the remote chain.
     let outcome = match lacs_config.storage.as_ref() {
-        Some(s) if s.backend.eq_ignore_ascii_case("postgres") => verify_postgres(s, &key).await,
-        _ => verify_sqlite(&db_path, &key).await,
+        Some(s) if s.backend.eq_ignore_ascii_case("postgres") => match &verifier {
+            Verifier::Private(key) => verify_postgres(s, key).await,
+            Verifier::Public(_) => VerifyOutcome::CannotVerify {
+                reason: "--pubkey verification is currently supported only for the \
+                         sqlite backend; omit --pubkey to verify postgres with the \
+                         private key"
+                    .to_string(),
+            },
+        },
+        _ => verify_sqlite(&db_path, &verifier).await,
     };
 
     let exit_code = audit_chain::outcome_to_exit_code(&outcome);
@@ -492,9 +523,18 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
     }
 }
 
+/// What the audit chain is verified against.
+pub(crate) enum Verifier {
+    /// The private signing key (also derives the public key used to verify).
+    Private(sysknife_daemon::audit_chain::AuditKey),
+    /// Only the hex-encoded Ed25519 public key — the auditor path, which proves
+    /// the chain without the ability to forge it.
+    Public(String),
+}
+
 pub(crate) async fn verify_sqlite(
     db_path: &std::path::Path,
-    key: &sysknife_daemon::audit_chain::AuditKey,
+    verifier: &Verifier,
 ) -> sysknife_daemon::audit_chain::VerifyOutcome {
     use sysknife_daemon::audit_chain::VerifyOutcome;
     use sysknife_daemon::transactions::TransactionStore;
@@ -516,7 +556,11 @@ pub(crate) async fn verify_sqlite(
             };
         }
     };
-    match store.verify_audit_chain(key) {
+    let result = match verifier {
+        Verifier::Private(key) => store.verify_audit_chain(key),
+        Verifier::Public(vk_hex) => store.verify_audit_chain_with_pubkey(vk_hex),
+    };
+    match result {
         Ok(o) => o,
         Err(e) => VerifyOutcome::CannotVerify {
             reason: format!("audit chain query failed: {e}"),

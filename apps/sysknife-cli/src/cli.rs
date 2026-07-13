@@ -143,6 +143,14 @@ pub struct AuditVerifyArgs {
     /// Emit a machine-readable JSON report instead of human-friendly text.
     #[arg(long)]
     pub json: bool,
+
+    /// Verify using only the exported public key file (`<audit-key>.pub`),
+    /// without the private key. This is the third-party / auditor path: it
+    /// proves the chain is intact and unforged without trusting the verifier
+    /// with the ability to sign. Without this flag, verification loads the
+    /// private key.
+    #[arg(long, value_name = "FILE")]
+    pub pubkey: Option<std::path::PathBuf>,
 }
 
 /// Arguments for `sysknife history`.
