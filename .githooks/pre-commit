@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Local CI gate (keeps GitHub Actions idle). Bypass with: git commit --no-verify
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+echo "[pre-commit] cargo fmt --all --check"
+cargo fmt --all --check
+echo "[pre-commit] cargo nextest run --workspace --locked"
+cargo nextest run --workspace --locked
+echo "[pre-commit] OK"
