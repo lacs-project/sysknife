@@ -567,6 +567,128 @@ fn verify_rows(vk: &VerifyingKey, expect_key_id: Option<&str>, rows: &[ChainRow]
     VerifyOutcome::Intact { rows_checked }
 }
 
+// ── Signed checkpoints (external anchoring / tail-truncation detection) ──────
+
+/// A signed commitment to the chain tip at a point in time. Periodically
+/// emitted and anchored to an independent, append-only sink (a separate
+/// database, a WORM store, or an RFC 3161 timestamp) so that a later attempt to
+/// rewrite or **truncate** the local chain is detectable: the anchored
+/// `(seq, chain_tip)` can no longer be reproduced from the shortened chain.
+///
+/// This is the Certificate-Transparency "signed checkpoint" idiom. The
+/// signature is Ed25519 over the canonical `(seq, chain_tip, created_at)`, so
+/// an auditor verifies it with only the public key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checkpoint {
+    /// `seq` of the chain tip this checkpoint commits to (the last row at
+    /// emit time).
+    pub seq: u64,
+    /// `chain_hash` of the row at `seq` (the committed chain tip).
+    pub chain_tip: String,
+    /// RFC 3339 timestamp when the checkpoint was signed.
+    pub created_at: String,
+    /// Hex Ed25519 signature over `canonical(seq, chain_tip, created_at)`.
+    pub signature: String,
+}
+
+/// Canonical message signed into a checkpoint. Reuses the prefix-free field
+/// framing so the encoding is unambiguous and stable across backends.
+fn checkpoint_message(seq: u64, chain_tip: &str, created_at: &str) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(160);
+    push_field(&mut buf, "seq", &seq.to_string());
+    push_field(&mut buf, "chain_tip", chain_tip);
+    push_field(&mut buf, "created_at", created_at);
+    buf
+}
+
+impl AuditKey {
+    /// Sign a checkpoint committing to `(seq, chain_tip)` at `created_at`.
+    pub fn sign_checkpoint(&self, seq: u64, chain_tip: &str, created_at: &str) -> Checkpoint {
+        let sig = self
+            .signing
+            .sign(&checkpoint_message(seq, chain_tip, created_at));
+        Checkpoint {
+            seq,
+            chain_tip: chain_tip.to_string(),
+            created_at: created_at.to_string(),
+            signature: hex::encode(sig.to_bytes()),
+        }
+    }
+}
+
+/// Result of checking anchored checkpoints against the current chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckpointOutcome {
+    /// Every checkpoint's signature is valid and its committed tip is still
+    /// present in the chain at the committed `seq`.
+    Consistent { checkpoints_checked: u64 },
+    /// A checkpoint signature failed to verify under the public key.
+    BadSignature { seq: u64 },
+    /// A checkpoint commits to a `seq` no longer present in the chain — the
+    /// chain has been **truncated** below a previously anchored tip.
+    Truncated {
+        checkpoint_seq: u64,
+        current_max_seq: u64,
+    },
+    /// A checkpoint's committed `chain_tip` does not match the chain's
+    /// `chain_hash` at that `seq` — the chain was **rewritten**.
+    TipMismatch {
+        seq: u64,
+        anchored: String,
+        actual: String,
+    },
+    /// Could not verify (e.g. malformed public key).
+    CannotVerify { reason: String },
+}
+
+/// Verify anchored `checkpoints` against `rows` (the current chain) with the
+/// hex **public** key. Detects truncation (a checkpoint seq no longer in the
+/// chain) and rewrite (tip mismatch at a checkpoint seq). `rows` must be in
+/// seq order. This is the anti-root guarantee: a host attacker who shortens or
+/// edits the local chain cannot reproduce a previously anchored signed tip.
+pub fn verify_checkpoints(
+    verifying_key_hex: &str,
+    rows: &[ChainRow],
+    checkpoints: &[Checkpoint],
+) -> CheckpointOutcome {
+    let vk = match parse_verifying_key(verifying_key_hex) {
+        Some(vk) => vk,
+        None => {
+            return CheckpointOutcome::CannotVerify {
+                reason: format!("invalid public key hex ({} chars)", verifying_key_hex.len()),
+            };
+        }
+    };
+    let current_max_seq = rows.iter().map(|r| r.seq).max().unwrap_or(0);
+    let mut checked = 0u64;
+    for cp in checkpoints {
+        let msg = checkpoint_message(cp.seq, &cp.chain_tip, &cp.created_at);
+        if !signature_ok(&vk, &msg, &cp.signature) {
+            return CheckpointOutcome::BadSignature { seq: cp.seq };
+        }
+        match rows.iter().find(|r| r.seq == cp.seq) {
+            Some(row) if row.chain_hash == cp.chain_tip => {}
+            Some(row) => {
+                return CheckpointOutcome::TipMismatch {
+                    seq: cp.seq,
+                    anchored: cp.chain_tip.clone(),
+                    actual: row.chain_hash.clone(),
+                };
+            }
+            None => {
+                return CheckpointOutcome::Truncated {
+                    checkpoint_seq: cp.seq,
+                    current_max_seq,
+                };
+            }
+        }
+        checked += 1;
+    }
+    CheckpointOutcome::Consistent {
+        checkpoints_checked: checked,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1052,5 +1174,79 @@ mod tests {
             dbg.contains(CURRENT_KEY_ID),
             "Debug output must contain the key_id value {CURRENT_KEY_ID:?}: {dbg}"
         );
+    }
+
+    // ── signed checkpoints (anti-truncation / anti-rewrite) ───────────────
+
+    #[test]
+    fn checkpoint_consistent_with_intact_chain() {
+        let key = fixed_key();
+        let rows = build_chain(&key, 5);
+        let cp = key.sign_checkpoint(3, &rows[2].chain_hash, "2026-04-24T12:00:00Z");
+        let outcome = verify_checkpoints(&key.verifying_key_hex(), &rows, &[cp]);
+        assert_eq!(
+            outcome,
+            CheckpointOutcome::Consistent {
+                checkpoints_checked: 1
+            }
+        );
+    }
+
+    #[test]
+    fn checkpoint_detects_truncation() {
+        let key = fixed_key();
+        let full = build_chain(&key, 5);
+        // Anchor a checkpoint at the tip (seq=5); later the chain is cut to 3.
+        let cp = key.sign_checkpoint(5, &full[4].chain_hash, "2026-04-24T12:00:00Z");
+        let truncated = &full[..3];
+        let outcome = verify_checkpoints(&key.verifying_key_hex(), truncated, &[cp]);
+        assert!(matches!(
+            outcome,
+            CheckpointOutcome::Truncated {
+                checkpoint_seq: 5,
+                current_max_seq: 3
+            }
+        ));
+    }
+
+    #[test]
+    fn checkpoint_detects_rewrite() {
+        let key = fixed_key();
+        let mut rows = build_chain(&key, 4);
+        let cp = key.sign_checkpoint(3, &rows[2].chain_hash, "2026-04-24T12:00:00Z");
+        // Rewrite the row at seq=3 after the checkpoint was anchored.
+        rows[2].chain_hash = "0".repeat(HASH_HEX_LEN);
+        let outcome = verify_checkpoints(&key.verifying_key_hex(), &rows, &[cp]);
+        assert!(matches!(
+            outcome,
+            CheckpointOutcome::TipMismatch { seq: 3, .. }
+        ));
+    }
+
+    #[test]
+    fn checkpoint_bad_signature_detected() {
+        let key = fixed_key();
+        let rows = build_chain(&key, 3);
+        let mut cp = key.sign_checkpoint(2, &rows[1].chain_hash, "2026-04-24T12:00:00Z");
+        cp.signature = "0".repeat(HASH_HEX_LEN); // not a valid signature
+        let outcome = verify_checkpoints(&key.verifying_key_hex(), &rows, &[cp]);
+        assert!(matches!(
+            outcome,
+            CheckpointOutcome::BadSignature { seq: 2 }
+        ));
+    }
+
+    #[test]
+    fn checkpoint_foreign_key_rejected() {
+        // A checkpoint signed by one key must not verify under another key.
+        let signer = AuditKey::from_bytes(vec![0x11; 32]);
+        let rows = build_chain(&signer, 3);
+        let cp = signer.sign_checkpoint(2, &rows[1].chain_hash, "2026-04-24T12:00:00Z");
+        let other = AuditKey::from_bytes(vec![0x22; 32]);
+        let outcome = verify_checkpoints(&other.verifying_key_hex(), &rows, &[cp]);
+        assert!(matches!(
+            outcome,
+            CheckpointOutcome::BadSignature { seq: 2 }
+        ));
     }
 }
