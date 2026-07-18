@@ -1,6 +1,5 @@
 use sysknife_daemon::auth::highest_role_from_groups;
 use sysknife_daemon::jobs::JobStateMachine;
-use sysknife_daemon::policy::approval_matches_request;
 use sysknife_daemon::state::DaemonConfig;
 use sysknife_daemon::transactions::{NewTransaction, TransactionStore};
 use sysknife_daemon::transport::listen::{bind_unix_listener, ListenTarget};
@@ -70,12 +69,6 @@ fn highest_role_is_derived_from_local_groups() {
         highest_role_from_groups(std::iter::empty::<&str>()),
         CallerRole::Observer
     );
-}
-
-#[test]
-fn approval_hashes_must_match_request_hash() {
-    assert!(approval_matches_request("req-123", "req-123"));
-    assert!(!approval_matches_request("req-123", "req-456"));
 }
 
 #[test]

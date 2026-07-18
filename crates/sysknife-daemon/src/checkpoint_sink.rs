@@ -1,6 +1,6 @@
 //! External anchor sinks for signed audit checkpoints.
 //!
-//! A [`Checkpoint`](crate::audit_chain::Checkpoint) commits `(seq, chain_tip,
+//! A [`Checkpoint`] commits `(seq, chain_tip,
 //! timestamp)` with an Ed25519 signature. Anchoring those checkpoints to an
 //! **independent, append-only** store is what makes tail-truncation and
 //! rewrite of the local chain *detectable* by a host attacker who controls the

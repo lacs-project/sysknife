@@ -41,6 +41,12 @@ jobs:
       - name: Check required repository files
         run: bash scripts/check_repo_completeness.sh
 
+      - name: Check release version consistency
+        run: bash scripts/check_release_versions.sh
+
+      - name: Check Ubuntu VM bootstrap contract
+        run: bash tests/e2e/ubuntu-vm-bootstrap.test.sh
+
       - name: Lint markdown
         run: |
           markdownlint-cli2 \
@@ -89,6 +95,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Type check
         run: ./node_modules/.bin/tsc --noEmit
@@ -159,3 +168,17 @@ jobs:
         # is not reachable from the privileged daemon, brain, or CLI, and has
         # no fixed upstream release yet. Re-evaluate when Tauri bumps the chain.
         run: cargo audit --ignore RUSTSEC-2026-0097
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high

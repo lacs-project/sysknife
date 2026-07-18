@@ -237,8 +237,8 @@ pub async fn plan_intent(
 
 /// Execute approved plan steps against the daemon.
 ///
-/// For each step the shell calls daemon `preview` (to obtain the
-/// `request_hash`) and then daemon `execute`. Progress lines are forwarded
+/// For each step the shell calls daemon `preview`, obtains a one-time approval
+/// receipt after the GUI confirmation, and then calls daemon `execute`.
 /// to the frontend as `sysknife:timeline-entry` events. A single
 /// `sysknife:job-completed` event is emitted after all steps finish (or on the
 /// first non-succeeded outcome).

@@ -28,9 +28,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    name: Validate release inputs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Validate tag and package versions
+        run: bash scripts/check_release_versions.sh "${{ github.ref_name }}"
+
+      - name: Require publication credentials
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          test -n "${NPM_TOKEN:-}" || { echo '::error::NPM_TOKEN is not configured'; exit 1; }
+          test -n "${CARGO_REGISTRY_TOKEN:-}" || { echo '::error::CARGO_REGISTRY_TOKEN is not configured'; exit 1; }
+
   build:
     name: Build ${{ matrix.target }}
+    needs: preflight
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     strategy:
       matrix:
         include:
@@ -80,6 +109,30 @@ jobs:
             "sysknife-daemon-${VERSION}-linux-${ARCH}" \
             > "sha256sums-linux-${ARCH}.txt"
 
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: sysknife-${{ github.ref_name }}-linux-${{ matrix.arch }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            sysknife-${{ github.ref_name }}-linux-${{ matrix.arch }}
+            sysknife-daemon-${{ github.ref_name }}-linux-${{ matrix.arch }}
+
+      - name: Attest SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            sysknife-${{ github.ref_name }}-linux-${{ matrix.arch }}
+            sysknife-daemon-${{ github.ref_name }}-linux-${{ matrix.arch }}
+          sbom-path: sysknife-${{ github.ref_name }}-linux-${{ matrix.arch }}.spdx.json
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -88,11 +141,12 @@ jobs:
             sysknife-*-linux-${{ matrix.arch }}
             sysknife-daemon-*-linux-${{ matrix.arch }}
             sha256sums-linux-${{ matrix.arch }}.txt
+            sysknife-*-linux-${{ matrix.arch }}.spdx.json
           retention-days: 1
 
   publish-npm:
     name: Publish sysknife-setup to npm
-    needs: build
+    needs: [preflight, build]
     runs-on: ubuntu-latest
 
     steps:
@@ -108,22 +162,16 @@ jobs:
       - name: Smoke-test the package
         run: node packages/setup/index.js --help
 
-      - name: Publish to npm (or skip if NPM_TOKEN absent)
-        # Secrets cannot be referenced directly in `if:` expressions, so
-        # surface NPM_TOKEN through env and gate inside the script.
-        # Empty token → log a notice and exit 0 (workflow stays green).
+      - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::notice title=npm publish skipped::NPM_TOKEN secret is not set."
-            exit 0
-          fi
+          test -n "${NODE_AUTH_TOKEN:-}" || { echo '::error::NPM_TOKEN is not configured'; exit 1; }
           cd packages/setup && npm publish --access public
 
   publish-crates:
     name: Publish to crates.io
-    needs: build
+    needs: [preflight, build]
     runs-on: ubuntu-latest
 
     steps:
@@ -138,23 +186,18 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y cmake
 
-      - name: Publish in dependency order (or skip if token absent)
-        # CARGO_REGISTRY_TOKEN must be set as a repository secret.
-        # If absent, log a notice and exit 0 so the release still succeeds.
+      - name: Publish in dependency order
         # Publish order follows the internal dependency graph:
-        #   types → proto, core → brain → daemon → daemon-test → cli
+        #   proto + core -> types -> brain -> daemon -> cli
         # --no-verify skips the redundant pre-publish rebuild; the build job
         # already verified the workspace compiles cleanly.
         # sleep 30 lets crates.io index each crate before its dependents publish.
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
-            echo "::notice title=crates.io publish skipped::CARGO_REGISTRY_TOKEN secret is not set."
-            exit 0
-          fi
-          for crate in sysknife-types sysknife-proto sysknife-core sysknife-brain \
-                       sysknife-daemon sysknife-daemon-test; do
+          test -n "${CARGO_REGISTRY_TOKEN:-}" || { echo '::error::CARGO_REGISTRY_TOKEN is not configured'; exit 1; }
+          for crate in sysknife-proto sysknife-core sysknife-types \
+                       sysknife-brain sysknife-daemon; do
             cargo publish -p "$crate" --token "$CARGO_REGISTRY_TOKEN" --no-verify
             sleep 30
           done
@@ -162,7 +205,7 @@ jobs:
 
   release:
     name: Create GitHub release
-    needs: build
+    needs: [build, publish-npm, publish-crates]
     runs-on: ubuntu-latest
     permissions:
       contents: write  # gh release create/upload
@@ -216,4 +259,6 @@ jobs:
             "dist/sysknife-${VERSION}-linux-aarch64" \
             "dist/sysknife-daemon-${VERSION}-linux-aarch64" \
             "dist/sha256sums-linux-x86_64.txt" \
-            "dist/sha256sums-linux-aarch64.txt"
+            "dist/sha256sums-linux-aarch64.txt" \
+            "dist/sysknife-${VERSION}-linux-x86_64.spdx.json" \
+            "dist/sysknife-${VERSION}-linux-aarch64.spdx.json"

@@ -72,7 +72,7 @@ async fn preview_action(
     framed: &mut FramedStream<UnixStream>,
     action_name: &str,
     params: Value,
-) -> String {
+) -> (String, String) {
     let preview_req = json!({
         "type": "preview",
         "request_id": "lifecycle-preview",
@@ -90,24 +90,39 @@ async fn preview_action(
         resp["type"], "preview_response",
         "expected preview_response, got: {resp}"
     );
-    resp["preview"]["request_hash"]
-        .as_str()
-        .unwrap()
-        .to_string()
+    let transaction_id = resp["transaction_id"].as_str().unwrap().to_string();
+    framed
+        .send(
+            &serde_json::to_vec(&json!({
+                "type": "approve",
+                "request_id": "lifecycle-approve",
+                "transaction_id": transaction_id,
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let approval: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+    (
+        transaction_id,
+        approval["approval_receipt"].as_str().unwrap().to_string(),
+    )
 }
 
 async fn execute_action(
     framed: &mut FramedStream<UnixStream>,
     action_name: &str,
     params: Value,
-    approval_hash: &str,
+    transaction_id: &str,
+    approval_receipt: &str,
 ) {
     let exec_req = json!({
         "type": "execute",
         "request_id": "lifecycle-execute",
+        "transaction_id": transaction_id,
         "action_name": action_name,
         "params": params,
-        "approval_hash": approval_hash
+        "approval_receipt": approval_receipt
     });
     framed
         .send(&serde_json::to_vec(&exec_req).unwrap())
@@ -158,8 +173,15 @@ async fn command_action_streams_lifecycle_events() {
     let state = test_state(&dir);
     let mut framed = spawn_handler(state).await;
 
-    let hash = preview_action(&mut framed, "GetSystemState", json!({})).await;
-    execute_action(&mut framed, "GetSystemState", json!({}), &hash).await;
+    let (transaction_id, receipt) = preview_action(&mut framed, "GetSystemState", json!({})).await;
+    execute_action(
+        &mut framed,
+        "GetSystemState",
+        json!({}),
+        &transaction_id,
+        &receipt,
+    )
+    .await;
 
     let messages = drain_until_completed(&mut framed).await;
     let lines = progress_lines(&messages);
@@ -229,8 +251,16 @@ async fn file_action_streams_lifecycle_events() {
     let state = test_state(&dir);
     let mut framed = spawn_handler(state).await;
 
-    let hash = preview_action(&mut framed, "ListPackageRepositories", json!({})).await;
-    execute_action(&mut framed, "ListPackageRepositories", json!({}), &hash).await;
+    let (transaction_id, receipt) =
+        preview_action(&mut framed, "ListPackageRepositories", json!({})).await;
+    execute_action(
+        &mut framed,
+        "ListPackageRepositories",
+        json!({}),
+        &transaction_id,
+        &receipt,
+    )
+    .await;
 
     let messages = drain_until_completed(&mut framed).await;
     let lines = progress_lines(&messages);
@@ -292,8 +322,15 @@ async fn rollback_execution_includes_lifecycle_events() {
     let mut framed = spawn_handler_with_executor(state, executor).await;
 
     // UpdateSystem is a high-risk command action that triggers rollback on failure.
-    let hash = preview_action(&mut framed, "UpdateSystem", json!({})).await;
-    execute_action(&mut framed, "UpdateSystem", json!({}), &hash).await;
+    let (transaction_id, receipt) = preview_action(&mut framed, "UpdateSystem", json!({})).await;
+    execute_action(
+        &mut framed,
+        "UpdateSystem",
+        json!({}),
+        &transaction_id,
+        &receipt,
+    )
+    .await;
 
     let messages = drain_until_completed(&mut framed).await;
     let lines = progress_lines(&messages);

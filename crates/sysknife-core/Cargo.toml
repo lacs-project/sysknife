@@ -4,6 +4,10 @@ version = "0.2.5"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+description = "Configuration and domain primitives for SysKnife"
+keywords = ["linux", "system-administration", "configuration"]
+categories = ["command-line-utilities", "config"]
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }

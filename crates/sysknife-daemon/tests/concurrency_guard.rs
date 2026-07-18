@@ -89,7 +89,7 @@ async fn do_preview(
     framed: &mut FramedStream<UnixStream>,
     action_name: &str,
     params: Value,
-) -> String {
+) -> (String, String) {
     let req = json!({
         "type": "preview",
         "request_id": format!("preview-{action_name}"),
@@ -106,10 +106,23 @@ async fn do_preview(
         resp["type"], "preview_response",
         "expected preview_response for {action_name}, got: {resp}"
     );
-    resp["preview"]["request_hash"]
-        .as_str()
-        .unwrap()
-        .to_string()
+    let transaction_id = resp["transaction_id"].as_str().unwrap().to_string();
+    framed
+        .send(
+            &serde_json::to_vec(&json!({
+                "type": "approve",
+                "request_id": format!("approve-{action_name}"),
+                "transaction_id": transaction_id,
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let approval: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+    (
+        transaction_id,
+        approval["approval_receipt"].as_str().unwrap().to_string(),
+    )
 }
 
 /// Send an execute request and return the raw response(s) up to job_completed.
@@ -117,14 +130,16 @@ async fn do_execute(
     framed: &mut FramedStream<UnixStream>,
     action_name: &str,
     params: Value,
-    approval_hash: &str,
+    transaction_id: &str,
+    approval_receipt: &str,
 ) -> Vec<Value> {
     let req = json!({
         "type": "execute",
         "request_id": format!("exec-{action_name}"),
+        "transaction_id": transaction_id,
         "action_name": action_name,
         "params": params,
-        "approval_hash": approval_hash,
+        "approval_receipt": approval_receipt,
     });
     framed
         .send(&serde_json::to_vec(&req).unwrap())
@@ -200,8 +215,8 @@ async fn mutating_action_blocked_while_high_risk_in_flight() {
     let mut framed = spawn_handler(state, executor, CallerRole::Admin).await;
 
     let params = json!({"package": "vim"});
-    let hash = do_preview(&mut framed, "AptInstall", params.clone()).await;
-    let msgs = do_execute(&mut framed, "AptInstall", params, &hash).await;
+    let (transaction_id, receipt) = do_preview(&mut framed, "AptInstall", params.clone()).await;
+    let msgs = do_execute(&mut framed, "AptInstall", params, &transaction_id, &receipt).await;
 
     let last = msgs.last().unwrap();
     assert_eq!(
@@ -270,8 +285,8 @@ async fn mutating_action_passes_when_slot_is_clear() {
     let mut framed = spawn_handler(state, executor, CallerRole::Admin).await;
 
     let params = json!({"package": "curl"});
-    let hash = do_preview(&mut framed, "AptInstall", params.clone()).await;
-    let msgs = do_execute(&mut framed, "AptInstall", params, &hash).await;
+    let (transaction_id, receipt) = do_preview(&mut framed, "AptInstall", params.clone()).await;
+    let msgs = do_execute(&mut framed, "AptInstall", params, &transaction_id, &receipt).await;
 
     // The action will go through to execution. Whether it succeeds or fails
     // (because there's no real apt-get in the test sandbox) is irrelevant —

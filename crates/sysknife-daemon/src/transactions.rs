@@ -216,46 +216,6 @@ impl TransactionStore {
         }
     }
 
-    /// Find the most-recently recorded transaction with the given `request_hash`
-    /// that is still in `Queued` status.
-    ///
-    /// Returns `None` if no matching Queued transaction exists. The dispatcher
-    /// uses this to enforce preview-before-execute and to block replay attacks:
-    /// an already-executed (Succeeded/Failed) transaction is never returned,
-    /// so a captured approval hash cannot be reused after the first execute.
-    pub fn find_by_request_hash(
-        &self,
-        request_hash: &str,
-    ) -> Result<Option<TransactionRecord>, TransactionStoreError> {
-        let conn = self.connection()?;
-        // Status is stored as its JSON serialization (e.g. `"queued"`).
-        let queued_json = serialize_field(&JobState::Queued)?;
-        let mut stmt = conn.prepare(
-            "SELECT
-                transaction_id,
-                request_id,
-                request_hash,
-                action_name,
-                risk_level,
-                status,
-                approval_id,
-                summary,
-                warnings_json
-             FROM transactions
-             WHERE request_hash = ?1
-               AND status = ?2
-               AND created_at > datetime('now', '-15 minutes')
-             ORDER BY seq DESC
-             LIMIT 1",
-        )?;
-        let mut rows = stmt.query(params![request_hash, queued_json])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row_to_record(row)?))
-        } else {
-            Ok(None)
-        }
-    }
-
     pub fn get_preview(
         &self,
         transaction_id: &str,
@@ -311,27 +271,60 @@ impl TransactionStore {
         Ok(())
     }
 
-    /// Atomically claim a `Queued` transaction for execution by transitioning
-    /// its status to `Running` in a single SQL statement.
-    ///
-    /// Returns `Ok(true)` if the transaction was claimed (it was in `Queued`
-    /// state). Returns `Ok(false)` if the transaction could not be claimed —
-    /// it either does not exist or was already transitioned away from `Queued`
-    /// by a concurrent request.
-    ///
-    /// This closes the TOCTOU window in replay protection: two concurrent
-    /// execute requests that both pass `find_by_request_hash` cannot both
-    /// proceed — only the first `claim_for_execution` wins; the loser must
-    /// return `stale_approval`.
-    pub fn claim_for_execution(&self, transaction_id: &str) -> Result<bool, TransactionStoreError> {
+    /// Attach one immutable approval receipt digest to a fresh queued preview.
+    pub fn approve_transaction(
+        &self,
+        transaction_id: &str,
+        receipt_digest: &str,
+    ) -> Result<bool, TransactionStoreError> {
         let conn = self.connection()?;
         let queued_json = serialize_field(&JobState::Queued)?;
-        let running_json = serialize_field(&JobState::Running)?;
         let rows_affected = conn.execute(
-            "UPDATE transactions SET status = ?1 \
-             WHERE transaction_id = ?2 AND status = ?3",
-            params![running_json, transaction_id, queued_json],
+            "INSERT INTO transaction_approvals (transaction_id, receipt_digest) \
+             SELECT transaction_id, ?1 FROM transactions \
+             WHERE transaction_id = ?2 \
+               AND status = ?3 \
+               AND julianday(created_at) > julianday('now', '-15 minutes') \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM transaction_approvals WHERE transaction_id = ?2 \
+               )",
+            params![receipt_digest, transaction_id, queued_json],
         )?;
+        Ok(rows_affected > 0)
+    }
+
+    /// Atomically consume an approved receipt and transition Queued to Running.
+    pub fn claim_approved_for_execution(
+        &self,
+        transaction_id: &str,
+        receipt_digest: &str,
+    ) -> Result<bool, TransactionStoreError> {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let queued_json = serialize_field(&JobState::Queued)?;
+        let running_json = serialize_field(&JobState::Running)?;
+        let rows_affected = tx.execute(
+            "UPDATE transactions SET status = ?1 \
+             WHERE transaction_id = ?2 \
+               AND status = ?3 \
+               AND julianday(created_at) > julianday('now', '-15 minutes') \
+               AND EXISTS ( \
+                   SELECT 1 FROM transaction_approvals \
+                   WHERE transaction_id = ?2 \
+                     AND receipt_digest = ?4 \
+                     AND consumed_at IS NULL \
+               )",
+            params![running_json, transaction_id, queued_json, receipt_digest],
+        )?;
+        if rows_affected > 0 {
+            tx.execute(
+                "UPDATE transaction_approvals \
+                 SET consumed_at = datetime('now') \
+                 WHERE transaction_id = ?1 AND consumed_at IS NULL",
+                params![transaction_id],
+            )?;
+        }
+        tx.commit()?;
         Ok(rows_affected > 0)
     }
 
@@ -356,7 +349,7 @@ impl TransactionStore {
         let rows_affected = conn.execute(
             "UPDATE transactions SET status = ?1 \
              WHERE status = ?2 \
-               AND created_at <= datetime('now', '-15 minutes')",
+               AND julianday(created_at) <= julianday('now', '-15 minutes')",
             params![canceled_json, queued_json],
         )?;
         Ok(rows_affected as u64)
@@ -403,7 +396,7 @@ impl TransactionStore {
         }
 
         if let Some(hours) = since_hours {
-            sql.push_str(" AND created_at > datetime('now', '-' || ? || ' hours')");
+            sql.push_str(" AND julianday(created_at) > julianday('now', '-' || ? || ' hours')");
             param_values.push(Box::new(hours));
         }
 
@@ -479,6 +472,13 @@ impl TransactionStore {
             CREATE TABLE IF NOT EXISTS transaction_previews (
                 transaction_id TEXT PRIMARY KEY,
                 preview_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS transaction_approvals (
+                transaction_id TEXT PRIMARY KEY,
+                receipt_digest TEXT NOT NULL,
+                approved_at TEXT NOT NULL DEFAULT (datetime('now')),
+                consumed_at TEXT
             );
 
             CREATE INDEX IF NOT EXISTS transactions_seq_idx ON transactions(seq);
@@ -1104,171 +1104,68 @@ mod tests {
     }
 
     #[test]
-    fn find_by_request_hash_returns_queued_transaction() {
-        let dir = tempdir().unwrap();
-        let store = test_store(dir.path().join("tx.db"));
-        let tx = store.record(queued_transaction()).unwrap();
-
-        let found = store.find_by_request_hash("hash-abc").unwrap();
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().transaction_id, tx.transaction_id);
-    }
-
-    #[test]
-    fn find_by_request_hash_returns_none_for_unknown_hash() {
-        let dir = tempdir().unwrap();
-        let store = test_store(dir.path().join("tx.db"));
-
-        let found = store.find_by_request_hash("nonexistent-hash").unwrap();
-        assert!(found.is_none());
-    }
-
-    #[test]
-    fn find_by_request_hash_returns_none_after_transaction_executed() {
-        // A transaction that has already been executed (Succeeded/Failed) must
-        // not be returned — this blocks replay attacks where a captured approval
-        // hash is submitted a second time after the first execute completes.
-        let dir = tempdir().unwrap();
-        let store = test_store(dir.path().join("tx.db"));
-        let tx = store.record(queued_transaction()).unwrap();
-
-        // Simulate completed execution (must go through Running first).
-        store
-            .update_status(&tx.transaction_id, JobState::Running)
-            .unwrap();
-        store
-            .update_status(&tx.transaction_id, JobState::Succeeded)
-            .unwrap();
-
-        let found = store.find_by_request_hash("hash-abc").unwrap();
-        assert!(
-            found.is_none(),
-            "executed transaction must not be returned (replay protection)"
-        );
-    }
-
-    #[test]
-    fn claim_for_execution_succeeds_for_queued_transaction() {
-        let dir = tempdir().unwrap();
-        let store = test_store(dir.path().join("tx.db"));
-        let tx = store.record(queued_transaction()).unwrap();
-
-        let claimed = store.claim_for_execution(&tx.transaction_id).unwrap();
-        assert!(claimed, "should claim Queued transaction");
-
-        let updated = store.get(&tx.transaction_id).unwrap().unwrap();
-        assert_eq!(
-            updated.status,
-            JobState::Running,
-            "status must be Running after claim"
-        );
-    }
-
-    #[test]
-    fn claim_for_execution_returns_false_when_already_running() {
+    fn approved_receipt_is_required_and_consumed_once() {
         let dir = tempdir().unwrap();
         let store = test_store(dir.path().join("tx.db"));
         let tx = store.record(queued_transaction()).unwrap();
 
         assert!(
-            store.claim_for_execution(&tx.transaction_id).unwrap(),
-            "first claim must succeed"
+            !store
+                .claim_approved_for_execution(&tx.transaction_id, "digest-a")
+                .unwrap(),
+            "an unapproved preview must not execute"
         );
         assert!(
-            !store.claim_for_execution(&tx.transaction_id).unwrap(),
-            "second claim must return false — simulates concurrent execute request"
+            store
+                .approve_transaction(&tx.transaction_id, "digest-a")
+                .unwrap(),
+            "first approval must succeed"
+        );
+        assert!(
+            !store
+                .approve_transaction(&tx.transaction_id, "digest-b")
+                .unwrap(),
+            "approval is immutable once issued"
+        );
+        assert!(
+            !store
+                .claim_approved_for_execution(&tx.transaction_id, "digest-b")
+                .unwrap(),
+            "a forged receipt must not execute"
+        );
+        assert!(
+            store
+                .claim_approved_for_execution(&tx.transaction_id, "digest-a")
+                .unwrap(),
+            "the exact approved receipt must execute"
+        );
+        assert!(
+            !store
+                .claim_approved_for_execution(&tx.transaction_id, "digest-a")
+                .unwrap(),
+            "the receipt must be one-time"
         );
     }
 
     #[test]
-    fn claim_for_execution_returns_false_for_unknown_id() {
-        let dir = tempdir().unwrap();
-        let store = test_store(dir.path().join("tx.db"));
-
-        let claimed = store.claim_for_execution("does-not-exist").unwrap();
-        assert!(!claimed, "unknown transaction must not be claimable");
-    }
-
-    #[test]
-    fn find_by_request_hash_returns_none_for_running_transaction() {
-        // A Running transaction must not be returned — it has already been
-        // claimed by a concurrent request and must not be executed again.
+    fn stale_iso_timestamp_cannot_be_approved() {
         let dir = tempdir().unwrap();
         let store = test_store(dir.path().join("tx.db"));
         let tx = store.record(queued_transaction()).unwrap();
-
-        store.claim_for_execution(&tx.transaction_id).unwrap();
-
-        let found = store.find_by_request_hash("hash-abc").unwrap();
-        assert!(
-            found.is_none(),
-            "Running transaction must not be returned (prevents duplicate execution)"
-        );
-    }
-
-    #[test]
-    fn find_by_request_hash_returns_queued_record_when_hash_shared_with_older_executed() {
-        // If a preview was generated twice for the same action, the most recent
-        // Queued record should be returned even if an older Succeeded record
-        // exists for the same hash.
-        let dir = tempdir().unwrap();
-        let store = test_store(dir.path().join("tx.db"));
-
-        // First round: record → execute → succeed.
-        let first_tx = store.record(queued_transaction()).unwrap();
-        store
-            .update_status(&first_tx.transaction_id, JobState::Running)
-            .unwrap();
-        store
-            .update_status(&first_tx.transaction_id, JobState::Succeeded)
-            .unwrap();
-
-        // Second round: new preview with same hash (still Queued).
-        let second_tx = store.record(queued_transaction()).unwrap();
-
-        let found = store.find_by_request_hash("hash-abc").unwrap();
-        assert!(found.is_some(), "second Queued record should be found");
-        assert_eq!(
-            found.unwrap().transaction_id,
-            second_tx.transaction_id,
-            "should return the most-recent Queued record, not the older Succeeded one"
-        );
-    }
-
-    // ── TTL expiry tests ────────────────────────────────────────────────────
-
-    #[test]
-    fn fresh_queued_transaction_is_found_by_request_hash() {
-        let dir = tempdir().unwrap();
-        let store = test_store(dir.path().join("tx.db"));
-        store.record(queued_transaction()).unwrap();
-
-        let found = store.find_by_request_hash("hash-abc").unwrap();
-        assert!(
-            found.is_some(),
-            "a freshly created Queued transaction must be found"
-        );
-    }
-
-    #[test]
-    fn stale_queued_transaction_is_not_found_by_request_hash() {
-        let dir = tempdir().unwrap();
-        let store = test_store(dir.path().join("tx.db"));
-        let tx = store.record(queued_transaction()).unwrap();
-
-        // Backdate created_at to 20 minutes ago so it exceeds the 15-minute TTL.
         let conn = store.connection().unwrap();
         conn.execute(
-            "UPDATE transactions SET created_at = datetime('now', '-20 minutes') \
+            "UPDATE transactions \
+             SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-20 minutes') \
              WHERE transaction_id = ?1",
             params![tx.transaction_id],
         )
         .unwrap();
 
-        let found = store.find_by_request_hash("hash-abc").unwrap();
         assert!(
-            found.is_none(),
-            "a Queued transaction older than 15 minutes must not be found"
+            !store
+                .approve_transaction(&tx.transaction_id, "digest-a")
+                .unwrap(),
+            "a production-format timestamp outside the TTL must not be approved"
         );
     }
 
@@ -1284,7 +1181,8 @@ mod tests {
         // Backdate the stale one.
         let conn = store.connection().unwrap();
         conn.execute(
-            "UPDATE transactions SET created_at = datetime('now', '-20 minutes') \
+            "UPDATE transactions \
+             SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-20 minutes') \
              WHERE transaction_id = ?1",
             params![stale.transaction_id],
         )
@@ -1476,7 +1374,8 @@ mod tests {
         let old = store.record(queued_transaction()).unwrap();
         let conn = store.connection().unwrap();
         conn.execute(
-            "UPDATE transactions SET created_at = datetime('now', '-48 hours') \
+            "UPDATE transactions \
+             SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-48 hours') \
              WHERE transaction_id = ?1",
             params![old.transaction_id],
         )

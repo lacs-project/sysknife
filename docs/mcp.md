@@ -48,24 +48,24 @@ Each `PlanStep`:
 | `summary`     | string | What this step does                      |
 | `risk_level`  | string | `"low"`, `"medium"`, or `"high"`         |
 | `params`      | object | Action-specific parameters               |
-| `command`     | string | Resolved shell command, e.g. `"timedatectl"` (empty if daemon unreachable) |
+| `command`     | string | Daemon-resolved shell command, e.g. `"timedatectl"` |
+| `transaction_id` | string | Daemon identity for this immutable preview |
 
 ---
 
 ### `sysknife_execute`
 
-Execute a plan produced by `sysknife_plan`.  Pass the `steps` array
-unchanged.
+Execute a plan produced by `sysknife_plan`. Each step must include the
+one-time receipt printed by `sysknife approve <transaction-id>`.
 
 **Input**
 
-| Field      | Type          | Description                                      |
-|------------|---------------|--------------------------------------------------|
-| `steps`    | `StepToExecute[]` | Steps from `sysknife_plan` output              |
-| `max_risk` | string?       | Ceiling: `"low"`, `"medium"` (default), `"high"` |
+| Field   | Type              | Description                         |
+|---------|-------------------|-------------------------------------|
+| `steps` | `StepToExecute[]` | Approved steps from `sysknife_plan` |
 
-Steps whose daemon-assessed risk exceeds `max_risk` cause an error
-before any execution begins.  Execution halts on the first failure.
+Each `StepToExecute` contains the original `transaction_id`, `action_name`, and
+`params`, plus an `approval_receipt`. Execution halts on the first failure.
 
 **Output** — `ExecuteOutput`
 
@@ -97,20 +97,23 @@ Each `StepResult`:
         ↓
    Present the plan (steps + risk levels) to the user
         ↓
-2. WAIT for explicit user approval
-   ("yes", "do it", "execute", "go ahead", "approved")
+2. STOP and wait for the user
         ↓
-3. sysknife_execute { steps, max_risk }
+3. User runs: sysknife approve <transaction-id>
+   Repeat for each accepted step and return the printed receipt
+        ↓
+4. sysknife_execute { steps with approval_receipt }
         ↓
    Report results
 ```
 
-**Never call `sysknife_execute` in the same turn as `sysknife_plan`.**  The plan
-must be shown and the user must respond before any execution occurs.
+**Never call `sysknife_execute` without a receipt minted by the separate CLI
+command.** A chat response such as "yes" is not an approval receipt. Receipts
+are bound to one immutable preview, expire after 15 minutes, and are consumed
+atomically on first use.
 
-This rule is enforced by the hookify prompt hook in
-`.claude/hookify.require-sysknife-approval.md`, which injects a reminder
-into the assistant's context on every turn.
+The daemon enforces this protocol. Prompt hooks provide guidance but are not
+the security boundary.
 
 ---
 
@@ -213,9 +216,10 @@ Claude:  [calls sysknife_plan { intent: "check disk usage" }]
 
          Execute?
 
-User:    yes
+User:    [runs sysknife approve 018f2c9d-... in a terminal]
+         Approval receipt: 5f493f80-...
 
-Claude:  [calls sysknife_execute { steps: [...], max_risk: "low" }]
+Claude:  [calls sysknife_execute with transaction_id and approval_receipt]
 
          GetDiskUsage ✓
          Filesystem     Size  Used Avail Use%  Mounted on
@@ -227,11 +231,12 @@ Claude:  [calls sysknife_execute { steps: [...], max_risk: "low" }]
 
 ## Risk Levels
 
-| Level    | Meaning                                         | Default ceiling |
-|----------|-------------------------------------------------|-----------------|
-| `low`    | Read-only or fully reversible                   | Always allowed  |
-| `medium` | Modifies state but reversible (e.g. set timezone) | Allowed by default |
-| `high`   | Destructive or hard to reverse (e.g. rpm-ostree) | Requires `max_risk: "high"` |
+| Level    | Meaning                                           | Approval |
+|----------|---------------------------------------------------|----------|
+| `low`    | Read-only or fully reversible                     | One-time receipt |
+| `medium` | Modifies state but reversible (e.g. set timezone) | One-time receipt |
+| `high`   | Destructive or hard to reverse (e.g. rpm-ostree)  | One-time receipt |
 
-Set `max_risk` explicitly when you know the plan contains high-risk
-steps and the user has approved them.
+Risk changes how prominently the plan should be reviewed; it never replaces
+the receipt requirement. The standalone CLI additionally uses stronger
+confirmation prompts for high-risk actions.

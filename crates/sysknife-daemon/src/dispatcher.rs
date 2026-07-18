@@ -14,18 +14,17 @@
 //!   supplies its own role.
 //! - Vsock role is derived from a pre-shared token validated against a file;
 //!   the token is generated at setup time and distributed out-of-band.
-//! - Every `execute` request must carry an `approval_hash` that exactly matches
-//!   the `request_hash` returned in the preceding `preview` response.
+//! - Every `execute` request must carry a one-time receipt issued for the exact
+//!   persisted preview. Receipt verification and consumption are atomic.
 //! - Role is checked against the per-action allowlist (see `policy.rs`) before
 //!   preview and again before execute.
 
-use std::process::Stdio;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
 use uuid::Uuid;
 
@@ -154,10 +153,7 @@ fn redact_argv(action_name: &str, params: &Value, args: &[String]) -> Vec<String
 
 use crate::{
     auth::highest_role_from_groups,
-    executor::{
-        build_action_spec, execute_spec, rollback_spec_for, ActionExecutor, ExecutionOutput,
-        ExecutorError,
-    },
+    executor::{build_action_spec, rollback_spec_for, ActionExecutor},
     preview::preview_action,
     state::DaemonState,
     state_collector::{collect_state, CollectedState, CommandRunner},
@@ -207,11 +203,20 @@ enum DaemonRequest {
         action_name: String,
         params: Value,
     },
+    Approve {
+        request_id: String,
+        transaction_id: String,
+    },
+    ApprovalDetails {
+        request_id: String,
+        transaction_id: String,
+    },
     Execute {
         request_id: String,
+        transaction_id: String,
         action_name: String,
         params: Value,
-        approval_hash: String,
+        approval_receipt: String,
     },
     Cancel {
         job_id: String,
@@ -243,6 +248,17 @@ enum DaemonResponse {
         request_id: String,
         preview: PreviewEnvelope,
         transaction_id: String,
+    },
+    ApprovalResponse {
+        request_id: String,
+        transaction_id: String,
+        approval_receipt: String,
+    },
+    ApprovalDetailsResponse {
+        request_id: String,
+        transaction_id: String,
+        action_name: String,
+        preview: PreviewEnvelope,
     },
     JobStarted {
         request_id: String,
@@ -706,9 +722,10 @@ async fn dispatch_loop<S>(
             }
             DaemonRequest::Execute {
                 request_id,
+                transaction_id,
                 action_name,
                 params,
-                approval_hash,
+                approval_receipt,
             } => {
                 handle_execute(
                     framed,
@@ -716,12 +733,21 @@ async fn dispatch_loop<S>(
                     Arc::clone(&executor),
                     &caller_role,
                     request_id,
+                    transaction_id,
                     action_name,
                     params,
-                    approval_hash,
+                    approval_receipt,
                 )
                 .await
             }
+            DaemonRequest::Approve {
+                request_id,
+                transaction_id,
+            } => handle_approve(framed, &state, request_id, transaction_id).await,
+            DaemonRequest::ApprovalDetails {
+                request_id,
+                transaction_id,
+            } => handle_approval_details(framed, &state, request_id, transaction_id).await,
             DaemonRequest::QueryAction {
                 request_id,
                 action_name,
@@ -760,6 +786,113 @@ async fn dispatch_loop<S>(
             eprintln!("[sysknife-daemon] connection handler send error: {e}");
         }
     }
+}
+
+fn receipt_digest(receipt: &str) -> String {
+    hex::encode(Sha256::digest(receipt.as_bytes()))
+}
+
+async fn handle_approve(
+    framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
+    state: &DaemonState,
+    request_id: &str,
+    transaction_id: &str,
+) -> Result<(), HandlerError> {
+    let receipt = Uuid::new_v4().to_string();
+    let approved = match state
+        .audit
+        .approve_transaction(transaction_id, &receipt_digest(&receipt))
+        .await
+    {
+        Ok(approved) => approved,
+        Err(e) => {
+            return send_error(
+                framed,
+                request_id,
+                "transient_infrastructure_failure",
+                format!("failed to persist approval: {e}"),
+            )
+            .await;
+        }
+    };
+    if !approved {
+        return send_error(
+            framed,
+            request_id,
+            "stale_approval",
+            "transaction is missing, expired, already approved, or no longer queued",
+        )
+        .await;
+    }
+    send_response(
+        framed,
+        &DaemonResponse::ApprovalResponse {
+            request_id: request_id.to_string(),
+            transaction_id: transaction_id.to_string(),
+            approval_receipt: receipt,
+        },
+    )
+    .await
+}
+
+async fn handle_approval_details(
+    framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
+    state: &DaemonState,
+    request_id: &str,
+    transaction_id: &str,
+) -> Result<(), HandlerError> {
+    let transaction = match state.audit.get(transaction_id).await {
+        Ok(Some(transaction)) if transaction.status == JobState::Queued => transaction,
+        Ok(_) => {
+            return send_error(
+                framed,
+                request_id,
+                "stale_approval",
+                "transaction is missing or no longer queued",
+            )
+            .await;
+        }
+        Err(e) => {
+            return send_error(
+                framed,
+                request_id,
+                "transient_infrastructure_failure",
+                format!("failed to load transaction: {e}"),
+            )
+            .await;
+        }
+    };
+    let preview = match state.audit.get_preview(transaction_id).await {
+        Ok(Some(preview)) => preview,
+        Ok(None) => {
+            return send_error(
+                framed,
+                request_id,
+                "stale_approval",
+                "transaction has no persisted preview",
+            )
+            .await;
+        }
+        Err(e) => {
+            return send_error(
+                framed,
+                request_id,
+                "transient_infrastructure_failure",
+                format!("failed to load preview: {e}"),
+            )
+            .await;
+        }
+    };
+    send_response(
+        framed,
+        &DaemonResponse::ApprovalDetailsResponse {
+            request_id: request_id.to_string(),
+            transaction_id: transaction_id.to_string(),
+            action_name: transaction.action_name,
+            preview,
+        },
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -1291,9 +1424,10 @@ async fn handle_execute(
     executor: Arc<dyn ActionExecutor>,
     caller_role: &CallerRole,
     request_id: &str,
+    transaction_id: &str,
     action_name: &str,
     params: &Value,
-    approval_hash: &str,
+    approval_receipt: &str,
 ) -> Result<(), HandlerError> {
     let spec = match build_action_spec(action_name, params) {
         Ok(s) => s,
@@ -1312,16 +1446,8 @@ async fn handle_execute(
         .await;
     }
 
-    // Compute the canonical hash and check it matches the approval.
-    let stored_hash = compute_request_hash(action_name, params);
-    if let Err(e) = crate::policy::require_fresh_approval(&stored_hash, approval_hash) {
-        return send_error(framed, request_id, "stale_approval", e.to_string()).await;
-    }
-
-    // Verify a prior preview exists (enforce preview-before-execute).
-    // A lookup failure is an infrastructure error — send a response instead of
-    // propagating, which would leave the client hanging with no reply.
-    let prior_tx = match state.audit.find_by_request_hash(&stored_hash).await {
+    let submitted_hash = compute_request_hash(action_name, params);
+    let prior_tx = match state.audit.get(transaction_id).await {
         Ok(tx) => tx,
         Err(e) => {
             return send_error(
@@ -1334,24 +1460,35 @@ async fn handle_execute(
         }
     };
 
-    let transaction_id = match prior_tx {
-        Some(tx) => tx.transaction_id,
+    let prior_tx = match prior_tx {
+        Some(tx) => tx,
         None => {
             return send_error(
                 framed,
                 request_id,
                 "stale_approval",
-                "no prior preview found for this action; preview before executing",
+                "no prior preview found for this transaction; preview before executing",
             )
             .await;
         }
     };
 
-    // Atomically claim the transaction for execution (Queued → Running).
-    // This closes the TOCTOU window: two concurrent execute requests that both
-    // pass find_by_request_hash cannot both proceed — the loser's UPDATE sees
-    // status ≠ Queued and returns false.
-    let claimed = match state.audit.claim_for_execution(&transaction_id).await {
+    if prior_tx.action_name != action_name || prior_tx.request_hash != submitted_hash {
+        return send_error(
+            framed,
+            request_id,
+            "stale_approval",
+            "action or parameters differ from the approved preview",
+        )
+        .await;
+    }
+    let stored_hash = prior_tx.request_hash;
+
+    let claimed = match state
+        .audit
+        .claim_approved_for_execution(transaction_id, &receipt_digest(approval_receipt))
+        .await
+    {
         Ok(c) => c,
         Err(e) => {
             return send_error(
@@ -1368,7 +1505,7 @@ async fn handle_execute(
             framed,
             request_id,
             "stale_approval",
-            "transaction already claimed by a concurrent request",
+            "transaction is not approved for this receipt, expired, or already consumed",
         )
         .await;
     }
@@ -1435,7 +1572,7 @@ async fn handle_execute(
         &DaemonResponse::JobStarted {
             request_id: request_id.to_string(),
             job_id: job_id.clone(),
-            transaction_id: transaction_id.clone(),
+            transaction_id: transaction_id.to_string(),
         },
     )
     .await?;
@@ -1458,13 +1595,34 @@ async fn handle_execute(
     )
     .await;
 
-    // Execute the action. Command actions stream stdout live as JobProgress
-    // frames; file-operation actions complete instantly with no output.
-    let output = match &spec.mechanism {
-        crate::actions::ActionMechanism::Command { program, args } => {
-            stream_command_with_progress(framed, &job_id, program, args).await
+    // All process execution goes through ActionExecutor. This is a security
+    // and testability boundary: injected executors must never fall through to
+    // real privileged commands merely because an action streams output.
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+    let execution = executor.execute_with_progress(&spec, progress_tx);
+    tokio::pin!(execution);
+    let mut progress_open = true;
+    let output = loop {
+        tokio::select! {
+            result = &mut execution => break result,
+            line = progress_rx.recv(), if progress_open => {
+                let Some(line) = line else {
+                    progress_open = false;
+                    continue;
+                };
+                if let Err(e) = send_response(
+                    framed,
+                    &DaemonResponse::JobProgress {
+                        job_id: job_id.clone(),
+                        line,
+                    },
+                ).await {
+                    eprintln!(
+                        "[sysknife-daemon] progress send failed (client disconnected?): {e}"
+                    );
+                }
+            }
         }
-        _ => execute_spec(&spec).await,
     };
 
     let (initial_status, initial_summary) = match &output {
@@ -1528,7 +1686,7 @@ async fn handle_execute(
     let mut warnings = Vec::new();
     match state
         .audit
-        .update_status(&transaction_id, final_status)
+        .update_status(transaction_id, final_status)
         .await
     {
         Ok(()) => {
@@ -1536,7 +1694,7 @@ async fn handle_execute(
             // terminal outcome of the action, not just the preview. Best-effort
             // and fire-and-forget — the local hash-chained log is the durable
             // record.
-            forward_status_change_event(state, &transaction_id, caller_role, final_status);
+            forward_status_change_event(state, transaction_id, caller_role, final_status);
         }
         Err(e) => {
             eprintln!(
@@ -1558,80 +1716,11 @@ async fn handle_execute(
                 job_id: job_id.clone(),
                 needs_reboot: matches!(final_status, JobState::NeedsReboot),
                 rollback_ref,
-                transaction_id,
+                transaction_id: transaction_id.to_string(),
             },
         },
     )
     .await
-}
-
-/// Execute a `Command` action, streaming each stdout line to `framed` as a
-/// `JobProgress` frame while the process runs.
-///
-/// Stderr is read concurrently via a spawned task to prevent deadlock when
-/// the OS stderr buffer fills before stdout is exhausted.
-async fn stream_command_with_progress(
-    framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
-    job_id: &str,
-    program: &'static str,
-    args: &[String],
-) -> Result<ExecutionOutput, ExecutorError> {
-    let mut child = tokio::process::Command::new(program)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(ExecutorError::Io)?;
-
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let stderr = child.stderr.take().expect("stderr was piped");
-
-    // Read stderr concurrently — if we exhaust stdout first and the process
-    // has filled the OS stderr buffer, the process blocks on writing stderr
-    // while we wait for stdout EOF: deadlock.
-    let stderr_task = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        BufReader::new(stderr)
-            .read_to_end(&mut buf)
-            .await
-            .map(|_| buf)
-    });
-
-    let mut lines = BufReader::new(stdout).lines();
-    let mut stdout_buf = String::new();
-
-    while let Some(line) = lines.next_line().await.map_err(ExecutorError::Io)? {
-        if !line.is_empty() {
-            if let Err(e) = send_response(
-                framed,
-                &DaemonResponse::JobProgress {
-                    job_id: job_id.to_string(),
-                    line: line.clone(),
-                },
-            )
-            .await
-            {
-                // Client disconnected mid-execution. Log and continue — the
-                // daemon must not abort privileged operations because the
-                // shell dropped its connection.
-                eprintln!("[sysknife-daemon] progress send failed (client disconnected?): {e}");
-            }
-        }
-        stdout_buf.push_str(&line);
-        stdout_buf.push('\n');
-    }
-
-    let exit_status = child.wait().await.map_err(ExecutorError::Io)?;
-    let stderr_bytes = stderr_task
-        .await
-        .map_err(|_| ExecutorError::Io(std::io::Error::other("stderr reader task panicked")))?
-        .map_err(ExecutorError::Io)?;
-
-    Ok(ExecutionOutput {
-        stdout: stdout_buf,
-        stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
-        exit_code: exit_status.code().unwrap_or(-1),
-    })
 }
 
 /// If `status` is `Failed` and `spec.rollback_available`, attempt an
@@ -1903,6 +1992,72 @@ mod tests {
         Arc::new(MockRunner)
     }
 
+    async fn approve_preview(
+        framed: &mut FramedStream<tokio::net::UnixStream>,
+        transaction_id: &str,
+    ) -> String {
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "approve",
+                    "request_id": format!("approve-{transaction_id}"),
+                    "transaction_id": transaction_id,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let response: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        assert_eq!(response["type"], "approval_response");
+        response["approval_receipt"]
+            .as_str()
+            .expect("approval receipt")
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn approval_details_returns_persisted_preview_before_approval() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            unix_connection_handler(server, state, runner(), CallerRole::Observer).await;
+        });
+        let mut framed = FramedStream::new(client);
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "preview",
+                    "request_id": "details-preview",
+                    "action_name": "GetSystemState",
+                    "params": {}
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let preview: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        let transaction_id = preview["transaction_id"].as_str().unwrap();
+
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "approval_details",
+                    "request_id": "details-read",
+                    "transaction_id": transaction_id
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let details: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        assert_eq!(details["type"], "approval_details_response");
+        assert_eq!(details["transaction_id"], transaction_id);
+        assert_eq!(details["action_name"], "GetSystemState");
+        assert_eq!(details["preview"]["risk_level"], "low");
+        assert!(!details["preview"]["summary"].as_str().unwrap().is_empty());
+    }
+
     /// Send `requests` to a spawned handler, collect exactly `want_responses`
     /// response frames, then drop the client to signal EOF.
     async fn exchange(
@@ -2101,16 +2256,16 @@ mod tests {
         let dir = tempdir().unwrap();
         let state = test_state(&dir);
 
-        let hash = compute_request_hash("GetSystemState", &json!({}));
         let resps = exchange(
             state,
             CallerRole::Observer,
             vec![json!({
                 "type": "execute",
                 "request_id": "r1",
+                "transaction_id": "missing-transaction",
                 "action_name": "GetSystemState",
                 "params": {},
-                "approval_hash": hash   // correct hash, but no prior preview
+                "approval_receipt": "unissued-receipt"
             })],
             1,
         )
@@ -2131,9 +2286,10 @@ mod tests {
             vec![json!({
                 "type": "execute",
                 "request_id": "r1",
+                "transaction_id": "missing-transaction",
                 "action_name": "GetSystemState",
                 "params": {},
-                "approval_hash": "thisiswronghash"
+                "approval_receipt": "wrong-receipt"
             })],
             1,
         )
@@ -2148,7 +2304,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[tokio::test]
-    async fn execute_after_preview_with_correct_hash_returns_job_completed() {
+    async fn execute_after_preview_with_receipt_returns_job_completed() {
         let dir = tempdir().unwrap();
         let state = test_state(&dir);
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
@@ -2174,18 +2330,17 @@ mod tests {
         let raw = framed.recv().await.unwrap();
         let preview_resp: Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(preview_resp["type"], "preview_response");
-        let returned_hash = preview_resp["preview"]["request_hash"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        let transaction_id = preview_resp["transaction_id"].as_str().unwrap();
+        let receipt = approve_preview(&mut framed, transaction_id).await;
 
-        // Step 2: execute with the hash the daemon returned.
+        // Step 2: execute with the one-time receipt the daemon returned.
         let exec_req = json!({
             "type": "execute",
             "request_id": "r2",
+            "transaction_id": transaction_id,
             "action_name": "GetSystemState",
             "params": {},
-            "approval_hash": returned_hash
+            "approval_receipt": receipt
         });
         framed
             .send(&serde_json::to_vec(&exec_req).unwrap())
@@ -2269,12 +2424,6 @@ mod tests {
             ) -> Result<Option<TransactionRecord>, TransactionStoreError> {
                 self.0.get(id).await
             }
-            async fn find_by_request_hash(
-                &self,
-                h: &str,
-            ) -> Result<Option<TransactionRecord>, TransactionStoreError> {
-                self.0.find_by_request_hash(h).await
-            }
             async fn get_preview(
                 &self,
                 id: &str,
@@ -2288,8 +2437,19 @@ mod tests {
             ) -> Result<(), TransactionStoreError> {
                 Err(TransactionStoreError::NotFound(id.to_string()))
             }
-            async fn claim_for_execution(&self, id: &str) -> Result<bool, TransactionStoreError> {
-                self.0.claim_for_execution(id).await
+            async fn approve_transaction(
+                &self,
+                id: &str,
+                digest: &str,
+            ) -> Result<bool, TransactionStoreError> {
+                self.0.approve_transaction(id, digest).await
+            }
+            async fn claim_approved_for_execution(
+                &self,
+                id: &str,
+                digest: &str,
+            ) -> Result<bool, TransactionStoreError> {
+                self.0.claim_approved_for_execution(id, digest).await
             }
             async fn cleanup_stale_queued(&self) -> Result<u64, TransactionStoreError> {
                 self.0.cleanup_stale_queued().await
@@ -2353,19 +2513,18 @@ mod tests {
             .await
             .unwrap();
         let preview_resp: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
-        let approval_hash = preview_resp["preview"]["request_hash"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        let transaction_id = preview_resp["transaction_id"].as_str().unwrap();
+        let receipt = approve_preview(&mut framed, transaction_id).await;
 
         framed
             .send(
                 &serde_json::to_vec(&json!({
                     "type": "execute",
                     "request_id": "r2",
+                    "transaction_id": transaction_id,
                     "action_name": "GetSystemState",
                     "params": {},
-                    "approval_hash": approval_hash
+                    "approval_receipt": receipt
                 }))
                 .unwrap(),
             )
@@ -2398,9 +2557,9 @@ mod tests {
     // ------------------------------------------------------------------
     // T4 — concurrent execute race at the dispatcher boundary
     //
-    // The transactions store guarantees that `claim_for_execution`'s
-    // conditional UPDATE only flips a row from Queued to Running once;
-    // the second caller observes status != Queued and bails.  Drive
+    // The transactions store guarantees that receipt consumption and the
+    // Queued-to-Running transition happen in one atomic claim; the second
+    // caller observes that the receipt is consumed and bails. Drive
     // that contract through TWO concurrent unix_connection_handler instances
     // sharing one DaemonState: one preview produces a Queued row, then
     // two executes race for it.  Exactly one must reach job_started;
@@ -2439,15 +2598,14 @@ mod tests {
             .unwrap();
         let raw = framed_p.recv().await.unwrap();
         let preview_resp: Value = serde_json::from_slice(&raw).unwrap();
-        let approval_hash = preview_resp["preview"]["request_hash"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        let transaction_id = preview_resp["transaction_id"].as_str().unwrap().to_string();
+        let approval_receipt = approve_preview(&mut framed_p, &transaction_id).await;
 
         // ── Two execute connections sharing the same DaemonState ─────
         async fn exec_once(
             state: crate::state::DaemonState,
-            approval_hash: String,
+            transaction_id: String,
+            approval_receipt: String,
             request_id: &'static str,
         ) -> Vec<Value> {
             let (c, s) = tokio::net::UnixStream::pair().unwrap();
@@ -2459,9 +2617,10 @@ mod tests {
                 &serde_json::to_vec(&json!({
                     "type": "execute",
                     "request_id": request_id,
+                    "transaction_id": transaction_id,
                     "action_name": "GetSystemState",
                     "params": {},
-                    "approval_hash": approval_hash
+                    "approval_receipt": approval_receipt
                 }))
                 .unwrap(),
             )
@@ -2488,8 +2647,18 @@ mod tests {
         }
 
         let (a, b) = tokio::join!(
-            exec_once(state.clone(), approval_hash.clone(), "exec-A"),
-            exec_once(state.clone(), approval_hash.clone(), "exec-B"),
+            exec_once(
+                state.clone(),
+                transaction_id.clone(),
+                approval_receipt.clone(),
+                "exec-A"
+            ),
+            exec_once(
+                state.clone(),
+                transaction_id.clone(),
+                approval_receipt.clone(),
+                "exec-B"
+            ),
         );
 
         // Each side must end in either job_completed or error_response.
@@ -2515,7 +2684,7 @@ mod tests {
         );
 
         // The loser must be flagged as stale_approval, not some other
-        // category — that's the contract `claim_for_execution` enforces.
+        // category — that's the receipt claim's wire contract.
         let loser = if outcomes[0] == "lose" { &a } else { &b };
         let err_frame = loser
             .iter()
@@ -2530,13 +2699,10 @@ mod tests {
     // ------------------------------------------------------------------
     // T5 — replay attack at the dispatcher boundary
     //
-    // The transactions store flips a row from Queued to Running on the
-    // first execute, and `find_by_request_hash` filters on `status =
-    // Queued`.  That single conditional UPDATE is the entire defence
-    // against replay: a captured (request_hash, approval_hash) tuple
-    // submitted a second time must miss the Queued row and surface as
-    // `stale_approval`.  Pin that contract through the live dispatcher
-    // (preview → execute → drain → re-execute), not just the store.
+    // The transaction store verifies and consumes the one-time receipt while
+    // moving the row from Queued to Running. A captured receipt submitted a
+    // second time must surface as `stale_approval`. Pin that contract through
+    // the live dispatcher, not just the store.
     // ------------------------------------------------------------------
 
     #[tokio::test]
@@ -2569,10 +2735,8 @@ mod tests {
         let raw = framed.recv().await.unwrap();
         let preview_resp: Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(preview_resp["type"], "preview_response");
-        let approval_hash = preview_resp["preview"]["request_hash"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        let transaction_id = preview_resp["transaction_id"].as_str().unwrap().to_string();
+        let approval_receipt = approve_preview(&mut framed, &transaction_id).await;
 
         // Step 2: first execute — must succeed and reach a terminal state.
         framed
@@ -2580,9 +2744,10 @@ mod tests {
                 &serde_json::to_vec(&json!({
                     "type": "execute",
                     "request_id": "r2",
+                    "transaction_id": transaction_id,
                     "action_name": "GetSystemState",
                     "params": {},
-                    "approval_hash": approval_hash
+                    "approval_receipt": approval_receipt
                 }))
                 .unwrap(),
             )
@@ -2601,17 +2766,17 @@ mod tests {
             }
         }
 
-        // Step 3: replay the same approval_hash on a fresh execute.
-        // The Queued row is gone, so the dispatcher must reject this
-        // with `stale_approval` rather than re-executing the action.
+        // Step 3: replay the same one-time receipt. The receipt is consumed,
+        // so the dispatcher must reject it rather than re-execute the action.
         framed
             .send(
                 &serde_json::to_vec(&json!({
                     "type": "execute",
                     "request_id": "r3-replay",
+                    "transaction_id": transaction_id,
                     "action_name": "GetSystemState",
                     "params": {},
-                    "approval_hash": approval_hash
+                    "approval_receipt": approval_receipt
                 }))
                 .unwrap(),
             )
@@ -2705,40 +2870,28 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // stream_command_with_progress
+    // RealActionExecutor progress channel
     // ------------------------------------------------------------------
 
     #[tokio::test]
     async fn stream_command_sends_job_progress_lines_during_execution() {
-        // stream_command_with_progress must emit JobProgress frames for each
-        // stdout line WHILE the process runs, not after it exits.
-        let (client_stream, server_stream) = tokio::net::UnixStream::pair().unwrap();
-        let mut framed_server = FramedStream::new(server_stream);
+        let spec = crate::actions::ActionSpec {
+            action_name: "test",
+            mechanism: crate::actions::ActionMechanism::Command {
+                program: "echo",
+                args: vec!["hello from stream".to_string()],
+            },
+            risk_level: sysknife_types::RiskLevel::Low,
+            reboot_required: false,
+            rollback_available: false,
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let executor = crate::executor::RealActionExecutor;
+        let handle =
+            tokio::spawn(async move { executor.execute_with_progress(&spec, tx).await.unwrap() });
 
-        // Run echo in a spawned task — it exits after producing output.
-        let handle = tokio::spawn(async move {
-            stream_command_with_progress(
-                &mut framed_server,
-                "job-test-123",
-                "echo",
-                &["hello from stream".to_string()],
-            )
-            .await
-            .unwrap()
-        });
-
-        // The client should receive a JobProgress frame before the task joins.
-        let mut framed_client = FramedStream::new(client_stream);
-        let raw = framed_client.recv().await.unwrap();
-        let msg: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-
-        assert_eq!(
-            msg["type"], "job_progress",
-            "expected job_progress, got: {msg}"
-        );
-        assert_eq!(msg["job_id"], "job-test-123");
-        assert_eq!(msg["line"], "hello from stream");
-
+        let line = rx.recv().await.expect("progress line");
+        assert_eq!(line, "hello from stream");
         let out = handle.await.unwrap();
         assert_eq!(out.exit_code, 0);
         assert!(out.stdout.contains("hello from stream"));

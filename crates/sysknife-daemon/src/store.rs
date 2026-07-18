@@ -66,11 +66,6 @@ pub trait AuditStore: Send + Sync + std::fmt::Debug {
         transaction_id: &str,
     ) -> Result<Option<TransactionRecord>, TransactionStoreError>;
 
-    async fn find_by_request_hash(
-        &self,
-        request_hash: &str,
-    ) -> Result<Option<TransactionRecord>, TransactionStoreError>;
-
     async fn get_preview(
         &self,
         transaction_id: &str,
@@ -82,9 +77,16 @@ pub trait AuditStore: Send + Sync + std::fmt::Debug {
         new_status: JobState,
     ) -> Result<(), TransactionStoreError>;
 
-    async fn claim_for_execution(
+    async fn approve_transaction(
         &self,
         transaction_id: &str,
+        receipt_digest: &str,
+    ) -> Result<bool, TransactionStoreError>;
+
+    async fn claim_approved_for_execution(
+        &self,
+        transaction_id: &str,
+        receipt_digest: &str,
     ) -> Result<bool, TransactionStoreError>;
 
     async fn cleanup_stale_queued(&self) -> Result<u64, TransactionStoreError>;
@@ -178,15 +180,6 @@ impl AuditStore for SqliteStore {
         blocking(move || inner.get(&id)).await
     }
 
-    async fn find_by_request_hash(
-        &self,
-        request_hash: &str,
-    ) -> Result<Option<TransactionRecord>, TransactionStoreError> {
-        let inner = Arc::clone(&self.inner);
-        let hash = request_hash.to_string();
-        blocking(move || inner.find_by_request_hash(&hash)).await
-    }
-
     async fn get_preview(
         &self,
         transaction_id: &str,
@@ -206,13 +199,26 @@ impl AuditStore for SqliteStore {
         blocking(move || inner.update_status(&id, new_status)).await
     }
 
-    async fn claim_for_execution(
+    async fn approve_transaction(
         &self,
         transaction_id: &str,
+        receipt_digest: &str,
     ) -> Result<bool, TransactionStoreError> {
         let inner = Arc::clone(&self.inner);
         let id = transaction_id.to_string();
-        blocking(move || inner.claim_for_execution(&id)).await
+        let digest = receipt_digest.to_string();
+        blocking(move || inner.approve_transaction(&id, &digest)).await
+    }
+
+    async fn claim_approved_for_execution(
+        &self,
+        transaction_id: &str,
+        receipt_digest: &str,
+    ) -> Result<bool, TransactionStoreError> {
+        let inner = Arc::clone(&self.inner);
+        let id = transaction_id.to_string();
+        let digest = receipt_digest.to_string();
+        blocking(move || inner.claim_approved_for_execution(&id, &digest)).await
     }
 
     async fn cleanup_stale_queued(&self) -> Result<u64, TransactionStoreError> {

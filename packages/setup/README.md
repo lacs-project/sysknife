@@ -8,17 +8,12 @@ The wizard auto-downloads prebuilt binaries verified against SHA256.
 
 ## Usage
 
-> **npm publish pending**: `sysknife-setup` is not yet on the npm registry.
-> Use the local-clone path until `NPM_TOKEN` is configured in CI.
-
 ```sh
-# Local-clone path (works today):
-git clone https://github.com/lacs-project/sysknife
-node sysknife/packages/setup/index.js
-
-# Once published to npm:
 npx sysknife-setup
 ```
+
+For local development, run `node packages/setup/index.js` from the repository
+root.
 
 Run from the root of your project. The wizard is interactive and scriptable
 via stdin redirection.

@@ -118,8 +118,8 @@ fn test_state(dir: &tempfile::TempDir) -> DaemonState {
     DaemonState::open(config).unwrap()
 }
 
-/// Do a preview for UpdateSystem and return the request_hash.
-async fn preview_update_system(framed: &mut FramedStream<UnixStream>) -> String {
+/// Preview and explicitly approve UpdateSystem.
+async fn preview_update_system(framed: &mut FramedStream<UnixStream>) -> (String, String) {
     let preview_req = json!({
         "type": "preview",
         "request_id": "rollback-preview",
@@ -137,20 +137,37 @@ async fn preview_update_system(framed: &mut FramedStream<UnixStream>) -> String 
         resp["type"], "preview_response",
         "expected preview_response, got: {resp}"
     );
-    resp["preview"]["request_hash"]
-        .as_str()
-        .unwrap()
-        .to_string()
+    let transaction_id = resp["transaction_id"].as_str().unwrap().to_string();
+    let approve_req = json!({
+        "type": "approve",
+        "request_id": "rollback-approve",
+        "transaction_id": transaction_id,
+    });
+    framed
+        .send(&serde_json::to_vec(&approve_req).unwrap())
+        .await
+        .unwrap();
+    let raw = framed.recv().await.unwrap();
+    let approval: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(approval["type"], "approval_response");
+    (
+        transaction_id,
+        approval["approval_receipt"].as_str().unwrap().to_string(),
+    )
 }
 
-/// Send an execute request for UpdateSystem with the given approval_hash.
-async fn execute_update_system(framed: &mut FramedStream<UnixStream>, approval_hash: &str) {
+async fn execute_update_system(
+    framed: &mut FramedStream<UnixStream>,
+    transaction_id: &str,
+    approval_receipt: &str,
+) {
     let exec_req = json!({
         "type": "execute",
         "request_id": "rollback-execute",
+        "transaction_id": transaction_id,
         "action_name": "UpdateSystem",
         "params": {},
-        "approval_hash": approval_hash
+        "approval_receipt": approval_receipt
     });
     framed
         .send(&serde_json::to_vec(&exec_req).unwrap())
@@ -189,11 +206,11 @@ async fn failed_update_system_triggers_automatic_rollback() {
     let mut framed = spawn_handler_with_executor(state, executor).await;
 
     // Step 1: Preview to get the request_hash.
-    let hash = preview_update_system(&mut framed).await;
+    let (transaction_id, receipt) = preview_update_system(&mut framed).await;
 
     // Step 2: Execute — the primary action will fail because `rpm-ostree upgrade`
     // is not available in CI, triggering the rollback path.
-    execute_update_system(&mut framed, &hash).await;
+    execute_update_system(&mut framed, &transaction_id, &receipt).await;
 
     // Step 3: Drain frames until job_completed.
     let (messages, completed) = drain_until_completed(&mut framed).await;
@@ -249,8 +266,8 @@ async fn rollback_updates_transaction_store_to_rolled_back() {
     let executor: Arc<dyn ActionExecutor> = Arc::new(FailThenRollbackExecutor);
     let mut framed = spawn_handler_with_executor(state, executor).await;
 
-    let hash = preview_update_system(&mut framed).await;
-    execute_update_system(&mut framed, &hash).await;
+    let (transaction_id, receipt) = preview_update_system(&mut framed).await;
+    execute_update_system(&mut framed, &transaction_id, &receipt).await;
     let (messages, _completed) = drain_until_completed(&mut framed).await;
 
     // Extract the transaction_id from job_started.
@@ -279,8 +296,8 @@ async fn failed_rollback_leaves_status_as_failed() {
     let executor: Arc<dyn ActionExecutor> = Arc::new(FailBothExecutor);
     let mut framed = spawn_handler_with_executor(state, executor).await;
 
-    let hash = preview_update_system(&mut framed).await;
-    execute_update_system(&mut framed, &hash).await;
+    let (transaction_id, receipt) = preview_update_system(&mut framed).await;
+    execute_update_system(&mut framed, &transaction_id, &receipt).await;
     let (messages, completed) = drain_until_completed(&mut framed).await;
 
     let status = completed["result"]["status"].as_str().unwrap();
@@ -334,18 +351,29 @@ async fn non_rollbackable_action_does_not_trigger_rollback() {
     let raw = framed.recv().await.unwrap();
     let resp: Value = serde_json::from_slice(&raw).unwrap();
     assert_eq!(resp["type"], "preview_response");
-    let hash = resp["preview"]["request_hash"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let transaction_id = resp["transaction_id"].as_str().unwrap().to_string();
+    framed
+        .send(
+            &serde_json::to_vec(&json!({
+                "type": "approve",
+                "request_id": "no-rollback-approve",
+                "transaction_id": transaction_id,
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let approval: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+    let receipt = approval["approval_receipt"].as_str().unwrap();
 
     // Execute.
     let exec_req = json!({
         "type": "execute",
         "request_id": "no-rollback-execute",
+        "transaction_id": transaction_id,
         "action_name": "GetSystemState",
         "params": {},
-        "approval_hash": hash
+        "approval_receipt": receipt
     });
     framed
         .send(&serde_json::to_vec(&exec_req).unwrap())

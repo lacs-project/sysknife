@@ -95,11 +95,12 @@ Tracked in the v0.2.0 milestone.
 
 ## Phase 7: UX Polish
 
-Tracked in the v0.3.0 milestone. All items complete.
+Tracked in the v0.3.0 milestone.
 
 - ~~reconnect banner in shell chrome~~ — done
 - ~~risk-scaled confirmation modal~~ — done; typed action name for High-risk
-- ~~execution pane with real-time timeline and cancel button~~ — done
+- execution pane cancellation — the button and acknowledgement exist, but
+  daemon-side active-process cancellation is not implemented yet
 - ~~plan pane step breakdown with risk badges~~ — done
 - ~~first-run experience / LLM provider setup wizard~~ — done
 - ~~surface config errors to shell UI~~ — done
@@ -125,7 +126,7 @@ Tracked in the v0.4.0 milestone.
 - record demo video on real Silverblue hardware (#32)
 - ~~`sysknife_plan` / `sysknife_execute` MCP tools~~ — done; stdio
   transport via `rmcp`; returns typed plan JSON with resolved commands;
-  execution gated on explicit user approval
+  execution gated on daemon-issued one-time approval receipts
 - extend MCP server with direct read-only tools — expose all ~25 Observer-level
   actions (`get_disk_usage`, `list_services`, `get_authorized_keys`, …) as
   individual MCP tools so Claude Desktop can read live system state in-context;

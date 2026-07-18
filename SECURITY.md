@@ -94,29 +94,36 @@ The per-action minimum role is a compile-time exhaustive match in
 are denied unconditionally. The caller's role is never supplied by the
 client — it is always derived server-side from kernel credentials.
 
-### Layer 4 — Approval hash (sysknife-daemon)
+### Layer 4 — One-time approval receipt (sysknife-daemon)
 
 Every mutating action requires a preview→approve→execute round-trip:
 
-1. The shell requests a preview; the daemon records the action + params
-   and returns a content hash.
-2. The user approves (checkbox for medium risk; typed action name for
-   high risk).
-3. The shell sends the approval hash back to the daemon.
-4. The daemon verifies `approval_hash == request_hash` before running
-   anything.
+1. The client requests a preview; the daemon records the action + canonical
+   params and returns a transaction ID.
+2. The user approves. MCP users run `sysknife approve <transaction-id>` in a
+   real terminal, which reloads the daemon-authoritative preview before asking
+   for confirmation and requires the exact action name for high-risk work.
+3. The daemon issues a random one-time receipt and stores only its SHA-256
+   digest against that transaction.
+4. Execute must present the transaction ID, exact action and params, and the
+   receipt. The daemon atomically consumes the receipt before running anything.
 
-A captured hash cannot be replayed: the `find_by_request_hash` query
-returns only `Queued` transactions within a 15-minute TTL. Once a
-transaction transitions to `Running`, `Succeeded`, or `Failed` it is
-never returned, closing the replay window.
+A receipt cannot be replayed and expires with its queued preview after 15
+minutes. MCP exposes no tool that can mint a receipt, so an agent cannot turn
+its own plan into an executable request without the separate terminal step.
+
+This boundary protects against an untrusted MCP agent, not against arbitrary
+malware already running as the same Linux user. A same-user process that can
+connect directly to the daemon IPC endpoint can invoke the approval request;
+Unix permissions, role groups, and host security remain part of the trust
+model.
 
 ### Layer 5 — Atomic execution claim (sysknife-daemon)
 
 Concurrent execute requests for the same transaction are blocked by an
-atomic `UPDATE WHERE status = 'queued'` SQL statement
-(`claim_for_execution` in `crates/sysknife-daemon/src/transactions.rs`).
-Only the first request wins; the second gets `stale_approval`.
+database transaction that verifies the receipt digest, changes the queued
+transaction to running, and marks the receipt consumed. Only the first request
+wins; concurrent or replayed requests get `stale_approval`.
 
 ---
 

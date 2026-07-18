@@ -87,10 +87,10 @@ What this does:
 | **Cursor**      | `.cursor/mcp.json` + `.cursor/rules/sysknife.mdc`    |
 | **Codex CLI**   | `~/.codex/config.toml` (appended) + `AGENTS.md`      |
 
-Then in your chat: ask for what you want, review the plan with risk pills,
-approve, watch it execute. The MCP layer enforces the same approval contract
-as the CLI — `sysknife_plan` always runs before `sysknife_execute`, never
-in the same turn.
+Then in your chat: ask for what you want and review the plan with risk pills.
+Approve each transaction with `sysknife approve <transaction-id>` in a
+terminal, return the one-time receipts, and watch it execute. The daemon, not
+the prompt, enforces the receipt boundary.
 
 > **Prefer the standalone CLI?** Same engine, no IDE — see the
 > [CLI guide](docs/cli.md) for `sysknife "..."`, `--dry-run`, `--json`,
@@ -220,11 +220,12 @@ Env vars always win over the config file. Full reference in
 ## MCP protocol
 
 SysKnife implements the [Model Context Protocol](https://modelcontextprotocol.io/)
-and exposes two tools — `sysknife_plan` and `sysknife_execute`. The MCP layer
-enforces the same approval contract as the CLI: agents must call
-`sysknife_plan` first, present the plan, wait for explicit human approval,
-then call `sysknife_execute`. High-risk actions are refused outright at the
-MCP boundary — they require the CLI/GUI confirmation flow.
+and exposes approval-gated planning and execution tools. `sysknife_plan`
+returns a daemon-issued transaction ID for each step. After reviewing the
+plan, the user runs `sysknife approve <transaction-id>` in a real terminal and
+gives the one-time receipt to the agent. `sysknife_execute` rejects missing,
+expired, mismatched, or replayed receipts. The MCP server cannot mint approval
+receipts itself.
 
 Use the setup wizard (above) to wire it into Claude Code, Cursor, or Codex CLI.
 All config files that may contain API keys are created with `chmod 0600`.

@@ -1,6 +1,5 @@
 use serde_json::json;
 use sysknife_daemon::jobs::JobStateMachine;
-use sysknife_daemon::policy::{approval_matches_request, require_fresh_approval, ApprovalError};
 use sysknife_daemon::preview::preview_action;
 use sysknife_daemon::transactions::{NewTransaction, TransactionStore};
 use sysknife_types::{JobState, PreviewEnvelope, RequestEnvelope, RiskLevel};
@@ -164,23 +163,6 @@ fn reboot_preview_is_high_risk_without_rollback() {
         .warnings
         .iter()
         .any(|warning: &String| warning.contains("reboot")));
-}
-
-#[test]
-fn stale_approval_is_rejected_when_hashes_differ() {
-    assert!(approval_matches_request("hash-1", "hash-1"));
-    assert!(!approval_matches_request("hash-1", "hash-2"));
-
-    require_fresh_approval("hash-1", "hash-1").expect("fresh approval");
-
-    let err = require_fresh_approval("hash-1", "hash-2").unwrap_err();
-    assert!(matches!(
-        err,
-        ApprovalError::StaleApproval {
-            request_hash,
-            approval_hash
-        } if request_hash == "hash-1" && approval_hash == "hash-2"
-    ));
 }
 
 #[test]

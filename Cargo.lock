@@ -5161,7 +5161,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-shell"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "async-trait",
  "reqwest 0.12.28",
@@ -5183,7 +5183,6 @@ dependencies = [
  "prost",
  "serde",
  "serde_json",
- "subtle",
  "sysknife-proto",
  "thiserror 2.0.18",
 ]

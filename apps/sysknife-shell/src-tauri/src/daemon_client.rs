@@ -27,7 +27,6 @@ use std::os::unix::net::UnixStream;
 #[cfg(any(test, not(feature = "demo")))]
 use std::time::Duration;
 
-#[cfg(any(test, not(feature = "demo")))]
 use serde_json::Value;
 #[cfg(any(test, not(feature = "demo")))]
 use sysknife_brain::planner::PlanningError;
@@ -232,11 +231,11 @@ fn string_array(v: &Value) -> Vec<String> {
 // Async execute (used by approve_preview Tauri command)
 // ---------------------------------------------------------------------------
 
-/// Drive one plan step through the daemon: preview → execute → stream events.
+/// Drive one human-approved plan step through preview → approve → execute.
 ///
-/// Opens a single async connection, sends a `preview` request to obtain the
-/// `request_hash`, then immediately sends an `execute` request using that
-/// hash as the `approval_hash`. `job_progress` lines are emitted to the
+/// Opens a single async connection, persists the preview, requests a one-time
+/// receipt after the GUI confirmation, then executes that exact transaction.
+/// `job_progress` lines are emitted to the
 /// frontend as `sysknife:timeline-entry` events. Returns the final job status
 /// string (`"succeeded"`, `"failed"`, `"needs_reboot"`, `"rolled_back"`).
 ///
@@ -278,10 +277,10 @@ pub async fn execute_action(
     let preview_resp: serde_json::Value = serde_json::from_slice(&raw)
         .map_err(|e| format!("invalid JSON in preview response: {e}"))?;
 
-    let request_hash = match preview_resp["type"].as_str() {
-        Some("preview_response") => preview_resp["preview"]["request_hash"]
+    let transaction_id = match preview_resp["type"].as_str() {
+        Some("preview_response") => preview_resp["transaction_id"]
             .as_str()
-            .ok_or_else(|| "preview_response missing request_hash field".to_string())?
+            .ok_or_else(|| "preview_response missing transaction_id field".to_string())?
             .to_string(),
         Some("error_response") => {
             return Err(format!(
@@ -300,13 +299,49 @@ pub async fn execute_action(
 
     emit_timeline(app, format!("Preview ready for {action_name}"));
 
+    let approve_req = serde_json::to_vec(&serde_json::json!({
+        "type": "approve",
+        "request_id": "shell-approve",
+        "transaction_id": transaction_id,
+    }))
+    .expect("static JSON is always serialisable");
+    async_write_framed(&mut stream, &approve_req)
+        .await
+        .map_err(|e| format!("failed to send approval request: {e}"))?;
+    let raw = timeout(TDuration::from_secs(10), async_read_framed(&mut stream))
+        .await
+        .map_err(|_| "timed out waiting for approval receipt".to_string())?
+        .map_err(|e| format!("failed to read approval response: {e}"))?;
+    let approval: Value = serde_json::from_slice(&raw)
+        .map_err(|e| format!("invalid JSON in approval response: {e}"))?;
+    let approval_receipt = match approval["type"].as_str() {
+        Some("approval_response") => approval["approval_receipt"]
+            .as_str()
+            .ok_or_else(|| "approval_response missing receipt".to_string())?
+            .to_string(),
+        Some("error_response") => {
+            return Err(format!(
+                "daemon rejected approval ({}): {}",
+                approval["category"].as_str().unwrap_or("unknown"),
+                approval["message"].as_str().unwrap_or("no message"),
+            ));
+        }
+        other => {
+            return Err(format!(
+                "unexpected response type to approval: {}",
+                other.unwrap_or("<missing>")
+            ));
+        }
+    };
+
     // ── Execute ───────────────────────────────────────────────────────────────
     let execute_req = serde_json::to_vec(&serde_json::json!({
         "type": "execute",
         "request_id": "shell-execute",
+        "transaction_id": transaction_id,
         "action_name": action_name,
         "params": params,
-        "approval_hash": request_hash
+        "approval_receipt": approval_receipt
     }))
     .expect("static JSON is always serialisable");
 

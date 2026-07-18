@@ -10,10 +10,9 @@ keywords = ["llm", "ai-agent", "linux", "actions", "types"]
 categories = ["command-line-utilities", "os::linux-apis"]
 
 [dependencies]
-sysknife-proto = { path = "../sysknife-proto" }
+sysknife-proto = { path = "../sysknife-proto", version = "0.2.5" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-subtle = "2"
 thiserror = { workspace = true }
 
 [dev-dependencies]

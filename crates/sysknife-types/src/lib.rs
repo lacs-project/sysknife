@@ -275,19 +275,10 @@ impl std::fmt::Display for UnknownActionName {
 impl std::error::Error for UnknownActionName {}
 
 // ---------------------------------------------------------------------------
-// Hash newtypes — RequestHash / ApprovalHash
+// Request hash newtype
 // ---------------------------------------------------------------------------
 
 /// Hex-encoded SHA-256 hash of a [`RequestEnvelope`].
-///
-/// `RequestHash` and [`ApprovalHash`] are intentionally distinct types even
-/// though they hold the same underlying string at runtime. The compiler will
-/// reject any code that swaps the two arguments to
-/// [`approval_matches_request`] — without
-/// these newtypes a `(String, String)` signature is one off-by-one parameter
-/// flip away from validating the wrong direction. The two also do **not**
-/// implement `PartialEq<ApprovalHash>`; the only sanctioned comparison is
-/// [`approval_matches_request`], which uses a constant-time compare.
 ///
 /// `serde(transparent)` keeps the wire format identical to a bare string so
 /// existing JSON IPC frames deserialize unchanged.
@@ -323,59 +314,6 @@ impl From<String> for RequestHash {
     fn from(s: String) -> Self {
         Self(s)
     }
-}
-
-/// Hex-encoded SHA-256 hash of an `ApprovalEnvelope`-equivalent payload.
-///
-/// See [`RequestHash`] for the type-state rationale.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ApprovalHash(String);
-
-impl ApprovalHash {
-    pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
-    }
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-    pub fn into_inner(self) -> String {
-        self.0
-    }
-}
-
-impl std::fmt::Display for ApprovalHash {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl AsRef<str> for ApprovalHash {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<String> for ApprovalHash {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-/// Constant-time comparison between a `RequestHash` and an `ApprovalHash`.
-///
-/// The only sanctioned way to compare the two — pulls `subtle::ConstantTimeEq`
-/// internally so a timing oracle cannot reveal a per-byte prefix. Returns
-/// `false` immediately when either side is empty or the lengths differ;
-/// neither short-circuit reveals byte-level information.
-pub fn approval_matches_request(request: &RequestHash, approval: &ApprovalHash) -> bool {
-    use subtle::ConstantTimeEq;
-    let r = request.as_str().as_bytes();
-    let a = approval.as_str().as_bytes();
-    if r.is_empty() || r.len() != a.len() {
-        return false;
-    }
-    r.ct_eq(a).unwrap_u8() == 1
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -806,38 +744,8 @@ impl TryFrom<proto::TransactionRecord> for TransactionRecord {
 }
 
 #[cfg(test)]
-mod hash_newtype_tests {
+mod request_hash_tests {
     use super::*;
-
-    #[test]
-    fn matches_when_request_and_approval_are_equal() {
-        let r = RequestHash::new("deadbeef".to_string());
-        let a = ApprovalHash::new("deadbeef".to_string());
-        assert!(approval_matches_request(&r, &a));
-    }
-
-    #[test]
-    fn rejects_unequal_hashes() {
-        let r = RequestHash::new("deadbeef".to_string());
-        let a = ApprovalHash::new("cafebabe".to_string());
-        assert!(!approval_matches_request(&r, &a));
-    }
-
-    #[test]
-    fn rejects_empty_request_hash() {
-        let r = RequestHash::new(String::new());
-        let a = ApprovalHash::new(String::new());
-        assert!(!approval_matches_request(&r, &a));
-        let a2 = ApprovalHash::new("deadbeef".to_string());
-        assert!(!approval_matches_request(&r, &a2));
-    }
-
-    #[test]
-    fn rejects_length_mismatch_without_byte_compare() {
-        let r = RequestHash::new("dead".to_string());
-        let a = ApprovalHash::new("deadbeef".to_string());
-        assert!(!approval_matches_request(&r, &a));
-    }
 
     #[test]
     fn serde_round_trips_via_transparent_string() {

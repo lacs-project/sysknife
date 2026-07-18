@@ -12,8 +12,8 @@
 //!
 //! 1. Call `sysknife_plan { intent }` — show the plan to the user, explain risk.
 //! 2. **STOP** — wait for explicit user approval before doing anything else.
-//! 3. Call `sysknife_execute { steps, max_risk }` — daemon runs each step and
-//!    streams output back as collected lines.
+//! 3. The user runs `sysknife approve <transaction-id>` for each accepted step.
+//! 4. Call `sysknife_execute` with the exact steps and one-time receipts.
 //!
 //! The three read-only tools (`sysknife_history`, `sysknife_doctor`,
 //! `sysknife_audit_verify`) are safe to call without going through the
@@ -81,8 +81,9 @@ pub struct PlanStepOutput {
     /// Action-specific parameters.
     pub params: serde_json::Value,
     /// Formatted shell command that will run on the VM, e.g. `"timedatectl"`.
-    /// Empty string when the daemon is unreachable.
     pub command: String,
+    /// Daemon-issued identity of the immutable persisted preview.
+    pub transaction_id: String,
 }
 
 /// The full plan returned by `sysknife_plan`.
@@ -105,10 +106,14 @@ pub struct PlanOutput {
 /// A single step to execute, taken verbatim from `sysknife_plan` output.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct StepToExecute {
+    /// Transaction ID returned by `sysknife_plan` for this exact step.
+    pub transaction_id: String,
     /// Canonical action name from the SysKnife catalogue, e.g. `"GetDiskUsage"`.
     pub action_name: String,
     /// Action-specific parameters (pass through from the plan unchanged).
     pub params: serde_json::Value,
+    /// One-time receipt from an explicit `sysknife approve <transaction-id>`.
+    pub approval_receipt: String,
 }
 
 /// Input to `sysknife_execute`.
@@ -116,13 +121,6 @@ pub struct StepToExecute {
 pub struct ExecuteInput {
     /// Steps to execute — take the `steps` array from `sysknife_plan` output.
     pub steps: Vec<StepToExecute>,
-    /// Highest risk level you are willing to execute without further
-    /// confirmation.  One of `"low"`, `"medium"`, `"high"`.
-    /// Defaults to `"medium"` if omitted.
-    ///
-    /// Steps whose daemon-assessed risk exceeds this ceiling cause the
-    /// tool to return an error before any execution occurs.
-    pub max_risk: Option<String>,
 }
 
 /// Execution result for a single step.
@@ -284,7 +282,7 @@ const SYSKNIFE_DISCOVERY_URI: &str = "sysknife://about";
 const SYSKNIFE_DISCOVERY_NAME: &str = "about";
 const SYSKNIFE_DISCOVERY_TITLE: &str = "SysKnife MCP server";
 const SYSKNIFE_DISCOVERY_DESCRIPTION: &str = "Discovery resource for Codex and other MCP clients.";
-const SYSKNIFE_DISCOVERY_BODY: &str = "SysKnife exposes a small tool set for planning and executing Linux system administration tasks.\n\nUse `sysknife_plan` first, present the plan to the user, wait for explicit approval, and only then call `sysknife_execute`.\n\nAvailable read-only tools: `sysknife_history`, `sysknife_doctor`, and `sysknife_audit_verify`.";
+const SYSKNIFE_DISCOVERY_BODY: &str = "SysKnife exposes a small tool set for planning and executing Linux system administration tasks.\n\nUse `sysknife_plan` first and present the plan to the user. The user must run `sysknife approve <transaction-id>` in a terminal for every accepted step. Call `sysknife_execute` only with the one-time receipts printed by those commands. MCP cannot issue approval receipts.\n\nAvailable read-only tools: `sysknife_history`, `sysknife_doctor`, and `sysknife_audit_verify`.";
 
 fn sysknife_about_resource() -> Resource {
     rmcp::model::RawResource::new(SYSKNIFE_DISCOVERY_URI, SYSKNIFE_DISCOVERY_NAME)
@@ -300,11 +298,11 @@ impl SysknifeMcpServer {
     ///
     /// Returns a JSON object with the proposed steps, each carrying an
     /// `action_name`, `summary`, `risk_level` ("low" | "medium" | "high"),
-    /// `params`, and `command` (the resolved shell command). No action is
-    /// executed — call `sysknife_execute` with the returned steps after the
-    /// user approves the plan.
+    /// `params`, `command` (the resolved shell command), and a daemon-issued
+    /// `transaction_id`. No action is executed. The user must approve each
+    /// transaction from a separate terminal before execution.
     #[tool(
-        description = "Plan a Linux system administration intent. Returns typed steps with risk levels and the resolved shell command per step. IMPORTANT: After presenting this plan to the user, STOP immediately. Do not call any other tools. Wait for explicit user approval before proceeding."
+        description = "Plan a Linux system administration intent. Returns typed steps with risk levels, resolved commands, and daemon transaction IDs. IMPORTANT: Present the plan, then STOP. The user must run `sysknife approve <transaction-id>` in a real terminal for each accepted step. Do not execute from chat approval alone."
     )]
     async fn sysknife_plan(
         &self,
@@ -316,31 +314,28 @@ impl SysknifeMcpServer {
         let mut output: PlanOutput = serde_json::from_value(value).map_err(|e| {
             ErrorData::internal_error(format!("output deserialization error: {e}"), None)
         })?;
-        enrich_with_commands(&mut output).await;
+        enrich_with_commands(&mut output)
+            .await
+            .map_err(|e| ErrorData::internal_error(e, None))?;
         Ok(Json(output))
     }
 
     /// Execute a plan produced by `sysknife_plan`.
     ///
-    /// Pass the `steps` array from `sysknife_plan` output unchanged.  Set
-    /// `max_risk` to the highest risk level you are willing to execute
-    /// without further confirmation (`"low"` | `"medium"` | `"high"`;
-    /// defaults to `"medium"`).
-    ///
-    /// Steps whose daemon-assessed risk exceeds `max_risk` cause an error
-    /// before any execution occurs.  On failure mid-plan execution stops
-    /// immediately and the error is returned.
+    /// Pass each exact step from `sysknife_plan` with the one-time receipt
+    /// printed by `sysknife approve <transaction-id>`. MCP cannot issue these
+    /// receipts itself. On failure mid-plan execution stops immediately.
     ///
     /// Returns per-step results including output lines, warnings, and
     /// whether a reboot is required.
     #[tool(
-        description = "Execute a plan produced by sysknife_plan. Pass the steps array unchanged. Set max_risk to the highest risk you will execute without confirmation (low/medium/high, default medium). Returns per-step output, warnings, and reboot requirements."
+        description = "Execute exact steps produced by sysknife_plan. Every step requires a one-time receipt from an explicit `sysknife approve <transaction-id>` CLI confirmation; MCP cannot approve its own mutations."
     )]
     async fn sysknife_execute(
         &self,
-        Parameters(ExecuteInput { steps, max_risk }): Parameters<ExecuteInput>,
+        Parameters(ExecuteInput { steps }): Parameters<ExecuteInput>,
     ) -> Result<Json<ExecuteOutput>, ErrorData> {
-        execute_steps_inner(steps, max_risk.as_deref())
+        execute_steps_inner(steps)
             .await
             .map(Json)
             .map_err(|e| ErrorData::internal_error(e, None))
@@ -477,59 +472,53 @@ async fn plan_intent_inner(intent: &str) -> Result<serde_json::Value, String> {
     serde_json::to_value(&plan).map_err(|e| format!("serialization error: {e}"))
 }
 
-/// For each step in the plan, call the daemon's `describe` endpoint to fill in
-/// `command`.  On error the `command` field is set to `"[<error>]"` so the
-/// user sees a visible signal rather than a silent empty string.  A wrong
-/// action name or missing required param is a planning bug — surfacing it
-/// in-band lets the user (and the model) diagnose the problem immediately.
-async fn enrich_with_commands(output: &mut PlanOutput) {
+/// Resolve and persist every step against the daemon. Planning fails closed if
+/// any step cannot be described or previewed; a synthetic transaction ID must
+/// never be presented as executable.
+async fn enrich_with_commands(output: &mut PlanOutput) -> Result<(), String> {
     let client = DaemonClient::new(resolve_socket_target());
     for step in &mut output.steps {
-        match client.describe(&step.action_name, &step.params).await {
-            Ok(DescribeInfo { command, .. }) => step.command = command,
-            Err(e) => step.command = format!("[{e}]"),
+        let DescribeInfo { command, .. } =
+            client
+                .describe(&step.action_name, &step.params)
+                .await
+                .map_err(|e| format!("describe failed for {}: {e}", step.action_name))?;
+        step.command = command;
+
+        let prepared = client
+            .preview(&step.action_name, &step.params)
+            .await
+            .map_err(|e| format!("preview failed for {}: {e}", step.action_name))?;
+        step.transaction_id = prepared.transaction_id;
+        step.risk_level = match prepared.preview.risk_level {
+            RiskLevel::Low => "low",
+            RiskLevel::Medium => "medium",
+            RiskLevel::High => "high",
         }
+        .to_string();
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // sysknife_execute helper
 // ---------------------------------------------------------------------------
 
-async fn execute_steps_inner(
-    steps: Vec<StepToExecute>,
-    max_risk: Option<&str>,
-) -> Result<ExecuteOutput, String> {
-    let ceiling = parse_max_risk(max_risk)?;
+async fn execute_steps_inner(steps: Vec<StepToExecute>) -> Result<ExecuteOutput, String> {
     let client = DaemonClient::new(resolve_socket_target());
 
     let mut results: Vec<StepResult> = Vec::new();
     let mut plan_needs_reboot = false;
 
     for step in steps {
-        // Preview: get daemon's authoritative risk assessment + request_hash.
-        let preview = client
-            .preview(&step.action_name, &step.params)
-            .await
-            .map_err(|e| format!("preview error for {}: {e}", step.action_name))?;
-
-        // Risk gate: check daemon-assessed risk against the ceiling.
-        check_risk_ceiling(&preview.risk_level, ceiling).map_err(|_| {
-            format!(
-                "step '{}' has risk '{:?}' which exceeds max_risk ceiling '{}'",
-                step.action_name,
-                preview.risk_level,
-                max_risk.unwrap_or("medium"),
-            )
-        })?;
-
         // Execute and collect progress lines.
         let mut output_lines: Vec<String> = Vec::new();
         let result = client
             .execute(
+                &step.transaction_id,
                 &step.action_name,
                 &step.params,
-                preview.request_hash.as_str(),
+                &step.approval_receipt,
                 |line| output_lines.push(line.to_owned()),
             )
             .await
@@ -591,48 +580,6 @@ fn truncate_output(mut lines: Vec<String>) -> Vec<String> {
         lines.push(format!("[truncated: {dropped} more lines omitted]"));
     }
     lines
-}
-
-/// Parse a `max_risk` string into an ordinal `u8` (0=low, 1=medium).
-///
-/// `None` defaults to medium (1). High-risk actions cannot be auto-executed
-/// via the MCP entrypoint — that route exists for assistant-driven flows that
-/// must always have a human in the loop, so the `"high"` ceiling is rejected
-/// outright. Callers that need to run high-risk plans must use the CLI/GUI
-/// approval path. Comparison is case-insensitive so `"Low"`, `"MEDIUM"`, etc.
-/// are all accepted.
-fn parse_max_risk(s: Option<&str>) -> Result<u8, String> {
-    let raw = s.unwrap_or("medium");
-    match raw.to_ascii_lowercase().as_str() {
-        "low" => Ok(0),
-        "medium" => Ok(1),
-        "high" => Err(
-            "max_risk=\"high\" is not allowed via MCP — high-risk plans must \
-             be approved via the CLI or GUI confirmation flow"
-                .to_string(),
-        ),
-        _ => Err(format!(
-            "invalid max_risk {raw:?}: expected \"low\" or \"medium\""
-        )),
-    }
-}
-
-/// Convert a daemon `RiskLevel` to an ordinal comparable against `parse_max_risk`.
-fn risk_level_ord(r: &RiskLevel) -> u8 {
-    match r {
-        RiskLevel::Low => 0,
-        RiskLevel::Medium => 1,
-        RiskLevel::High => 2,
-    }
-}
-
-/// Return `Err(())` if `risk` exceeds `ceiling`.
-fn check_risk_ceiling(risk: &RiskLevel, ceiling: u8) -> Result<(), ()> {
-    if risk_level_ord(risk) > ceiling {
-        Err(())
-    } else {
-        Ok(())
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -838,7 +785,7 @@ async fn audit_chain_quick_check(
 
     let outcome = match lacs_config.storage.as_ref() {
         Some(s) if s.backend.eq_ignore_ascii_case("postgres") => verify_postgres(s, &key).await,
-        _ => verify_sqlite(&db_path, &Verifier::Private(key.clone())).await,
+        _ => verify_sqlite(&db_path, &Verifier::Private(Box::new(key.clone()))).await,
     };
 
     match outcome {
@@ -894,7 +841,7 @@ async fn audit_verify_inner() -> AuditVerifyReport {
 
     let outcome = match lacs_config.storage.as_ref() {
         Some(s) if s.backend.eq_ignore_ascii_case("postgres") => verify_postgres(s, &key).await,
-        _ => verify_sqlite(&db_path, &Verifier::Private(key.clone())).await,
+        _ => verify_sqlite(&db_path, &Verifier::Private(Box::new(key.clone()))).await,
     };
 
     outcome_to_report(outcome, backend_label)
@@ -1069,82 +1016,16 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // parse_max_risk
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn parse_max_risk_none_defaults_to_medium() {
-        assert_eq!(parse_max_risk(None), Ok(1));
-    }
-
-    #[test]
-    fn parse_max_risk_low() {
-        assert_eq!(parse_max_risk(Some("low")), Ok(0));
-    }
-
-    #[test]
-    fn parse_max_risk_medium() {
-        assert_eq!(parse_max_risk(Some("medium")), Ok(1));
-    }
-
-    #[test]
-    fn parse_max_risk_high_is_rejected() {
-        let err = parse_max_risk(Some("high")).unwrap_err();
-        assert!(err.contains("not allowed via MCP"), "got: {err}");
-    }
-
-    #[test]
-    fn parse_max_risk_is_case_insensitive() {
-        assert_eq!(parse_max_risk(Some("LOW")), Ok(0));
-        assert_eq!(parse_max_risk(Some("Low")), Ok(0));
-        assert_eq!(parse_max_risk(Some("Medium")), Ok(1));
-        assert_eq!(parse_max_risk(Some("MEDIUM")), Ok(1));
-        // "high" is rejected regardless of case
-        assert!(parse_max_risk(Some("HIGH")).is_err());
-        assert!(parse_max_risk(Some("High")).is_err());
-    }
-
-    #[test]
-    fn parse_max_risk_unknown_returns_err() {
-        assert!(parse_max_risk(Some("extreme")).is_err());
-        assert!(parse_max_risk(Some("")).is_err());
-    }
-
-    // -----------------------------------------------------------------------
-    // risk_level_ord
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn risk_level_ord_ordering() {
-        assert!(risk_level_ord(&RiskLevel::Low) < risk_level_ord(&RiskLevel::Medium));
-        assert!(risk_level_ord(&RiskLevel::Medium) < risk_level_ord(&RiskLevel::High));
-    }
-
-    // -----------------------------------------------------------------------
-    // check_risk_ceiling
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn check_risk_ceiling_within_ceiling_is_ok() {
-        // low step, ceiling=medium
-        assert!(check_risk_ceiling(&RiskLevel::Low, 1).is_ok());
-        // medium step, ceiling=medium
-        assert!(check_risk_ceiling(&RiskLevel::Medium, 1).is_ok());
-        // high step, ceiling=high
-        assert!(check_risk_ceiling(&RiskLevel::High, 2).is_ok());
-        // exact match at every level
-        assert!(check_risk_ceiling(&RiskLevel::Low, 0).is_ok());
-    }
-
-    #[test]
-    fn check_risk_ceiling_exceeds_ceiling_is_err() {
-        // medium step, ceiling=low
-        assert!(check_risk_ceiling(&RiskLevel::Medium, 0).is_err());
-        // high step, ceiling=low
-        assert!(check_risk_ceiling(&RiskLevel::High, 0).is_err());
-        // high step, ceiling=medium
-        assert!(check_risk_ceiling(&RiskLevel::High, 1).is_err());
+    fn execute_input_without_approval_receipt_is_rejected() {
+        let input = serde_json::json!({
+            "steps": [{
+                "transaction_id": "tx-1",
+                "action_name": "AptInstall",
+                "params": {"package": "vim"}
+            }]
+        });
+        assert!(serde_json::from_value::<ExecuteInput>(input).is_err());
     }
 
     // -----------------------------------------------------------------------

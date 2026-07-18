@@ -119,6 +119,27 @@ sysknife history --status succeeded --limit 5 --since 2026-04-10T00:00:00Z
 
 ---
 
+### `sysknife approve`
+
+Issue a one-time receipt for a transaction returned by the MCP
+`sysknife_plan` tool. This command requires an interactive terminal. It first
+loads and displays the daemon-authoritative action, risk, summary, and proposed
+change so an agent cannot substitute an opaque transaction ID. It mints the
+receipt only after confirmation; high-risk approvals require typing the exact
+action name.
+
+```sh
+sysknife approve 018f2c9d-...
+sysknife --json approve 018f2c9d-...
+```
+
+Give the printed `approval_receipt` to the MCP client for that exact step. The
+receipt expires after 15 minutes, is bound to the preview's action and params,
+and is consumed on first execution. A chat message saying "approved" is not a
+receipt.
+
+---
+
 ### `sysknife audit`
 
 Inspect and anchor the tamper-evident, Ed25519-signed audit chain the daemon

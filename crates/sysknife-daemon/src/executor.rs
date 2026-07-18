@@ -14,7 +14,10 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::io;
 use std::net::IpAddr;
+use std::process::Stdio;
 use std::str::FromStr;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutorError {
@@ -76,6 +79,23 @@ impl ExecutionOutput {
 pub trait ActionExecutor: Send + Sync {
     /// Execute an [`ActionSpec`] and return its output.
     async fn execute(&self, spec: &ActionSpec) -> Result<ExecutionOutput, ExecutorError>;
+
+    /// Execute an action and publish stdout lines while it runs.
+    ///
+    /// Test doubles normally implement only [`execute`](Self::execute); this
+    /// default forwards their captured output after completion. Production
+    /// overrides the method so command output remains live.
+    async fn execute_with_progress(
+        &self,
+        spec: &ActionSpec,
+        progress: UnboundedSender<String>,
+    ) -> Result<ExecutionOutput, ExecutorError> {
+        let output = self.execute(spec).await?;
+        for line in output.stdout.lines().filter(|line| !line.is_empty()) {
+            let _ = progress.send(line.to_string());
+        }
+        Ok(output)
+    }
 }
 
 /// Production executor that delegates to real OS processes and filesystem ops.
@@ -86,6 +106,64 @@ impl ActionExecutor for RealActionExecutor {
     async fn execute(&self, spec: &ActionSpec) -> Result<ExecutionOutput, ExecutorError> {
         execute_spec(spec).await
     }
+
+    async fn execute_with_progress(
+        &self,
+        spec: &ActionSpec,
+        progress: UnboundedSender<String>,
+    ) -> Result<ExecutionOutput, ExecutorError> {
+        match &spec.mechanism {
+            ActionMechanism::Command { program, args } => {
+                execute_command_with_progress(program, args, progress).await
+            }
+            _ => execute_spec(spec).await,
+        }
+    }
+}
+
+async fn execute_command_with_progress(
+    program: &'static str,
+    args: &[String],
+    progress: UnboundedSender<String>,
+) -> Result<ExecutionOutput, ExecutorError> {
+    let mut child = tokio::process::Command::new(program)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(ExecutorError::Io)?;
+
+    let stdout = child.stdout.take().expect("stdout was piped");
+    let stderr = child.stderr.take().expect("stderr was piped");
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        BufReader::new(stderr)
+            .read_to_end(&mut buf)
+            .await
+            .map(|_| buf)
+    });
+
+    let mut lines = BufReader::new(stdout).lines();
+    let mut stdout_buf = String::new();
+    while let Some(line) = lines.next_line().await.map_err(ExecutorError::Io)? {
+        if !line.is_empty() {
+            let _ = progress.send(line.clone());
+        }
+        stdout_buf.push_str(&line);
+        stdout_buf.push('\n');
+    }
+
+    let exit_status = child.wait().await.map_err(ExecutorError::Io)?;
+    let stderr_bytes = stderr_task
+        .await
+        .map_err(|_| ExecutorError::Io(io::Error::other("stderr reader task panicked")))?
+        .map_err(ExecutorError::Io)?;
+
+    Ok(ExecutionOutput {
+        stdout: stdout_buf,
+        stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
+        exit_code: exit_status.code().unwrap_or(-1),
+    })
 }
 
 /// Map an action name and JSON params to an [`ActionSpec`].

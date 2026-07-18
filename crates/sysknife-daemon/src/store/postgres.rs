@@ -134,6 +134,20 @@ impl PostgresStore {
 
         sqlx_core::query::query(
             r#"
+            CREATE TABLE IF NOT EXISTS transaction_approvals (
+                transaction_id TEXT PRIMARY KEY,
+                receipt_digest TEXT NOT NULL,
+                approved_at TEXT NOT NULL,
+                consumed_at TEXT
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(map_sqlx_err)?;
+
+        sqlx_core::query::query(
+            r#"
             CREATE TABLE IF NOT EXISTS transaction_previews (
                 transaction_id TEXT PRIMARY KEY,
                 preview_json TEXT NOT NULL
@@ -237,29 +251,6 @@ impl AuditStore for PostgresStore {
         row.map(row_to_record).transpose()
     }
 
-    async fn find_by_request_hash(
-        &self,
-        request_hash: &str,
-    ) -> Result<Option<TransactionRecord>, TransactionStoreError> {
-        let queued_json = serialize(&JobState::Queued)?;
-        // 15-minute TTL window matches the SQLite path.
-        let row = sqlx_core::query::query(
-            "SELECT transaction_id, request_id, request_hash, action_name, risk_level, \
-                    status, approval_id, summary, warnings_json \
-             FROM transactions \
-             WHERE request_hash = $1 \
-               AND status = $2 \
-               AND created_at::timestamptz > now() - INTERVAL '15 minutes' \
-             ORDER BY seq DESC LIMIT 1",
-        )
-        .bind(request_hash)
-        .bind(&queued_json)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(map_sqlx_err)?;
-        row.map(row_to_record).transpose()
-    }
-
     async fn get_preview(
         &self,
         transaction_id: &str,
@@ -313,22 +304,70 @@ impl AuditStore for PostgresStore {
         Ok(())
     }
 
-    async fn claim_for_execution(
+    async fn approve_transaction(
         &self,
         transaction_id: &str,
+        receipt_digest: &str,
     ) -> Result<bool, TransactionStoreError> {
         let queued = serialize(&JobState::Queued)?;
-        let running = serialize(&JobState::Running)?;
         let result = sqlx_core::query::query(
-            "UPDATE transactions SET status = $1 \
-             WHERE transaction_id = $2 AND status = $3",
+            "INSERT INTO transaction_approvals \
+                 (transaction_id, receipt_digest, approved_at) \
+             SELECT transaction_id, $1, $2 FROM transactions \
+             WHERE transaction_id = $3 \
+               AND status = $4 \
+               AND created_at::timestamptz > now() - INTERVAL '15 minutes' \
+             ON CONFLICT (transaction_id) DO NOTHING",
         )
-        .bind(&running)
+        .bind(receipt_digest)
+        .bind(now_iso())
         .bind(transaction_id)
         .bind(&queued)
         .execute(&self.pool)
         .await
         .map_err(map_sqlx_err)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn claim_approved_for_execution(
+        &self,
+        transaction_id: &str,
+        receipt_digest: &str,
+    ) -> Result<bool, TransactionStoreError> {
+        let queued = serialize(&JobState::Queued)?;
+        let running = serialize(&JobState::Running)?;
+        let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
+        let result = sqlx_core::query::query(
+            "UPDATE transactions SET status = $1 \
+             WHERE transaction_id = $2 \
+               AND status = $3 \
+               AND created_at::timestamptz > now() - INTERVAL '15 minutes' \
+               AND EXISTS ( \
+                   SELECT 1 FROM transaction_approvals \
+                   WHERE transaction_id = $2 \
+                     AND receipt_digest = $4 \
+                     AND consumed_at IS NULL \
+               )",
+        )
+        .bind(&running)
+        .bind(transaction_id)
+        .bind(&queued)
+        .bind(receipt_digest)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sqlx_err)?;
+        if result.rows_affected() > 0 {
+            sqlx_core::query::query(
+                "UPDATE transaction_approvals SET consumed_at = $1 \
+                 WHERE transaction_id = $2 AND consumed_at IS NULL",
+            )
+            .bind(now_iso())
+            .bind(transaction_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sqlx_err)?;
+        }
+        tx.commit().await.map_err(map_sqlx_err)?;
         Ok(result.rows_affected() > 0)
     }
 

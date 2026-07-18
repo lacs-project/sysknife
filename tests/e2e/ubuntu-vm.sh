@@ -305,14 +305,63 @@ growpart:
 
 resize_rootfs: true
 
-# Install build essentials and tools required by the ubuntu action suite.
-# This runs once on first boot; it may take a couple of minutes.
+# Run package installation through a strict bootstrap script so a partial
+# cloud-init run cannot be mistaken for a usable test VM.
+write_files:
+  - path: /usr/local/sbin/sysknife-e2e-bootstrap
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+
+      state_dir=/var/lib/sysknife-e2e
+      mkdir -p "\$state_dir"
+      rm -f "\$state_dir/cloud-init-done" "\$state_dir/cloud-init-failed"
+      trap 'status=\$?; printf "bootstrap failed with status %s\n" "\$status" > "\$state_dir/cloud-init-failed"; exit "\$status"' ERR
+
+      wait_for_network() {
+        local attempt
+        for attempt in \$(seq 1 30); do
+          if getent ahostsv4 archive.ubuntu.com >/dev/null 2>&1 && \
+             curl --fail --silent --show-error --head --max-time 10 \
+               http://archive.ubuntu.com/ubuntu/ >/dev/null; then
+            return 0
+          fi
+          sleep 2
+        done
+        return 1
+      }
+
+      apt_retry() {
+        local attempt
+        for attempt in \$(seq 1 5); do
+          if DEBIAN_FRONTEND=noninteractive apt-get \
+              -o Acquire::Retries=3 \
+              -o DPkg::Lock::Timeout=120 \
+              "\$@"; then
+            return 0
+          fi
+          sleep \$((attempt * 5))
+        done
+        return 1
+      }
+
+      wait_for_network
+      apt_retry update -y
+      apt_retry install -y build-essential pkg-config libssl-dev libsqlite3-dev curl wget jq rsync netcat-openbsd software-properties-common ufw firewalld snapd distrobox netplan.io
+
+      if systemctl list-unit-files --quiet | grep -q '^firewalld'; then
+        systemctl disable --now firewalld
+      fi
+
+      for command in gcc curl jq rsync nc; do
+        command -v "\$command" >/dev/null
+      done
+      echo "cloud-init first-boot complete" > "\$state_dir/cloud-init-done"
+
 runcmd:
-  - mkdir -p /var/lib/sysknife-e2e
-  - apt-get update -y
-  - DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential pkg-config libssl-dev libsqlite3-dev curl wget jq rsync netcat-openbsd software-properties-common ufw firewalld snapd distrobox netplan.io
-  - if systemctl list-unit-files --quiet | grep -q '^firewalld'; then systemctl disable --now firewalld; fi
-  - echo "cloud-init first-boot complete" > /var/lib/sysknife-e2e/cloud-init-done
+  - /usr/local/sbin/sysknife-e2e-bootstrap
 
 final_message: |
   Ubuntu ${UBUNTU_RELEASE} cloud-init setup finished.
@@ -387,22 +436,42 @@ cmd_install() {
     log "VM is up and SSH key auth works."
     log "Waiting for cloud-init runcmd to finish (apt-get install, ~2-3 min)..."
 
-    # Poll for the sentinel written at the end of runcmd.
+    # Poll for the success marker, but fail immediately if bootstrap or
+    # cloud-init reports an error. A reachable VM is not necessarily ready.
     local waited=0
     local max_wait=300
     # shellcheck disable=SC2046
     while ! ssh $(ssh_opts) -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
             'test -f /var/lib/sysknife-e2e/cloud-init-done' 2>/dev/null; do
+        if ssh $(ssh_opts) -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
+                'test -f /var/lib/sysknife-e2e/cloud-init-failed' 2>/dev/null; then
+            ssh $(ssh_opts) -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
+                'sudo cat /var/lib/sysknife-e2e/cloud-init-failed; sudo cloud-init status --long || true; sudo journalctl -u cloud-final --no-pager -n 100 || true' >&2
+            die "cloud-init bootstrap failed"
+        fi
+
+        local cloud_status
+        cloud_status="$(ssh $(ssh_opts) -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
+            'cloud-init status 2>/dev/null || true')"
+        if [[ "$cloud_status" == *"status: error"* ]]; then
+            ssh $(ssh_opts) -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
+                'sudo cloud-init status --long; sudo journalctl -u cloud-final --no-pager -n 100 || true' >&2
+            die "cloud-init reported an error"
+        fi
+
         if [ "$waited" -ge "$max_wait" ]; then
-            log "WARNING: cloud-init sentinel not found within ${max_wait}s."
-            log "The VM is reachable — cloud-init may still be running. Check with:"
-            log "  $0 ssh 'sudo cloud-init status --long'"
-            break
+            ssh $(ssh_opts) -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
+                'sudo cloud-init status --long || true; sudo journalctl -u cloud-final --no-pager -n 100 || true' >&2
+            die "cloud-init did not complete within ${max_wait}s"
         fi
         sleep 10
         waited=$((waited + 10))
         log "  still waiting... ${waited}s / ${max_wait}s"
     done
+
+    ssh $(ssh_opts) -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
+        'for command in gcc curl jq rsync nc; do command -v "$command" >/dev/null || exit 1; done' \
+        || die "cloud-init completed without all required tools"
 
     log ""
     log "Install complete. The VM is running with SSH on localhost:${SSH_PORT}."

@@ -76,6 +76,12 @@ pub enum Command {
     /// Query past SysKnife execution history.
     History(HistoryArgs),
 
+    /// Approve one daemon-persisted preview and print its one-time receipt.
+    Approve {
+        /// Transaction ID returned by `sysknife_plan`.
+        transaction_id: String,
+    },
+
     /// Print shell completion script to stdout.
     Completions {
         /// Target shell.

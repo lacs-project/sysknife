@@ -3,6 +3,12 @@ name = "sysknife-proto"
 version = "0.2.5"
 edition = "2021"
 build = "build.rs"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Protocol buffer definitions for the SysKnife daemon IPC contract"
+keywords = ["linux", "system-administration", "protobuf", "ipc"]
+categories = ["os::linux-apis", "encoding"]
 
 [dependencies]
 prost = { workspace = true }

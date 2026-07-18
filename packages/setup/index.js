@@ -872,8 +872,8 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
   Supports Claude Code, Cursor, and Codex CLI.
 
 \x1b[1mUSAGE\x1b[0m
-  npx sysknife-setup [OPTIONS]          (once published to npm)
-  node packages/setup/index.js [OPTIONS] (local clone — works today)
+  npx sysknife-setup [OPTIONS]
+  node packages/setup/index.js [OPTIONS] (repository checkout)
 
 \x1b[1mOPTIONS\x1b[0m
   --claude      Configure Claude Code only.

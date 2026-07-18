@@ -119,27 +119,29 @@ The daemon owns:
 - transaction records (SQLite audit log)
 - rollback (automatic on failure for supported actions)
 
-Neither the brain nor the shell can execute a privileged action
-directly. The daemon verifies the approval hash before running
-anything.
+Neither the brain nor the shell can execute a privileged action directly. The
+daemon verifies and atomically consumes a one-time approval receipt before
+running anything.
 
 ## Request Flow
 
 1. A user enters intent in the shell.
 2. The brain proposes a typed plan.
 3. The shell sends each mutating step to the daemon for preview.
-4. The daemon generates a preview: risk level, side effects, reboot
-   requirement, rollback availability, and a content hash.
+4. The daemon persists an immutable preview and returns its transaction ID,
+   risk level, side effects, reboot requirement, and rollback availability.
 5. The shell shows the preview and captures approval.
    High-risk steps require the user to type the action name explicitly.
-6. The shell sends the approved hash back to the daemon to execute.
-7. The daemon verifies the hash is fresh, then runs the action.
-8. During execution, the daemon streams live stdout output line-by-line
+6. The daemon issues a random one-time receipt and stores only its digest.
+7. The client sends the exact transaction, action, params, and receipt.
+8. The daemon verifies the preview is fresh and atomically consumes the
+   receipt, then runs the action.
+9. During execution, the daemon streams live stdout output line-by-line
    as `JobProgress` frames.
-9. The shell displays each line as it arrives.
-10. On failure, if `rollback_available` is true, the daemon runs the
+10. The shell displays each line as it arrives.
+11. On failure, if `rollback_available` is true, the daemon runs the
     rollback action automatically and reports the result.
-11. The transaction is persisted to SQLite with the final job state.
+12. The transaction is persisted to SQLite with the final job state.
 
 ## IPC Protocol
 

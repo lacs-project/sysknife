@@ -72,6 +72,11 @@ async fn dispatch(
         // --- sysknife history [flags] ---
         Some(Command::History(args)) => runner::run_history(args.clone(), socket, log).await,
 
+        // --- sysknife approve <transaction-id> ---
+        Some(Command::Approve { transaction_id }) => {
+            runner::run_approve(transaction_id, socket, cli.json, log).await
+        }
+
         // --- sysknife mcp-server ---
         Some(Command::McpServer) => mcp_server::run_mcp_server().await,
 

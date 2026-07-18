@@ -4,10 +4,14 @@ version = "0.2.5"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+description = "Policy-enforced, audit-logged Linux action daemon for SysKnife"
+keywords = ["linux", "system-administration", "daemon", "security"]
+categories = ["command-line-utilities", "os::linux-apis"]
 
 [dependencies]
-sysknife-core = { path = "../sysknife-core" }
-sysknife-types = { path = "../sysknife-types" }
+sysknife-core = { path = "../sysknife-core", version = "0.2.5" }
+sysknife-types = { path = "../sysknife-types", version = "0.2.5" }
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -48,7 +52,7 @@ sqlx-postgres = { version = "0.8.6", default-features = false, features = [
 chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
-sysknife-brain = { path = "../sysknife-brain" }
+sysknife-brain = { path = "../sysknife-brain", version = "0.2.5" }
 serde_json = { workspace = true }
 syslog_loose = "0.23"
 tempfile = "3"

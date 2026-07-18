@@ -1,7 +1,7 @@
 {
   "identifier": "org.lacsfoundation.LacsShell",
   "productName": "SysKnife Shell",
-  "version": "0.2.0",
+  "version": "0.2.5",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build",

@@ -70,7 +70,17 @@ UBUNTU_RELEASE=<codename> ./tests/e2e/ubuntu-vm.sh download
 UBUNTU_RELEASE=<codename> ./tests/e2e/ubuntu-vm.sh install
 ```
 
-`download` and `install` are idempotent — safe to re-run.
+`download` and `install` are idempotent — safe to re-run. The first-boot
+bootstrap retries transient DNS, network, apt, and dpkg-lock failures. It
+returns success only after the required tools are present. On failure,
+`install` prints `cloud-init status` and `cloud-final` journal diagnostics and
+exits non-zero instead of leaving a partially provisioned VM marked ready.
+
+The host-side contract check does not require QEMU:
+
+```sh
+bash tests/e2e/ubuntu-vm-bootstrap.test.sh
+```
 
 ## Daily use
 

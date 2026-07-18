@@ -93,13 +93,18 @@ async fn drain_to_completed(framed: &mut FramedStream<UnixStream>) -> Value {
     panic!("job_completed not received within 50 frames");
 }
 
-/// Send a preview request and return the `request_hash` on success, or None.
-async fn preview_and_get_hash(
+struct ApprovedPreview {
+    transaction_id: String,
+    approval_receipt: String,
+}
+
+/// Persist a preview, approve it, and return its one-time execution receipt.
+async fn preview_and_approve(
     framed: &mut FramedStream<UnixStream>,
     request_id: &str,
     action_name: &str,
     params: Value,
-) -> Option<String> {
+) -> Option<ApprovedPreview> {
     let req = json!({
         "type": "preview",
         "request_id": request_id,
@@ -107,10 +112,42 @@ async fn preview_and_get_hash(
         "params": params,
     });
     let r = send_recv(framed, req).await;
-    r["preview"]["request_hash"]
-        .as_str()
-        .filter(|h| !h.is_empty())
-        .map(|h| h.to_string())
+    let transaction_id = r["transaction_id"].as_str()?.to_string();
+    let approval = send_recv(
+        framed,
+        json!({
+            "type": "approve",
+            "request_id": format!("{request_id}-approve"),
+            "transaction_id": &transaction_id,
+        }),
+    )
+    .await;
+    let approval_receipt = approval["approval_receipt"].as_str()?.to_string();
+    Some(ApprovedPreview {
+        transaction_id,
+        approval_receipt,
+    })
+}
+
+async fn execute_approved(
+    framed: &mut FramedStream<UnixStream>,
+    request_id: &str,
+    action_name: &str,
+    params: Value,
+    approved: &ApprovedPreview,
+) -> Value {
+    send_recv(
+        framed,
+        json!({
+            "type": "execute",
+            "request_id": request_id,
+            "transaction_id": &approved.transaction_id,
+            "action_name": action_name,
+            "params": params,
+            "approval_receipt": &approved.approval_receipt,
+        }),
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -277,18 +314,15 @@ async fn run_ssh_key_cycle(framed: &mut FramedStream<UnixStream>, tap: &mut Tap,
         }),
     )
     .await;
-    let add_hash = r["preview"]["request_hash"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    if r["type"] == "preview_response" && !add_hash.is_empty() {
+    let add_transaction_id = r["transaction_id"].as_str().unwrap_or("").to_string();
+    if r["type"] == "preview_response" && !add_transaction_id.is_empty() {
         tap.ok("preview AddAuthorizedKey returns preview_response");
     } else {
         tap.fail(
             "preview AddAuthorizedKey returns preview_response",
             &format!("got: {r}"),
         );
-        // Cannot execute without a valid hash — skip remaining SSH tests.
+        // Cannot execute without a valid transaction — skip remaining SSH tests.
         for _ in 0..7 {
             tap.fail(
                 "SSH key cycle skipped",
@@ -298,15 +332,27 @@ async fn run_ssh_key_cycle(framed: &mut FramedStream<UnixStream>, tap: &mut Tap,
         return;
     }
 
+    let approval = send_recv(
+        framed,
+        json!({
+            "type": "approve",
+            "request_id": "t7-approve",
+            "transaction_id": &add_transaction_id,
+        }),
+    )
+    .await;
+    let add_receipt = approval["approval_receipt"].as_str().unwrap_or("");
+
     // T8: execute AddAuthorizedKey — expect job_started first
     let r = send_recv(
         framed,
         json!({
             "type": "execute",
             "request_id": "t8",
+            "transaction_id": add_transaction_id,
             "action_name": "AddAuthorizedKey",
             "params": { "username": test_user, "public_key": TEST_SSH_KEY },
-            "approval_hash": add_hash
+            "approval_receipt": add_receipt
         }),
     )
     .await;
@@ -361,11 +407,8 @@ async fn run_ssh_key_cycle(framed: &mut FramedStream<UnixStream>, tap: &mut Tap,
         }),
     )
     .await;
-    let remove_hash = r["preview"]["request_hash"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    if r["type"] == "preview_response" && !remove_hash.is_empty() {
+    let remove_transaction_id = r["transaction_id"].as_str().unwrap_or("").to_string();
+    if r["type"] == "preview_response" && !remove_transaction_id.is_empty() {
         tap.ok("preview RemoveAuthorizedKey returns preview_response");
     } else {
         tap.fail(
@@ -375,15 +418,27 @@ async fn run_ssh_key_cycle(framed: &mut FramedStream<UnixStream>, tap: &mut Tap,
         return;
     }
 
+    let approval = send_recv(
+        framed,
+        json!({
+            "type": "approve",
+            "request_id": "t11-approve",
+            "transaction_id": &remove_transaction_id,
+        }),
+    )
+    .await;
+    let remove_receipt = approval["approval_receipt"].as_str().unwrap_or("");
+
     // T12: execute RemoveAuthorizedKey — expect job_started first
     let r = send_recv(
         framed,
         json!({
             "type": "execute",
             "request_id": "t12",
+            "transaction_id": remove_transaction_id,
             "action_name": "RemoveAuthorizedKey",
             "params": { "username": test_user, "public_key": TEST_SSH_KEY },
-            "approval_hash": remove_hash
+            "approval_receipt": remove_receipt
         }),
     )
     .await;
@@ -430,17 +485,18 @@ async fn run_ssh_key_cycle(framed: &mut FramedStream<UnixStream>, tap: &mut Tap,
 
 /// T15: execute without a prior preview returns stale_approval.
 ///
-/// Verifies the "no prior preview" guard in handle_execute. The approval
-/// gate must reject an execute whose hash was never produced by a preview.
+/// Verifies the "no prior preview" guard in handle_execute. The approval gate
+/// must reject an execute whose transaction and receipt were never issued.
 async fn run_stale_approval_test(framed: &mut FramedStream<UnixStream>, tap: &mut Tap) {
     let r = send_recv(
         framed,
         json!({
             "type": "execute",
             "request_id": "t15",
+            "transaction_id": "this-transaction-was-never-previewed",
             "action_name": "GetDiskUsage",
             "params": {},
-            "approval_hash": "this-hash-was-never-issued-by-a-preview"
+            "approval_receipt": "this-receipt-was-never-issued"
         }),
     )
     .await;
@@ -728,21 +784,21 @@ async fn run_per_user_query_tests(
 /// user may need to be removed manually: `sudo userdel -r skintegtest`.
 async fn run_user_management_cycle(framed: &mut FramedStream<UnixStream>, tap: &mut Tap) {
     // T28: preview CreateUser
-    let create_hash = preview_and_get_hash(
+    let create_approved = preview_and_approve(
         framed,
         "ucycle-1",
         "CreateUser",
         json!({ "username": INTEG_TEST_USER }),
     )
     .await;
-    match &create_hash {
-        Some(hash) if !hash.is_empty() => {
-            tap.ok("preview CreateUser returns preview_response with hash");
+    match &create_approved {
+        Some(_) => {
+            tap.ok("preview CreateUser returns an approved transaction");
         }
         _ => {
             tap.fail(
-                "preview CreateUser returns preview_response with hash",
-                "no hash returned — check sysknife-admin group membership",
+                "preview CreateUser returns an approved transaction",
+                "no transaction returned — check sysknife-admin group membership",
             );
             for _ in 0..7 {
                 tap.fail("user management cycle skipped", "preview CreateUser failed");
@@ -750,18 +806,15 @@ async fn run_user_management_cycle(framed: &mut FramedStream<UnixStream>, tap: &
             return;
         }
     }
-    let create_hash = create_hash.unwrap();
+    let create_approved = create_approved.unwrap();
 
     // T29: execute CreateUser — expect job_started
-    let r = send_recv(
+    let r = execute_approved(
         framed,
-        json!({
-            "type": "execute",
-            "request_id": "ucycle-2",
-            "action_name": "CreateUser",
-            "params": { "username": INTEG_TEST_USER },
-            "approval_hash": create_hash
-        }),
+        "ucycle-2",
+        "CreateUser",
+        json!({ "username": INTEG_TEST_USER }),
+        &create_approved,
     )
     .await;
     if r["type"] == "job_started" {
@@ -805,21 +858,21 @@ async fn run_user_management_cycle(framed: &mut FramedStream<UnixStream>, tap: &
     }
 
     // T32: preview DeleteUser
-    let delete_hash = preview_and_get_hash(
+    let delete_approved = preview_and_approve(
         framed,
         "ucycle-3",
         "DeleteUser",
         json!({ "username": INTEG_TEST_USER }),
     )
     .await;
-    match &delete_hash {
-        Some(hash) if !hash.is_empty() => {
-            tap.ok("preview DeleteUser returns preview_response with hash");
+    match &delete_approved {
+        Some(_) => {
+            tap.ok("preview DeleteUser returns an approved transaction");
         }
         _ => {
             tap.fail(
-                "preview DeleteUser returns preview_response with hash",
-                "no hash returned — user left behind; run: sudo userdel -r skintegtest",
+                "preview DeleteUser returns an approved transaction",
+                "no transaction returned — user left behind; run: sudo userdel -r skintegtest",
             );
             for _ in 0..3 {
                 tap.fail("user management cycle skipped", "preview DeleteUser failed");
@@ -827,18 +880,15 @@ async fn run_user_management_cycle(framed: &mut FramedStream<UnixStream>, tap: &
             return;
         }
     }
-    let delete_hash = delete_hash.unwrap();
+    let delete_approved = delete_approved.unwrap();
 
     // T33: execute DeleteUser — expect job_started
-    let r = send_recv(
+    let r = execute_approved(
         framed,
-        json!({
-            "type": "execute",
-            "request_id": "ucycle-4",
-            "action_name": "DeleteUser",
-            "params": { "username": INTEG_TEST_USER },
-            "approval_hash": delete_hash
-        }),
+        "ucycle-4",
+        "DeleteUser",
+        json!({ "username": INTEG_TEST_USER }),
+        &delete_approved,
     )
     .await;
     if r["type"] == "job_started" {
@@ -890,21 +940,21 @@ async fn run_user_management_cycle(framed: &mut FramedStream<UnixStream>, tap: &
 /// Requires Dev role (RestartService is a Dev-level action).
 async fn run_service_mutation_tests(framed: &mut FramedStream<UnixStream>, tap: &mut Tap) {
     // T36: preview RestartService(firewalld.service)
-    let hash = preview_and_get_hash(
+    let approved = preview_and_approve(
         framed,
         "svc-1",
         "RestartService",
         json!({ "unit": "firewalld.service" }),
     )
     .await;
-    match &hash {
-        Some(h) if !h.is_empty() => {
-            tap.ok("preview RestartService(firewalld) returns preview_response with hash");
+    match &approved {
+        Some(_) => {
+            tap.ok("preview RestartService(firewalld) returns an approved transaction");
         }
         _ => {
             tap.fail(
-                "preview RestartService(firewalld) returns preview_response with hash",
-                "no hash returned",
+                "preview RestartService(firewalld) returns an approved transaction",
+                "no transaction returned",
             );
             for _ in 0..2 {
                 tap.fail(
@@ -915,18 +965,15 @@ async fn run_service_mutation_tests(framed: &mut FramedStream<UnixStream>, tap: 
             return;
         }
     }
-    let hash = hash.unwrap();
+    let approved = approved.unwrap();
 
     // T37: execute RestartService — expect job_started
-    let r = send_recv(
+    let r = execute_approved(
         framed,
-        json!({
-            "type": "execute",
-            "request_id": "svc-2",
-            "action_name": "RestartService",
-            "params": { "unit": "firewalld.service" },
-            "approval_hash": hash
-        }),
+        "svc-2",
+        "RestartService",
+        json!({ "unit": "firewalld.service" }),
+        &approved,
     )
     .await;
     if r["type"] == "job_started" {
@@ -968,21 +1015,21 @@ async fn run_identity_cycle(framed: &mut FramedStream<UnixStream>, tap: &mut Tap
     let test_hostname = "sysknife-dt";
 
     // T39: preview SetHostname(test)
-    let hash = preview_and_get_hash(
+    let approved = preview_and_approve(
         framed,
         "identity-1",
         "SetHostname",
         json!({ "hostname": test_hostname }),
     )
     .await;
-    match &hash {
-        Some(h) if !h.is_empty() => {
-            tap.ok("preview SetHostname returns preview_response with hash");
+    match &approved {
+        Some(_) => {
+            tap.ok("preview SetHostname returns an approved transaction");
         }
         _ => {
             tap.fail(
-                "preview SetHostname returns preview_response with hash",
-                "no hash returned",
+                "preview SetHostname returns an approved transaction",
+                "no transaction returned",
             );
             for _ in 0..5 {
                 tap.fail("identity cycle skipped", "preview SetHostname failed");
@@ -990,18 +1037,15 @@ async fn run_identity_cycle(framed: &mut FramedStream<UnixStream>, tap: &mut Tap
             return;
         }
     }
-    let hash = hash.unwrap();
+    let approved = approved.unwrap();
 
     // T40: execute SetHostname(test)
-    let r = send_recv(
+    let r = execute_approved(
         framed,
-        json!({
-            "type": "execute",
-            "request_id": "identity-2",
-            "action_name": "SetHostname",
-            "params": { "hostname": test_hostname },
-            "approval_hash": hash
-        }),
+        "identity-2",
+        "SetHostname",
+        json!({ "hostname": test_hostname }),
+        &approved,
     )
     .await;
     if r["type"] == "job_started" {
@@ -1045,38 +1089,35 @@ async fn run_identity_cycle(framed: &mut FramedStream<UnixStream>, tap: &mut Tap
     }
 
     // Restore: preview + execute with original hostname (always runs).
-    let restore_hash = preview_and_get_hash(
+    let restore_approved = preview_and_approve(
         framed,
         "identity-3",
         "SetHostname",
         json!({ "hostname": original_hostname }),
     )
     .await;
-    match &restore_hash {
-        Some(h) if !h.is_empty() => {
-            tap.ok("preview SetHostname restore returns preview_response with hash");
+    match &restore_approved {
+        Some(_) => {
+            tap.ok("preview SetHostname restore returns an approved transaction");
         }
         _ => {
             tap.fail(
-                "preview SetHostname restore returns preview_response with hash",
-                "no hash — hostname left at test value; restore manually with: hostnamectl set-hostname <original>",
+                "preview SetHostname restore returns an approved transaction",
+                "no transaction — hostname left at test value; restore manually with: hostnamectl set-hostname <original>",
             );
             tap.fail("identity restore skipped", "preview failed");
             return;
         }
     }
-    let restore_hash = restore_hash.unwrap();
+    let restore_approved = restore_approved.unwrap();
 
     // T43: execute restore
-    let r = send_recv(
+    let r = execute_approved(
         framed,
-        json!({
-            "type": "execute",
-            "request_id": "identity-4",
-            "action_name": "SetHostname",
-            "params": { "hostname": original_hostname },
-            "approval_hash": restore_hash
-        }),
+        "identity-4",
+        "SetHostname",
+        json!({ "hostname": original_hostname }),
+        &restore_approved,
     )
     .await;
     if r["type"] == "job_started" {
@@ -1133,21 +1174,21 @@ async fn run_group_membership_cycle(
     };
 
     // T45: preview AddUserToGroup
-    let hash = preview_and_get_hash(
+    let approved = preview_and_approve(
         framed,
         "grp-1",
         "AddUserToGroup",
         json!({ "username": test_user, "group": group }),
     )
     .await;
-    match &hash {
-        Some(h) if !h.is_empty() => {
-            tap.ok("preview AddUserToGroup returns preview_response with hash");
+    match &approved {
+        Some(_) => {
+            tap.ok("preview AddUserToGroup returns an approved transaction");
         }
         _ => {
             tap.fail(
-                "preview AddUserToGroup returns preview_response with hash",
-                "no hash — check sysknife-admin group membership",
+                "preview AddUserToGroup returns an approved transaction",
+                "no transaction — check sysknife-admin group membership",
             );
             for _ in 0..7 {
                 tap.fail(
@@ -1158,18 +1199,15 @@ async fn run_group_membership_cycle(
             return;
         }
     }
-    let hash = hash.unwrap();
+    let approved = approved.unwrap();
 
     // T46: execute AddUserToGroup
-    let r = send_recv(
+    let r = execute_approved(
         framed,
-        json!({
-            "type": "execute",
-            "request_id": "grp-2",
-            "action_name": "AddUserToGroup",
-            "params": { "username": test_user, "group": group },
-            "approval_hash": hash
-        }),
+        "grp-2",
+        "AddUserToGroup",
+        json!({ "username": test_user, "group": group }),
+        &approved,
     )
     .await;
     if r["type"] == "job_started" {
@@ -1204,21 +1242,21 @@ async fn run_group_membership_cycle(
     }
 
     // Restore: preview RemoveUserFromGroup (always runs to stay self-cleaning).
-    let remove_hash = preview_and_get_hash(
+    let remove_approved = preview_and_approve(
         framed,
         "grp-3",
         "RemoveUserFromGroup",
         json!({ "username": test_user, "group": group }),
     )
     .await;
-    match &remove_hash {
-        Some(h) if !h.is_empty() => {
-            tap.ok("preview RemoveUserFromGroup returns preview_response with hash");
+    match &remove_approved {
+        Some(_) => {
+            tap.ok("preview RemoveUserFromGroup returns an approved transaction");
         }
         _ => {
             tap.fail(
-                "preview RemoveUserFromGroup returns preview_response with hash",
-                "no hash — user left in audio group; restore with: gpasswd -d <user> audio",
+                "preview RemoveUserFromGroup returns an approved transaction",
+                "no transaction — user left in audio group; restore with: gpasswd -d <user> audio",
             );
             for _ in 0..3 {
                 tap.fail(
@@ -1229,18 +1267,15 @@ async fn run_group_membership_cycle(
             return;
         }
     }
-    let remove_hash = remove_hash.unwrap();
+    let remove_approved = remove_approved.unwrap();
 
     // T50: execute RemoveUserFromGroup
-    let r = send_recv(
+    let r = execute_approved(
         framed,
-        json!({
-            "type": "execute",
-            "request_id": "grp-4",
-            "action_name": "RemoveUserFromGroup",
-            "params": { "username": test_user, "group": group },
-            "approval_hash": remove_hash
-        }),
+        "grp-4",
+        "RemoveUserFromGroup",
+        json!({ "username": test_user, "group": group }),
+        &remove_approved,
     )
     .await;
     if r["type"] == "job_started" {

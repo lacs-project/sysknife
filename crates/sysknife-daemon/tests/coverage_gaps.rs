@@ -173,23 +173,6 @@ fn list_transactions_combined_action_and_status_filter() {
 }
 
 // ---------------------------------------------------------------------------
-// approval_matches_request: empty hash edge case
-// ---------------------------------------------------------------------------
-
-#[test]
-fn approval_matches_request_rejects_empty_request_hash() {
-    // A SHA256 request hash is never empty; defensive guard must reject it.
-    assert!(
-        !sysknife_daemon::policy::approval_matches_request("", ""),
-        "empty request hash must not match anything"
-    );
-    assert!(
-        !sysknife_daemon::policy::approval_matches_request("", "some-hash"),
-        "empty request hash must not match a non-empty approval hash"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // ListJobHistory via handle_query_action (integration)
 // ---------------------------------------------------------------------------
 
@@ -311,7 +294,7 @@ async fn query_action_rejects_non_observer_action() {
 async fn execute_rejects_observer_for_admin_action() {
     // Observer role cannot execute RebootSystem (Admin-only).
     // Authorization is checked before the preview/hash check, so we can send
-    // any approval_hash and still get authorization_failure first.
+    // any transaction/receipt and still get authorization_failure first.
     let dir = tempdir().unwrap();
     let state = test_state(&dir);
     let mut framed = spawn_handler_with_role(state, CallerRole::Observer).await;
@@ -319,9 +302,10 @@ async fn execute_rejects_observer_for_admin_action() {
     let req = json!({
         "type": "execute",
         "request_id": "auth-test",
+        "transaction_id": "any-transaction",
         "action_name": "RebootSystem",
         "params": {},
-        "approval_hash": "any-hash"
+        "approval_receipt": "any-receipt"
     });
     framed
         .send(&serde_json::to_vec(&req).unwrap())
@@ -351,9 +335,10 @@ async fn execute_rejects_dev_for_admin_action() {
     let req = json!({
         "type": "execute",
         "request_id": "dev-auth-test",
+        "transaction_id": "any-transaction",
         "action_name": "SetKernelArguments",
         "params": { "add": [], "remove": [] },
-        "approval_hash": "any-hash"
+        "approval_receipt": "any-receipt"
     });
     framed
         .send(&serde_json::to_vec(&req).unwrap())
@@ -400,7 +385,8 @@ fn cleanup_stale_queued_does_not_clobber_running_rows() {
     {
         let conn = rusqlite::Connection::open(dir.path().join("tx.sqlite")).unwrap();
         conn.execute(
-            "UPDATE transactions SET created_at = datetime('now', '-30 minutes')",
+            "UPDATE transactions \
+             SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 minutes')",
             params![],
         )
         .unwrap();
@@ -413,10 +399,9 @@ fn cleanup_stale_queued_does_not_clobber_running_rows() {
     );
 
     // Re-read: queued should now be Canceled, running should still be Running.
-    let still_queued = store.find_by_request_hash(&queued.request_hash).unwrap();
-    assert!(
-        still_queued.is_none(),
-        "find_by_request_hash should not find a Canceled row through the Queued filter"
+    assert_eq!(
+        store.get(&queued.transaction_id).unwrap().unwrap().status,
+        JobState::Canceled
     );
     let history = store.list_transactions(10, None, None, None).unwrap();
     let queued_status = history

@@ -9,20 +9,25 @@ A release is triggered by pushing a version tag of the form `vMAJOR.MINOR.PATCH`
 (e.g. `v0.2.0`) to the `main` branch.  The GitHub Actions release workflow
 (`.github/workflows/release.yml`) then:
 
-1. Builds `sysknife` and `sysknife-daemon` binaries for Linux x86\_64 and aarch64.
-2. Creates a GitHub Release with the binaries and SHA-256 checksums as assets.
-3. Publishes `sysknife-setup` to the npm registry as `@sysknife/setup` (requires
-   the `NPM_TOKEN` repository secret to be set; see below).
+1. Verifies that the tag and every package manifest use the same version.
+2. Builds `sysknife` and `sysknife-daemon` for Linux x86\_64 and aarch64.
+3. Generates SPDX SBOMs and GitHub/Sigstore provenance attestations.
+4. Publishes `sysknife-setup` to npm and the public Rust crates to crates.io.
+5. Creates a GitHub Release with binaries, SHA-256 checksums, and SBOMs.
+
+The release fails during preflight if either registry credential is missing;
+publication is never silently skipped.
 
 ## Cutting a Release
 
 ```bash
 # Ensure main is clean and all tests pass.
 cargo nextest run --workspace --locked
+bash scripts/check_release_versions.sh v0.2.5
 
 # Tag and push — the workflow fires automatically.
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.2.5
+git push origin v0.2.5
 ```
 
 The tag must match `v[0-9]+.[0-9]+.[0-9]+` exactly.  Pre-release suffixes
@@ -35,9 +40,8 @@ The tag must match `v[0-9]+.[0-9]+.[0-9]+` exactly.  Pre-release suffixes
 Set a repository secret named `NPM_TOKEN` in
 **Settings → Secrets and Variables → Actions**.
 
-The token must have the **Automation** type and publish permission for the
-`@sysknife` npm scope.  If the secret is absent the publish step is skipped
-with a workflow notice; the GitHub Release still proceeds normally.
+The token must have permission to publish the unscoped `sysknife-setup`
+package. If the secret is absent, release preflight fails.
 
 ### How to Create the Token
 
@@ -48,16 +52,14 @@ with a workflow notice; the GitHub Release still proceeds normally.
 
 ### Version Bumping
 
-Before tagging a release, update the `version` field in
-`packages/setup/package.json`.  npm requires a unique version per publish;
-attempting to re-publish the same version fails with `403 You cannot publish
-over the previously published versions`.
+Before tagging, update all package versions together. npm and crates.io require
+a unique version per publish; registries do not allow replacing an existing
+version. `scripts/check_release_versions.sh` lists every version-bearing
+manifest and rejects drift.
 
 ```bash
-# Example: bump to 0.2.0
-jq '.version = "0.2.0"' packages/setup/package.json | sponge packages/setup/package.json
-git add packages/setup/package.json
-git commit -m "chore(setup): bump npm version to 0.2.0"
+# After updating manifests and lockfiles:
+bash scripts/check_release_versions.sh v0.2.5
 ```
 
 ### Smoke Test
@@ -72,10 +74,10 @@ cd packages/setup && npm publish --dry-run
 
 ## crates.io Publishing
 
-The workflow publishes the workspace crates to crates.io on every tag, in
-dependency order.  This step is **gated on a secret** named
-`CARGO_REGISTRY_TOKEN`.  If the secret is absent the step is skipped with a
-workflow notice; the GitHub Release and npm steps still complete normally.
+The workflow publishes the public workspace crates to crates.io on every tag,
+in dependency order. It requires the `CARGO_REGISTRY_TOKEN` secret; if the
+secret is absent, release preflight fails. The private `sysknife-daemon-test`
+and desktop shell crates are not published.
 
 ### Enabling crates.io publish
 
@@ -93,12 +95,11 @@ Crates are published in dependency order so crates.io indexes each one before
 its dependents try to reference it:
 
 ```
-sysknife-types
 sysknife-proto
 sysknife-core
+sysknife-types
 sysknife-brain
 sysknife-daemon
-sysknife-daemon-test
 sysknife-cli
 ```
 
@@ -110,3 +111,13 @@ After the workflow completes:
   `https://github.com/lacs-project/sysknife/releases/tag/vX.Y.Z`.
 - npm package is visible at `https://www.npmjs.com/package/sysknife-setup`.
 - `npx sysknife-setup --help` should print the help text and exit 0.
+- Download a binary and verify its build provenance:
+
+  ```bash
+  gh attestation verify sysknife-vX.Y.Z-linux-x86_64 \
+    --repo lacs-project/sysknife
+  sha256sum --check sha256sums-linux-x86_64.txt
+  ```
+
+The matching `.spdx.json` release asset is the dependency inventory bound to
+the binary by a separate SBOM attestation.

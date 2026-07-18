@@ -21,10 +21,13 @@ use std::path::PathBuf;
 
 use clap::CommandFactory;
 use serde_json::{json, Value};
+use std::io::IsTerminal;
 use sysknife_brain::config::BrainConfig;
 use sysknife_brain::planner::{LlmPlanner, PlanRiskLevel};
 use sysknife_brain::PlanEvent;
-use sysknife_types::{DistroHint, DISTRO_FAMILY_DEBIAN, DISTRO_FAMILY_FEDORA, DISTRO_FAMILY_OTHER};
+use sysknife_types::{
+    DistroHint, RiskLevel, DISTRO_FAMILY_DEBIAN, DISTRO_FAMILY_FEDORA, DISTRO_FAMILY_OTHER,
+};
 
 use sysknife_brain::state_client::StateClient as _;
 
@@ -176,6 +179,53 @@ pub fn highest_risk(plan: &sysknife_brain::planner::Plan) -> Option<&PlanRiskLev
             PlanRiskLevel::High => 2,
         })
         .map(|s| s.risk_level())
+}
+
+pub async fn run_approve(
+    transaction_id: &str,
+    socket: SocketTarget,
+    json: bool,
+    log: &Logger,
+) -> Result<(), CliError> {
+    if !std::io::stdin().is_terminal() {
+        return Err(CliError::NonInteractive);
+    }
+    let client = DaemonClient::new(socket);
+    let details = client.approval_details(transaction_id).await?;
+    log.print_stderr(&format!(
+        "Action:  {}\nRisk:    {:?}\nSummary: {}\nProposed change:\n{}",
+        details.action_name,
+        details.preview.risk_level,
+        details.preview.summary,
+        serde_json::to_string_pretty(&details.preview.proposed_change)
+            .unwrap_or_else(|_| "<unavailable>".to_string())
+    ));
+    let approved = if details.preview.risk_level == RiskLevel::High {
+        prompt_exact(
+            "High-risk action. Type the exact action name to approve",
+            &details.action_name,
+        )
+        .await
+    } else {
+        prompt_confirm(&format!("Approve transaction {}?", details.transaction_id)).await
+    };
+    if !approved {
+        return Err(CliError::Rejected);
+    }
+
+    let receipt = client.approve(transaction_id).await?;
+    if json {
+        log.println(
+            &serde_json::json!({
+                "transaction_id": transaction_id,
+                "approval_receipt": receipt,
+            })
+            .to_string(),
+        );
+    } else {
+        log.println(&format!("Approval receipt: {receipt}"));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -478,7 +528,7 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
         }
 
         match AuditKey::load_or_generate(&key_path) {
-            Ok(k) => Verifier::Private(k),
+            Ok(k) => Verifier::Private(Box::new(k)),
             Err(e) => {
                 let reason = format!("audit key load failed: {e}");
                 emit_verify_outcome(
@@ -646,7 +696,7 @@ pub async fn run_audit_checkpoint(
 /// What the audit chain is verified against.
 pub(crate) enum Verifier {
     /// The private signing key (also derives the public key used to verify).
-    Private(sysknife_daemon::audit_chain::AuditKey),
+    Private(Box<sysknife_daemon::audit_chain::AuditKey>),
     /// Only the hex-encoded Ed25519 public key — the auditor path, which proves
     /// the chain without the ability to forge it.
     Public(String),
@@ -1009,14 +1059,15 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
         }
 
         // Preview the step.
-        let preview = exec_client
+        let prepared = exec_client
             .preview(step.action_name(), step.params())
             .await?;
+        let preview = &prepared.preview;
 
         if opts.json {
-            log.println(&serde_json::to_string(&preview).expect("PreviewEnvelope is Serialize"));
+            log.println(&serde_json::to_string(preview).expect("PreviewEnvelope is Serialize"));
         } else {
-            crate::render::print_step_header(step.action_name(), &preview);
+            crate::render::print_step_header(step.action_name(), preview);
         }
 
         // Spinner clears on the first output line so execution output
@@ -1032,11 +1083,13 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
         let exec_spinner_ref = exec_spinner.clone();
         let mut first_line = true;
 
+        let approval_receipt = exec_client.approve(&prepared.transaction_id).await?;
         let exec_result = exec_client
             .execute(
+                &prepared.transaction_id,
                 step.action_name(),
                 step.params(),
-                preview.request_hash.as_str(),
+                &approval_receipt,
                 |line| {
                     if first_line {
                         if let Some(ref pb) = exec_spinner_ref {
@@ -1186,6 +1239,19 @@ async fn prompt_confirm(msg: &str) -> bool {
             false
         }
         Ok(_) => matches!(buf.trim().to_ascii_lowercase().as_str(), "y" | "yes"),
+    }
+}
+
+async fn prompt_exact(msg: &str, expected: &str) -> bool {
+    use tokio::io::AsyncBufReadExt as _;
+
+    eprint!("{msg} ({expected}): ");
+    let _ = io::stderr().flush();
+    let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
+    let mut buf = String::new();
+    match reader.read_line(&mut buf).await {
+        Ok(0) | Err(_) => false,
+        Ok(_) => buf.trim() == expected,
     }
 }
 
