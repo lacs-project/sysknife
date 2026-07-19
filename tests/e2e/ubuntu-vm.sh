@@ -89,6 +89,14 @@ CLOUD_INIT_DIR="${VM_DIR}/cloud-init"
 # different filenames (ubuntu-overlay.qcow2, ubuntu-vm.pid).  When running
 # Dedicated passphrase-less SSH key for the VM. Shared with atomic-vm.sh.
 SSH_KEY="${SYSKNIFE_VM_SSH_KEY:-$HOME/.ssh/sysknife-vm}"
+SSH_OPTIONS=(
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    -o LogLevel=ERROR
+    -i "$SSH_KEY"
+    -o IdentitiesOnly=yes
+    -o BatchMode=yes
+)
 
 # Approximate minimum size check for cloud images. All Ubuntu LTS cloud images
 # are at least 300 MB; 314572800 = 300 * 1024 * 1024.
@@ -140,10 +148,6 @@ require_tools() {
     fi
 }
 
-ssh_opts() {
-    printf -- '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i %s -o IdentitiesOnly=yes -o BatchMode=yes' "$SSH_KEY"
-}
-
 # Wait for the SSH port to accept connections (TCP probe).
 wait_for_tcp() {
     local port="$1" max_wait="${2:-180}" waited=0
@@ -163,8 +167,7 @@ wait_for_tcp() {
 wait_for_ssh_auth() {
     local port="$1" max_wait="${2:-240}" waited=0
     log "Waiting for SSH key auth on port $port (up to ${max_wait}s)..."
-    # shellcheck disable=SC2046
-    while ! ssh $(ssh_opts) -o ConnectTimeout=5 -p "$port" \
+    while ! ssh "${SSH_OPTIONS[@]}" -o ConnectTimeout=5 -p "$port" \
             "${VM_USER}@127.0.0.1" true 2>/dev/null; do
         if [ "$waited" -ge "$max_wait" ]; then
             die "SSH key auth did not succeed on port $port within ${max_wait}s."
@@ -440,27 +443,26 @@ cmd_install() {
     # cloud-init reports an error. A reachable VM is not necessarily ready.
     local waited=0
     local max_wait=300
-    # shellcheck disable=SC2046
-    while ! ssh $(ssh_opts) -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
+    while ! ssh "${SSH_OPTIONS[@]}" -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
             'test -f /var/lib/sysknife-e2e/cloud-init-done' 2>/dev/null; do
-        if ssh $(ssh_opts) -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
+        if ssh "${SSH_OPTIONS[@]}" -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
                 'test -f /var/lib/sysknife-e2e/cloud-init-failed' 2>/dev/null; then
-            ssh $(ssh_opts) -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
+            ssh "${SSH_OPTIONS[@]}" -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
                 'sudo cat /var/lib/sysknife-e2e/cloud-init-failed; sudo cloud-init status --long || true; sudo journalctl -u cloud-final --no-pager -n 100 || true' >&2
             die "cloud-init bootstrap failed"
         fi
 
         local cloud_status
-        cloud_status="$(ssh $(ssh_opts) -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
+        cloud_status="$(ssh "${SSH_OPTIONS[@]}" -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
             'cloud-init status 2>/dev/null || true')"
         if [[ "$cloud_status" == *"status: error"* ]]; then
-            ssh $(ssh_opts) -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
+            ssh "${SSH_OPTIONS[@]}" -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
                 'sudo cloud-init status --long; sudo journalctl -u cloud-final --no-pager -n 100 || true' >&2
             die "cloud-init reported an error"
         fi
 
         if [ "$waited" -ge "$max_wait" ]; then
-            ssh $(ssh_opts) -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
+            ssh "${SSH_OPTIONS[@]}" -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
                 'sudo cloud-init status --long || true; sudo journalctl -u cloud-final --no-pager -n 100 || true' >&2
             die "cloud-init did not complete within ${max_wait}s"
         fi
@@ -469,7 +471,7 @@ cmd_install() {
         log "  still waiting... ${waited}s / ${max_wait}s"
     done
 
-    ssh $(ssh_opts) -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
+    ssh "${SSH_OPTIONS[@]}" -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
         'for command in gcc curl jq rsync nc; do command -v "$command" >/dev/null || exit 1; done' \
         || die "cloud-init completed without all required tools"
 
@@ -500,21 +502,24 @@ cmd_start() {
 
 cmd_ssh() {
     [ -f "$SSH_KEY" ] || die "SSH key not found at $SSH_KEY."
-    # shellcheck disable=SC2046
-    exec ssh $(ssh_opts) -p "$SSH_PORT" "${VM_USER}@127.0.0.1" "$@"
+    exec ssh "${SSH_OPTIONS[@]}" -p "$SSH_PORT" "${VM_USER}@127.0.0.1" "$@"
 }
 
 cmd_sync() {
     require_tools rsync
     [ -f "$SSH_KEY" ] || die "SSH key not found. Run '$0 download' first."
     log "Syncing repo to VM..."
+    local rsync_shell
+    printf -v rsync_shell \
+        'ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i %q -o IdentitiesOnly=yes -o BatchMode=yes -p %q' \
+        "$SSH_KEY" "$SSH_PORT"
     rsync -az \
         --exclude=target \
         --exclude=node_modules \
         --exclude=.git/objects/pack \
         --exclude=tests/e2e/ubuntu-vm \
         --exclude=tests/e2e/vm \
-        -e "ssh $(ssh_opts) -p ${SSH_PORT}" \
+        -e "$rsync_shell" \
         "${REPO_ROOT}/" \
         "${VM_USER}@127.0.0.1:/home/${VM_USER}/sysknife/"
     log "Sync complete."
@@ -566,8 +571,7 @@ cmd_stop() {
     # errors used to be silently `|| true`'d into nothing: SSH key auth
     # failure, sudo denial, systemctl-poweroff failure. Now they surface.
     local ssh_rc=0
-    # shellcheck disable=SC2046
-    ssh $(ssh_opts) -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
+    ssh "${SSH_OPTIONS[@]}" -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
         'sudo systemctl poweroff' || ssh_rc=$?
     if [ "$ssh_rc" -ne 0 ]; then
         log "WARNING: SSH poweroff command exited with status ${ssh_rc}. The VM may still be running."

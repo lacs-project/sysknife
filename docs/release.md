@@ -1,100 +1,98 @@
-# Release Process
+# Release process
 
-This document describes how SysKnife releases are cut and how the
-`sysknife-setup` npm package is published.
+SysKnife releases are intentionally tag-driven and one way. npm and crates.io
+versions cannot be replaced after publication, so a tag is pushed only after
+the [release-readiness checklist](release-readiness.md) is complete.
 
-## Overview
+## What the workflow publishes
 
-A release is triggered by pushing a version tag of the form `vMAJOR.MINOR.PATCH`
-(e.g. `v0.2.0`) to the `main` branch.  The GitHub Actions release workflow
-(`.github/workflows/release.yml`) then:
+Pushing a tag matching `vMAJOR.MINOR.PATCH` on `main` starts
+`.github/workflows/release.yml`. It:
 
-1. Verifies that the tag and every package manifest use the same version.
-2. Builds `sysknife` and `sysknife-daemon` for Linux x86\_64 and aarch64.
-3. Generates SPDX SBOMs and GitHub/Sigstore provenance attestations.
-4. Publishes `sysknife-setup` to npm and the public Rust crates to crates.io.
-5. Creates a GitHub Release with binaries, SHA-256 checksums, and SBOMs.
+1. Verifies the tag against every Cargo and npm package version.
+2. Builds `sysknife` and `sysknife-daemon` on native Linux x86_64 and aarch64
+   runners.
+3. Generates SPDX SBOMs, checksums, and GitHub artifact attestations.
+4. Publishes `sysknife-setup` to npm through trusted publishing (OIDC).
+5. Publishes the public Rust crates to crates.io in dependency order.
+6. Creates the GitHub Release and uploads the binaries, SBOMs, and checksums.
 
-The release fails during preflight if either registry credential is missing;
-publication is never silently skipped.
+Publication is never silently skipped. The release is created only after both
+registries accept the packages.
 
-## Cutting a Release
+## One-time repository setup
+
+Before the first tag:
+
+- Configure an npm trusted publisher for package `sysknife-setup`, repository
+  `lacs-project/sysknife`, workflow `release.yml`, and the exact GitHub owner.
+  The npm job uses Node 24 and `id-token: write`; no long-lived `NPM_TOKEN` is
+  used. See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+- Add `CARGO_REGISTRY_TOKEN` as a GitHub Actions secret. Restrict the token to
+  only the SysKnife crates where crates.io token scopes allow it.
+- Protect `main` with a ruleset requiring the CI, E2E, and Postgres contract
+  checks, at least one approval, resolved review conversations, and no force
+  pushes. See [GitHub rulesets](https://docs.github.com/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets).
+- Enable private vulnerability reporting and immutable releases in repository
+  settings before announcing the project.
+- Confirm the GitHub Actions runners and action versions used by the release
+  workflow are available to the repository.
+
+## Rehearse without publishing
+
+Run the manual `release-rehearsal` workflow on the exact commit intended for
+release. It packages every public crate, packs the npm installer, builds native
+binaries, smoke-tests the CLI, and emits checksums without contacting a
+registry or creating a release.
+
+The same check is available locally:
 
 ```bash
-# Ensure main is clean and all tests pass.
+scripts/release_rehearsal.sh --check
+scripts/release_rehearsal.sh --full --output dist/rehearsal
+```
+
+`release_rehearsal.sh` deliberately refuses `--publish`.
+
+## Cut a release
+
+Use a clean, reviewed `main` checkout. Replace `v0.2.5` with the intended
+version.
+
+```bash
 cargo nextest run --workspace --locked
 bash scripts/check_release_versions.sh v0.2.5
+scripts/release_rehearsal.sh --full --output dist/rehearsal
 
-# Tag and push — the workflow fires automatically.
-git tag v0.2.5
+git tag -s v0.2.5 -m "SysKnife v0.2.5"
 git push origin v0.2.5
 ```
 
-The tag must match `v[0-9]+.[0-9]+.[0-9]+` exactly.  Pre-release suffixes
-(e.g. `v0.2.0-rc1`) do not trigger the workflow.
+The tag pattern does not accept prerelease suffixes. Do not move or reuse a
+published tag. If publication partly fails, diagnose and rerun the workflow on
+the same commit; do not publish a different tree under the same version.
 
-## npm Publishing
+## Registry details
 
-### Required Secret
+### npm
 
-Set a repository secret named `NPM_TOKEN` in
-**Settings → Secrets and Variables → Actions**.
-
-The token must have permission to publish the unscoped `sysknife-setup`
-package. If the secret is absent, release preflight fails.
-
-### How to Create the Token
-
-1. Log in to <https://www.npmjs.com> as the `lacs-project` org admin.
-2. Go to **Account → Access Tokens → Generate New Token → Granular Access Token**.
-3. Set **Packages and scopes** → `sysknife-setup` → **Read and write**.
-4. Copy the token and add it as the `NPM_TOKEN` secret in GitHub.
-
-### Version Bumping
-
-Before tagging, update all package versions together. npm and crates.io require
-a unique version per publish; registries do not allow replacing an existing
-version. `scripts/check_release_versions.sh` lists every version-bearing
-manifest and rejects drift.
+`packages/setup/package.json` runs its `prepublishOnly` smoke test before
+upload. For a local package inspection:
 
 ```bash
-# After updating manifests and lockfiles:
-bash scripts/check_release_versions.sh v0.2.5
+cd packages/setup
+npm pack --dry-run
 ```
 
-### Smoke Test
+Trusted publishing requires the npm package's publisher configuration to
+match the GitHub repository and workflow exactly. Keep `id-token: write`
+scoped to the npm job.
 
-The `prepublishOnly` script in `packages/setup/package.json` runs
-`node index.js --help` before npm uploads the package.  If the script exits
-non-zero the publish is aborted.  You can run the same check locally:
+### crates.io
 
-```bash
-cd packages/setup && npm publish --dry-run
-```
+The public crates are published in dependency order:
 
-## crates.io Publishing
-
-The workflow publishes the public workspace crates to crates.io on every tag,
-in dependency order. It requires the `CARGO_REGISTRY_TOKEN` secret; if the
-secret is absent, release preflight fails. The private `sysknife-daemon-test`
-and desktop shell crates are not published.
-
-### Enabling crates.io publish
-
-1. Go to <https://crates.io/me> and generate an API token with the
-   **Publish new crates** and **Publish updates** scopes.
-2. In the GitHub repo, go to **Settings → Secrets and variables → Actions →
-   New repository secret**.
-3. Name it `CARGO_REGISTRY_TOKEN` and paste the token value.
-4. Re-run the latest release workflow (Actions → release → Re-run all jobs) or
-   push a new tag.
-
-### Crate publish order
-
-Crates are published in dependency order so crates.io indexes each one before
-its dependents try to reference it:
-
-```
+```text
 sysknife-proto
 sysknife-core
 sysknife-types
@@ -103,21 +101,20 @@ sysknife-daemon
 sysknife-cli
 ```
 
-## Verification
+The private `sysknife-daemon-test` and desktop shell crates are not published.
 
-After the workflow completes:
+## Verify the published release
 
-- GitHub Release assets are visible at
-  `https://github.com/lacs-project/sysknife/releases/tag/vX.Y.Z`.
-- npm package is visible at `https://www.npmjs.com/package/sysknife-setup`.
-- `npx sysknife-setup --help` should print the help text and exit 0.
-- Download a binary and verify its build provenance:
+After the workflow succeeds:
 
-  ```bash
-  gh attestation verify sysknife-vX.Y.Z-linux-x86_64 \
-    --repo lacs-project/sysknife
-  sha256sum --check sha256sums-linux-x86_64.txt
-  ```
+```bash
+npx sysknife-setup --help
 
-The matching `.spdx.json` release asset is the dependency inventory bound to
-the binary by a separate SBOM attestation.
+gh attestation verify sysknife-vX.Y.Z-linux-x86_64 \
+  --repo lacs-project/sysknife
+sha256sum --check sha256sums-linux-x86_64.txt
+```
+
+Also perform a clean install, `sysknife doctor`, one preview/approve/execute
+cycle, and uninstall on the supported OS image before announcing the release.
+Keep the release private or draft until these checks pass.

@@ -13,13 +13,10 @@ set -u
 
 # Brand palette (24-bit ANSI):
 COAT=$'\033[38;2;255;167;38m'    # vivid orange (Material Orange 400)
-SADDLE=$'\033[38;2;0;229;176m'   # vivid teal (Material Teal A400-ish)
 DIM=$'\033[2m'
 BOLD=$'\033[1m'
 GREEN=$'\033[38;2;105;240;174m'  # bright spring green (Material Green A200)
 YELLOW=$'\033[38;2;255;213;79m'  # vivid amber-yellow (Material Amber 300)
-RED=$'\033[38;2;255;82;82m'      # vivid red (Material Red A200)
-CYAN=$'\033[38;2;0;229;176m'     # vivid teal for step headers
 RESET=$'\033[0m'
 
 cprint() { printf '%s%s%s\n' "$1" "$2" "$RESET"; }

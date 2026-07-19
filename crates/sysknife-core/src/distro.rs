@@ -182,15 +182,17 @@ impl DistroId {
         }
     }
 
-    /// Returns `true` for distros and versions that SysKnife explicitly supports.
+    /// Returns `true` for distros and versions with a shipped action backend.
     ///
     /// Support policy:
-    /// - Fedora 41+
-    /// - FedoraSilverblue 41+
+    /// - Fedora Atomic variants 41+ (Silverblue, Kinoite, and siblings)
     /// - Ubuntu LTS: 22.04, 24.04, 26.04 (interim releases like 26.10 are excluded)
+    ///
+    /// Plain Fedora remains detectable so the planner can explain the gap, but
+    /// it is not supported until the dedicated `dnf` action family ships.
     pub fn is_supported(&self) -> bool {
         match self {
-            Self::Fedora { version } => *version >= 41,
+            Self::Fedora { .. } => false,
             Self::FedoraSilverblue { version } => *version >= 41,
             Self::Ubuntu { major, minor } => {
                 matches!((*major, *minor), (22, 4) | (24, 4) | (26, 4))
@@ -497,6 +499,24 @@ REDHAT_SUPPORT_PRODUCT_VERSION=41
 SUPPORT_END=2025-05-13
 VARIANT="Kinoite"
 VARIANT_ID=kinoite
+"#;
+
+    /// Fedora Silverblue 44, the current Atomic Desktop release at launch.
+    const FEDORA_SILVERBLUE_44: &str = r#"NAME="Fedora Linux"
+VERSION="44 (Silverblue)"
+ID=fedora
+VERSION_ID=44
+VERSION_CODENAME=""
+PLATFORM_ID="platform:f44"
+PRETTY_NAME="Fedora Linux 44 (Silverblue)"
+ANSI_COLOR="0;38;2;60;110;180"
+LOGO=fedora-logo-icon
+CPE_NAME="cpe:/o:fedoraproject:fedora:44"
+HOME_URL="https://fedoraproject.org/"
+DOCUMENTATION_URL="https://docs.fedoraproject.org/en-US/fedora/f44/"
+SUPPORT_URL="https://ask.fedoraproject.org/"
+VARIANT="Silverblue"
+VARIANT_ID=silverblue
 "#;
 
     /// Ubuntu 22.04 LTS (Jammy Jellyfish).
@@ -835,6 +855,15 @@ SUPPORT_END="2028-03-15"
     }
 
     #[test]
+    fn detect_current_silverblue_routes_to_fedora_silverblue() {
+        let r = parse_os_release(FEDORA_SILVERBLUE_44).unwrap();
+        assert_eq!(
+            detect_distro(&r),
+            DistroId::FedoraSilverblue { version: 44 }
+        );
+    }
+
+    #[test]
     fn detect_ubuntu_core_routes_to_ubuntu_core() {
         let r = parse_os_release(UBUNTU_CORE_24).unwrap();
         assert_eq!(
@@ -900,8 +929,8 @@ SUPPORT_END="2028-03-15"
     // -----------------------------------------------------------------------
 
     #[test]
-    fn supported_fedora_41() {
-        assert!(DistroId::Fedora { version: 41 }.is_supported());
+    fn plain_fedora_is_unsupported_until_dnf_actions_ship() {
+        assert!(!DistroId::Fedora { version: 44 }.is_supported());
     }
 
     #[test]
@@ -912,6 +941,11 @@ SUPPORT_END="2028-03-15"
     #[test]
     fn supported_fedora_silverblue_41() {
         assert!(DistroId::FedoraSilverblue { version: 41 }.is_supported());
+    }
+
+    #[test]
+    fn supported_fedora_silverblue_44() {
+        assert!(DistroId::FedoraSilverblue { version: 44 }.is_supported());
     }
 
     #[test]

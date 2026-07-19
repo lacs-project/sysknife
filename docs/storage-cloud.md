@@ -1,157 +1,129 @@
-# Storage Backend — Cloud Postgres Reference
+# Audit storage and recovery
 
-SysKnife supports two audit-log backends, selected at daemon startup:
+SysKnife's durable transaction audit log has two backends:
 
-- **SQLite** (default) — single-file local database. **Recommended only for
-  testing and sandboxing.** The audit log dies with the host: no off-box
-  durability, nothing to forward to a SOC, no centralised retention.
-- **Postgres** — managed or self-hosted. **Recommended for production.**
+- **SQLite** is the default at `/var/lib/sysknife/daemon.sqlite`. It is suitable
+  for a single host when that file and its audit key are backed up.
+- **PostgreSQL** is recommended when audit history must survive a host loss or
+  be centralized. The live contract is tested against PostgreSQL 17.
 
-Set the backend in `~/.config/sysknife/config.toml` or via environment
-variables before starting the daemon. `npx sysknife-setup` configures the
-MCP integration, not the storage backend.
+Journald and optional RFC 5424 syslog forwarding are complementary operational
+signals. They are best effort and are not the database of record.
+
+## PostgreSQL configuration
 
 ```toml
 [storage]
 backend = "postgres"
-url     = "postgres://sysknife:${PG_PASSWORD}@db.example.com:5432/sysknife_audit?sslmode=require"
+url = "postgres://sysknife:${PG_PASSWORD}@db.example.com:5432/sysknife_audit?sslmode=verify-full"
 
 [storage.pool]
-max_connections          = 8
-acquire_timeout_secs     = 10
-statement_cache_capacity = 100   # set to 0 for transaction-mode pgbouncer / CockroachDB
+max_connections = 8
+acquire_timeout_secs = 10
+statement_cache_capacity = 100
 ```
 
-The same code path serves every supported cloud — only the URL and a couple
-of pool knobs change.
+Use a dedicated database and role. The role currently needs connection,
+schema usage/create, and DML privileges because the daemon applies migrations
+at startup. Do not grant cluster administration or access to unrelated
+databases. Store the URL in a root-readable environment file or secret
+manager, not in a world-readable config file.
 
-## Provider URL reference
+On startup, the daemon:
 
-### AWS RDS for PostgreSQL + Aurora PostgreSQL
+1. Opens a transaction and takes a PostgreSQL advisory transaction lock.
+2. Creates `schema_migrations` if needed.
+3. Applies each pending migration once and records its version.
+4. Refuses to start if the database schema is newer than the binary.
 
-```text
-postgres://<user>:<pass>@<id>.<region>.rds.amazonaws.com:5432/<db>?sslmode=verify-full&sslrootcert=/etc/sysknife/rds-global-bundle.pem
+Migration 1 adopts databases created by pre-migration SysKnife builds without
+dropping or rewriting existing transaction rows. The CI contract verifies
+legacy-row preservation, migration idempotence, approval claims, history, and
+hash-chain validation against a live PostgreSQL server.
+
+Transaction-mode PgBouncer deployments may require
+`statement_cache_capacity = 0`. CockroachDB is not currently supported: its
+PostgreSQL wire compatibility does not include the migration and concurrency
+semantics SysKnife relies on.
+
+## Provider notes
+
+Use a writer endpoint and TLS certificate verification wherever the provider
+supports it.
+
+| Provider | Endpoint guidance |
+|---|---|
+| AWS RDS / Aurora PostgreSQL | Use the writer endpoint with `sslmode=verify-full` and the AWS CA bundle. Do not use an Aurora reader endpoint. |
+| GCP Cloud SQL / AlloyDB | Prefer the Auth Proxy or connector sidecar; connect to its loopback endpoint. |
+| Azure Database for PostgreSQL | Use Flexible Server with `sslmode=verify-full` and the current Azure CA chain. |
+| Supabase | Direct port 5432 supports prepared statements. For a transaction-mode pooler, set the statement cache to 0. |
+| Neon | Use TLS; increase `acquire_timeout_secs` if scale-to-zero cold starts exceed the default. |
+| Self-hosted PostgreSQL | Use `verify-full`, a private network, restricted role, monitored storage, and tested backups. |
+
+Provider CA bundles and authentication behavior change. Verify current
+provider documentation during deployment rather than copying a stale
+certificate URL from this guide.
+
+## SQLite backup and restore
+
+Back up the database and audit key together. The key defaults to
+`/var/lib/sysknife/audit-key` and should remain mode `0600`.
+
+```bash
+sudo systemctl stop sysknife-daemon
+sudo sqlite3 /var/lib/sysknife/daemon.sqlite \
+  ".backup '/var/backups/sysknife/daemon.sqlite'"
+sudo install -m 0600 /var/lib/sysknife/audit-key \
+  /var/backups/sysknife/audit-key
+sudo systemctl start sysknife-daemon
 ```
 
-- Use **`verify-full`** in production. Ship the AWS global CA bundle
-  (`https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem`) so
-  cert rotation doesn't break clients.
-- **Aurora**: writer endpoint = `<cluster>.<region>.rds.amazonaws.com`.
-  Reader endpoint (`<cluster>-ro.<region>.rds.amazonaws.com`) is read-only —
-  audit log INSERTs against it fail with
-  `cannot execute INSERT in a read-only transaction`.
-- **IAM auth** is supported but the 15-minute token lifetime requires a
-  rebuild of `PgConnectOptions` per connection — for now use password auth
-  with a Secrets Manager rotation job (Phase 2 issue tracks IAM refresh).
+Restore both files while the daemon is stopped, preserve ownership and modes,
+then run `sysknife doctor` and `sysknife audit verify`. A database restored
+without its matching key cannot validate new signatures against the original
+key identity.
 
-### GCP Cloud SQL for PostgreSQL + AlloyDB
+## PostgreSQL backup and restore
 
-**Direct (public IP):**
+For production, enable provider-managed point-in-time recovery and retention
+appropriate to your incident-response policy. Also take a logical backup
+before every SysKnife upgrade that introduces a migration.
 
-```text
-postgres://<user>:<pass>@<public-ip>:5432/<db>?sslmode=verify-ca&sslrootcert=server-ca.pem&sslcert=client-cert.pem&sslkey=client-key.pem
+```bash
+pg_dump --format=custom --no-owner --file=sysknife-audit.dump "$DATABASE_URL"
+createdb sysknife_restore_test
+pg_restore --no-owner --dbname=sysknife_restore_test sysknife-audit.dump
 ```
 
-**Auth Proxy / Connector (recommended):** run `cloud-sql-proxy` (or AlloyDB
-connector) as a sidecar. Daemon connects to `127.0.0.1:5432` with
-`sslmode=disable` because the proxy already terminates mTLS.
+Restore into an isolated database first. Point a temporary SysKnife config at
+that database, provide a copy of the matching audit key, then verify:
 
-```text
-postgres://<user>:<pass>@127.0.0.1:5432/<db>?sslmode=disable
+```bash
+XDG_CONFIG_HOME=/tmp/sysknife-restore-config \
+SYSKNIFE_AUDIT_KEY_PATH=/secure/restore-test/audit-key \
+  sysknife audit verify
+
+XDG_CONFIG_HOME=/tmp/sysknife-restore-config sysknife doctor
 ```
 
-IAM auth requires the proxy/connector — IAM tokens cannot be passed in a
-raw connection string.
+The temporary config's `[storage]` URL must target the isolated restore, never
+the production database.
 
-### Azure Database for PostgreSQL — Flexible Server
+Do not claim recoverability until a timed restore drill has succeeded and its
+recovery point and recovery time are recorded. Database backups and audit-key
+backups should have separate access controls so compromise of one system does
+not silently permit forged history.
 
-```text
-postgres://<user>:<pass>@<server>.postgres.database.azure.com:5432/<db>?sslmode=verify-full&sslrootcert=/etc/sysknife/azure-digicert-g2.pem
-```
+## Forwarding and retention
 
-- TLS 1.2+ required. Azure rotated the **intermediate CAs** under DigiCert
-  Global Root in Q1 2026; the recommended trust set is **DigiCert Global
-  Root CA + DigiCert Global Root G2 + Microsoft RSA Root Certificate
-  Authority 2017** simultaneously, or ship the full Azure root bundle.
-- **Microsoft Entra (Azure AD) tokens** supported. Token TTL ~1h; the same
-  per-connection rebuild pattern as RDS IAM applies (Phase 2).
+- The transaction database is authoritative for preview, approval, execution,
+  status, and chain history.
+- The safety-fence JSONL file records plans rejected before daemon execution.
+- Journald receives safety-fence events and audit-chain watermarks where
+  available.
+- UDP syslog forwarding can lose, reorder, or duplicate messages. Treat it as
+  alerting telemetry, not a durable copy.
 
-### Supabase
-
-**Direct (port 5432, full prepared-statement support):**
-
-```text
-postgres://postgres:<pass>@db.<ref>.supabase.co:5432/postgres?sslmode=require
-```
-
-**Pooler (Supavisor, port 6543, transaction mode):**
-
-```text
-postgres://postgres.<ref>:<pass>@aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=require
-```
-
-When using the **pooler**, set `statement_cache_capacity = 0` in
-`[storage.pool]` — transaction-mode PgBouncer rejects sqlx's named prepared
-statements. The 5432 endpoint accepts the default cache.
-
-### Neon
-
-```text
-postgres://<user>:<pass>@ep-<id>.<region>.aws.neon.tech/<db>?sslmode=require
-```
-
-- Auto-suspend means the first connection after idle has 300–800 ms cold
-  start. Set `acquire_timeout_secs = 30` and Neon-specific traffic will
-  succeed without flaky retries.
-- Pooled endpoint (`-pooler` host suffix) supports protocol-level prepared
-  statements as of 2025; sqlx's default cache works there too.
-
-### CockroachDB Cloud (Postgres wire-compatible)
-
-```text
-postgres://<user>:<pass>@<cluster>.cockroachlabs.cloud:26257/<db>?sslmode=verify-full&sslrootcert=cc-ca.crt&options=--cluster%3D<cluster-id>
-```
-
-- Port is **26257**, not 5432.
-- Set `statement_cache_capacity = 0` — CockroachDB schema-change
-  invalidation can collide with sqlx's per-connection cache.
-- `40001` retries are serializable-isolation aborts; sqlx surfaces them as
-  errors. SysKnife's audit-log writer is single-row INSERT, so this is rare,
-  but client retries are recommended if the pattern emerges.
-
-### Heroku Postgres
-
-```text
-postgres://<user>:<pass>@<host>.compute.amazonaws.com:5432/<db>?sslmode=require
-```
-
-Standard plans serve self-signed certs → `verify-full` will fail. Use
-`sslmode=require` (encryption without verification). For `verify-full`,
-upgrade to **Enhanced Certificates** (publicly-signed ISRG certs).
-
-### Self-hosted
-
-```text
-postgres://<user>:<pass>@<host>:5432/<db>?sslmode=verify-full[&sslrootcert=...]
-```
-
-You decide. Default to `verify-full` with a configurable `ca_file`. Allow
-`sslmode=disable` only when the host is loopback.
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---------|-----|
-| `SSL connection is required` | Add `?sslmode=require` (or stronger) to the URL. |
-| `certificate verify failed: unable to get local issuer` | `verify-full` set without a CA on path. Either `sslrootcert=...` in the URL, or relax to `sslmode=require`. |
-| `prepared statement "sqlx_s_1" already exists` | Transaction-mode PgBouncer (Supabase pooler / some self-hosted setups) or CockroachDB. Set `statement_cache_capacity = 0`. |
-| `cannot execute INSERT in a read-only transaction` | URL points at an Aurora reader or a CockroachDB follower. Use the writer/cluster endpoint. |
-| First write hangs ~600 ms intermittently | Neon scale-to-zero cold start. Raise `acquire_timeout_secs` to 30. |
-
-## Choosing between SQLite and Postgres
-
-Pick **Postgres** unless you have a specific reason to keep audit history
-on the host. Configure it in `~/.config/sysknife/config.toml` or with
-environment variables before starting the daemon. The daemon validates the
-URL by attempting a connection and surfaces TLS / firewall / DNS errors
-before it begins normal operation.
+Define retention, deletion authorization, backup encryption, restore testing,
+and SIEM ingestion before production use. Monitor daemon startup failures,
+database capacity, backup age, restore-test age, and chain verification.

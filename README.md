@@ -21,11 +21,9 @@
 
 <p align="center">
   <strong>Distros</strong>&nbsp;
-  <img src="https://img.shields.io/badge/Fedora%2041%2B-✓-294172?style=flat-square&logo=fedora&logoColor=white" alt="Fedora 41+">
-  <img src="https://img.shields.io/badge/Silverblue%2041%2B-✓-294172?style=flat-square&logo=fedora&logoColor=white" alt="Silverblue 41+">
-  <img src="https://img.shields.io/badge/Ubuntu%2026.04-✓-E95420?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu 26.04">
-  <img src="https://img.shields.io/badge/Ubuntu%2024.04-✓-E95420?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu 24.04">
-  <img src="https://img.shields.io/badge/Ubuntu%2022.04-✓-E95420?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu 22.04">
+  <img src="https://img.shields.io/badge/Ubuntu%2024.04-validated-2f855a?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu 24.04 validated">
+  <img src="https://img.shields.io/badge/Ubuntu%2022.04%20%2F%2026.04-smoke--tested-d97706?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu 22.04 and 26.04 smoke-tested">
+  <img src="https://img.shields.io/badge/Fedora%20Atomic-current%20validation%20required-294172?style=flat-square&logo=fedora&logoColor=white" alt="Fedora Atomic current validation required">
 </p>
 
 <p align="center">
@@ -97,7 +95,7 @@ the prompt, enforces the receipt boundary.
 > approval prompts, and audit-log inspection.
 
 <details>
-<summary><strong>Manual install — Fedora 41+ / Silverblue 41+ · Ubuntu 22.04 / 24.04 / 26.04</strong></summary>
+<summary><strong>Manual install — Ubuntu LTS · Fedora Atomic</strong></summary>
 
 ```sh
 # Build + install the daemon the wizard configures
@@ -107,15 +105,16 @@ make build
 sudo make install
 sudo systemctl enable --now sysknife-daemon
 
-# Then run the wizard (local-clone path until npm publish lands)
-node packages/setup/index.js
+# Then run the published setup wizard
+npx sysknife-setup
 ```
 
-The same steps work on every supported distro. The Ubuntu 24.04 action set is
-validated (65/65 stories pass on a live VM with gpt-4.1); Ubuntu 22.04 (jammy)
-and 26.04 (resolute) VM tooling is complete with smoke tests passing on all
-three LTSes. See [`docs/distro-support.md`](docs/distro-support.md) for the full
-matrix.
+Ubuntu 24.04 is validated with 65/65 stories on a live VM. Ubuntu 22.04 and
+26.04 have passed bootstrap and smoke tests but not the full story suite.
+Fedora Atomic is the rpm-ostree target; record a current Silverblue 44 VM run
+before treating a release as current-validated. Plain Fedora Workstation and
+Server remain experimental until the `dnf` action family ships. See the
+[`distro support matrix`](docs/distro-support.md) for evidence and scope.
 </details>
 
 <details>
@@ -189,7 +188,8 @@ milestone.
 | **Ubuntu 22.04 / 26.04 VM tooling** — smoke tests pass on all three LTSes | ✅ |
 | Telegram approval interface | 📋 roadmap |
 
-**1,227 tests** pass across Rust and TypeScript on every commit.
+**1,231 Rust tests and 72 frontend tests** form the current deterministic
+release baseline.
 
 ## Configure your LLM
 
@@ -266,10 +266,13 @@ are scoped with clear acceptance criteria.
 
 - [Architecture overview](docs/architecture.md)
 - [Distro support matrix](docs/distro-support.md)
+- [Configuration](docs/configuration.md)
+- [Audit storage and recovery](docs/storage-cloud.md)
 - [Developer guide](docs/developer-guide.md)
 - [Testing guide](docs/contributing/testing.md)
 - [VM daemon setup](docs/vm-daemon-setup.md)
 - [Security policy](SECURITY.md)
+- [Release readiness checklist](docs/release-readiness.md)
 - [Roadmap](ROADMAP.md)
 - [ADR 0001 — System boundaries](docs/adr/0001-system-boundaries.md)
 - [ADR 0002 — Brain provider layer](docs/adr/0002-brain-provider-layer.md)
@@ -280,7 +283,7 @@ are scoped with clear acceptance criteria.
 | Channel | Install | Notes |
 |---------|---------|-------|
 | **npm** | `npx sysknife-setup` | [npmjs.com/package/sysknife-setup](https://www.npmjs.com/package/sysknife-setup) — zero-install setup wizard |
-| **crates.io** | `cargo install sysknife-cli` / `cargo install sysknife-daemon` | Available once `CARGO_REGISTRY_TOKEN` is configured — see [docs/release.md](docs/release.md) |
+| **crates.io** | `cargo install sysknife-cli` / `cargo install sysknife-daemon` | Published by reviewed version tags; see [docs/release.md](docs/release.md) |
 | **GitHub Releases** | Download from [Releases](https://github.com/lacs-project/sysknife/releases) | Prebuilt x86_64 + aarch64 binaries with SHA-256 checksums on every tag |
 
 ## License

@@ -3,7 +3,8 @@
 # Regenerate: `vhs assets/demo/mcp-flow.tape` (writes assets/demo/mcp-flow.gif)
 #
 # This tape calls assets/demo/mcp-flow-mock.sh, a deterministic offline replay
-# of a Claude Code session using the sysknife_plan + sysknife_execute MCP tools.
+# of a Claude Code session using planning, terminal-issued receipts, and the
+# sysknife_execute MCP tool.
 # No live LLM calls, daemon, or network access required — every render is
 # identical.
 
@@ -11,8 +12,9 @@ Output "assets/demo/mcp-flow.gif"
 
 Set Theme         "Catppuccin Mocha"
 Set FontSize      18
-Set Width         1200
-Set Height        720
+Set Width         1000
+Set Height        600
+Set Framerate     15
 Set Padding       20
 Set BorderRadius  10
 Set TypingSpeed   55ms
@@ -35,10 +37,10 @@ Sleep 2800ms
 # Hold on the tool-result plan card so viewer can read risk pills (6s).
 Sleep 6000ms
 
-# Assistant plan summary + approval prompt + "y" typed.
-Sleep 3000ms
+# Assistant plan summary + three separate terminal approvals.
+Sleep 6000ms
 
-# sysknife_execute spinner (~2s) + step 1 streaming (≈4.5s).
+# Receipt-bound sysknife_execute spinner (~2s) + step 1 streaming (≈4.5s).
 Sleep 7000ms
 
 # Step 2 + step 3 streaming (≈5s each with 1.5s post-step hold).

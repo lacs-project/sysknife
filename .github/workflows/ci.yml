@@ -44,6 +44,9 @@ jobs:
       - name: Check release version consistency
         run: bash scripts/check_release_versions.sh
 
+      - name: Check public support and approval claims
+        run: bash tests/release/public-claims.test.sh
+
       - name: Check Ubuntu VM bootstrap contract
         run: bash tests/e2e/ubuntu-vm-bootstrap.test.sh
 
@@ -149,6 +152,38 @@ jobs:
 
       - name: Test workspace
         run: cargo nextest run --workspace --locked
+
+  postgres-contract:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: sysknife
+          POSTGRES_PASSWORD: sysknife
+          POSTGRES_DB: sysknife_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sysknife -d sysknife_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SYSKNIFE_TEST_POSTGRES_URL: >-
+        postgres://sysknife:sysknife@127.0.0.1:5432/sysknife_test?sslmode=disable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run live Postgres migration and store contract
+        run: cargo test -p sysknife-daemon --test postgres_store --locked
 
   security-audit:
     runs-on: ubuntu-latest

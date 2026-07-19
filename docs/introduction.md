@@ -85,7 +85,7 @@ npx sysknife-setup
 
 <img
   src="https://raw.githubusercontent.com/lacs-project/sysknife/main/assets/demo/mcp-flow.gif"
-  alt="SysKnife MCP flow — plan and approve from inside Claude Code"
+  alt="SysKnife MCP flow — plan in Claude Code, approve in a terminal, execute with a one-time receipt"
   class="sysknife-demo"
 />
 
@@ -97,8 +97,10 @@ See the [MCP Server guide](mcp.md) for full setup and the approval-gate hook.
 
 > **ℹ️ Distro support**
 >
-> Fedora 41+ and Silverblue 41+ are fully supported.
-> Ubuntu action families are implemented and in E2E validation.
+> Ubuntu 24.04 is validated with the full 65-story VM suite. Ubuntu 22.04 and
+> 26.04 are smoke-tested. Fedora Atomic is supported by the rpm-ostree action
+> family, but a current Silverblue 44 VM run is a release gate. Plain Fedora
+> remains experimental until the `dnf` action family ships.
 > See [Distro Support](distro-support.md) for the full matrix.
 
 ```sh
@@ -115,7 +117,7 @@ SysKnife auto-detects it. See [Quick Start](quickstart.md).
 
 ## Status
 
-140+ typed actions · 1,227 tests · Fedora / Silverblue fully supported · MIT
+140+ typed actions · 1,231 Rust tests + 72 frontend tests · MIT
 
 SysKnife is the reference implementation of the
 [LACS specification](https://github.com/lacs-project/specification) — a

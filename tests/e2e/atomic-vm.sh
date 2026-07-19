@@ -37,7 +37,7 @@
 #   help       — print this help
 #
 # Environment:
-#   SYSKNIFE_VM_RELEASE  — Fedora release number (default: 43)
+#   SYSKNIFE_VM_RELEASE  — Fedora release number (default: 44)
 #   SYSKNIFE_VM_VARIANT  — atomic variant. Accepted values (case-insensitive):
 #                      silverblue (GNOME), kinoite (KDE),
 #                      sericea (Sway Atomic), onyx (Budgie Atomic),
@@ -54,7 +54,7 @@
 
 set -euo pipefail
 
-RELEASE="${SYSKNIFE_VM_RELEASE:-43}"
+RELEASE="${SYSKNIFE_VM_RELEASE:-44}"
 # Normalize to lowercase for path consistency; quickget accepts any case.
 VARIANT="$(printf '%s' "${SYSKNIFE_VM_VARIANT:-silverblue}" | tr '[:upper:]' '[:lower:]')"
 VM_DIR="${SYSKNIFE_VM_DIR:-tests/e2e/vm}"

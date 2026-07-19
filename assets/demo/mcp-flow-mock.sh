@@ -16,8 +16,7 @@ DIM=$'\033[2m'
 BOLD=$'\033[1m'
 GREEN=$'\033[38;2;105;240;174m'  # bright spring green (Material Green A200)
 YELLOW=$'\033[38;2;255;213;79m'  # vivid amber-yellow (Material Amber 300)
-RED=$'\033[38;2;255;82;82m'      # vivid red (Material Red A200)
-PURPLE=$'\033[38;2;179;136;255m' # accent purple (for plan_id)
+PURPLE=$'\033[38;2;179;136;255m' # accent purple (transaction IDs / receipts)
 RESET=$'\033[0m'
 ITALIC=$'\033[3m'
 
@@ -64,24 +63,23 @@ sleep_ms 300
 # ── tool result block — plan card ────────────────────────────────────────
 printf '%s┌─ Result ──────────────────────────────────────────────────────────┐%s\n' "$DIM" "$RESET"
 printf '%s│%s\n' "$DIM" "$RESET"
-printf '%s│%s  %splan_id%s  %sp_8a3d1f9c%s\n' "$DIM" "$RESET" "$DIM" "$RESET" "$PURPLE" "$RESET"
-printf '%s│%s  %sintent%s   %s"install vim, restart sshd, and show me the firewall state"%s\n' \
+printf '%s│%s  %sintent%s  %s"install vim, restart sshd, and show me the firewall state"%s\n' \
     "$DIM" "$RESET" "$DIM" "$RESET" "$ITALIC" "$RESET"
 printf '%s│%s\n' "$DIM" "$RESET"
 printf '%s│%s  %s1%s  %sAddLayeredPackage%s             %s● medium%s  %sapproval required%s\n' \
     "$DIM" "$RESET" "$DIM" "$RESET" "$BOLD" "$RESET" "$YELLOW" "$RESET" "$YELLOW" "$RESET"
-printf '%s│%s     %slayer vim into next deployment via rpm-ostree%s\n' "$DIM" "$RESET" "$DIM" "$RESET"
+printf '%s│%s     %stx_91c4a7 · layer vim into next deployment via rpm-ostree%s\n' "$DIM" "$RESET" "$PURPLE" "$RESET"
 printf '%s│%s  %s2%s  %sRestartService%s                %s● medium%s  %sapproval required%s\n' \
     "$DIM" "$RESET" "$DIM" "$RESET" "$BOLD" "$RESET" "$YELLOW" "$RESET" "$YELLOW" "$RESET"
-printf '%s│%s     %srestart sshd and verify it comes back active%s\n' "$DIM" "$RESET" "$DIM" "$RESET"
-printf '%s│%s  %s3%s  %sGetFirewallState%s              %s● low%s     %sauto%s\n' \
-    "$DIM" "$RESET" "$DIM" "$RESET" "$BOLD" "$RESET" "$GREEN" "$RESET" "$DIM" "$RESET"
-printf '%s│%s     %sread firewalld zones and active services%s\n' "$DIM" "$RESET" "$DIM" "$RESET"
+printf '%s│%s     %stx_2db830 · restart sshd and verify it comes back active%s\n' "$DIM" "$RESET" "$PURPLE" "$RESET"
+printf '%s│%s  %s3%s  %sGetFirewallState%s              %s● low%s     %sreceipt required%s\n' \
+    "$DIM" "$RESET" "$DIM" "$RESET" "$BOLD" "$RESET" "$GREEN" "$RESET" "$YELLOW" "$RESET"
+printf '%s│%s     %stx_7f52e1 · read firewalld zones and active services%s\n' "$DIM" "$RESET" "$PURPLE" "$RESET"
 printf '%s│%s\n' "$DIM" "$RESET"
 printf '%s└───────────────────────────────────────────────────────────────────┘%s\n' "$DIM" "$RESET"
 sleep_ms 700
 
-# ── assistant presents plan + approval ───────────────────────────────────
+# ── assistant presents the enforced terminal approval boundary ───────────
 echo
 printf 'SysKnife has a 3-step plan ready:\n'
 sleep_ms 300
@@ -89,25 +87,32 @@ printf '  %s1.%s Layer vim (medium risk — triggers a pending reboot)\n' "$BOLD
 sleep_ms 225
 printf '  %s2.%s Restart sshd (medium risk — brief connection drop)\n' "$BOLD" "$RESET"
 sleep_ms 225
-printf '  %s3.%s Read firewall state (low risk — read-only, runs automatically)\n' "$BOLD" "$RESET"
+printf '  %s3.%s Read firewall state (low risk — still bound to this preview)\n' "$BOLD" "$RESET"
 sleep_ms 525
 echo
-printf '%sShould I run sysknife_execute on these 3 steps? (y/n)%s ' "$BOLD" "$RESET"
-sleep_ms 525
-printf '%sy%s\n' "$COAT" "$RESET"
-sleep_ms 450
+printf '%sChat approval is not enough.%s Approve each accepted transaction in a terminal:\n' "$YELLOW" "$RESET"
+printf '%sRequired: sysknife approve <transaction-id>%s\n' "$DIM" "$RESET"
+sleep_ms 600
+printf '%s$%s sysknife approve tx_91c4a7\n' "$MINT" "$RESET"; sleep_ms 350
+printf '  receipt  %srcpt_91c4…7d2a%s\n' "$PURPLE" "$RESET"; sleep_ms 350
+printf '%s$%s sysknife approve tx_2db830\n' "$MINT" "$RESET"; sleep_ms 350
+printf '  receipt  %srcpt_2db8…44fe%s\n' "$PURPLE" "$RESET"; sleep_ms 350
+printf '%s$%s sysknife approve tx_7f52e1\n' "$MINT" "$RESET"; sleep_ms 350
+printf '  receipt  %srcpt_7f52…b019%s\n' "$PURPLE" "$RESET"; sleep_ms 650
+printf '%sReceipts are preview-bound, expire in 15 minutes, and work once.%s\n' "$DIM" "$RESET"
+sleep_ms 650
 
 # ── tool call: sysknife_execute — spinner ────────────────────────────────
 echo
 for i in $(seq 1 17); do
     idx=$(( (i - 1) % 10 ))
-    printf '\r%s⏺%s %ssysknife_execute%s(plan_id="p_8a3d1f9c") %s%s%s' \
+    printf '\r%s⏺%s %ssysknife_execute%s(steps=[tx_91c4a7, tx_2db830, tx_7f52e1] + receipts) %s%s%s' \
         "$COAT" "$RESET" "$BOLD" "$RESET" "$DIM" "${spinner_chars[$idx]}" "$RESET"
     sleep_ms 120
 done
 printf '\r\033[K'
 
-printf '%s⏺%s %ssysknife_execute%s(plan_id="p_8a3d1f9c")\n' \
+printf '%s⏺%s %ssysknife_execute%s(steps=[transaction_id + approval_receipt] × 3)\n' \
     "$COAT" "$RESET" "$BOLD" "$RESET"
 sleep_ms 300
 
@@ -121,7 +126,7 @@ printf '%s│%s  %s▶%s %sAddLayeredPackage%s  %slayering vim into next deploym
 sleep_ms 450
 printf '%s│%s  › Checking out tree dabb04b... done\n' "$DIM" "$RESET";          sleep_ms 375
 printf '%s│%s  › Resolving dependencies... done\n' "$DIM" "$RESET";            sleep_ms 375
-printf '%s│%s  › Adding layer: vim-9.1.0-2.fc41.x86_64\n' "$DIM" "$RESET";    sleep_ms 375
+printf '%s│%s  › Adding layer: vim-9.1.0-2.fc44.x86_64\n' "$DIM" "$RESET";    sleep_ms 375
 printf '%s│%s  › Writing objects: 100%% (37/37) done\n' "$DIM" "$RESET";      sleep_ms 450
 printf '%s│%s  %s✓%s  layered vim — succeeded\n' "$DIM" "$RESET" "$GREEN" "$RESET"
 printf '%s│%s    %s⚠ reboot required for layered packages%s\n' "$DIM" "$RESET" "$YELLOW" "$RESET"
@@ -163,6 +168,8 @@ printf 'FedoraWorkstation zone with ssh open.\n'
 sleep_ms 450
 printf '%sNote:%s a reboot is pending to activate the layered vim package.\n' "$YELLOW" "$RESET"
 sleep_ms 600
+printf '%sReceipts consumed — replay now returns stale_approval.%s\n' "$DIM" "$RESET"
+sleep_ms 400
 echo
 printf '%saudit  3 entries  hash a31f…cb02%s\n' "$DIM" "$RESET"
 sleep_ms 3000

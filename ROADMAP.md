@@ -120,6 +120,7 @@ Tracked in the v0.4.0 milestone.
 - Ubuntu 26.04 full action parity (65/65 stories)
 - dnf action family (Fedora Workstation non-atomic)
 - pacman action family (Arch/Manjaro)
+- record a current Fedora Silverblue 44 full VM run for each public release
 
 ## Phase 9: Launch
 

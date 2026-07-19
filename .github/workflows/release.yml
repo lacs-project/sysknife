@@ -45,10 +45,8 @@ jobs:
 
       - name: Require publication credentials
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          test -n "${NPM_TOKEN:-}" || { echo '::error::NPM_TOKEN is not configured'; exit 1; }
           test -n "${CARGO_REGISTRY_TOKEN:-}" || { echo '::error::CARGO_REGISTRY_TOKEN is not configured'; exit 1; }
 
   build:
@@ -148,26 +146,28 @@ jobs:
     name: Publish sysknife-setup to npm
     needs: [preflight, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
 
       - name: Smoke-test the package
         run: node packages/setup/index.js --help
 
       - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          test -n "${NODE_AUTH_TOKEN:-}" || { echo '::error::NPM_TOKEN is not configured'; exit 1; }
-          cd packages/setup && npm publish --access public
+          cd packages/setup
+          npm publish --access public
 
   publish-crates:
     name: Publish to crates.io

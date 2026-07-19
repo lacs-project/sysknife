@@ -25,6 +25,12 @@ echo "$PLAN" | jq .
 STEP_COUNT=$(echo "$PLAN" | jq '.plan.steps | length')
 ACTIONS=$(echo "$PLAN" | jq -r '.plan.steps[].action')
 
+if [[ "$STEP_COUNT" -ne 2 ]]; then
+  echo "FAIL: expected exactly 2 steps, got $STEP_COUNT"
+  echo "Actions: $ACTIONS"
+  exit 1
+fi
+
 if ! echo "$ACTIONS" | grep -q "GetNetworkStatus"; then
   echo "FAIL: GetNetworkStatus not found in plan"
   echo "Actions: $ACTIONS"

@@ -10,11 +10,17 @@ required=(
   "ROADMAP.md"
   "docs/architecture.md"
   "docs/developer-guide.md"
+  "docs/distro-support.md"
+  "docs/release.md"
+  "docs/release-readiness.md"
+  "docs/storage-cloud.md"
   "docs/adr/0001-system-boundaries.md"
   ".github/PULL_REQUEST_TEMPLATE.md"
   ".github/ISSUE_TEMPLATE/bug_report.yml"
   ".github/ISSUE_TEMPLATE/feature_request.yml"
   ".github/workflows/ci.yml"
+  ".github/workflows/e2e.yml"
+  ".github/workflows/release-rehearsal.yml"
 )
 
 missing=()

@@ -20,6 +20,21 @@
 name: e2e
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "tests/e2e/**"
+      - "scripts/**"
+      - "assets/demo/**"
+      - "apps/sysknife-cli/**"
+      - ".github/workflows/e2e.yml"
+  pull_request:
+    paths:
+      - "tests/e2e/**"
+      - "scripts/**"
+      - "assets/demo/**"
+      - "apps/sysknife-cli/**"
+      - ".github/workflows/e2e.yml"
   workflow_dispatch:
 
 permissions:
@@ -36,11 +51,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: ShellCheck story scripts, harness, and silverblue-vm helper
-        uses: ludeeus/action-shellcheck@master
-        with:
-          scandir: tests/e2e
-          severity: warning
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y shellcheck
+
+      - name: ShellCheck maintained scripts
+        run: |
+          find tests/e2e tests/release scripts assets/demo \
+            -type f -name '*.sh' -print0 \
+            | xargs -0 shellcheck --severity=warning
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

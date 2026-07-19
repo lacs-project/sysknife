@@ -147,7 +147,7 @@ You also need `qemu-system-x86_64`, `qemu-utils` (for `qemu-img`), `rsync`,
 distro.
 
 ```sh
-# Fedora 41+ (default repos have a current quickemu)
+# Fedora Atomic 44 (default repos have a current quickemu)
 sudo dnf install quickemu qemu qemu-img
 
 # Fedora Atomic Desktops
@@ -195,7 +195,7 @@ sudo chmod +r /boot/vmlinuz-*
 #    ssh cannot prompt for a passphrase). Idempotent.
 ./tests/e2e/atomic-vm.sh keygen
 
-# 2. Download the Silverblue 43 ISO (~2.5 GB, cached under tests/e2e/vm/).
+# 2. Download the Silverblue 44 ISO (~2.5 GB, cached under tests/e2e/vm/).
 ./tests/e2e/atomic-vm.sh download
 
 # 3. Run the Fedora installer interactively (GUI window opens).

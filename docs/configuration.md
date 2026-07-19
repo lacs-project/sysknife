@@ -52,7 +52,7 @@ url     = "postgres://sysknife:${PG_PASSWORD}@db.example.com:5432/audit?sslmode=
 [storage.pool]
 max_connections          = 8
 acquire_timeout_secs     = 10
-statement_cache_capacity = 100   # set to 0 for Supabase pooler / CockroachDB
+statement_cache_capacity = 100   # set to 0 for transaction-mode poolers
 
 # ─── [policy] ────────────────────────────────────────────────────────
 # Per-action risk-level overrides. Map from action name → risk level
@@ -70,6 +70,12 @@ InstallFlatpak = "High"     # require Admin in this org (default: Medium/Dev)
 host     = "siem.internal:514"
 facility = 1                 # 1 = user-level (default)
 ```
+
+The transaction database is the durable audit record. Safety-fence JSONL,
+journald watermarks, and UDP syslog forwarding are operational signals and may
+be unavailable or lossy. PostgreSQL migrations run automatically at daemon
+startup; backup and restore requirements are documented in
+[`storage-cloud.md`](storage-cloud.md).
 
 ## Environment variables
 

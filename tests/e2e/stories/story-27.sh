@@ -49,8 +49,8 @@ fi
 # implies enabled=true — the model need not echo back the implied value.
 ENABLED_RAW=$(echo "$ENABLE_STEP" | jq -r '.params.enabled // .params.enable // "implicit"')
 case "$ENABLED_RAW" in
-  true|"true"|enable|enabled|implicit) : ;;
-  false|"false"|disable|disabled)
+  true|enable|enabled|implicit) : ;;
+  false|disable|disabled)
     echo "FAIL: model proposed disable but intent says enable, got '$ENABLED_RAW'"
     echo "Full params: $(echo "$ENABLE_STEP" | jq '.params')"
     exit 1

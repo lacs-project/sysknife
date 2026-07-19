@@ -180,12 +180,18 @@ Each entry contains `timestamp`, `event`, `intent`, `reason`, and
 
 ### Transaction log
 
-Every daemon execution — queued, running, succeeded, failed, rolled
-back — is recorded in a SQLite database at the path configured by
-`SYSKNIFE_DATABASE_PATH` (default `~/.local/share/sysknife/daemon.sqlite`).
-Query with `journalctl` (see below) or directly with `sqlite3`.
+Every daemon execution — previewed, approved, running, succeeded, failed, or
+rolled back — is recorded in the configured transaction database. SQLite is
+the default at `SYSKNIFE_DATABASE_PATH` (packaged default:
+`/var/lib/sysknife/daemon.sqlite`); PostgreSQL is available for centralized,
+off-host durability. Both backends store the same signed hash-chain fields.
 
-### Journald forwarding
+The transaction database is authoritative. Query it with `sysknife history`
+and verify its chain with `sysknife audit verify`. See
+[`docs/storage-cloud.md`](docs/storage-cloud.md) for backup, restore, and
+PostgreSQL migration operations.
+
+### Journald and syslog forwarding
 
 On systemd hosts, every safety fence rejection is also forwarded to the
 systemd journal as a structured log entry with these fields:
@@ -205,6 +211,11 @@ Query live:
 journalctl -f SYSKNIFE_EVENT=safety_fence_rejection
 journalctl SYSLOG_IDENTIFIER=sysknife-brain --since today
 ```
+
+The daemon also emits an audit-chain watermark to journald after transaction
+writes and can forward transaction events as RFC 5424 syslog over UDP. These
+paths are best effort: UDP may lose, reorder, or duplicate events, and neither
+path replaces the transaction database or its backups.
 
 ### Enabling tamper-evident sealing (recommended for production)
 
@@ -241,3 +252,4 @@ security certification work.
 |---|---|---|
 | Tool output injection | [#98](https://github.com/lacs-project/sysknife/issues/98) | `query_*` results re-enter the LLM context unsanitized. A crafted service description or package name could attempt prompt injection. Impact is bounded by Layer 2–5. |
 | Action param validation | — | Action params are typed per-handler but not validated at a shared schema boundary. A compromised LLM could propose valid action + malicious params (e.g. `AddAuthorizedKey` with an attacker-controlled key). |
+| UDP audit forwarding | — | External RFC 5424 forwarding is best effort and provides no delivery acknowledgement. Use the transaction database and tested backups as the durable record. |

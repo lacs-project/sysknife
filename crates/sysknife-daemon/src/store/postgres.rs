@@ -2,7 +2,7 @@
 //!
 //! Wire-compatible with AWS RDS / Aurora, GCP Cloud SQL + AlloyDB, Azure
 //! Database for PostgreSQL Flexible Server, Supabase (direct + pooler),
-//! Neon (direct + pooler), CockroachDB Cloud, and self-hosted Postgres.
+//! Neon (direct + pooler), and self-hosted Postgres.
 //!
 //! ## Connection lifecycle
 //!
@@ -11,12 +11,13 @@
 //! same pool is used for every request — sqlx handles connection reuse,
 //! retry on broken connections, and TLS via rustls.
 //!
-//! On first connect, the schema is created via `PostgresStore::initialize`
-//! using `CREATE TABLE IF NOT EXISTS`. The schema mirrors the SQLite version
-//! field-for-field; the only dialect difference is `BIGINT NOT NULL UNIQUE`
-//! for `seq` instead of SQLite's `INTEGER NOT NULL UNIQUE`. `created_at` is
-//! stored as `TEXT` (RFC 3339 with `Z` suffix) in both backends; Postgres
-//! reads cast to `timestamptz` at query time so `INTERVAL` arithmetic works.
+//! On connect, `PostgresStore::initialize` runs ordered, transactional schema
+//! migrations under a database advisory lock. Existing installations created
+//! before migration tracking are adopted by migration 1 without dropping or
+//! rewriting rows. The schema mirrors SQLite field-for-field; the only dialect
+//! difference is `BIGINT NOT NULL UNIQUE` for `seq`. `created_at` remains
+//! `TEXT` (RFC 3339 with `Z` suffix) in both backends and is cast to
+//! `timestamptz` for interval arithmetic.
 //!
 //! ## Concurrency
 //!
@@ -38,6 +39,54 @@ use crate::audit_chain::{AuditKey, ChainContent, ChainRow, VerifyOutcome, CURREN
 use crate::store::AuditStore;
 use crate::transactions::{NewTransaction, RecordedPreviewedTransaction, TransactionStoreError};
 
+const MIGRATION_LOCK_ID: i64 = 0x5359_534b_4e49_4645;
+
+struct Migration {
+    version: i64,
+    name: &'static str,
+    statements: &'static [&'static str],
+}
+
+const MIGRATIONS: &[Migration] = &[Migration {
+    version: 1,
+    name: "initial_audit_schema",
+    statements: &[
+        r#"
+        CREATE TABLE IF NOT EXISTS transactions (
+            transaction_id TEXT PRIMARY KEY,
+            request_id TEXT NOT NULL,
+            request_hash TEXT NOT NULL,
+            action_name TEXT NOT NULL,
+            risk_level TEXT NOT NULL,
+            status TEXT NOT NULL,
+            approval_id TEXT,
+            summary TEXT NOT NULL,
+            warnings_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            seq BIGINT NOT NULL UNIQUE,
+            key_id TEXT NOT NULL,
+            chain_hash TEXT NOT NULL,
+            prev_chain_hash TEXT NOT NULL DEFAULT ''
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS transaction_approvals (
+            transaction_id TEXT PRIMARY KEY,
+            receipt_digest TEXT NOT NULL,
+            approved_at TEXT NOT NULL,
+            consumed_at TEXT
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS transaction_previews (
+            transaction_id TEXT PRIMARY KEY,
+            preview_json TEXT NOT NULL
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS transactions_seq_idx ON transactions(seq)",
+    ],
+}];
+
 /// Configuration for the Postgres backend. Built by `main.rs` from
 /// `[storage]` in `config.toml`.
 #[derive(Clone, Debug)]
@@ -50,9 +99,9 @@ pub struct PostgresConfig {
     /// `acquire_timeout` for getting a connection from the pool. Raise above
     /// the default 5s if you hit Neon cold starts (~600 ms first call).
     pub acquire_timeout: Duration,
-    /// Set to 0 for transaction-mode PgBouncer (Supabase pooler) and
-    /// CockroachDB Cloud — both choke on sqlx's per-connection prepared-
-    /// statement cache. Default 100 covers all other backends.
+    /// Set to 0 for transaction-mode PgBouncer (including some hosted
+    /// poolers), which cannot use sqlx's per-connection prepared-statement
+    /// cache. Default 100 covers direct Postgres connections.
     pub statement_cache_capacity: usize,
 }
 
@@ -87,8 +136,7 @@ impl PostgresStore {
                 format!("invalid postgres URL: {e}"),
             ))
         })?;
-        // 0 disables the cache — required for transaction-mode pgbouncer
-        // (Supabase pooler) and CockroachDB Cloud. See store.rs docs.
+        // 0 disables the cache for transaction-mode PgBouncer deployments.
         connect_opts = connect_opts.statement_cache_capacity(config.statement_cache_capacity);
 
         let pool = PgPoolOptions::new()
@@ -103,69 +151,68 @@ impl PostgresStore {
         Ok(store)
     }
 
-    /// Create the schema if it doesn't exist. Idempotent on repeat starts.
+    /// Apply pending schema migrations atomically. The advisory transaction
+    /// lock serializes concurrent daemon starts against the same database.
     async fn initialize(&self) -> Result<(), TransactionStoreError> {
-        // Each statement is run separately because some Postgres providers
-        // (Supabase pooler, transaction-mode PgBouncer) reject multi-
-        // statement strings.
-        sqlx_core::query::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS transactions (
-                transaction_id TEXT PRIMARY KEY,
-                request_id TEXT NOT NULL,
-                request_hash TEXT NOT NULL,
-                action_name TEXT NOT NULL,
-                risk_level TEXT NOT NULL,
-                status TEXT NOT NULL,
-                approval_id TEXT,
-                summary TEXT NOT NULL,
-                warnings_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                seq BIGINT NOT NULL UNIQUE,
-                key_id TEXT NOT NULL,
-                chain_hash TEXT NOT NULL,
-                prev_chain_hash TEXT NOT NULL DEFAULT ''
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(map_sqlx_err)?;
+        let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
+        sqlx_core::query::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(MIGRATION_LOCK_ID)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sqlx_err)?;
 
         sqlx_core::query::query(
             r#"
-            CREATE TABLE IF NOT EXISTS transaction_approvals (
-                transaction_id TEXT PRIMARY KEY,
-                receipt_digest TEXT NOT NULL,
-                approved_at TEXT NOT NULL,
-                consumed_at TEXT
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version BIGINT PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
             "#,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(map_sqlx_err)?;
 
-        sqlx_core::query::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS transaction_previews (
-                transaction_id TEXT PRIMARY KEY,
-                preview_json TEXT NOT NULL
+        let current: i64 = sqlx_core::query_scalar::query_scalar(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_sqlx_err)?;
+        let latest = MIGRATIONS.last().map_or(0, |migration| migration.version);
+        if current > latest {
+            return Err(TransactionStoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "postgres schema version {current} is newer than this binary supports ({latest})"
+                ),
+            )));
+        }
+
+        for migration in MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version > current)
+        {
+            // Run statements separately for transaction-mode poolers that
+            // reject multi-statement query strings.
+            for statement in migration.statements {
+                sqlx_core::query::query(statement)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(map_sqlx_err)?;
+            }
+            sqlx_core::query::query(
+                "INSERT INTO schema_migrations (version, name) VALUES ($1, $2)",
             )
-            "#,
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(map_sqlx_err)?;
+            .bind(migration.version)
+            .bind(migration.name)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sqlx_err)?;
+        }
 
-        sqlx_core::query::query(
-            "CREATE INDEX IF NOT EXISTS transactions_seq_idx ON transactions(seq)",
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(map_sqlx_err)?;
-
-        Ok(())
+        tx.commit().await.map_err(map_sqlx_err)
     }
 }
 

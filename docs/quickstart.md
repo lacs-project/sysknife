@@ -21,8 +21,10 @@ sudo systemctl enable --now sysknife-daemon
 
 > **ℹ️ Fedora / Silverblue**
 >
-> All 140+ actions are fully supported and tested on Fedora 41+ and Silverblue 41+.
-> Ubuntu 22.04 / 24.04 / 26.04 LTS are supported; 24.04 is validated (65/65 stories on a live VM). See [distro support](distro-support.md).
+> Ubuntu 24.04 is validated with 65/65 stories on a live VM. Ubuntu 22.04 and
+> 26.04 have smoke-test coverage. Fedora Atomic uses the rpm-ostree action
+> family and requires a current Silverblue 44 validation run for each release.
+> Plain Fedora remains experimental. See [distro support](distro-support.md).
 
 ## Step 2 — Choose an LLM
 

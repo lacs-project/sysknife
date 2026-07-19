@@ -9,11 +9,12 @@ Claude Code MCP flow.
 
 `mcp-flow.tape` + `mcp-flow-mock.sh` → `mcp-flow.gif`
 
-Shows a Claude Code session where the user asks a sysadmin question, Claude
-calls the `sysknife_plan` MCP tool, presents a bordered plan card with risk
-badges, the user approves, Claude calls `sysknife_execute`, steps stream
-back, and the audit hash is printed. This is the primary README hero — it
-communicates "use SysKnife via your AI IDE."
+Shows a Claude Code session where `sysknife_plan` returns daemon transaction
+IDs, the user approves each accepted preview with
+`sysknife approve <transaction-id>` in a separate terminal, and Claude passes
+the one-time receipts to `sysknife_execute`. Execution streams back, receipts
+are consumed, and the audit hash is printed. A chat response alone is never
+presented as approval.
 
 ### Regenerate MCP GIF
 
@@ -21,10 +22,10 @@ communicates "use SysKnife via your AI IDE."
 # Render raw GIF with VHS
 vhs assets/demo/mcp-flow.tape
 
-# Optimize to stay under the 3 MB ceiling
-ffmpeg -y -i assets/demo/mcp-flow.gif \
-  -vf "fps=10,scale=1200:720:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=64[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3" \
-  -loop 0 assets/demo/mcp-flow.gif
+# Deterministically reduce the palette after rendering
+gifsicle -O3 --colors 128 assets/demo/mcp-flow.gif \
+  -o assets/demo/mcp-flow.optimized.gif
+mv assets/demo/mcp-flow.optimized.gif assets/demo/mcp-flow.gif
 ```
 
 ---
@@ -54,8 +55,8 @@ Output: `demo.gif`.
 
 ## Sizing rules
 
-- **Width × Height = 1200 × 720** for both recordings.
-- **GIF must stay under 3 MB** (GitHub's mobile renderer hard ceiling).
+- **MCP width x height = 1000 x 600**; CLI width x height = 1200 x 720.
+- Keep each GIF under 5 MB so the README remains usable on slower links.
 - FontSize 18 for the MCP flow (more content fits on screen); 24 for the CLI demo.
 
 ## Why mocks instead of live binaries?

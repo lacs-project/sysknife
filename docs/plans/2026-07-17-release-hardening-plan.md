@@ -18,6 +18,7 @@ GitHub Actions, npm, cargo-nextest.
 ## Task 1: Record And Fix The Baseline Test Escape
 
 **Files:**
+
 - Modify: `crates/sysknife-daemon/src/executor.rs`
 - Modify: `crates/sysknife-daemon/src/dispatcher.rs`
 - Modify: `crates/sysknife-daemon/tests/rollback.rs`
@@ -35,6 +36,7 @@ GitHub Actions, npm, cargo-nextest.
 ## Task 2: Add One-Time Daemon Approval Receipts
 
 **Files:**
+
 - Modify: `crates/sysknife-daemon/src/transactions.rs`
 - Modify: `crates/sysknife-daemon/src/store.rs`
 - Modify: `crates/sysknife-daemon/src/store/postgres.rs`
@@ -55,6 +57,7 @@ GitHub Actions, npm, cargo-nextest.
 ## Task 3: Update CLI, GUI, And MCP Approval Flows
 
 **Files:**
+
 - Modify: `apps/sysknife-cli/src/client.rs`
 - Modify: `apps/sysknife-cli/src/cli.rs`
 - Modify: `apps/sysknife-cli/src/main.rs`
@@ -76,6 +79,7 @@ GitHub Actions, npm, cargo-nextest.
 ## Task 4: Harden Ubuntu VM End-To-End Bootstrap
 
 **Files:**
+
 - Modify: `tests/e2e/ubuntu-vm.sh`
 - Modify: `docs/contributing/ubuntu-vm-testing.md`
 - Add/Modify: shell tests under `tests/e2e/`
@@ -91,6 +95,7 @@ GitHub Actions, npm, cargo-nextest.
 ## Task 5: Harden Dependencies And Release Provenance
 
 **Files:**
+
 - Modify: `Cargo.lock`
 - Modify: `apps/sysknife-shell/package.json`
 - Modify: `apps/sysknife-shell/package-lock.json`
@@ -110,6 +115,7 @@ GitHub Actions, npm, cargo-nextest.
 ## Task 6: Align OSS Documentation And Packaging
 
 **Files:**
+
 - Modify: `README.md`
 - Modify: `SECURITY.md`
 - Modify: `ROADMAP.md`

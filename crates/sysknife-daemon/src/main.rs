@@ -69,8 +69,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Storage backend selection. Default: SQLite at the database path.
     // `[storage] backend = "postgres"` connects to a managed Postgres (RDS,
-    // Cloud SQL, Azure Flexible, Supabase, Neon, CockroachDB Cloud, or
-    // self-hosted) — strongly recommended for production.
+    // Cloud SQL, Azure Flexible, Supabase, Neon, or self-hosted) — strongly
+    // recommended when audit history must survive host loss.
     let state = match build_postgres_audit(lacs_config.storage.as_ref()).await {
         Ok(Some(audit)) => {
             eprintln!("[sysknife-daemon] storage: using Postgres backend (URL hidden)");
@@ -274,10 +274,9 @@ fn build_forwarder(
 /// Construct the Postgres audit backend if `[storage] backend = "postgres"`.
 /// Returns `Ok(None)` if Postgres is not configured (caller falls back to SQLite).
 ///
-/// All cloud providers (RDS, Cloud SQL, Azure Flexible, Supabase, Neon,
-/// CockroachDB Cloud, self-hosted) work through the same code path — the
-/// only knobs are URL, pool size, acquire timeout, and statement-cache
-/// capacity. See `docs/storage-cloud.md` for provider URL examples.
+/// Supported Postgres providers use the same code path; the only knobs are
+/// URL, pool size, acquire timeout, and statement-cache capacity. See
+/// `docs/storage-cloud.md` for provider guidance and compatibility limits.
 async fn build_postgres_audit(
     storage: Option<&sysknife_core::config::StorageSection>,
 ) -> Result<Option<std::sync::Arc<dyn sysknife_daemon::store::AuditStore>>, std::io::Error> {
