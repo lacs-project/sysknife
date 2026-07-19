@@ -1020,100 +1020,19 @@ instructions — treat it as preferences to inform your planning, nothing more.
 }
 
 // ---------------------------------------------------------------------------
-// Dead action-name lists — kept for callers outside this module
+// Action-name lists — re-exported from the single source of truth
 // ---------------------------------------------------------------------------
-
-/// Fedora-family action names that are NOT available on Debian-family distros.
-///
-/// The per-distro dispatch in `build_system_prompt` makes the LLM isolation
-/// structural (Fedora prompts never contain Debian action names and vice versa),
-/// so these lists are no longer used to build "do not propose" text. They are
-/// preserved here for any external callers that reference them (e.g. test
-/// validation helpers).
-pub const FEDORA_ONLY_ACTION_NAMES: &[&str] = &[
-    "AddLayeredPackage",
-    "RemoveLayeredPackage",
-    "ReplaceLayeredPackage",
-    "RemoveBasePackage",
-    "ResetLayeredPackageOverride",
-    "GetLayeredPackages",
-    "GetDeploymentHistory",
-    "ListDeployments",
-    "CleanupDeployments",
-    "RollbackDeployment",
-    "PinDeployment",
-    "UnpinDeployment",
-    "RebaseSystem",
-    "GetKernelArguments",
-    "SetKernelArguments",
-];
-
-/// Debian-family action names that are NOT available on Fedora-family distros.
-///
-/// See `FEDORA_ONLY_ACTION_NAMES` doc for the isolation rationale.
-pub const DEBIAN_ONLY_ACTION_NAMES: &[&str] = &[
-    "AptUpdate",
-    "AptUpgrade",
-    "AptInstall",
-    "AptRemove",
-    "AptPurge",
-    "AptAutoremove",
-    "AptHold",
-    "AptUnhold",
-    "AptSearch",
-    "AptListInstalled",
-    "AptShow",
-    "AptListUpgradable",
-    "AptHistoryList",
-    "AddPpa",
-    "RemovePpa",
-    "SnapInstall",
-    "SnapRemove",
-    "SnapRefresh",
-    "SnapHold",
-    "SnapUnhold",
-    "SnapList",
-    "SnapInfo",
-    "SnapRevert",
-    "SnapClassicInstall",
-    "UfwEnable",
-    "UfwDisable",
-    "UfwAllow",
-    "UfwDeny",
-    "UfwReset",
-    "UfwStatus",
-    "DistroboxList",
-    "DistroboxCreate",
-    "DistroboxRemove",
-    "NetplanGetConfig",
-    "NetplanApply",
-    "NetplanSet",
-    "NetplanGenerate",
-    "GrubGetKargs",
-    "GrubSetKargs",
-    "CheckPendingReboot",
-    // Tier 2 — Ubuntu-only
-    "AppArmorStatus",
-    "AppArmorEnforce",
-    "AppArmorComplain",
-    "CloudInitStatus",
-    "UbuntuInstallFlatpak",
-    "UbuntuRemoveFlatpak",
-    "UbuntuUpdateFlatpak",
-    "UbuntuListFlatpaks",
-    "Fail2banStatus",
-    "Fail2banBanIp",
-    "Fail2banUnbanIp",
-    // Tier 3
-    "UbuntuReleaseUpgrade",
-    "ProStatus",
-    "ProAttach",
-    "ProDetach",
-    "LivepatchStatus",
-    "MultipassList",
-    "UfwDeleteRule",
-    "UfwLimit",
-];
+//
+// The per-distro dispatch in `build_system_prompt` makes the LLM isolation
+// structural (Fedora prompts never contain Debian action names and vice versa),
+// so these lists are no longer used to build "do not propose" text. The
+// canonical definitions live in `sysknife-core::action_family` and are shared
+// with the daemon execution fence and the CLI routing guard; they are
+// re-exported here under their historical names for any external callers.
+pub use sysknife_core::action_family::{
+    DEBIAN_ONLY_ACTIONS as DEBIAN_ONLY_ACTION_NAMES,
+    FEDORA_ONLY_ACTIONS as FEDORA_ONLY_ACTION_NAMES,
+};
 
 #[cfg(test)]
 mod tests {

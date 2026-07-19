@@ -1474,6 +1474,38 @@ mod tests {
         assert_eq!(out.exit_code, 0);
     }
 
+    /// Regression guard for the live subprocess stdout relay. This coverage
+    /// previously lived in the dispatcher (`stream_command_sends_job_progress_
+    /// lines_during_execution`) and was lost when the streaming code moved here;
+    /// restored at its owning layer. Proves `RealActionExecutor` forwards each
+    /// stdout line over the mpsc channel as it arrives and reports the exit code.
+    #[tokio::test]
+    async fn real_executor_streams_each_stdout_line() {
+        let spec = ActionSpec {
+            action_name: "GetSystemState",
+            mechanism: ActionMechanism::Command {
+                program: "printf",
+                args: vec!["line-one\\nline-two\\nline-three\\n".to_string()],
+            },
+            risk_level: RiskLevel::Low,
+            reboot_required: false,
+            rollback_available: false,
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let out = RealActionExecutor
+            .execute_with_progress(&spec, tx)
+            .await
+            .unwrap();
+
+        let mut lines = Vec::new();
+        while let Ok(line) = rx.try_recv() {
+            lines.push(line);
+        }
+        assert_eq!(lines, vec!["line-one", "line-two", "line-three"]);
+        assert_eq!(out.exit_code, 0);
+        assert!(out.stdout.contains("line-two"));
+    }
+
     #[tokio::test]
     async fn execute_spec_file_write_creates_file() {
         let dir = tempdir().unwrap();

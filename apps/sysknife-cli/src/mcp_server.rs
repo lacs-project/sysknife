@@ -783,9 +783,12 @@ async fn audit_chain_quick_check(
         }
     };
 
+    let verifier = Verifier::Private(Box::new(key));
     let outcome = match lacs_config.storage.as_ref() {
-        Some(s) if s.backend.eq_ignore_ascii_case("postgres") => verify_postgres(s, &key).await,
-        _ => verify_sqlite(&db_path, &Verifier::Private(Box::new(key.clone()))).await,
+        Some(s) if s.backend.eq_ignore_ascii_case("postgres") => {
+            verify_postgres(s, &verifier).await
+        }
+        _ => verify_sqlite(&db_path, &verifier).await,
     };
 
     match outcome {
@@ -839,9 +842,12 @@ async fn audit_verify_inner() -> AuditVerifyReport {
         }
     };
 
+    let verifier = Verifier::Private(Box::new(key));
     let outcome = match lacs_config.storage.as_ref() {
-        Some(s) if s.backend.eq_ignore_ascii_case("postgres") => verify_postgres(s, &key).await,
-        _ => verify_sqlite(&db_path, &Verifier::Private(Box::new(key.clone()))).await,
+        Some(s) if s.backend.eq_ignore_ascii_case("postgres") => {
+            verify_postgres(s, &verifier).await
+        }
+        _ => verify_sqlite(&db_path, &verifier).await,
     };
 
     outcome_to_report(outcome, backend_label)

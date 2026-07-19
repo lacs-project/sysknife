@@ -188,7 +188,7 @@ milestone.
 | **Ubuntu 22.04 / 26.04 VM tooling** — smoke tests pass on all three LTSes | ✅ |
 | Telegram approval interface | 📋 roadmap |
 
-**1,231 Rust tests and 72 frontend tests** form the current deterministic
+**1,249 Rust tests and 72 frontend tests** form the current deterministic
 release baseline.
 
 ## Configure your LLM

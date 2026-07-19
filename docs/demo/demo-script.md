@@ -38,7 +38,7 @@ proposes a multi-step plan.
 
 | Step | Action | Risk |
 | --- | --- | --- |
-| 1 | `rpm_ostree_install htop` | Medium |
+| 1 | `AddLayeredPackage htop` | High |
 | 2 | `firewall_add_service ssh` | High |
 
 Each step shows:
@@ -74,7 +74,8 @@ The daemon handles all privileged operations."
 
 ## Scene 5: Rollback demo (20 seconds)
 
-**Setup:** prepare a scenario where a High-risk action fails.
+**Setup:** prepare a supported rpm-ostree action whose preview reports
+`rollback_available: true`, then make that action fail.
 Options:
 
 1. Temporarily make `rpm-ostree rollback` fail by stopping
@@ -92,12 +93,13 @@ approve it, let it fail.
 - Rollback automatically triggers
 - Transaction log shows the failure and rollback
 
-**Narration point:** "When a high-risk action fails, SysKnife rolls
-back automatically. Every execution is logged."
+**Narration point:** "When an action explicitly advertises rollback support,
+SysKnife attempts that rollback after failure. Every execution is logged."
 
 ## Scene 6: Audit trail (5 seconds)
 
-**Show:** the SQLite transaction log (via CLI or shell UI).
+**Show:** the configured transaction log (SQLite for a local demo, PostgreSQL
+for a production deployment) via the CLI or shell UI.
 
 **Action:** show that every action, approval, and rollback is
 recorded with timestamps.

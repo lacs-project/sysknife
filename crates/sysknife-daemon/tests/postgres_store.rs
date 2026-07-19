@@ -148,24 +148,27 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
         Some(preview())
     );
 
+    let receipt = store
+        .approve_transaction(transaction_id)
+        .await
+        .expect("approve transaction")
+        .expect("fresh transaction is approved");
+    let receipt_digest = sysknife_daemon::audit_chain::approval_receipt_digest(&receipt);
     assert!(store
-        .approve_transaction(transaction_id, "receipt-digest")
+        .approve_transaction(transaction_id)
         .await
-        .expect("approve transaction"));
-    assert!(!store
-        .approve_transaction(transaction_id, "replacement-digest")
-        .await
-        .expect("reject duplicate approval"));
+        .expect("reject duplicate approval")
+        .is_none());
     assert!(!store
         .claim_approved_for_execution(transaction_id, "wrong-digest")
         .await
         .expect("reject wrong receipt"));
     assert!(store
-        .claim_approved_for_execution(transaction_id, "receipt-digest")
+        .claim_approved_for_execution(transaction_id, &receipt_digest)
         .await
         .expect("claim approved transaction"));
     assert!(!store
-        .claim_approved_for_execution(transaction_id, "receipt-digest")
+        .claim_approved_for_execution(transaction_id, &receipt_digest)
         .await
         .expect("reject receipt replay"));
 
@@ -182,6 +185,12 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
     assert_eq!(history.len(), 1);
     assert_eq!(
         store.verify_audit_chain(&key).await.expect("verify chain"),
+        VerifyOutcome::Intact { rows_checked: 1 }
+    );
+    assert_eq!(
+        PostgresStore::verify_with_pubkey(&config, &key.verifying_key_hex())
+            .await
+            .expect("verify Postgres chain with public key only"),
         VerifyOutcome::Intact { rows_checked: 1 }
     );
 

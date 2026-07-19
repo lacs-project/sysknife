@@ -89,7 +89,7 @@ pub struct DaemonSection {
 /// [storage.pool]
 /// max_connections          = 8
 /// acquire_timeout_secs     = 10
-/// statement_cache_capacity = 100   # set to 0 for Supabase pooler / CockroachDB
+/// statement_cache_capacity = 100   # set to 0 for transaction-mode poolers
 /// ```
 ///
 /// See `docs/storage-cloud.md` for cloud-provider URL reference.
@@ -169,8 +169,8 @@ pub struct StoragePoolSection {
     /// Raise above 10 if you observe Neon cold-start failures.
     pub acquire_timeout_secs: Option<u64>,
     /// Per-connection prepared-statement cache size. Default 100.
-    /// **Set to 0** for transaction-mode PgBouncer (Supabase pooler) and
-    /// CockroachDB Cloud — both reject sqlx's named prepared statements.
+    /// **Set to 0** for transaction-mode PgBouncer (including the Supabase
+    /// pooler), which rejects sqlx's named prepared statements.
     pub statement_cache_capacity: Option<usize>,
 }
 

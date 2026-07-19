@@ -33,15 +33,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
         with:
           node-version: '20'
 
       - name: Validate tag and package versions
         run: bash scripts/check_release_versions.sh "${{ github.ref_name }}"
+
+      - name: Check registry state for resumable publishing
+        run: bash scripts/check_registry_versions.sh "${{ github.ref_name }}"
 
       - name: Require publication credentials
         env:
@@ -70,7 +73,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
 
       - name: Install system dependencies
         run: |
@@ -78,12 +81,12 @@ jobs:
           sudo apt-get install -y cmake
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
         with:
           targets: ${{ matrix.target }}
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
         with:
           key: ${{ matrix.target }}
 
@@ -108,7 +111,7 @@ jobs:
             > "sha256sums-linux-${ARCH}.txt"
 
       - name: Generate SPDX SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0
         with:
           path: .
           format: spdx-json
@@ -117,14 +120,14 @@ jobs:
           upload-release-assets: false
 
       - name: Attest build provenance
-        uses: actions/attest@v4
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6  # v4
         with:
           subject-path: |
             sysknife-${{ github.ref_name }}-linux-${{ matrix.arch }}
             sysknife-daemon-${{ github.ref_name }}-linux-${{ matrix.arch }}
 
       - name: Attest SBOM
-        uses: actions/attest@v4
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6  # v4
         with:
           subject-path: |
             sysknife-${{ github.ref_name }}-linux-${{ matrix.arch }}
@@ -132,7 +135,7 @@ jobs:
           sbom-path: sysknife-${{ github.ref_name }}-linux-${{ matrix.arch }}.spdx.json
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: binaries-${{ matrix.arch }}
           path: |
@@ -152,22 +155,30 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
 
       - name: Smoke-test the package
-        run: node packages/setup/index.js --help
+        run: npm test --prefix packages/setup
 
       - name: Publish to npm
+        env:
+          VERSION: ${{ github.ref_name }}
         run: |
-          cd packages/setup
-          npm publish --access public
+          VERSION="${VERSION#v}"
+          if curl --fail --silent --retry 3 --retry-connrefused \
+            "https://registry.npmjs.org/sysknife-setup/${VERSION}" >/dev/null; then
+            echo "sysknife-setup ${VERSION} already exists; skipping"
+          else
+            cd packages/setup
+            npm publish --access public
+          fi
 
   publish-crates:
     name: Publish to crates.io
@@ -176,10 +187,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
 
       - name: Install system dependencies
         run: |
@@ -189,19 +200,26 @@ jobs:
       - name: Publish in dependency order
         # Publish order follows the internal dependency graph:
         #   proto + core -> types -> brain -> daemon -> cli
-        # --no-verify skips the redundant pre-publish rebuild; the build job
-        # already verified the workspace compiles cleanly.
+        # Every generated crate archive is verified before upload. Existing
+        # versions are skipped so a partially completed release can be resumed.
         # sleep 30 lets crates.io index each crate before its dependents publish.
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          VERSION: ${{ github.ref_name }}
         run: |
           test -n "${CARGO_REGISTRY_TOKEN:-}" || { echo '::error::CARGO_REGISTRY_TOKEN is not configured'; exit 1; }
+          VERSION="${VERSION#v}"
           for crate in sysknife-proto sysknife-core sysknife-types \
-                       sysknife-brain sysknife-daemon; do
-            cargo publish -p "$crate" --token "$CARGO_REGISTRY_TOKEN" --no-verify
-            sleep 30
+                       sysknife-brain sysknife-daemon sysknife-cli; do
+            if curl --fail --silent --retry 3 --retry-connrefused \
+              --user-agent 'sysknife-release/1.0 (https://github.com/lacs-project/sysknife)' \
+              "https://crates.io/api/v1/crates/${crate}/${VERSION}" >/dev/null; then
+              echo "${crate} ${VERSION} already exists; skipping"
+            else
+              cargo publish -p "$crate" --locked --token "$CARGO_REGISTRY_TOKEN"
+              sleep 30
+            fi
           done
-          cargo publish -p sysknife-cli --token "$CARGO_REGISTRY_TOKEN" --no-verify
 
   release:
     name: Create GitHub release
@@ -212,10 +230,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           merge-multiple: true
           path: dist/

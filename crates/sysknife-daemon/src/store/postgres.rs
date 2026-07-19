@@ -32,10 +32,12 @@ use sqlx_core::row::Row;
 use sqlx_postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 use std::str::FromStr;
 use std::time::Duration;
+use subtle::ConstantTimeEq;
 use sysknife_types::{JobState, PreviewEnvelope, TransactionRecord};
 use uuid::Uuid;
 
 use crate::audit_chain::{AuditKey, ChainContent, ChainRow, VerifyOutcome, CURRENT_KEY_ID};
+use crate::audit_watermark::emit_chain_tip_watermark;
 use crate::store::AuditStore;
 use crate::transactions::{NewTransaction, RecordedPreviewedTransaction, TransactionStoreError};
 
@@ -123,32 +125,54 @@ pub struct PostgresStore {
     audit_key: std::sync::Arc<AuditKey>,
 }
 
+struct InsertedTransaction {
+    record: TransactionRecord,
+    seq: u64,
+    chain_hash: String,
+}
+
 impl PostgresStore {
-    /// Connect to the configured Postgres database, run the migration,
-    /// and bind an audit key for chain computation.
-    pub async fn connect(
-        config: &PostgresConfig,
-        audit_key: std::sync::Arc<AuditKey>,
-    ) -> Result<Self, TransactionStoreError> {
+    async fn connect_pool(config: &PostgresConfig) -> Result<PgPool, TransactionStoreError> {
         let mut connect_opts = PgConnectOptions::from_str(&config.url).map_err(|e| {
             TransactionStoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!("invalid postgres URL: {e}"),
             ))
         })?;
-        // 0 disables the cache for transaction-mode PgBouncer deployments.
         connect_opts = connect_opts.statement_cache_capacity(config.statement_cache_capacity);
-
-        let pool = PgPoolOptions::new()
+        PgPoolOptions::new()
             .max_connections(config.max_connections)
             .acquire_timeout(config.acquire_timeout)
             .connect_with(connect_opts)
             .await
-            .map_err(map_sqlx_err)?;
+            .map_err(map_sqlx_err)
+    }
+
+    /// Connect to the configured Postgres database, run the migration,
+    /// and bind an audit key for chain computation.
+    pub async fn connect(
+        config: &PostgresConfig,
+        audit_key: std::sync::Arc<AuditKey>,
+    ) -> Result<Self, TransactionStoreError> {
+        let pool = Self::connect_pool(config).await?;
 
         let store = Self { pool, audit_key };
         store.initialize().await?;
         Ok(store)
+    }
+
+    /// Verify an existing Postgres chain with only the exported public key.
+    /// This path performs no migrations and never loads the signing key.
+    pub async fn verify_with_pubkey(
+        config: &PostgresConfig,
+        verifying_key_hex: &str,
+    ) -> Result<VerifyOutcome, TransactionStoreError> {
+        let pool = Self::connect_pool(config).await?;
+        let rows = fetch_chain_rows_from_pool(&pool).await?;
+        Ok(crate::audit_chain::verify_chain_with_pubkey(
+            verifying_key_hex,
+            &rows,
+        ))
     }
 
     /// Apply pending schema migrations atomically. The advisory transaction
@@ -182,11 +206,8 @@ impl PostgresStore {
         .map_err(map_sqlx_err)?;
         let latest = MIGRATIONS.last().map_or(0, |migration| migration.version);
         if current > latest {
-            return Err(TransactionStoreError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "postgres schema version {current} is newer than this binary supports ({latest})"
-                ),
+            return Err(TransactionStoreError::DatabaseInvariant(format!(
+                "postgres schema version {current} is newer than this binary supports ({latest})"
             )));
         }
 
@@ -221,7 +242,23 @@ impl PostgresStore {
 // ---------------------------------------------------------------------------
 
 fn map_sqlx_err(e: sqlx_core::Error) -> TransactionStoreError {
-    TransactionStoreError::Io(std::io::Error::other(format!("postgres: {e}")))
+    let message = format!("postgres: {e}");
+    let invariant = match &e {
+        sqlx_core::Error::Database(db) => db
+            .code()
+            .is_some_and(|code| code.starts_with("22") || code.starts_with("23")),
+        sqlx_core::Error::TypeNotFound { .. }
+        | sqlx_core::Error::ColumnIndexOutOfBounds { .. }
+        | sqlx_core::Error::ColumnNotFound(_)
+        | sqlx_core::Error::ColumnDecode { .. }
+        | sqlx_core::Error::Decode(_) => true,
+        _ => false,
+    };
+    if invariant {
+        TransactionStoreError::DatabaseInvariant(message)
+    } else {
+        TransactionStoreError::Io(std::io::Error::other(message))
+    }
 }
 
 fn serialize<T: serde::Serialize>(v: &T) -> Result<String, TransactionStoreError> {
@@ -250,10 +287,11 @@ impl AuditStore for PostgresStore {
     ) -> Result<TransactionRecord, TransactionStoreError> {
         let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
         let transaction_id = Uuid::new_v4().to_string();
-        let record =
+        let inserted =
             insert_transaction(&mut tx, &self.audit_key, &transaction_id, transaction).await?;
         tx.commit().await.map_err(map_sqlx_err)?;
-        Ok(record)
+        emit_chain_tip_watermark(inserted.seq, &inserted.chain_hash);
+        Ok(inserted.record)
     }
 
     async fn record_previewed(
@@ -263,21 +301,22 @@ impl AuditStore for PostgresStore {
     ) -> Result<RecordedPreviewedTransaction, TransactionStoreError> {
         let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
         let transaction_id = Uuid::new_v4().to_string();
-        let record =
+        let inserted =
             insert_transaction(&mut tx, &self.audit_key, &transaction_id, transaction).await?;
 
         sqlx_core::query::query(
             "INSERT INTO transaction_previews (transaction_id, preview_json) VALUES ($1, $2)",
         )
-        .bind(&record.transaction_id)
+        .bind(&inserted.record.transaction_id)
         .bind(serialize(&preview)?)
         .execute(&mut *tx)
         .await
         .map_err(map_sqlx_err)?;
 
         tx.commit().await.map_err(map_sqlx_err)?;
+        emit_chain_tip_watermark(inserted.seq, &inserted.chain_hash);
         Ok(RecordedPreviewedTransaction {
-            transaction: record,
+            transaction: inserted.record,
             preview,
         })
     }
@@ -354,8 +393,31 @@ impl AuditStore for PostgresStore {
     async fn approve_transaction(
         &self,
         transaction_id: &str,
-        receipt_digest: &str,
-    ) -> Result<bool, TransactionStoreError> {
+    ) -> Result<Option<String>, TransactionStoreError> {
+        let row = sqlx_core::query::query(
+            "SELECT request_hash, approval_id FROM transactions WHERE transaction_id = $1",
+        )
+        .bind(transaction_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_sqlx_err)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let request_hash: String = row.try_get("request_hash").map_err(map_sqlx_err)?;
+        let committed_digest: Option<String> = row.try_get("approval_id").map_err(map_sqlx_err)?;
+        let receipt = self
+            .audit_key
+            .approval_receipt(transaction_id, &request_hash);
+        let receipt_digest = crate::audit_chain::approval_receipt_digest(&receipt);
+        let commitment_matches = committed_digest.as_deref().is_some_and(|committed| {
+            bool::from(receipt_digest.as_bytes().ct_eq(committed.as_bytes()))
+        });
+        if !commitment_matches {
+            return Err(TransactionStoreError::DatabaseInvariant(format!(
+                "transaction {transaction_id} approval commitment does not match its signed preview"
+            )));
+        }
         let queued = serialize(&JobState::Queued)?;
         let result = sqlx_core::query::query(
             "INSERT INTO transaction_approvals \
@@ -370,6 +432,21 @@ impl AuditStore for PostgresStore {
         .bind(now_iso())
         .bind(transaction_id)
         .bind(&queued)
+        .execute(&self.pool)
+        .await
+        .map_err(map_sqlx_err)?;
+        Ok((result.rows_affected() > 0).then_some(receipt))
+    }
+
+    async fn revoke_unconsumed_approval(
+        &self,
+        transaction_id: &str,
+    ) -> Result<bool, TransactionStoreError> {
+        let result = sqlx_core::query::query(
+            "DELETE FROM transaction_approvals \
+             WHERE transaction_id = $1 AND consumed_at IS NULL",
+        )
+        .bind(transaction_id)
         .execute(&self.pool)
         .await
         .map_err(map_sqlx_err)?;
@@ -508,16 +585,7 @@ impl AuditStore for PostgresStore {
     }
 
     async fn fetch_chain_rows(&self) -> Result<Vec<ChainRow>, TransactionStoreError> {
-        let rows = sqlx_core::query::query(
-            "SELECT seq, key_id, transaction_id, request_id, request_hash, \
-                    action_name, risk_level, summary, approval_id, warnings_json, \
-                    created_at, prev_chain_hash, chain_hash \
-             FROM transactions ORDER BY seq ASC",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(map_sqlx_err)?;
-        rows.into_iter().map(row_to_chain_row).collect()
+        fetch_chain_rows_from_pool(&self.pool).await
     }
 
     async fn verify_audit_chain(
@@ -529,6 +597,19 @@ impl AuditStore for PostgresStore {
     }
 }
 
+async fn fetch_chain_rows_from_pool(pool: &PgPool) -> Result<Vec<ChainRow>, TransactionStoreError> {
+    let rows = sqlx_core::query::query(
+        "SELECT seq, key_id, transaction_id, request_id, request_hash, \
+                    action_name, risk_level, summary, approval_id, warnings_json, \
+                    created_at, prev_chain_hash, chain_hash \
+             FROM transactions ORDER BY seq ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(map_sqlx_err)?;
+    rows.into_iter().map(row_to_chain_row).collect()
+}
+
 // ---------------------------------------------------------------------------
 // Insert path — chain-aware
 // ---------------------------------------------------------------------------
@@ -538,11 +619,15 @@ async fn insert_transaction(
     key: &AuditKey,
     transaction_id: &str,
     transaction: NewTransaction,
-) -> Result<TransactionRecord, TransactionStoreError> {
+) -> Result<InsertedTransaction, TransactionStoreError> {
     let warnings_json = serialize(&transaction.warnings)?;
     let status = JobState::Queued;
     let created_at = now_iso();
     let key_id = CURRENT_KEY_ID.to_string();
+    let approval_id = transaction
+        .approval_id
+        .clone()
+        .or_else(|| Some(key.approval_commitment(transaction_id, &transaction.request_hash)));
 
     // SELECT … FOR UPDATE on the most-recent row (if any) so concurrent
     // writers serialise on the chain tip. Without this, two parallel
@@ -570,7 +655,7 @@ async fn insert_transaction(
             action_name: &transaction.action_name,
             risk_level: transaction.risk_level,
             summary: &transaction.summary,
-            approval_id: transaction.approval_id.as_deref(),
+            approval_id: approval_id.as_deref(),
             warnings_json: &warnings_json,
             created_at: &created_at,
         },
@@ -590,7 +675,7 @@ async fn insert_transaction(
     .bind(&transaction.action_name)
     .bind(serialize(&transaction.risk_level)?)
     .bind(serialize(&status)?)
-    .bind(&transaction.approval_id)
+    .bind(&approval_id)
     .bind(&transaction.summary)
     .bind(&warnings_json)
     .bind(&created_at)
@@ -602,16 +687,20 @@ async fn insert_transaction(
     .await
     .map_err(map_sqlx_err)?;
 
-    Ok(TransactionRecord {
-        transaction_id: transaction_id.to_string(),
-        request_id: transaction.request_id,
-        request_hash: transaction.request_hash,
-        action_name: transaction.action_name,
-        risk_level: transaction.risk_level,
-        status,
-        approval_id: transaction.approval_id,
-        summary: transaction.summary,
-        warnings: transaction.warnings,
+    Ok(InsertedTransaction {
+        record: TransactionRecord {
+            transaction_id: transaction_id.to_string(),
+            request_id: transaction.request_id,
+            request_hash: transaction.request_hash,
+            action_name: transaction.action_name,
+            risk_level: transaction.risk_level,
+            status,
+            approval_id,
+            summary: transaction.summary,
+            warnings: transaction.warnings,
+        },
+        seq,
+        chain_hash,
     })
 }
 
@@ -682,5 +771,11 @@ mod tests {
         .expect("standard URL parses");
         // Ensure binding via PgPoolOptions wouldn't reject it (just smoke-check).
         let _ = opts.statement_cache_capacity(0);
+    }
+
+    #[test]
+    fn schema_decode_errors_are_classified_as_invariant_failures() {
+        let error = map_sqlx_err(sqlx_core::Error::ColumnNotFound("chain_hash".to_string()));
+        assert!(matches!(error, TransactionStoreError::DatabaseInvariant(_)));
     }
 }

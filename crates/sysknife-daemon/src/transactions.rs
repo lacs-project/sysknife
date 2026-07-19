@@ -4,6 +4,7 @@ use rusqlite::{params, Connection, TransactionBehavior};
 use serde::{de::DeserializeOwned, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 use sysknife_types::{JobState, PreviewEnvelope, RiskLevel, TransactionRecord};
 use uuid::Uuid;
 
@@ -56,6 +57,12 @@ pub struct RecordedPreviewedTransaction {
     pub preview: PreviewEnvelope,
 }
 
+struct InsertedTransaction {
+    record: TransactionRecord,
+    seq: u64,
+    chain_hash: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum TransactionStoreError {
     #[error("io error: {0}")]
@@ -66,6 +73,9 @@ pub enum TransactionStoreError {
 
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("database invariant violation: {0}")]
+    DatabaseInvariant(String),
 
     #[error("transaction not found: {0}")]
     NotFound(String),
@@ -156,9 +166,10 @@ impl TransactionStore {
         // and then race to INSERT — the loser hits SQLITE_BUSY.
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let transaction_id = Uuid::new_v4().to_string();
-        let record = Self::insert_transaction(&tx, key, &transaction_id, transaction)?;
+        let inserted = Self::insert_transaction(&tx, key, &transaction_id, transaction)?;
         tx.commit()?;
-        Ok(record)
+        emit_chain_tip_watermark(inserted.seq, &inserted.chain_hash);
+        Ok(inserted.record)
     }
 
     pub fn record_previewed(
@@ -179,12 +190,13 @@ impl TransactionStore {
         // and then race to INSERT — the loser hits SQLITE_BUSY.
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let transaction_id = Uuid::new_v4().to_string();
-        let transaction = Self::insert_transaction(&tx, key, &transaction_id, transaction)?;
-        Self::insert_preview(&tx, &transaction.transaction_id, &preview)?;
+        let inserted = Self::insert_transaction(&tx, key, &transaction_id, transaction)?;
+        Self::insert_preview(&tx, &inserted.record.transaction_id, &preview)?;
         tx.commit()?;
+        emit_chain_tip_watermark(inserted.seq, &inserted.chain_hash);
 
         Ok(RecordedPreviewedTransaction {
-            transaction,
+            transaction: inserted.record,
             preview,
         })
     }
@@ -275,8 +287,29 @@ impl TransactionStore {
     pub fn approve_transaction(
         &self,
         transaction_id: &str,
-        receipt_digest: &str,
-    ) -> Result<bool, TransactionStoreError> {
+    ) -> Result<Option<String>, TransactionStoreError> {
+        let key = self
+            .audit_key
+            .as_ref()
+            .ok_or(TransactionStoreError::AuditChainMissing(
+                "this TransactionStore was opened read-only; cannot approve",
+            ))?;
+        let Some(record) = self.get(transaction_id)? else {
+            return Ok(None);
+        };
+        let receipt = key.approval_receipt(transaction_id, &record.request_hash);
+        let receipt_digest = audit_chain::approval_receipt_digest(&receipt);
+        let Some(committed_digest) = record.approval_id.as_deref() else {
+            return Err(TransactionStoreError::DatabaseInvariant(format!(
+                "transaction {transaction_id} has no signed approval commitment"
+            )));
+        };
+        if !bool::from(receipt_digest.as_bytes().ct_eq(committed_digest.as_bytes())) {
+            return Err(TransactionStoreError::DatabaseInvariant(format!(
+                "transaction {transaction_id} approval commitment does not match its signed preview"
+            )));
+        }
+
         let conn = self.connection()?;
         let queued_json = serialize_field(&JobState::Queued)?;
         let rows_affected = conn.execute(
@@ -289,6 +322,21 @@ impl TransactionStore {
                    SELECT 1 FROM transaction_approvals WHERE transaction_id = ?2 \
                )",
             params![receipt_digest, transaction_id, queued_json],
+        )?;
+        Ok((rows_affected > 0).then_some(receipt))
+    }
+
+    /// Remove an approval that was persisted but could not be delivered to the
+    /// caller. Consumed receipts are never revocable.
+    pub fn revoke_unconsumed_approval(
+        &self,
+        transaction_id: &str,
+    ) -> Result<bool, TransactionStoreError> {
+        let conn = self.connection()?;
+        let rows_affected = conn.execute(
+            "DELETE FROM transaction_approvals \
+             WHERE transaction_id = ?1 AND consumed_at IS NULL",
+            params![transaction_id],
         )?;
         Ok(rows_affected > 0)
     }
@@ -436,7 +484,25 @@ impl TransactionStore {
     }
 
     fn initialize(&self) -> Result<(), TransactionStoreError> {
-        let conn = self.connection()?;
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (\
+                 version INTEGER PRIMARY KEY,\
+                 name TEXT NOT NULL,\
+                 applied_at TEXT NOT NULL DEFAULT (datetime('now'))\
+             );",
+        )?;
+        let current: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )?;
+        if current > 1 {
+            return Err(TransactionStoreError::DatabaseInvariant(format!(
+                "sqlite schema version {current} is newer than this binary supports (1)"
+            )));
+        }
         // Schema additions for the append-tamper-evident hash chain (see
         // `audit_chain.rs` for the full threat model — note that truncation of
         // the tail is NOT detected by this chain alone; that requires the
@@ -450,7 +516,7 @@ impl TransactionStore {
         // status is intentionally absent from the chain content — it is mutable.
         // The chain protects the *authorisation decision* captured at insert
         // time, not the live execution state.
-        conn.execute_batch(
+        tx.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS transactions (
                 transaction_id TEXT PRIMARY KEY,
@@ -484,6 +550,11 @@ impl TransactionStore {
             CREATE INDEX IF NOT EXISTS transactions_seq_idx ON transactions(seq);
             "#,
         )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (1, ?1)",
+            params!["initial_audit_schema"],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -615,14 +686,16 @@ impl TransactionStore {
         key: &AuditKey,
         transaction_id: &str,
         transaction: NewTransaction,
-    ) -> Result<TransactionRecord, TransactionStoreError> {
+    ) -> Result<InsertedTransaction, TransactionStoreError> {
         let request_id = transaction.request_id;
         let request_hash = transaction.request_hash;
         let action_name = transaction.action_name;
         let risk_level = transaction.risk_level;
         // Initial status is always Queued — not caller-controllable.
         let status = JobState::Queued;
-        let approval_id = transaction.approval_id;
+        let approval_id = transaction
+            .approval_id
+            .or_else(|| Some(key.approval_commitment(transaction_id, &request_hash)));
         let summary = transaction.summary;
         let warnings = transaction.warnings;
         let warnings_json = serde_json::to_string(&warnings)?;
@@ -704,13 +777,11 @@ impl TransactionStore {
             ],
         )?;
 
-        // Emit an independent journald watermark so a SIEM can detect tail
-        // truncation: if the journal stream contains (seq, chain_hash) pairs
-        // beyond the SQLite tail, rows have been deleted. Non-fatal — see
-        // `audit_watermark` module documentation for the failure policy.
-        emit_chain_tip_watermark(seq, &chain_hash);
-
-        Ok(record)
+        Ok(InsertedTransaction {
+            record,
+            seq,
+            chain_hash,
+        })
     }
 
     fn insert_preview(
@@ -1115,35 +1186,86 @@ mod tests {
                 .unwrap(),
             "an unapproved preview must not execute"
         );
+        let receipt = store
+            .approve_transaction(&tx.transaction_id)
+            .unwrap()
+            .expect("first approval must succeed");
+        let digest = audit_chain::approval_receipt_digest(&receipt);
+        assert_eq!(tx.approval_id.as_deref(), Some(digest.as_str()));
         assert!(
             store
-                .approve_transaction(&tx.transaction_id, "digest-a")
-                .unwrap(),
-            "first approval must succeed"
-        );
-        assert!(
-            !store
-                .approve_transaction(&tx.transaction_id, "digest-b")
-                .unwrap(),
+                .approve_transaction(&tx.transaction_id)
+                .unwrap()
+                .is_none(),
             "approval is immutable once issued"
         );
         assert!(
             !store
-                .claim_approved_for_execution(&tx.transaction_id, "digest-b")
+                .claim_approved_for_execution(&tx.transaction_id, "wrong-digest")
                 .unwrap(),
             "a forged receipt must not execute"
         );
         assert!(
             store
-                .claim_approved_for_execution(&tx.transaction_id, "digest-a")
+                .claim_approved_for_execution(&tx.transaction_id, &digest)
                 .unwrap(),
             "the exact approved receipt must execute"
         );
         assert!(
             !store
-                .claim_approved_for_execution(&tx.transaction_id, "digest-a")
+                .claim_approved_for_execution(&tx.transaction_id, &digest)
                 .unwrap(),
             "the receipt must be one-time"
+        );
+    }
+
+    #[test]
+    fn approval_commitment_is_covered_by_the_signed_chain() {
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let tx = store.record(queued_transaction()).unwrap();
+        assert!(tx.approval_id.is_some());
+
+        store
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE transactions SET approval_id = 'forged' WHERE transaction_id = ?1",
+                params![tx.transaction_id],
+            )
+            .unwrap();
+
+        let key = AuditKey::from_bytes(vec![0x42; 32]);
+        assert!(matches!(
+            store.verify_audit_chain(&key).unwrap(),
+            VerifyOutcome::Broken { .. }
+        ));
+    }
+
+    #[test]
+    fn approve_rejects_a_forged_commitment_at_runtime() {
+        // Defense-in-depth: even before the chain-verify pass runs, approving a
+        // transaction whose stored commitment was tampered must fail closed via
+        // the constant-time check in `approve_transaction`, not issue a receipt.
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let tx = store.record(queued_transaction()).unwrap();
+
+        store
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE transactions SET approval_id = 'forged' WHERE transaction_id = ?1",
+                params![tx.transaction_id],
+            )
+            .unwrap();
+
+        let err = store
+            .approve_transaction(&tx.transaction_id)
+            .expect_err("a forged commitment must be rejected, not approved");
+        assert!(
+            matches!(err, TransactionStoreError::DatabaseInvariant(_)),
+            "forged commitment must surface as a DatabaseInvariant, got {err:?}"
         );
     }
 
@@ -1162,9 +1284,10 @@ mod tests {
         .unwrap();
 
         assert!(
-            !store
-                .approve_transaction(&tx.transaction_id, "digest-a")
-                .unwrap(),
+            store
+                .approve_transaction(&tx.transaction_id)
+                .unwrap()
+                .is_none(),
             "a production-format timestamp outside the TTL must not be approved"
         );
     }
@@ -1503,7 +1626,8 @@ mod tests {
     /// committed connection with duplicate seq. In practice this cannot happen
     /// through the public API (BEGIN IMMEDIATE + seq allocation inside the same
     /// DB transaction prevents races), but the unit test validates the ordering
-    /// invariant: watermark is emitted AFTER `conn.execute()` returns `Ok`.
+    /// invariant: the watermark is emitted AFTER `tx.commit()` succeeds, so a
+    /// rolled-back transaction emits nothing.
     ///
     /// Strategy: install the sink, then verify that a store that has never had
     /// `record()` called on it emits zero watermarks.

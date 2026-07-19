@@ -193,6 +193,26 @@ const TRANSACTION_ID_DISPLAY_PREFIX_LEN: usize = 8;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
+#[serde(transparent)]
+struct TransactionId(String);
+
+impl TransactionId {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(transparent)]
+struct ApprovalReceipt(String);
+
+impl ApprovalReceipt {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum DaemonRequest {
     QueryState {
@@ -205,18 +225,18 @@ enum DaemonRequest {
     },
     Approve {
         request_id: String,
-        transaction_id: String,
+        transaction_id: TransactionId,
     },
     ApprovalDetails {
         request_id: String,
-        transaction_id: String,
+        transaction_id: TransactionId,
     },
     Execute {
         request_id: String,
-        transaction_id: String,
+        transaction_id: TransactionId,
         action_name: String,
         params: Value,
-        approval_receipt: String,
+        approval_receipt: ApprovalReceipt,
     },
     Cancel {
         job_id: String,
@@ -465,6 +485,47 @@ fn authorize_action(
     action_name: &str,
 ) -> bool {
     policy.action_allowed(caller, action_name)
+}
+
+// Family-specific action lists come from the single source of truth in
+// `sysknife-core::action_family`, shared with the CLI routing guard and the
+// brain prompt so the execution fence can never drift out of parity.
+use sysknife_core::action_family::{DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS};
+
+fn validate_action_platform(state: &DaemonState, action_name: &str) -> Result<(), String> {
+    use sysknife_core::distro::DistroFamily;
+
+    let required_family = if DEBIAN_ONLY_ACTIONS.contains(&action_name) {
+        Some(DistroFamily::Debian)
+    } else if FEDORA_ONLY_ACTIONS.contains(&action_name) {
+        Some(DistroFamily::Fedora)
+    } else {
+        None
+    };
+    let is_mutating = state
+        .policy
+        .min_role_for_action(action_name)
+        .is_some_and(|role| {
+            crate::auth::role_rank(&role) > crate::auth::role_rank(&CallerRole::Observer)
+        });
+    if required_family.is_none() && !is_mutating {
+        return Ok(());
+    }
+
+    let distro = state.host_distro.as_ref().ok_or_else(|| {
+        format!("cannot safely run {action_name}: host distribution could not be detected")
+    })?;
+    if !distro.is_supported() {
+        return Err(format!(
+            "cannot run {action_name} on unsupported host {distro}; see docs/distro-support.md"
+        ));
+    }
+    if required_family.is_some_and(|family| distro.family() != family) {
+        return Err(format!(
+            "action {action_name} is incompatible with supported host {distro}"
+        ));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -743,11 +804,11 @@ async fn dispatch_loop<S>(
             DaemonRequest::Approve {
                 request_id,
                 transaction_id,
-            } => handle_approve(framed, &state, request_id, transaction_id).await,
+            } => handle_approve(framed, &state, request_id, transaction_id.as_str()).await,
             DaemonRequest::ApprovalDetails {
                 request_id,
                 transaction_id,
-            } => handle_approval_details(framed, &state, request_id, transaction_id).await,
+            } => handle_approval_details(framed, &state, request_id, transaction_id.as_str()).await,
             DaemonRequest::QueryAction {
                 request_id,
                 action_name,
@@ -798,13 +859,22 @@ async fn handle_approve(
     request_id: &str,
     transaction_id: &str,
 ) -> Result<(), HandlerError> {
-    let receipt = Uuid::new_v4().to_string();
-    let approved = match state
-        .audit
-        .approve_transaction(transaction_id, &receipt_digest(&receipt))
-        .await
-    {
-        Ok(approved) => approved,
+    let receipt = match state.audit.approve_transaction(transaction_id).await {
+        Ok(receipt) => receipt,
+        // A `DatabaseInvariant` here means the stored approval commitment does
+        // not match the signed preview (tamper / key mismatch) — a fail-closed
+        // integrity signal, NOT a transient blip. Reporting it as transient
+        // would falsely tell the user a retry will help; it will fail
+        // identically. Surface it as a distinct, non-retryable category.
+        Err(e @ crate::transactions::TransactionStoreError::DatabaseInvariant(_)) => {
+            return send_error(
+                framed,
+                request_id,
+                "integrity_failure",
+                format!("approval rejected by an integrity check: {e}"),
+            )
+            .await;
+        }
         Err(e) => {
             return send_error(
                 framed,
@@ -815,7 +885,7 @@ async fn handle_approve(
             .await;
         }
     };
-    if !approved {
+    let Some(receipt) = receipt else {
         return send_error(
             framed,
             request_id,
@@ -823,8 +893,8 @@ async fn handle_approve(
             "transaction is missing, expired, already approved, or no longer queued",
         )
         .await;
-    }
-    send_response(
+    };
+    let response = send_response(
         framed,
         &DaemonResponse::ApprovalResponse {
             request_id: request_id.to_string(),
@@ -832,7 +902,16 @@ async fn handle_approve(
             approval_receipt: receipt,
         },
     )
-    .await
+    .await;
+    if response.is_err() {
+        if let Err(e) = state.audit.revoke_unconsumed_approval(transaction_id).await {
+            eprintln!(
+                "[sysknife-daemon] failed to revoke undelivered approval for \
+                 {transaction_id}: {e}"
+            );
+        }
+    }
+    response
 }
 
 async fn handle_approval_details(
@@ -1218,6 +1297,9 @@ async fn handle_preview(
         )
         .await;
     }
+    if let Err(message) = validate_action_platform(state, action_name) {
+        return send_error(framed, request_id, "unsupported_platform", message).await;
+    }
 
     let request_hash = compute_request_hash(action_name, params);
 
@@ -1417,6 +1499,62 @@ fn forward_status_change_event(
     });
 }
 
+async fn release_high_risk_slot(state: &DaemonState, owns_slot: bool, request_hash: &str) {
+    if !owns_slot {
+        return;
+    }
+
+    let mut slot = state.running_high_risk_reboot.lock().await;
+    if slot.as_deref() == Some(request_hash) {
+        *slot = None;
+    }
+}
+
+/// Total attempts to persist a terminal transaction status before giving up.
+/// Terminal writes are an audit-trail obligation, so a transient store error
+/// is worth a few short retries; three keeps the worst-case latency bounded
+/// (see [`TERMINAL_STATUS_RETRY_BACKOFF_MS`]) while surviving a brief blip.
+const TERMINAL_STATUS_RETRY_ATTEMPTS: u32 = 3;
+/// Linear backoff base between terminal-status retries. Attempt `n` waits
+/// `BACKOFF_MS * (n + 1)`, i.e. 25 ms then 50 ms — long enough to let a
+/// momentarily busy SQLite writer drain, short enough not to stall the client.
+const TERMINAL_STATUS_RETRY_BACKOFF_MS: u64 = 25;
+
+async fn update_terminal_status(
+    state: &DaemonState,
+    transaction_id: &str,
+    target: JobState,
+) -> Result<(), crate::transactions::TransactionStoreError> {
+    for attempt in 0..TERMINAL_STATUS_RETRY_ATTEMPTS {
+        match state.audit.update_status(transaction_id, target).await {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                // A `get` failure here collapses to `None` and is deliberately
+                // swallowed: it cannot manufacture a false success, it only
+                // costs one more retry before the original `error` propagates.
+                if state
+                    .audit
+                    .get(transaction_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|record| record.status == target)
+                {
+                    return Ok(());
+                }
+                if attempt == TERMINAL_STATUS_RETRY_ATTEMPTS - 1 {
+                    return Err(error);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    TERMINAL_STATUS_RETRY_BACKOFF_MS * u64::from(attempt + 1),
+                ))
+                .await;
+            }
+        }
+    }
+    unreachable!("bounded retry loop always returns")
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_execute(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
@@ -1424,11 +1562,13 @@ async fn handle_execute(
     executor: Arc<dyn ActionExecutor>,
     caller_role: &CallerRole,
     request_id: &str,
-    transaction_id: &str,
+    transaction_id: &TransactionId,
     action_name: &str,
     params: &Value,
-    approval_receipt: &str,
+    approval_receipt: &ApprovalReceipt,
 ) -> Result<(), HandlerError> {
+    let transaction_id = transaction_id.as_str();
+    let approval_receipt = approval_receipt.as_str();
     let spec = match build_action_spec(action_name, params) {
         Ok(s) => s,
         Err(e) => {
@@ -1444,6 +1584,9 @@ async fn handle_execute(
             format!("action '{action_name}' is not allowed for {caller_role:?} role"),
         )
         .await;
+    }
+    if let Err(message) = validate_action_platform(state, action_name) {
+        return send_error(framed, request_id, "unsupported_platform", message).await;
     }
 
     let submitted_hash = compute_request_hash(action_name, params);
@@ -1483,32 +1626,6 @@ async fn handle_execute(
         .await;
     }
     let stored_hash = prior_tx.request_hash;
-
-    let claimed = match state
-        .audit
-        .claim_approved_for_execution(transaction_id, &receipt_digest(approval_receipt))
-        .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return send_error(
-                framed,
-                request_id,
-                "transient_infrastructure_failure",
-                format!("failed to claim transaction: {e}"),
-            )
-            .await;
-        }
-    };
-    if !claimed {
-        return send_error(
-            framed,
-            request_id,
-            "stale_approval",
-            "transaction is not approved for this receipt, expired, or already consumed",
-        )
-        .await;
-    }
 
     // ── Concurrency gate (ME4) ─────────────────────────────────────────────
     //
@@ -1565,9 +1682,37 @@ async fn handle_execute(
         // Lock drops here via RAII, releasing for other read-only actions.
     }
 
+    let claimed = match state
+        .audit
+        .claim_approved_for_execution(transaction_id, &receipt_digest(approval_receipt))
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            release_high_risk_slot(state, is_high_risk_reboot, &stored_hash).await;
+            return send_error(
+                framed,
+                request_id,
+                "transient_infrastructure_failure",
+                format!("failed to claim transaction: {e}"),
+            )
+            .await;
+        }
+    };
+    if !claimed {
+        release_high_risk_slot(state, is_high_risk_reboot, &stored_hash).await;
+        return send_error(
+            framed,
+            request_id,
+            "stale_approval",
+            "transaction is not approved for this receipt, expired, or already consumed",
+        )
+        .await;
+    }
+
     let job_id = Uuid::new_v4().to_string();
 
-    send_response(
+    if let Err(send_error) = send_response(
         framed,
         &DaemonResponse::JobStarted {
             request_id: request_id.to_string(),
@@ -1575,7 +1720,19 @@ async fn handle_execute(
             transaction_id: transaction_id.to_string(),
         },
     )
-    .await?;
+    .await
+    {
+        release_high_risk_slot(state, is_high_risk_reboot, &stored_hash).await;
+        if let Err(status_error) =
+            update_terminal_status(state, transaction_id, JobState::Failed).await
+        {
+            eprintln!(
+                "[sysknife-daemon] failed to mark disconnected transaction {transaction_id} \
+                 as Failed: {status_error}"
+            );
+        }
+        return Err(send_error);
+    }
 
     let _ = send_response(
         framed,
@@ -1624,6 +1781,23 @@ async fn handle_execute(
             }
         }
     };
+
+    // The executor may enqueue its final stdout lines and complete in the same
+    // scheduler turn. Drain the closed channel so those lines are not lost when
+    // `select!` observes completion first.
+    while let Ok(line) = progress_rx.try_recv() {
+        if let Err(e) = send_response(
+            framed,
+            &DaemonResponse::JobProgress {
+                job_id: job_id.clone(),
+                line,
+            },
+        )
+        .await
+        {
+            eprintln!("[sysknife-daemon] final progress send failed: {e}");
+        }
+    }
 
     let (initial_status, initial_summary) = match &output {
         Ok(out) if out.is_success() => {
@@ -1675,20 +1849,13 @@ async fn handle_execute(
     // (success OR failure). The slot was only set when this action was
     // itself High-risk + reboot-required; for other mutating actions the
     // guard was read but never written, so there is nothing to clear.
-    if is_high_risk_reboot {
-        let mut slot = state.running_high_risk_reboot.lock().await;
-        *slot = None;
-    }
+    release_high_risk_slot(state, is_high_risk_reboot, &stored_hash).await;
 
     // Update the transaction record. A failure here is an audit-trail loss —
     // log it and surface it as a warning in the job result so the client is
     // aware of the gap.
     let mut warnings = Vec::new();
-    match state
-        .audit
-        .update_status(transaction_id, final_status)
-        .await
-    {
+    match update_terminal_status(state, transaction_id, final_status).await {
         Ok(()) => {
             // Forward a status-change event to the SIEM so analysts see the
             // terminal outcome of the action, not just the preview. Best-effort
@@ -2015,6 +2182,30 @@ mod tests {
             .to_string()
     }
 
+    async fn preview_and_approve(
+        framed: &mut FramedStream<tokio::net::UnixStream>,
+        action_name: &str,
+        params: Value,
+    ) -> (String, String) {
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "preview",
+                    "request_id": format!("preview-{action_name}"),
+                    "action_name": action_name,
+                    "params": params,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let response: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        assert_eq!(response["type"], "preview_response");
+        let transaction_id = response["transaction_id"].as_str().unwrap().to_string();
+        let receipt = approve_preview(framed, &transaction_id).await;
+        (transaction_id, receipt)
+    }
+
     #[tokio::test]
     async fn approval_details_returns_persisted_preview_before_approval() {
         let dir = tempdir().unwrap();
@@ -2056,6 +2247,193 @@ mod tests {
         assert_eq!(details["action_name"], "GetSystemState");
         assert_eq!(details["preview"]["risk_level"], "low");
         assert!(!details["preview"]["summary"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn approve_missing_transaction_maps_to_stale_approval() {
+        let dir = tempdir().unwrap();
+        let responses = exchange(
+            test_state(&dir),
+            CallerRole::Observer,
+            vec![json!({
+                "type": "approve",
+                "request_id": "approve-missing",
+                "transaction_id": "missing-transaction",
+            })],
+            1,
+        )
+        .await;
+
+        assert_eq!(responses[0]["type"], "error_response");
+        assert_eq!(responses[0]["category"], "stale_approval");
+    }
+
+    #[tokio::test]
+    async fn approving_same_transaction_twice_maps_second_to_stale_approval() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            unix_connection_handler(server, state, runner(), CallerRole::Observer).await;
+        });
+        let mut framed = FramedStream::new(client);
+        let (transaction_id, _) =
+            preview_and_approve(&mut framed, "GetSystemState", json!({})).await;
+
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "approve",
+                    "request_id": "approve-again",
+                    "transaction_id": transaction_id,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let response: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+
+        assert_eq!(response["type"], "error_response");
+        assert_eq!(response["category"], "stale_approval");
+    }
+
+    #[tokio::test]
+    async fn approve_with_forged_commitment_maps_to_integrity_failure() {
+        // A tampered `approval_id` makes the store return `DatabaseInvariant`
+        // (fail-closed). The dispatcher must surface that as a distinct,
+        // non-retryable `integrity_failure` — NOT `transient_infrastructure_
+        // failure`, which would falsely tell the user a retry can succeed.
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("sysknife-test.db");
+        let state = test_state(&dir);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            unix_connection_handler(server, state, runner(), CallerRole::Observer).await;
+        });
+        let mut framed = FramedStream::new(client);
+
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "preview",
+                    "request_id": "preview-forge",
+                    "action_name": "GetSystemState",
+                    "params": {},
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let preview: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        let transaction_id = preview["transaction_id"].as_str().unwrap().to_string();
+
+        // Forge the stored commitment via an independent connection to the same
+        // SQLite file so the daemon reads a tampered value on the next request.
+        rusqlite::Connection::open(&db_path)
+            .unwrap()
+            .execute(
+                "UPDATE transactions SET approval_id = 'forged' WHERE transaction_id = ?1",
+                rusqlite::params![transaction_id],
+            )
+            .unwrap();
+
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "approve",
+                    "request_id": "approve-forged",
+                    "transaction_id": transaction_id,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let response: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+
+        assert_eq!(response["type"], "error_response");
+        assert_eq!(response["category"], "integrity_failure");
+    }
+
+    #[tokio::test]
+    async fn undelivered_approval_is_revoked_so_the_user_can_retry() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let handler_state = state.clone();
+        tokio::spawn(async move {
+            unix_connection_handler(server, handler_state, runner(), CallerRole::Observer).await;
+        });
+        let mut framed = FramedStream::new(client);
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "preview",
+                    "request_id": "preview-undelivered",
+                    "action_name": "GetSystemState",
+                    "params": {},
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let preview: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        let transaction_id = preview["transaction_id"].as_str().unwrap();
+
+        let (peer, broken_stream) = tokio::io::duplex(64);
+        drop(peer);
+        let mut broken_framed = FramedStream::new(broken_stream);
+        assert!(handle_approve(
+            &mut broken_framed,
+            &state,
+            "approve-undelivered",
+            transaction_id,
+        )
+        .await
+        .is_err());
+
+        let (retry_stream, receiver) = tokio::io::duplex(4096);
+        let mut retry_framed = FramedStream::new(retry_stream);
+        handle_approve(&mut retry_framed, &state, "approve-retry", transaction_id)
+            .await
+            .unwrap();
+        let mut receiver = FramedStream::new(receiver);
+        let response: Value = serde_json::from_slice(&receiver.recv().await.unwrap()).unwrap();
+        assert_eq!(response["type"], "approval_response");
+    }
+
+    #[tokio::test]
+    async fn approval_details_for_running_transaction_maps_to_stale_approval() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let handler_state = state.clone();
+        tokio::spawn(async move {
+            unix_connection_handler(server, handler_state, runner(), CallerRole::Observer).await;
+        });
+        let mut framed = FramedStream::new(client);
+        let (transaction_id, receipt) =
+            preview_and_approve(&mut framed, "GetSystemState", json!({})).await;
+        assert!(state
+            .audit
+            .claim_approved_for_execution(&transaction_id, &receipt_digest(&receipt))
+            .await
+            .unwrap());
+
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "approval_details",
+                    "request_id": "details-running",
+                    "transaction_id": transaction_id,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let response: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+
+        assert_eq!(response["type"], "error_response");
+        assert_eq!(response["category"], "stale_approval");
     }
 
     /// Send `requests` to a spawned handler, collect exactly `want_responses`
@@ -2247,6 +2625,35 @@ mod tests {
         assert_eq!(resps[0]["type"], "preview_response");
     }
 
+    #[test]
+    fn unsupported_distros_cannot_reach_mutation_paths() {
+        let dir = tempdir().unwrap();
+        let mut state = test_state(&dir);
+        state.host_distro = Some(sysknife_core::distro::DistroId::UbuntuCore {
+            major: 24,
+            minor: 4,
+        });
+        assert!(validate_action_platform(&state, "AptInstall").is_err());
+
+        state.host_distro = Some(sysknife_core::distro::DistroId::Ubuntu {
+            major: 20,
+            minor: 4,
+        });
+        assert!(validate_action_platform(&state, "UpdateSystem").is_err());
+    }
+
+    #[test]
+    fn supported_hosts_still_enforce_action_family() {
+        let dir = tempdir().unwrap();
+        let mut state = test_state(&dir);
+        state.host_distro = Some(sysknife_core::distro::DistroId::Ubuntu {
+            major: 24,
+            minor: 4,
+        });
+        assert!(validate_action_platform(&state, "AptInstall").is_ok());
+        assert!(validate_action_platform(&state, "AddLayeredPackage").is_err());
+    }
+
     // ------------------------------------------------------------------
     // execute — stale approval
     // ------------------------------------------------------------------
@@ -2276,27 +2683,154 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_with_wrong_hash_returns_stale_approval() {
+    async fn execute_with_changed_params_rejects_without_consuming_approval() {
         let dir = tempdir().unwrap();
         let state = test_state(&dir);
-
-        let resps = exchange(
-            state,
-            CallerRole::Observer,
-            vec![json!({
-                "type": "execute",
-                "request_id": "r1",
-                "transaction_id": "missing-transaction",
-                "action_name": "GetSystemState",
-                "params": {},
-                "approval_receipt": "wrong-receipt"
-            })],
-            1,
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let handler_state = state.clone();
+        tokio::spawn(async move {
+            unix_connection_handler(server, handler_state, runner(), CallerRole::Observer).await;
+        });
+        let mut framed = FramedStream::new(client);
+        let (transaction_id, receipt) = preview_and_approve(
+            &mut framed,
+            "GetServiceStatus",
+            json!({"unit": "sshd.service"}),
         )
         .await;
 
-        assert_eq!(resps[0]["type"], "error_response");
-        assert_eq!(resps[0]["category"], "stale_approval");
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "execute",
+                    "request_id": "changed-params",
+                    "transaction_id": transaction_id,
+                    "action_name": "GetServiceStatus",
+                    "params": {"unit": "cron.service"},
+                    "approval_receipt": receipt,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let response: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+
+        assert_eq!(response["type"], "error_response");
+        assert_eq!(response["category"], "stale_approval");
+        assert_eq!(
+            state
+                .audit
+                .get(&transaction_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            JobState::Queued
+        );
+        assert!(state
+            .audit
+            .claim_approved_for_execution(&transaction_id, &receipt_digest(&receipt))
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn execute_with_changed_action_rejects_without_consuming_approval() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let handler_state = state.clone();
+        tokio::spawn(async move {
+            unix_connection_handler(server, handler_state, runner(), CallerRole::Observer).await;
+        });
+        let mut framed = FramedStream::new(client);
+        let (transaction_id, receipt) =
+            preview_and_approve(&mut framed, "GetSystemState", json!({})).await;
+
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "execute",
+                    "request_id": "changed-action",
+                    "transaction_id": transaction_id,
+                    "action_name": "GetDiskUsage",
+                    "params": {},
+                    "approval_receipt": receipt,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let response: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+
+        assert_eq!(response["type"], "error_response");
+        assert_eq!(response["category"], "stale_approval");
+        assert_eq!(
+            state
+                .audit
+                .get(&transaction_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            JobState::Queued
+        );
+        assert!(state
+            .audit
+            .claim_approved_for_execution(&transaction_id, &receipt_digest(&receipt))
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn job_started_send_failure_releases_slot_and_marks_transaction_failed() {
+        let dir = tempdir().unwrap();
+        let mut state = test_state(&dir);
+        state.host_distro = Some(sysknife_core::distro::DistroId::FedoraSilverblue { version: 44 });
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let handler_state = state.clone();
+        tokio::spawn(async move {
+            unix_connection_handler(server, handler_state, runner(), CallerRole::Admin).await;
+        });
+        let mut preview_stream = FramedStream::new(client);
+        let params = json!({"package": "vim"});
+        let (transaction_id, receipt) =
+            preview_and_approve(&mut preview_stream, "AddLayeredPackage", params.clone()).await;
+
+        let (peer, broken_stream) = tokio::io::duplex(64);
+        drop(peer);
+        let mut broken_framed = FramedStream::new(broken_stream);
+        let typed_transaction_id = TransactionId(transaction_id.clone());
+        let typed_receipt = ApprovalReceipt(receipt);
+        let result = handle_execute(
+            &mut broken_framed,
+            &state,
+            Arc::new(crate::executor::RealActionExecutor),
+            &CallerRole::Admin,
+            "execute-disconnected",
+            &typed_transaction_id,
+            "AddLayeredPackage",
+            &params,
+            &typed_receipt,
+        )
+        .await;
+
+        assert!(result.is_err(), "the initial response write must fail");
+        assert!(
+            state.running_high_risk_reboot.lock().await.is_none(),
+            "a disconnected client must not retain the global reboot slot"
+        );
+        assert_eq!(
+            state
+                .audit
+                .get(&transaction_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            JobState::Failed,
+            "a claimed transaction must not remain Running when execution never starts"
+        );
     }
 
     // ------------------------------------------------------------------
@@ -2440,9 +2974,14 @@ mod tests {
             async fn approve_transaction(
                 &self,
                 id: &str,
-                digest: &str,
+            ) -> Result<Option<String>, TransactionStoreError> {
+                self.0.approve_transaction(id).await
+            }
+            async fn revoke_unconsumed_approval(
+                &self,
+                id: &str,
             ) -> Result<bool, TransactionStoreError> {
-                self.0.approve_transaction(id, digest).await
+                self.0.revoke_unconsumed_approval(id).await
             }
             async fn claim_approved_for_execution(
                 &self,
@@ -2870,31 +3409,84 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // RealActionExecutor progress channel
+    // Dispatcher progress relay
     // ------------------------------------------------------------------
 
     #[tokio::test]
-    async fn stream_command_sends_job_progress_lines_during_execution() {
-        let spec = crate::actions::ActionSpec {
-            action_name: "test",
-            mechanism: crate::actions::ActionMechanism::Command {
-                program: "echo",
-                args: vec!["hello from stream".to_string()],
-            },
-            risk_level: sysknife_types::RiskLevel::Low,
-            reboot_required: false,
-            rollback_available: false,
-        };
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let executor = crate::executor::RealActionExecutor;
-        let handle =
-            tokio::spawn(async move { executor.execute_with_progress(&spec, tx).await.unwrap() });
+    async fn fast_executor_progress_is_drained_before_job_completed() {
+        struct FastProgressExecutor;
 
-        let line = rx.recv().await.expect("progress line");
-        assert_eq!(line, "hello from stream");
-        let out = handle.await.unwrap();
-        assert_eq!(out.exit_code, 0);
-        assert!(out.stdout.contains("hello from stream"));
+        #[async_trait::async_trait]
+        impl ActionExecutor for FastProgressExecutor {
+            async fn execute(
+                &self,
+                _spec: &crate::actions::ActionSpec,
+            ) -> Result<crate::executor::ExecutionOutput, crate::executor::ExecutorError>
+            {
+                unreachable!("dispatcher uses execute_with_progress")
+            }
+
+            async fn execute_with_progress(
+                &self,
+                _spec: &crate::actions::ActionSpec,
+                progress: tokio::sync::mpsc::UnboundedSender<String>,
+            ) -> Result<crate::executor::ExecutionOutput, crate::executor::ExecutorError>
+            {
+                progress.send("last line before exit".to_string()).unwrap();
+                Ok(crate::executor::ExecutionOutput {
+                    stdout: "last line before exit\n".to_string(),
+                    stderr: String::new(),
+                    exit_code: 0,
+                })
+            }
+        }
+
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            connection_handler_with_executor(
+                server,
+                state,
+                runner(),
+                Arc::new(FastProgressExecutor),
+                CallerRole::Observer,
+            )
+            .await;
+        });
+        let mut framed = FramedStream::new(client);
+        let (transaction_id, receipt) =
+            preview_and_approve(&mut framed, "GetSystemState", json!({})).await;
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "execute",
+                    "request_id": "execute-fast-progress",
+                    "transaction_id": transaction_id,
+                    "action_name": "GetSystemState",
+                    "params": {},
+                    "approval_receipt": receipt,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let mut progress_lines = Vec::new();
+        loop {
+            let response: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+            match response["type"].as_str().unwrap() {
+                "job_progress" => {
+                    progress_lines.push(response["line"].as_str().unwrap().to_string())
+                }
+                "job_started" => {}
+                "job_completed" => break,
+                other => panic!("unexpected response: {other}"),
+            }
+        }
+        assert!(progress_lines
+            .iter()
+            .any(|line| line == "last line before exit"));
     }
 
     // ------------------------------------------------------------------

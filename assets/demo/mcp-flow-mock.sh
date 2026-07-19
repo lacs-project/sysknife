@@ -16,6 +16,7 @@ DIM=$'\033[2m'
 BOLD=$'\033[1m'
 GREEN=$'\033[38;2;105;240;174m'  # bright spring green (Material Green A200)
 YELLOW=$'\033[38;2;255;213;79m'  # vivid amber-yellow (Material Amber 300)
+RED=$'\033[38;2;255;107;107m'     # failure/high-risk red
 PURPLE=$'\033[38;2;179;136;255m' # accent purple (transaction IDs / receipts)
 RESET=$'\033[0m'
 ITALIC=$'\033[3m'
@@ -66,8 +67,8 @@ printf '%s│%s\n' "$DIM" "$RESET"
 printf '%s│%s  %sintent%s  %s"install vim, restart sshd, and show me the firewall state"%s\n' \
     "$DIM" "$RESET" "$DIM" "$RESET" "$ITALIC" "$RESET"
 printf '%s│%s\n' "$DIM" "$RESET"
-printf '%s│%s  %s1%s  %sAddLayeredPackage%s             %s● medium%s  %sapproval required%s\n' \
-    "$DIM" "$RESET" "$DIM" "$RESET" "$BOLD" "$RESET" "$YELLOW" "$RESET" "$YELLOW" "$RESET"
+printf '%s│%s  %s1%s  %sAddLayeredPackage%s             %s● high%s    %sapproval required%s\n' \
+    "$DIM" "$RESET" "$DIM" "$RESET" "$BOLD" "$RESET" "$RED" "$RESET" "$YELLOW" "$RESET"
 printf '%s│%s     %stx_91c4a7 · layer vim into next deployment via rpm-ostree%s\n' "$DIM" "$RESET" "$PURPLE" "$RESET"
 printf '%s│%s  %s2%s  %sRestartService%s                %s● medium%s  %sapproval required%s\n' \
     "$DIM" "$RESET" "$DIM" "$RESET" "$BOLD" "$RESET" "$YELLOW" "$RESET" "$YELLOW" "$RESET"
@@ -83,7 +84,7 @@ sleep_ms 700
 echo
 printf 'SysKnife has a 3-step plan ready:\n'
 sleep_ms 300
-printf '  %s1.%s Layer vim (medium risk — triggers a pending reboot)\n' "$BOLD" "$RESET"
+printf '  %s1.%s Layer vim (high risk — triggers a pending reboot)\n' "$BOLD" "$RESET"
 sleep_ms 225
 printf '  %s2.%s Restart sshd (medium risk — brief connection drop)\n' "$BOLD" "$RESET"
 sleep_ms 225

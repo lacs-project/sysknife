@@ -1,6 +1,6 @@
 # SysKnife MCP Server
 
-The `sysknife mcp-server` subcommand exposes two MCP tools that let any
+The `sysknife mcp-server` subcommand exposes five MCP tools that let any
 MCP-capable AI assistant (Claude Code, Cursor, Codex CLI, …) plan and execute
 Linux system administration tasks through SysKnife's approval-gated,
 audit-logged path.
@@ -85,6 +85,24 @@ Each `StepResult`:
 | `warnings`       | `string[]` | Daemon warnings                          |
 | `needs_reboot`   | bool       | Whether this step needs a reboot         |
 | `transaction_id` | string     | Daemon audit transaction ID              |
+
+---
+
+### `sysknife_history`
+
+List audit-log entries with optional `status`, `action`, `since`, and `limit`
+filters. This tool is read-only and does not require a plan or receipt.
+
+### `sysknife_doctor`
+
+Check daemon connectivity, active brain configuration, audit storage, and a
+quick audit-chain status. This tool is read-only.
+
+### `sysknife_audit_verify`
+
+Verify the Ed25519-signed audit chain and report `intact`, `broken`, or
+`cannot_verify`, including the first offending row when verification fails.
+This tool is read-only.
 
 ---
 

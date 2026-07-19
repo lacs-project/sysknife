@@ -31,6 +31,9 @@ pub struct DaemonState {
     /// Both implement [`AuditStore`] async trait.
     pub audit: Arc<dyn AuditStore>,
     pub policy: PolicyTable,
+    /// Strict host identity used to enforce the documented support matrix at
+    /// preview and execution boundaries.
+    pub host_distro: Option<sysknife_core::distro::DistroId>,
     /// Optional external audit-log forwarder. `None` when no `[audit.forward]`
     /// sink is configured; events recorded by the dispatcher are then only
     /// written to the local hash-chained store.
@@ -104,6 +107,7 @@ impl DaemonState {
             config,
             audit,
             policy,
+            host_distro: sysknife_core::distro::detect().ok(),
             forwarder,
             running_high_risk_reboot: Arc::new(Mutex::new(None)),
         })
@@ -123,6 +127,7 @@ impl DaemonState {
             config,
             audit,
             policy,
+            host_distro: sysknife_core::distro::detect().ok(),
             forwarder,
             running_high_risk_reboot: Arc::new(Mutex::new(None)),
         }

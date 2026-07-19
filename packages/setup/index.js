@@ -83,6 +83,13 @@ function findBinary(name) {
  *                     log output remains comprehensible.
  */
 function ask(rl, lineQueue, question, defaultVal) {
+  if (NO_PROMPTS) {
+    if (defaultVal === undefined) {
+      return Promise.reject(new Error(`--no-prompts requires a default for: ${question}`));
+    }
+    return Promise.resolve(defaultVal || '');
+  }
+
   return new Promise((resolve) => {
     const suffix = defaultVal ? ` ${D}[${defaultVal}]${X}` : '';
     const prompt  = `  ${question}${suffix}: `;
@@ -234,6 +241,11 @@ const NO_BINARY       = ARG_SET.has('--no-binary');
 const NO_PROMPTS      = ARG_SET.has('--no-prompts');
 const HAVE_EXPLICIT_INTEGRATION_FLAGS = WANT_CLAUDE || WANT_CURSOR || WANT_CODEX || WANT_ALL;
 
+if (NO_PROMPTS && !HAVE_EXPLICIT_INTEGRATION_FLAGS) {
+  console.error('sysknife-setup: --no-prompts requires --claude, --cursor, --codex, or --all');
+  process.exit(2);
+}
+
 // ---------------------------------------------------------------------------
 // Hookify rule content (Claude Code only)
 // ---------------------------------------------------------------------------
@@ -254,13 +266,13 @@ pattern: .*
 
 When using the sysknife MCP tools, you MUST follow this order:
 
-1. Call \`sysknife_plan\` → present the plan to the user
-2. **WAIT** for the user to explicitly approve
-   (words like "yes", "do it", "execute", "go ahead", "approved")
-3. Only then call \`sysknife_execute\`
+1. Call \`sysknife_plan\` and present every transaction ID to the user
+2. **STOP.** The user must run \`sysknife approve <transaction-id>\` in a terminal
+3. Ask the user to provide each one-time receipt printed by that command
+4. Call \`sysknife_execute\` only with the matching \`approval_receipt\`
 
 **Never call \`sysknife_execute\` in the same turn as \`sysknife_plan\`.**
-Always stop after showing the plan and wait for the user's response.
+A chat response such as "yes" is not approval and cannot replace a receipt.
 
 ## Multiple VMs (fleet operations)
 
@@ -268,8 +280,8 @@ When sysknife is configured with multiple targets (sysknife-web, sysknife-db, �
 
 1. Call \`sysknife_plan\` for **all** VMs that will be affected — before executing any
 2. Present **all** plans together so the user can review the full scope of changes
-3. **WAIT** for the user to explicitly approve all plans in a single response
-4. Only then call \`sysknife_execute\` for each VM
+3. **STOP** while the user runs \`sysknife approve <transaction-id>\` for every accepted step
+4. Collect the matching terminal-issued receipts, then execute each VM
 
 **Never execute one VM while another VM's plan is still pending review.**
 **Never skip showing a plan because it looks similar to another VM's plan.**
@@ -311,7 +323,7 @@ not VM data.
 
 **Before running local Bash for system queries:**
 1. Check whether sysknife MCP tools are available (fetch deferred schemas via \`ToolSearch\`).
-2. If sysknife is available, use \`sysknife_plan\` → approve → \`sysknife_execute\` instead.
+2. If sysknife is available, use \`sysknife_plan\` → terminal \`sysknife approve\` → \`sysknife_execute\` instead.
 3. Only run the local Bash command if sysknife is unavailable or the user explicitly asks for the local host.
 `;
 
@@ -330,12 +342,13 @@ alwaysApply: true
 
 When using the sysknife MCP tools, you MUST follow this order:
 
-1. Call \`sysknife_plan\` → present the plan to the user
-2. **WAIT** for the user to explicitly approve
-   (words like "yes", "do it", "execute", "go ahead", "approved")
-3. Only then call \`sysknife_execute\`
+1. Call \`sysknife_plan\` and present every transaction ID to the user
+2. **STOP.** The user must run \`sysknife approve <transaction-id>\` in a terminal
+3. Collect the one-time receipts printed by those commands
+4. Call \`sysknife_execute\` only with each matching \`approval_receipt\`
 
 **Never call \`sysknife_execute\` in the same turn as \`sysknife_plan\`.**
+A chat response such as "yes" is not approval and cannot replace a receipt.
 
 ## Approval gate (multiple VMs)
 
@@ -343,8 +356,8 @@ When sysknife is configured with multiple targets (sysknife-web, sysknife-db, �
 
 1. Call \`sysknife_plan\` for **all** affected VMs before executing any
 2. Present **all** plans together for review
-3. **WAIT** for the user to approve all plans
-4. Only then call \`sysknife_execute\` for each VM
+3. **STOP** while the user approves each transaction in a terminal
+4. Collect every receipt, then call \`sysknife_execute\` for each VM
 
 ## VM system queries
 
@@ -362,15 +375,17 @@ const AGENTS_MD_BLOCK = `
 
 When using the sysknife MCP tools, follow this order:
 
-1. Call \`sysknife_plan\` → present the plan to the user
-2. **WAIT** for the user to explicitly approve before proceeding
-3. Only then call \`sysknife_execute\`
+1. Call \`sysknife_plan\` and present every transaction ID to the user
+2. **STOP.** The user must run \`sysknife approve <transaction-id>\` in a terminal
+3. Collect the one-time receipts printed by those commands
+4. Call \`sysknife_execute\` only with each matching \`approval_receipt\`
 
 **Never call \`sysknife_execute\` in the same turn as \`sysknife_plan\`.**
+A chat response such as "yes" is not approval and cannot replace a receipt.
 
-For multi-VM configurations (sysknife-web, sysknife-db, …), plan all
-affected VMs first, present all plans together, wait for a single
-explicit approval, then execute each in turn.
+For multi-VM configurations (sysknife-web, sysknife-db, …), plan all affected
+VMs first, present all plans together, then stop while the user approves each
+transaction in a terminal and supplies every matching receipt.
 
 Prefer \`sysknife_plan\`/\`sysknife_execute\` over shell commands for
 guest VM queries — local shell returns host data, not VM data.
@@ -388,7 +403,8 @@ async function collectTarget(rl, lineQueue, idx) {
   console.log(`    ${D}/tmp/sysknife-vm.sock${X}        ${D}SSH tunnel to a VM${X}`);
   console.log(`    ${D}vsock://10:9734${X}              ${D}virtio-vsock (CID:port)${X}`);
 
-  const socket = await ask(rl, lineQueue, 'Daemon socket', '/run/sysknife/daemon.sock');
+  const defaultSocket = path.join(os.homedir(), '.local', 'share', 'sysknife', 'daemon.sock');
+  const socket = await ask(rl, lineQueue, 'Daemon socket', defaultSocket);
 
   // Optionally probe the socket so the user knows immediately if the daemon
   // is not running, rather than discovering it after all config is written.
@@ -428,9 +444,23 @@ function targetNextStep(target) {
   const { socket, name } = target;
   const label = name ? `${name} (${socket})` : socket;
 
+  // Sockets that live on this machine, so the daemon starts locally rather than
+  // over an SSH tunnel. Includes the default user-service socket written by the
+  // wizard (matches install-daemon.js) and the two legacy system paths.
+  const userServiceSocket = path.join(os.homedir(), '.local', 'share', 'sysknife', 'daemon.sock');
+  const localSockets = new Set([
+    userServiceSocket,
+    '/run/sysknife/daemon.sock',
+    '/tmp/sysknife-daemon.sock',
+  ]);
+
   if (socket.startsWith('vsock://')) {
     step(`Start daemon in ${label} guest:  sudo systemctl start sysknife-daemon`);
-  } else if (socket !== '/run/sysknife/daemon.sock' && socket !== '/tmp/sysknife-daemon.sock') {
+  } else if (socket === userServiceSocket) {
+    // Default: a per-user daemon managed by a `systemctl --user` unit.
+    step('Start the daemon:  systemctl --user enable --now sysknife-daemon');
+    step('              or:  cargo run -p sysknife-daemon');
+  } else if (!localSockets.has(socket)) {
     // Likely an SSH tunnel socket — remind user to open the tunnel
     step(`Open SSH tunnel for ${label}:  ssh -fN -L ${socket}:/run/sysknife/daemon.sock <user>@<host>`);
     step(`Then start the daemon in the guest:  sudo systemctl start sysknife-daemon`);

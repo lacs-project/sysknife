@@ -212,7 +212,7 @@ async fn mutating_action_blocked_while_high_risk_in_flight() {
     }
 
     let executor: Arc<dyn ActionExecutor> = Arc::new(InstantSuccessExecutor);
-    let mut framed = spawn_handler(state, executor, CallerRole::Admin).await;
+    let mut framed = spawn_handler(state.clone(), executor, CallerRole::Admin).await;
 
     let params = json!({"package": "vim"});
     let (transaction_id, receipt) = do_preview(&mut framed, "AptInstall", params.clone()).await;
@@ -231,6 +231,21 @@ async fn mutating_action_blocked_while_high_risk_in_flight() {
         last["request_id"].as_str().unwrap_or(""),
         "exec-AptInstall",
         "conflict response must echo the request_id"
+    );
+
+    *state.running_high_risk_reboot.lock().await = None;
+    let retry = do_execute(
+        &mut framed,
+        "AptInstall",
+        json!({"package": "vim"}),
+        &transaction_id,
+        &receipt,
+    )
+    .await;
+    assert_eq!(
+        retry.last().unwrap()["type"],
+        "job_completed",
+        "a retryable conflict must not consume the approval receipt"
     );
 }
 

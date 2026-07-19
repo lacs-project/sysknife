@@ -9,7 +9,7 @@
 //! - [`PostgresStore`] — `sqlx`-backed, native async, TLS via rustls +
 //!   webpki-roots. Wire-compatible with AWS RDS / Aurora, GCP Cloud SQL +
 //!   AlloyDB, Azure Database for PostgreSQL Flexible Server, Supabase,
-//!   Neon, CockroachDB Cloud, and any self-hosted Postgres.
+//!   Neon, and self-hosted PostgreSQL.
 //!
 //! The dispatcher does not know which backend is active. It calls into
 //! [`AuditStore`] (an async trait) and the runtime resolves to the configured
@@ -27,7 +27,6 @@
 //! | Supabase (5432)      | `db.<ref>.supabase.co:5432`                     | `require`     | default         |
 //! | Supabase (pooler)    | `*.pooler.supabase.com:6543`                    | `require`     | **0**           |
 //! | Neon                 | `ep-*.neon.tech`                                | `require`     | default         |
-//! | CockroachDB Cloud    | `*.cockroachlabs.cloud:26257`                   | `verify-full` | **0**           |
 //! | Self-hosted          | (operator chooses)                              | as needed     | default         |
 
 use async_trait::async_trait;
@@ -80,7 +79,11 @@ pub trait AuditStore: Send + Sync + std::fmt::Debug {
     async fn approve_transaction(
         &self,
         transaction_id: &str,
-        receipt_digest: &str,
+    ) -> Result<Option<String>, TransactionStoreError>;
+
+    async fn revoke_unconsumed_approval(
+        &self,
+        transaction_id: &str,
     ) -> Result<bool, TransactionStoreError>;
 
     async fn claim_approved_for_execution(
@@ -202,12 +205,19 @@ impl AuditStore for SqliteStore {
     async fn approve_transaction(
         &self,
         transaction_id: &str,
-        receipt_digest: &str,
+    ) -> Result<Option<String>, TransactionStoreError> {
+        let inner = Arc::clone(&self.inner);
+        let id = transaction_id.to_string();
+        blocking(move || inner.approve_transaction(&id)).await
+    }
+
+    async fn revoke_unconsumed_approval(
+        &self,
+        transaction_id: &str,
     ) -> Result<bool, TransactionStoreError> {
         let inner = Arc::clone(&self.inner);
         let id = transaction_id.to_string();
-        let digest = receipt_digest.to_string();
-        blocking(move || inner.approve_transaction(&id, &digest)).await
+        blocking(move || inner.revoke_unconsumed_approval(&id)).await
     }
 
     async fn claim_approved_for_execution(

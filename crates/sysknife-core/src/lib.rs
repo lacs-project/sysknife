@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+pub mod action_family;
 pub mod config;
 pub mod distro;
 

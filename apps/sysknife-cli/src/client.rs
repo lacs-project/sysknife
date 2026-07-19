@@ -38,6 +38,7 @@ pub struct PreparedPreview {
     pub preview: PreviewEnvelope,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct ApprovalDetails {
     pub transaction_id: String,
     pub action_name: String,

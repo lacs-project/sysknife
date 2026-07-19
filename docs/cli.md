@@ -160,7 +160,7 @@ sysknife audit verify --pubkey /etc/sysknife/audit-key.pub
 | Flag | Description |
 |---|---|
 | `--json` | Machine-readable JSON report instead of human text |
-| `--pubkey FILE` | Verify with only the exported public key (`<audit-key>.pub`), no private key: the third-party / auditor path. Proves the chain without the ability to sign. SQLite backend only. |
+| `--pubkey FILE` | Verify with only the exported public key (`<audit-key>.pub`), no private key: the third-party / auditor path. Works with SQLite and PostgreSQL and proves the chain without signing access. |
 
 #### `sysknife audit checkpoint`
 

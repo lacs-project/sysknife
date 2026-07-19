@@ -128,7 +128,7 @@ for crate in "${crates[@]}"; do
             )
             ;;
     esac
-    cargo package -p "$crate" --locked --allow-dirty --no-verify \
+    cargo package -p "$crate" --locked --allow-dirty \
         "${package_overrides[@]}"
     install -m 0644 "target/package/${crate}-${version}.crate" "$output/"
 done

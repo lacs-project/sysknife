@@ -159,7 +159,7 @@ pub struct AuditVerifyArgs {
     /// without the private key. This is the third-party / auditor path: it
     /// proves the chain is intact and unforged without trusting the verifier
     /// with the ability to sign. Without this flag, verification loads the
-    /// private key. Currently supported only for the SQLite backend.
+    /// private key. Supported for both SQLite and PostgreSQL backends.
     #[arg(long, value_name = "FILE")]
     pub pubkey: Option<std::path::PathBuf>,
 }

@@ -30,6 +30,28 @@ for crate in sysknife-proto sysknife-core sysknife-types sysknife-brain \
     grep -Fq "patch.crates-io.${crate}.path" "$rehearsal"
 done
 grep -Fq 'npm pack ./packages/setup' "$rehearsal"
+if grep -Fq -- '--no-verify' "$rehearsal"; then
+    printf 'FAIL: rehearsal skips generated crate verification\n' >&2
+    exit 1
+fi
+
+release_workflow="${repo_root}/.github/workflows/release.yml"
+grep -Fq 'check_registry_versions.sh' "$release_workflow"
+grep -Fq 'already exists; skipping' "$release_workflow"
+# Positive invariant: every `uses:` MUST pin a full 40-hex commit SHA. This
+# catches every mutable form (semver tags like @v6.1.0, @stable, @main, and
+# short SHAs), not just the two the old negative regex happened to enumerate.
+while IFS= read -r uses_line; do
+    if ! printf '%s\n' "$uses_line" | grep -Eq 'uses:[[:space:]]+[^@[:space:]]+@[0-9a-f]{40}([[:space:]]|$)'; then
+        printf 'FAIL: release workflow action is not pinned to a 40-hex SHA: %s\n' \
+            "$uses_line" >&2
+        exit 1
+    fi
+done < <(grep -E '^[[:space:]]*(-[[:space:]]+)?uses:' "$release_workflow")
+if grep -Fq -- '--no-verify' "$release_workflow"; then
+    printf 'FAIL: release publication skips generated crate verification\n' >&2
+    exit 1
+fi
 
 if grep -Eiq '(^|[[:space:]])(cargo|npm)[[:space:]]+publish|gh[[:space:]]+release[[:space:]]+create' "$rehearsal"; then
     printf 'FAIL: rehearsal contains a publication command\n' >&2

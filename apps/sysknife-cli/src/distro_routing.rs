@@ -19,66 +19,10 @@ use sysknife_core::distro::{DistroFamily, DistroId};
 // Action families
 // ---------------------------------------------------------------------------
 
-/// Action names that are only valid on Debian-family distros.
-///
-/// Grouped by underlying tool: apt, snap, ufw, distrobox, netplan.
-const DEBIAN_ONLY_ACTIONS: &[&str] = &[
-    // apt
-    "AptUpdate",
-    "AptUpgrade",
-    "AptInstall",
-    "AptRemove",
-    "AptPurge",
-    "AptAutoremove",
-    "AptHold",
-    "AptUnhold",
-    "AptSearch",
-    "AptListInstalled",
-    "AptShow",
-    // snap
-    "SnapInstall",
-    "SnapRemove",
-    "SnapRefresh",
-    "SnapHold",
-    "SnapUnhold",
-    "SnapList",
-    "SnapInfo",
-    // ufw
-    "UfwEnable",
-    "UfwDisable",
-    "UfwAllow",
-    "UfwDeny",
-    "UfwReset",
-    "UfwStatus",
-    // distrobox
-    "DistroboxList",
-    "DistroboxCreate",
-    "DistroboxRemove",
-    // netplan
-    "NetplanGetConfig",
-    "NetplanApply",
-];
-
-/// Action names that are only valid on Fedora-family distros.
-///
-/// These are rpm-ostree or DNF shaped actions.
-const FEDORA_ONLY_ACTIONS: &[&str] = &[
-    "RebaseSystem",
-    "AddLayeredPackage",
-    "RemoveLayeredPackage",
-    "ReplaceLayeredPackage",
-    "RemoveBasePackage",
-    "ResetLayeredPackageOverride",
-    "GetLayeredPackages",
-    "GetDeploymentHistory",
-    "ListDeployments",
-    "CleanupDeployments",
-    "RollbackDeployment",
-    "PinDeployment",
-    "UnpinDeployment",
-    "GetKernelArguments",
-    "SetKernelArguments",
-];
+// The canonical family lists are the single source of truth in
+// `sysknife-core::action_family`; the daemon fence, this routing guard, and the
+// brain prompt all reference the same constants so they cannot drift apart.
+use sysknife_core::action_family::{DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -101,7 +45,6 @@ pub fn check_action_distro(action_name: &str, distro: Option<&DistroId>) -> Resu
     };
 
     let family = distro.family();
-
     if DEBIAN_ONLY_ACTIONS.contains(&action_name) && family != DistroFamily::Debian {
         return Err(format!(
             "{action_name} is only valid on Debian-family distros (apt/snap/ufw); \
@@ -115,6 +58,15 @@ pub fn check_action_distro(action_name: &str, distro: Option<&DistroId>) -> Resu
             "{action_name} is only valid on Fedora-family distros (rpm-ostree/dnf); \
              current distro is {distro} ({family_name})",
             family_name = family_label(&family),
+        ));
+    }
+
+    if (DEBIAN_ONLY_ACTIONS.contains(&action_name) || FEDORA_ONLY_ACTIONS.contains(&action_name))
+        && !distro.is_supported()
+    {
+        return Err(format!(
+            "{action_name} is disabled on unsupported distro {distro}; \
+             see docs/distro-support.md"
         ));
     }
 
@@ -200,6 +152,24 @@ mod tests {
             minor: 4,
         };
         assert!(check_action_distro("AptInstall", Some(&distro)).is_ok());
+    }
+
+    #[test]
+    fn apt_install_on_ubuntu_core_is_rejected() {
+        let distro = DistroId::UbuntuCore {
+            major: 24,
+            minor: 4,
+        };
+        assert!(check_action_distro("AptInstall", Some(&distro)).is_err());
+    }
+
+    #[test]
+    fn apt_install_on_unsupported_ubuntu_release_is_rejected() {
+        let distro = DistroId::Ubuntu {
+            major: 20,
+            minor: 4,
+        };
+        assert!(check_action_distro("AptInstall", Some(&distro)).is_err());
     }
 
     #[test]

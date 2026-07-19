@@ -47,6 +47,12 @@ jobs:
       - name: Check public support and approval claims
         run: bash tests/release/public-claims.test.sh
 
+      - name: Test setup package contracts
+        run: npm test --prefix packages/setup
+
+      - name: Check release rehearsal contract
+        run: bash tests/release/release-rehearsal.test.sh
+
       - name: Check Ubuntu VM bootstrap contract
         run: bash tests/e2e/ubuntu-vm-bootstrap.test.sh
 

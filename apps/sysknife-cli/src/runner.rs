@@ -545,15 +545,9 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
     // Branch on storage backend. SQLite: open the local file read-only.
     // Postgres: connect via sqlx and verify against the remote chain.
     let outcome = match lacs_config.storage.as_ref() {
-        Some(s) if s.backend.eq_ignore_ascii_case("postgres") => match &verifier {
-            Verifier::Private(key) => verify_postgres(s, key).await,
-            Verifier::Public(_) => VerifyOutcome::CannotVerify {
-                reason: "--pubkey verification is currently supported only for the \
-                         sqlite backend; omit --pubkey to verify postgres with the \
-                         private key"
-                    .to_string(),
-            },
-        },
+        Some(s) if s.backend.eq_ignore_ascii_case("postgres") => {
+            verify_postgres(s, &verifier).await
+        }
         _ => verify_sqlite(&db_path, &verifier).await,
     };
 
@@ -740,7 +734,7 @@ pub(crate) async fn verify_sqlite(
 
 pub(crate) async fn verify_postgres(
     storage: &sysknife_core::config::StorageSection,
-    key: &sysknife_daemon::audit_chain::AuditKey,
+    verifier: &Verifier,
 ) -> sysknife_daemon::audit_chain::VerifyOutcome {
     use sysknife_core::config::StorageBackend;
     use sysknife_daemon::audit_chain::VerifyOutcome;
@@ -779,23 +773,32 @@ pub(crate) async fn verify_postgres(
         }
     }
 
-    // PostgresStore::connect takes ownership of the key inside an Arc.
-    // Clone the loaded key so the SQLite verify path can still use it if
-    // both backends are ever queried in sequence (today only one runs).
-    let key_arc = std::sync::Arc::new(key.clone());
-    let store = match PostgresStore::connect(&cfg, key_arc).await {
-        Ok(s) => s,
-        Err(e) => {
-            return VerifyOutcome::CannotVerify {
-                reason: format!("postgres connect failed: {e}"),
-            };
+    match verifier {
+        Verifier::Private(key) => {
+            let store =
+                match PostgresStore::connect(&cfg, std::sync::Arc::new((**key).clone())).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return VerifyOutcome::CannotVerify {
+                            reason: format!("postgres connect failed: {e}"),
+                        };
+                    }
+                };
+            match store.verify_audit_chain(key).await {
+                Ok(outcome) => outcome,
+                Err(e) => VerifyOutcome::CannotVerify {
+                    reason: format!("postgres audit chain query failed: {e}"),
+                },
+            }
         }
-    };
-    match store.verify_audit_chain(key).await {
-        Ok(o) => o,
-        Err(e) => VerifyOutcome::CannotVerify {
-            reason: format!("postgres audit chain query failed: {e}"),
-        },
+        Verifier::Public(verifying_key_hex) => {
+            match PostgresStore::verify_with_pubkey(&cfg, verifying_key_hex).await {
+                Ok(outcome) => outcome,
+                Err(e) => VerifyOutcome::CannotVerify {
+                    reason: format!("postgres audit chain query failed: {e}"),
+                },
+            }
+        }
     }
 }
 

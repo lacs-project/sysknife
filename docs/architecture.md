@@ -132,7 +132,8 @@ running anything.
    risk level, side effects, reboot requirement, and rollback availability.
 5. The shell shows the preview and captures approval.
    High-risk steps require the user to type the action name explicitly.
-6. The daemon issues a random one-time receipt and stores only its digest.
+6. The daemon issues a deterministic, domain-separated Ed25519 receipt and
+   stores its SHA-256 commitment inside the signed transaction row.
 7. The client sends the exact transaction, action, params, and receipt.
 8. The daemon verifies the preview is fresh and atomically consumes the
    receipt, then runs the action.
@@ -141,7 +142,8 @@ running anything.
 10. The shell displays each line as it arrives.
 11. On failure, if `rollback_available` is true, the daemon runs the
     rollback action automatically and reports the result.
-12. The transaction is persisted to SQLite with the final job state.
+12. The transaction is persisted to the configured SQLite or PostgreSQL store
+    with the final job state.
 
 ## IPC Protocol
 

@@ -30,9 +30,9 @@ tokio-vsock = "0.7.2"
 # Postgres backend (#147). Cloud-provider compatible via rustls + webpki-roots.
 # Audit-log writes use the same wire-format-compatible URL across AWS RDS,
 # GCP Cloud SQL, Azure Database for PostgreSQL Flexible Server, Supabase,
-# Neon, CockroachDB Cloud, and self-hosted. Statement cache is configurable
+# Neon, and self-hosted PostgreSQL. Statement cache is configurable
 # so the same binary works behind transaction-mode PgBouncer (Supabase
-# pooler) and CockroachDB.
+# pooler).
 # We pull `sqlx-postgres` and `sqlx-core` directly (not the umbrella `sqlx`
 # crate) so we don't drag in the `sqlx-sqlite` transitive dep — its
 # `libsqlite3-sys ^0.30` clashes with `rusqlite 0.39`'s `libsqlite3-sys ^0.37`

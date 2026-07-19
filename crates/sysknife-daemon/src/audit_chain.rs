@@ -63,6 +63,7 @@
 //! `key_id = "v1"` and rotation is manual (delete the chain, regenerate).
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use sysknife_types::RiskLevel;
 use zeroize::Zeroize;
@@ -74,12 +75,12 @@ pub const CURRENT_KEY_ID: &str = "v1";
 /// Hex-encoded length of an Ed25519 signature (64 raw bytes → 128 hex chars).
 pub const HASH_HEX_LEN: usize = 128;
 
-/// Domain-separation tags for the two Ed25519 signing contexts (rows vs
-/// checkpoints). They MUST stay distinct and prefix-free so a signature made
-/// in one context can never verify in the other. Enforced by the
-/// `domain_tags_are_distinct_and_prefix_free` test.
+/// Domain-separation tags for Ed25519 signing contexts. They MUST stay distinct
+/// and prefix-free so a signature made in one context can never verify in any
+/// other. Enforced by the `domain_tags_are_distinct_and_prefix_free` test.
 const ROW_DOMAIN: &[u8] = b"sysknife-audit-row-v1\x1f";
 const CHECKPOINT_DOMAIN: &[u8] = b"sysknife-checkpoint-v1\x1f";
+const APPROVAL_DOMAIN: &[u8] = b"sysknife-approval-receipt-v1\x1f";
 
 /// Loaded Ed25519 signing key + its identifier. Construct via
 /// [`AuditKey::load_or_generate`].
@@ -223,6 +224,30 @@ impl AuditKey {
     pub fn verifying_key_hex(&self) -> String {
         hex::encode(self.signing.verifying_key().to_bytes())
     }
+
+    /// Derive the bearer receipt for one immutable preview. The signature is
+    /// deterministic, so a failed response delivery can be retried without
+    /// storing plaintext bearer credentials in the database.
+    pub fn approval_receipt(&self, transaction_id: &str, request_hash: &str) -> String {
+        // Frame both fields through `push_field` (the same escaping used for
+        // chain rows) so the signed message is injective in
+        // (transaction_id, request_hash). Raw concatenation with a bare 0x1F
+        // would alias distinct inputs if either field ever contained 0x1F;
+        // escaping removes that dependency on the callers' value shapes.
+        let mut message = APPROVAL_DOMAIN.to_vec();
+        push_field(&mut message, "txid", transaction_id);
+        push_field(&mut message, "reqhash", request_hash);
+        hex::encode(self.signing.sign(&message).to_bytes())
+    }
+
+    /// Chain-stored SHA-256 commitment to the deterministic approval receipt.
+    pub fn approval_commitment(&self, transaction_id: &str, request_hash: &str) -> String {
+        approval_receipt_digest(&self.approval_receipt(transaction_id, request_hash))
+    }
+}
+
+pub fn approval_receipt_digest(receipt: &str) -> String {
+    hex::encode(Sha256::digest(receipt.as_bytes()))
 }
 
 /// Message signed for a row: `ROW_DOMAIN || canonical(content) || prev_chain_hash`.
@@ -381,7 +406,8 @@ pub struct ChainContent<'a> {
     /// See the struct-level security contract for the only safe correction
     /// strategies.
     pub summary: &'a str,
-    /// `None` for un-approved (preview-only) records; serialised as empty.
+    /// Signed receipt commitment for daemon-created previews. Legacy/imported
+    /// rows may be `None`; serialised as empty for wire compatibility.
     pub approval_id: Option<&'a str>,
     /// JSON-canonical (sorted keys) array of warning strings.
     pub warnings_json: &'a str,
@@ -1401,7 +1427,37 @@ mod tests {
         // cross-verify because their signed messages start with distinct,
         // prefix-free domain tags.
         assert_ne!(ROW_DOMAIN, CHECKPOINT_DOMAIN);
+        assert_ne!(ROW_DOMAIN, APPROVAL_DOMAIN);
+        assert_ne!(CHECKPOINT_DOMAIN, APPROVAL_DOMAIN);
         assert!(!ROW_DOMAIN.starts_with(CHECKPOINT_DOMAIN));
         assert!(!CHECKPOINT_DOMAIN.starts_with(ROW_DOMAIN));
+        assert!(!ROW_DOMAIN.starts_with(APPROVAL_DOMAIN));
+        assert!(!APPROVAL_DOMAIN.starts_with(ROW_DOMAIN));
+        assert!(!CHECKPOINT_DOMAIN.starts_with(APPROVAL_DOMAIN));
+        assert!(!APPROVAL_DOMAIN.starts_with(CHECKPOINT_DOMAIN));
+    }
+
+    #[test]
+    fn approval_receipt_framing_is_injective() {
+        // The signed receipt message must be injective in
+        // (transaction_id, request_hash). Without `push_field` escaping, the
+        // ambiguous pair below would collide because a raw 0x1F separator
+        // cannot be distinguished from a 0x1F inside a field value.
+        let key = fixed_key();
+        let sep = "\u{1f}";
+        let a = key.approval_receipt(&format!("tx{sep}b"), "c");
+        let b = key.approval_receipt("tx", &format!("b{sep}c"));
+        assert_ne!(a, b, "0x1F in a field must not alias distinct receipts");
+
+        // Sanity: the derivation is deterministic (Ed25519, same inputs).
+        assert_eq!(
+            key.approval_receipt("tx-1", "hash-1"),
+            key.approval_receipt("tx-1", "hash-1"),
+        );
+        // And the commitment is exactly SHA-256 of the receipt.
+        assert_eq!(
+            key.approval_commitment("tx-1", "hash-1"),
+            approval_receipt_digest(&key.approval_receipt("tx-1", "hash-1")),
+        );
     }
 }

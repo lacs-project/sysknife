@@ -7,9 +7,9 @@ Supported Ubuntu LTSes:
 
 | Release | Codename | SSH port | Status |
 |---|---|---|---|
-| 22.04 | jammy | 2222 | validated |
-| 24.04 | noble | 2223 | validated (historical default) |
-| 26.04 | resolute | 2224 | validated |
+| 22.04 | jammy | 2222 | smoke-tested |
+| 24.04 | noble | 2223 | release-validated (default) |
+| 26.04 | resolute | 2224 | smoke-tested |
 
 The Ubuntu path uses `qemu-system-x86_64` directly with a cloud-init seed
 ISO — no quickemu, no interactive installer, no GUI window. The base image

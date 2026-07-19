@@ -103,8 +103,9 @@ Every mutating action requires a preview→approve→execute round-trip:
 2. The user approves. MCP users run `sysknife approve <transaction-id>` in a
    real terminal, which reloads the daemon-authoritative preview before asking
    for confirmation and requires the exact action name for high-risk work.
-3. The daemon issues a random one-time receipt and stores only its SHA-256
-   digest against that transaction.
+3. The daemon derives a domain-separated Ed25519 receipt from the transaction
+   ID and request hash, then stores only its SHA-256 commitment. That commitment
+   is part of the immutable signed transaction row.
 4. Execute must present the transaction ID, exact action and params, and the
    receipt. The daemon atomically consumes the receipt before running anything.
 
@@ -124,6 +125,13 @@ Concurrent execute requests for the same transaction are blocked by an
 database transaction that verifies the receipt digest, changes the queued
 transaction to running, and marks the receipt consumed. Only the first request
 wins; concurrent or replayed requests get `stale_approval`.
+
+Receipt digests are 256-bit commitments to 512-bit Ed25519 signatures. The
+atomic claim compares the digest inside the database transaction; SQL engines
+do not promise constant-time string comparison, but the high-entropy,
+single-use, 15-minute bearer value makes timing recovery impractical. The
+daemon uses constant-time comparison when validating the signed commitment
+before issuing a receipt.
 
 ---
 

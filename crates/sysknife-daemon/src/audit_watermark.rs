@@ -2,10 +2,11 @@
 //!
 //! ## Purpose
 //!
-//! Every time a new chain entry is written to SQLite, this module emits a
-//! structured journald log line recording `(seq, chain_hash_hex)` under the
-//! syslog identifier `sysknife-audit-tip`. A SIEM or audit-verifier can then
-//! compare this independent stream against the SQLite chain tail:
+//! Every time a new chain entry is committed to the configured transaction
+//! backend (SQLite or PostgreSQL), this module emits a structured journald log
+//! line recording `(seq, chain_hash_hex)` under the syslog identifier
+//! `sysknife-audit-tip`. A SIEM or audit-verifier can then compare this
+//! independent stream against the stored chain tail:
 //!
 //! ```text
 //! journalctl -t sysknife-audit-tip -o json | jq -r '.MESSAGE'
@@ -42,8 +43,9 @@ static WARNED_JOURNALD_UNAVAILABLE: OnceLock<()> = OnceLock::new();
 ///
 /// `chain_hash_hex` must be the hex-encoded Ed25519 signature of the newly
 /// inserted chain row — exactly as stored in the `chain_hash` column. Passing a
-/// pre-encoded hex string avoids a redundant decode/re-encode at the call site
-/// in `transactions.rs`, where the hash is already a `String`.
+/// pre-encoded hex string avoids a redundant decode/re-encode at the call sites
+/// (`transactions.rs` for SQLite and `store/postgres.rs` for PostgreSQL), where
+/// the hash is already a `String`.
 ///
 /// This function is non-fatal: if journald is unavailable the call returns
 /// normally after logging a one-time warning to stderr.
