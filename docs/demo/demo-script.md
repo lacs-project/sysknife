@@ -119,5 +119,7 @@ recorded with timestamps.
 1. Trim dead time (typing pauses, download waits)
 2. Add captions for each scene transition
 3. Export GIF from scenes 1-3 at 720p, max 5 MB
-4. Place GIF at `docs/assets/demo.gif`
-5. Update README to reference the GIF
+4. Place GIF at `assets/demo/demo.gif` (see `assets/demo/README.md` for the
+   VHS tape + `gifsicle` optimization step used to regenerate it)
+5. Reference it from the docs (`docs/cli.md`, `docs/introduction.md`); the
+   README hero is the MCP flow at `assets/demo/mcp-flow.gif`

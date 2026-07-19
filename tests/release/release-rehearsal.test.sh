@@ -38,16 +38,20 @@ fi
 release_workflow="${repo_root}/.github/workflows/release.yml"
 grep -Fq 'check_registry_versions.sh' "$release_workflow"
 grep -Fq 'already exists; skipping' "$release_workflow"
-# Positive invariant: every `uses:` MUST pin a full 40-hex commit SHA. This
-# catches every mutable form (semver tags like @v6.1.0, @stable, @main, and
-# short SHAs), not just the two the old negative regex happened to enumerate.
-while IFS= read -r uses_line; do
-    if ! printf '%s\n' "$uses_line" | grep -Eq 'uses:[[:space:]]+[^@[:space:]]+@[0-9a-f]{40}([[:space:]]|$)'; then
-        printf 'FAIL: release workflow action is not pinned to a 40-hex SHA: %s\n' \
-            "$uses_line" >&2
-        exit 1
-    fi
-done < <(grep -E '^[[:space:]]*(-[[:space:]]+)?uses:' "$release_workflow")
+# Positive invariant: EVERY `uses:` in EVERY workflow MUST pin a full 40-hex
+# commit SHA. This catches every mutable form (semver tags like @v6.1.0,
+# @stable, @main, per-tool tags like @cargo-nextest, and short SHAs), across
+# all workflows — not just the publishing one — for a uniform supply-chain
+# posture that cannot silently drift.
+for workflow in "${repo_root}"/.github/workflows/*.yml; do
+    while IFS= read -r uses_line; do
+        if ! printf '%s\n' "$uses_line" | grep -Eq 'uses:[[:space:]]+[^@[:space:]]+@[0-9a-f]{40}([[:space:]]|$)'; then
+            printf 'FAIL: %s action is not pinned to a 40-hex SHA: %s\n' \
+                "$(basename "$workflow")" "$uses_line" >&2
+            exit 1
+        fi
+    done < <(grep -E '^[[:space:]]*(-[[:space:]]+)?uses:' "$workflow")
+done
 if grep -Fq -- '--no-verify' "$release_workflow"; then
     printf 'FAIL: release publication skips generated crate verification\n' >&2
     exit 1

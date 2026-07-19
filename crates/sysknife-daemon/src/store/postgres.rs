@@ -39,7 +39,10 @@ use uuid::Uuid;
 use crate::audit_chain::{AuditKey, ChainContent, ChainRow, VerifyOutcome, CURRENT_KEY_ID};
 use crate::audit_watermark::emit_chain_tip_watermark;
 use crate::store::AuditStore;
-use crate::transactions::{NewTransaction, RecordedPreviewedTransaction, TransactionStoreError};
+use crate::transactions::{
+    NewTransaction, RecordedPreviewedTransaction, TransactionStoreError,
+    APPROVAL_RECEIPT_TTL_MINUTES,
+};
 
 const MIGRATION_LOCK_ID: i64 = 0x5359_534b_4e49_4645;
 
@@ -420,13 +423,15 @@ impl AuditStore for PostgresStore {
         }
         let queued = serialize(&JobState::Queued)?;
         let result = sqlx_core::query::query(
-            "INSERT INTO transaction_approvals \
-                 (transaction_id, receipt_digest, approved_at) \
-             SELECT transaction_id, $1, $2 FROM transactions \
-             WHERE transaction_id = $3 \
-               AND status = $4 \
-               AND created_at::timestamptz > now() - INTERVAL '15 minutes' \
-             ON CONFLICT (transaction_id) DO NOTHING",
+            &format!(
+                "INSERT INTO transaction_approvals \
+                     (transaction_id, receipt_digest, approved_at) \
+                 SELECT transaction_id, $1, $2 FROM transactions \
+                 WHERE transaction_id = $3 \
+                   AND status = $4 \
+                   AND created_at::timestamptz > now() - INTERVAL '{APPROVAL_RECEIPT_TTL_MINUTES} minutes' \
+                 ON CONFLICT (transaction_id) DO NOTHING"
+            ),
         )
         .bind(receipt_digest)
         .bind(now_iso())
@@ -462,16 +467,18 @@ impl AuditStore for PostgresStore {
         let running = serialize(&JobState::Running)?;
         let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
         let result = sqlx_core::query::query(
-            "UPDATE transactions SET status = $1 \
-             WHERE transaction_id = $2 \
-               AND status = $3 \
-               AND created_at::timestamptz > now() - INTERVAL '15 minutes' \
-               AND EXISTS ( \
-                   SELECT 1 FROM transaction_approvals \
-                   WHERE transaction_id = $2 \
-                     AND receipt_digest = $4 \
-                     AND consumed_at IS NULL \
-               )",
+            &format!(
+                "UPDATE transactions SET status = $1 \
+                 WHERE transaction_id = $2 \
+                   AND status = $3 \
+                   AND created_at::timestamptz > now() - INTERVAL '{APPROVAL_RECEIPT_TTL_MINUTES} minutes' \
+                   AND EXISTS ( \
+                       SELECT 1 FROM transaction_approvals \
+                       WHERE transaction_id = $2 \
+                         AND receipt_digest = $4 \
+                         AND consumed_at IS NULL \
+                   )"
+            ),
         )
         .bind(&running)
         .bind(transaction_id)
@@ -499,9 +506,11 @@ impl AuditStore for PostgresStore {
         let queued = serialize(&JobState::Queued)?;
         let canceled = serialize(&JobState::Canceled)?;
         let result = sqlx_core::query::query(
-            "UPDATE transactions SET status = $1 \
-             WHERE status = $2 \
-               AND created_at::timestamptz <= now() - INTERVAL '15 minutes'",
+            &format!(
+                "UPDATE transactions SET status = $1 \
+                 WHERE status = $2 \
+                   AND created_at::timestamptz <= now() - INTERVAL '{APPROVAL_RECEIPT_TTL_MINUTES} minutes'"
+            ),
         )
         .bind(&canceled)
         .bind(&queued)

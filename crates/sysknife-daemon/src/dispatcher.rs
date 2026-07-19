@@ -1659,9 +1659,18 @@ async fn handle_execute(
             // Another high-risk reboot-required action is already executing.
             // Return a typed Conflict response so the shell can surface a
             // "wait, an upgrade is running" message rather than a generic error.
+            //
+            // The approval is NOT consumed by a conflict (the claim happens
+            // after this gate), so it remains valid for retry — but only until
+            // its TTL elapses. A high-risk reboot job can outrun that window, so
+            // we tell the user up front that a long wait means re-approving,
+            // instead of letting the retry fail later with a bare stale_approval.
+            let ttl = crate::transactions::APPROVAL_RECEIPT_TTL_MINUTES;
             let msg = format!(
                 "a High-risk reboot-required action is already executing (request_hash \
-                 {running_hash}); retry after the current job completes"
+                 {running_hash}); retry after the current job completes. This approval \
+                 expires {ttl} minutes after it was issued — if the running job is still \
+                 going by then, run `sysknife approve <transaction-id>` again for a fresh receipt"
             );
             drop(slot); // release before I/O
             return send_response(

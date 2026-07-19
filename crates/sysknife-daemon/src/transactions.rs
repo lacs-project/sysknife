@@ -8,6 +8,18 @@ use subtle::ConstantTimeEq;
 use sysknife_types::{JobState, PreviewEnvelope, RiskLevel, TransactionRecord};
 use uuid::Uuid;
 
+/// Lifetime of an approval receipt / preview, in minutes.
+///
+/// A transaction can be approved, its receipt claimed for execution, or it is
+/// swept as stale, only while `created_at` is within this window. It is the
+/// single source of truth for the TTL: both the SQLite (`julianday`) and the
+/// PostgreSQL (`INTERVAL`) backends interpolate this constant into their SQL,
+/// so the two engines can never disagree on the window. 15 minutes balances
+/// operator usability (time to run `sysknife approve` in a terminal) against
+/// the exposure window of a single-use bearer receipt. Prose in `SECURITY.md`
+/// cites the same "15-minute" value; keep them in sync if this changes.
+pub(crate) const APPROVAL_RECEIPT_TTL_MINUTES: i64 = 15;
+
 /// Data provided by the caller when recording a new transaction.
 ///
 /// The initial `status` is always `Queued` — it is not caller-controllable.
@@ -313,14 +325,16 @@ impl TransactionStore {
         let conn = self.connection()?;
         let queued_json = serialize_field(&JobState::Queued)?;
         let rows_affected = conn.execute(
-            "INSERT INTO transaction_approvals (transaction_id, receipt_digest) \
-             SELECT transaction_id, ?1 FROM transactions \
-             WHERE transaction_id = ?2 \
-               AND status = ?3 \
-               AND julianday(created_at) > julianday('now', '-15 minutes') \
-               AND NOT EXISTS ( \
-                   SELECT 1 FROM transaction_approvals WHERE transaction_id = ?2 \
-               )",
+            &format!(
+                "INSERT INTO transaction_approvals (transaction_id, receipt_digest) \
+                 SELECT transaction_id, ?1 FROM transactions \
+                 WHERE transaction_id = ?2 \
+                   AND status = ?3 \
+                   AND julianday(created_at) > julianday('now', '-{APPROVAL_RECEIPT_TTL_MINUTES} minutes') \
+                   AND NOT EXISTS ( \
+                       SELECT 1 FROM transaction_approvals WHERE transaction_id = ?2 \
+                   )"
+            ),
             params![receipt_digest, transaction_id, queued_json],
         )?;
         Ok((rows_affected > 0).then_some(receipt))
@@ -352,16 +366,18 @@ impl TransactionStore {
         let queued_json = serialize_field(&JobState::Queued)?;
         let running_json = serialize_field(&JobState::Running)?;
         let rows_affected = tx.execute(
-            "UPDATE transactions SET status = ?1 \
-             WHERE transaction_id = ?2 \
-               AND status = ?3 \
-               AND julianday(created_at) > julianday('now', '-15 minutes') \
-               AND EXISTS ( \
-                   SELECT 1 FROM transaction_approvals \
-                   WHERE transaction_id = ?2 \
-                     AND receipt_digest = ?4 \
-                     AND consumed_at IS NULL \
-               )",
+            &format!(
+                "UPDATE transactions SET status = ?1 \
+                 WHERE transaction_id = ?2 \
+                   AND status = ?3 \
+                   AND julianday(created_at) > julianday('now', '-{APPROVAL_RECEIPT_TTL_MINUTES} minutes') \
+                   AND EXISTS ( \
+                       SELECT 1 FROM transaction_approvals \
+                       WHERE transaction_id = ?2 \
+                         AND receipt_digest = ?4 \
+                         AND consumed_at IS NULL \
+                   )"
+            ),
             params![running_json, transaction_id, queued_json, receipt_digest],
         )?;
         if rows_affected > 0 {
@@ -395,9 +411,11 @@ impl TransactionStore {
         let canceled_json = serialize_field(&JobState::Canceled)?;
         let queued_json = serialize_field(&JobState::Queued)?;
         let rows_affected = conn.execute(
-            "UPDATE transactions SET status = ?1 \
-             WHERE status = ?2 \
-               AND julianday(created_at) <= julianday('now', '-15 minutes')",
+            &format!(
+                "UPDATE transactions SET status = ?1 \
+                 WHERE status = ?2 \
+                   AND julianday(created_at) <= julianday('now', '-{APPROVAL_RECEIPT_TTL_MINUTES} minutes')"
+            ),
             params![canceled_json, queued_json],
         )?;
         Ok(rows_affected as u64)

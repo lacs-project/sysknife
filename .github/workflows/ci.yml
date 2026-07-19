@@ -20,15 +20,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
 
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
         with:
           node-version: "20"
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.11"
 
@@ -95,10 +95,10 @@ jobs:
         working-directory: apps/sysknife-shell
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
 
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
         with:
           node-version: "20"
 
@@ -122,7 +122,7 @@ jobs:
       CARGO_INCREMENTAL: 0
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
 
       - name: Install Tauri system dependencies
         run: |
@@ -135,12 +135,12 @@ jobs:
             patchelf
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
         with:
           components: rustfmt, clippy
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
 
       - name: Format check
         run: cargo fmt --all --check
@@ -154,7 +154,9 @@ jobs:
         run: cargo doc --no-deps --workspace --locked
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@cargo-nextest
+        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b  # v2
+        with:
+          tool: cargo-nextest
 
       - name: Test workspace
         run: cargo nextest run --workspace --locked
@@ -180,13 +182,13 @@ jobs:
         postgres://sysknife:sysknife@127.0.0.1:5432/sysknife_test?sslmode=disable
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
 
       - name: Run live Postgres migration and store contract
         run: cargo test -p sysknife-daemon --test postgres_store --locked
@@ -195,10 +197,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@cargo-audit
+        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b  # v2
+        with:
+          tool: cargo-audit
 
       - name: Audit dependencies for known RustSec advisories
         # Fails the build on any unignored vulnerability. Unmaintained-crate
@@ -208,6 +212,9 @@ jobs:
         # only by the Tauri desktop shell's webview deps (kuchikiki/selectors),
         # is not reachable from the privileged daemon, brain, or CLI, and has
         # no fixed upstream release yet. Re-evaluate when Tauri bumps the chain.
+        #
+        # The accepted unmaintained/unsound advisories (all GUI-transitive) are
+        # catalogued in docs/security/audit-advisories.md.
         run: cargo audit --ignore RUSTSEC-2026-0097
 
   dependency-review:
@@ -217,9 +224,9 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
 
       - name: Review dependency changes
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48  # v4
         with:
           fail-on-severity: high
