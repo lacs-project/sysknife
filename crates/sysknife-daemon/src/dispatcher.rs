@@ -711,7 +711,13 @@ pub async fn connection_handler_with_executor<S>(
 /// Receive the first frame, parse the auth message, and validate the token.
 ///
 /// Returns the granted `CallerRole` on success, or `None` if the frame is
-/// malformed or the token does not match the stored value.
+/// malformed or the token does not match the stored value. Every rejection
+/// path logs a distinct, operator-facing `eprintln!` naming the specific
+/// cause (timeout, framing error, malformed JSON, wrong frame type, or a bad
+/// token) so operators can diagnose vsock auth failures from server logs.
+/// The response sent back to the *client* stays a uniform generic rejection
+/// regardless of cause — these logs are server-side only and must never be
+/// used to build a client-observable auth oracle.
 async fn authenticate_vsock_token(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     token_path: &std::path::Path,
@@ -723,18 +729,43 @@ async fn authenticate_vsock_token(
         token: String,
     }
 
-    let raw = tokio::time::timeout(
+    let recv_result = tokio::time::timeout(
         std::time::Duration::from_secs(VSOCK_AUTH_FRAME_TIMEOUT_SECS),
         framed.recv(),
     )
-    .await
-    .ok()? // timeout expired
-    .ok()?; // framing error
-    let auth: AuthFrame = serde_json::from_slice(&raw).ok()?;
+    .await;
+    let Ok(frame_result) = recv_result else {
+        eprintln!(
+            "[sysknife-daemon] vsock auth: timed out waiting for auth frame after {VSOCK_AUTH_FRAME_TIMEOUT_SECS}s"
+        );
+        return None;
+    };
+    let raw = match frame_result {
+        Ok(raw) => raw,
+        Err(e) => {
+            eprintln!("[sysknife-daemon] vsock auth: framing error reading auth frame: {e}");
+            return None;
+        }
+    };
+    let auth: AuthFrame = match serde_json::from_slice(&raw) {
+        Ok(auth) => auth,
+        Err(e) => {
+            eprintln!("[sysknife-daemon] vsock auth: malformed auth frame JSON: {e}");
+            return None;
+        }
+    };
     if auth.msg_type != "auth" {
+        eprintln!(
+            "[sysknife-daemon] vsock auth: unexpected frame type {:?} (expected \"auth\")",
+            auth.msg_type
+        );
         return None;
     }
-    crate::auth::validate_token_against_file(&auth.token, token_path)
+    let role = crate::auth::validate_token_against_file(&auth.token, token_path);
+    if role.is_none() {
+        eprintln!("[sysknife-daemon] vsock auth: token did not validate against token file");
+    }
+    role
 }
 
 // ---------------------------------------------------------------------------
@@ -1794,6 +1825,22 @@ async fn handle_execute(
 
     let is_high_risk_reboot =
         spec.risk_level == sysknife_types::RiskLevel::High && spec.reboot_required;
+
+    // Defensive invariant: the slot is only ever *claimed* inside `if
+    // is_mutating { ... }` below, but `release_high_risk_slot` runs
+    // unconditionally on every exit path (see calls further down). If a
+    // future action were classified High-risk + reboot-required yet not
+    // mutating (e.g. an Observer-role action), it would skip the claim but
+    // still attempt the release — harmless today (release is a no-op unless
+    // the hash matches a claimed slot) but a sign the risk/role policy tables
+    // have drifted out of sync. Policy validation prevents this today; this
+    // assertion catches a future regression cheaply rather than relying on
+    // that invariant holding silently forever.
+    debug_assert!(
+        !is_high_risk_reboot || is_mutating,
+        "high-risk+reboot action must be mutating (action {action_name:?} is High risk \
+         + reboot_required but policy does not require Dev/Admin to run it)"
+    );
 
     // Check the gate for any mutating action; only set it for high-risk+reboot.
     if is_mutating {

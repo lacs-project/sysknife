@@ -66,7 +66,13 @@ pub fn validate_token_against_file(
     }
     let stored = match std::fs::read_to_string(token_path) {
         Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "[sysknife-daemon] WARNING: vsock token file {} does not exist; rejecting vsock auth (provision the token file to allow vsock connections)",
+                token_path.display()
+            );
+            return None;
+        }
         Err(e) => {
             eprintln!(
                 "[sysknife-daemon] WARNING: cannot read token file {}: {e}; rejecting vsock auth",

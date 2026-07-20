@@ -4821,6 +4821,7 @@ dependencies = [
  "async-openai",
  "async-trait",
  "futures",
+ "http",
  "rig-core",
  "serde",
  "serde_json",
