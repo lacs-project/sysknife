@@ -11,7 +11,8 @@
   "homepage": "https://github.com/lacs-project/sysknife#readme",
   "bugs": "https://github.com/lacs-project/sysknife/issues",
   "bin": {
-    "sysknife-setup": "index.js"
+    "sysknife-setup": "index.js",
+    "sysknife-mcp": "mcp-launcher.js"
   },
   "engines": {
     "node": ">=18"
@@ -19,7 +20,8 @@
   "files": [
     "index.js",
     "install-binary.js",
-    "install-daemon.js"
+    "install-daemon.js",
+    "mcp-launcher.js"
   ],
   "keywords": [
     "sysknife",
@@ -28,6 +30,7 @@
     "linux"
   ],
   "license": "MIT",
+  "mcpName": "io.github.lacs-project/sysknife",
   "publishConfig": {
     "access": "public"
   },
