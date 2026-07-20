@@ -16,6 +16,13 @@ test('generated integration rules require terminal-issued approval receipts', ()
   assert.doesNotMatch(source, /words like \"yes\", \"do it\"/);
 });
 
+test('MCP configs are merged, not overwritten (preserves other servers)', () => {
+  assert.match(source, /mergeMcpServers\('\.mcp\.json'/);
+  assert.match(source, /mergeMcpServers\(cursorPath/);
+  assert.doesNotMatch(source, /const mcpConfig = \{ mcpServers \}/);
+  assert.doesNotMatch(source, /const cursorMcp = \{ mcpServers \}/);
+});
+
 test('default MCP target and user service use the same socket', () => {
   assert.match(source, /\.local', 'share', 'sysknife', 'daemon\.sock/);
   assert.match(daemonInstaller, /\.local', 'share', 'sysknife', 'daemon\.sock/);
