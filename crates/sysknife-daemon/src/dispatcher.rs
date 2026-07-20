@@ -1046,8 +1046,34 @@ async fn handle_query_history(
     action_filter: Option<String>,
     since_hours: Option<u32>,
 ) -> Result<(), HandlerError> {
-    // Read-only structured query. No approval gate: history is Observer-level,
-    // exactly like the `ListJobHistory` action it complements.
+    // Honour the SAME `[policy.risk_overrides]` gate as the `ListJobHistory`
+    // action (see handle_query_action): if an operator raised history above
+    // Observer, this structured path must refuse it too, otherwise it would be
+    // an authorization bypass around that policy. History is keyed on the
+    // `ListJobHistory` action so a single override governs both paths.
+    match state.policy.min_role_for_action("ListJobHistory") {
+        Some(CallerRole::Observer) => {}
+        Some(_) => {
+            return send_error(
+                framed,
+                request_id,
+                "authorization_failure",
+                "history has been restricted above read-only by policy; \
+                 it is not available over the structured query path",
+            )
+            .await;
+        }
+        None => {
+            return send_error(
+                framed,
+                request_id,
+                "validation_failure",
+                "ListJobHistory action is not registered",
+            )
+            .await;
+        }
+    }
+
     let entries = match state
         .audit
         .list_history(
@@ -2489,6 +2515,47 @@ mod tests {
             entries[0].get("risk_level").is_some(),
             "risk_level must be present as a typed field"
         );
+    }
+
+    #[tokio::test]
+    async fn query_history_honours_policy_override_raising_history_above_observer() {
+        // Authorization consistency: if an operator raises ListJobHistory above
+        // Observer via [policy.risk_overrides], the structured query_history
+        // path must refuse it too — it must not be a bypass around that policy.
+        let dir = tempdir().unwrap();
+        let real = test_state(&dir);
+        // risk_overrides raise an action's RISK LEVEL; "high" pushes
+        // ListJobHistory's derived min-role above Observer.
+        let overrides =
+            std::collections::HashMap::from([("ListJobHistory".to_string(), "high".to_string())]);
+        let policy = crate::policy::PolicyTable::from_overrides(&overrides).unwrap();
+        let state = crate::state::DaemonState::open_with_audit(
+            real.config.clone(),
+            policy,
+            None,
+            real.audit.clone(),
+        );
+
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            unix_connection_handler(server, state, runner(), CallerRole::Observer).await;
+        });
+        let mut framed = FramedStream::new(client);
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "query_history",
+                    "request_id": "hist-denied",
+                    "limit": 10,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let response: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+
+        assert_eq!(response["type"], "error_response");
+        assert_eq!(response["category"], "authorization_failure");
     }
 
     #[tokio::test]

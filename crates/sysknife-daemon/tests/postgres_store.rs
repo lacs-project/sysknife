@@ -183,6 +183,27 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
         .await
         .expect("query history");
     assert_eq!(history.len(), 1);
+
+    // Structured history (P3): same filters, plus a populated created_at and a
+    // typed risk_level. Exercises the Postgres list_history $idx/bind order and
+    // row_to_history_entry mapping against a real server.
+    let structured = store
+        .list_history(10, Some("running"), Some("RestartService"), Some(1))
+        .await
+        .expect("query structured history");
+    assert_eq!(structured.len(), 1);
+    assert_eq!(structured[0].action_name, "RestartService");
+    assert_eq!(structured[0].status, JobState::Running);
+    assert!(
+        !structured[0].created_at.is_empty(),
+        "created_at must be populated from the Postgres row"
+    );
+    // Filters must behave identically to list_transactions.
+    assert!(store
+        .list_history(10, Some("succeeded"), None, None)
+        .await
+        .expect("filter mismatch returns empty")
+        .is_empty());
     assert_eq!(
         store.verify_audit_chain(&key).await.expect("verify chain"),
         VerifyOutcome::Intact { rows_checked: 1 }
