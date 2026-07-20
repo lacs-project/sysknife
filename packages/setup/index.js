@@ -40,6 +40,7 @@ const crypto   = require('crypto');
 
 const { installBinaryIfMissing } = require('./install-binary.js');
 const { installDaemonService }   = require('./install-daemon.js');
+const { mergeMcpServers }        = require('./mcp-config.js');
 
 // ---------------------------------------------------------------------------
 // Terminal helpers
@@ -633,17 +634,8 @@ async function main() {
     }
   }
 
-  // ── 7.5. Pre-flight: ask about existing .mcp.json before closing rl ────────
-
-  let skipMcpJson = false;
-  if (doClaude && fs.existsSync('.mcp.json')) {
-    warn('.mcp.json already exists.');
-    const overwriteAnswer = await ask(rl, lineQueue, 'Overwrite?', 'Y');
-    skipMcpJson = !overwriteAnswer.toLowerCase().startsWith('y');
-    if (skipMcpJson) {
-      warn('Skipping .mcp.json — edit it manually to update.');
-    }
-  }
+  // .mcp.json / .cursor/mcp.json are merged (existing servers preserved), so no
+  // destructive "Overwrite?" prompt is needed before closing the readline.
 
   rl.close();
 
@@ -685,18 +677,18 @@ async function main() {
   // ── Claude Code ──────────────────────────────────────────────────────────
 
   if (doClaude) {
-    const mcpConfig = { mcpServers };
+    // Merge into any existing .mcp.json so the user's other MCP servers survive.
+    const mcpExisted = fs.existsSync('.mcp.json');
+    const mcpConfig  = mergeMcpServers('.mcp.json', mcpServers);
 
-    if (!skipMcpJson) {
-      // .mcp.json may contain provider API keys in plain text. Restrict to owner
-      // read/write so a coworker on a shared workstation (or a stray `cat *` in a
-      // build script) cannot recover them. `chmodSync` is idempotent and also
-      // tightens permissions on a pre-existing file that was created with the
-      // process umask before this change.
-      fs.writeFileSync('.mcp.json', JSON.stringify(mcpConfig, null, 2) + '\n', { mode: 0o600 });
-      fs.chmodSync('.mcp.json', 0o600);
-      ok(`Created .mcp.json  (${targets.length} target${targets.length > 1 ? 's' : ''}: ${targetSummary})`);
-    }
+    // .mcp.json may contain provider API keys in plain text. Restrict to owner
+    // read/write so a coworker on a shared workstation (or a stray `cat *` in a
+    // build script) cannot recover them. `chmodSync` is idempotent and also
+    // tightens permissions on a pre-existing file that was created with the
+    // process umask before this change.
+    fs.writeFileSync('.mcp.json', JSON.stringify(mcpConfig, null, 2) + '\n', { mode: 0o600 });
+    fs.chmodSync('.mcp.json', 0o600);
+    ok(`${mcpExisted ? 'Updated' : 'Created'} .mcp.json  (${targets.length} target${targets.length > 1 ? 's' : ''}: ${targetSummary})`);
 
     if (!fs.existsSync('.claude')) {
       fs.mkdirSync('.claude', { recursive: true });
@@ -725,14 +717,13 @@ async function main() {
     if (!fs.existsSync('.cursor')) {
       fs.mkdirSync('.cursor', { recursive: true });
     }
-    const cursorMcp = { mcpServers };
-    fs.writeFileSync(
-      path.join('.cursor', 'mcp.json'),
-      JSON.stringify(cursorMcp, null, 2) + '\n',
-      { mode: 0o600 }
-    );
-    fs.chmodSync(path.join('.cursor', 'mcp.json'), 0o600);
-    ok(`Created .cursor/mcp.json  (${targets.length} target${targets.length > 1 ? 's' : ''}: ${targetSummary})`);
+    // Merge into any existing .cursor/mcp.json so other MCP servers survive.
+    const cursorPath    = path.join('.cursor', 'mcp.json');
+    const cursorExisted = fs.existsSync(cursorPath);
+    const cursorMcp     = mergeMcpServers(cursorPath, mcpServers);
+    fs.writeFileSync(cursorPath, JSON.stringify(cursorMcp, null, 2) + '\n', { mode: 0o600 });
+    fs.chmodSync(cursorPath, 0o600);
+    ok(`${cursorExisted ? 'Updated' : 'Created'} .cursor/mcp.json  (${targets.length} target${targets.length > 1 ? 's' : ''}: ${targetSummary})`);
 
     const rulesDir = path.join('.cursor', 'rules');
     if (!fs.existsSync(rulesDir)) {
