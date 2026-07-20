@@ -1,7 +1,7 @@
 use crate::audit_chain::{self, AuditKey, ChainContent, ChainRow, VerifyOutcome, CURRENT_KEY_ID};
 use crate::audit_watermark::emit_chain_tip_watermark;
 use rusqlite::{params, Connection, TransactionBehavior};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
@@ -19,6 +19,23 @@ use uuid::Uuid;
 /// the exposure window of a single-use bearer receipt. Prose in `SECURITY.md`
 /// cites the same "15-minute" value; keep them in sync if this changes.
 pub(crate) const APPROVAL_RECEIPT_TTL_MINUTES: i64 = 15;
+
+/// One structured audit-log row for the history IPC.
+///
+/// Unlike [`TransactionRecord`] (which crosses the proto boundary and omits the
+/// creation timestamp), this is a serde-only DTO carried over the JSON daemon
+/// wire. It exists so programmatic clients (the MCP `sysknife_history` tool)
+/// get typed `risk_level` and `created_at` instead of re-parsing formatted
+/// text. `created_at` is the ISO-8601 timestamp stored at insert time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct JobHistoryEntry {
+    pub transaction_id: String,
+    pub action_name: String,
+    pub risk_level: RiskLevel,
+    pub status: JobState,
+    pub summary: String,
+    pub created_at: String,
+}
 
 /// Data provided by the caller when recording a new transaction.
 ///
@@ -437,13 +454,79 @@ impl TransactionStore {
         since_hours: Option<u32>,
     ) -> Result<Vec<TransactionRecord>, TransactionStoreError> {
         let conn = self.connection()?;
-        let limit = limit.min(100);
-
-        let mut sql = String::from(
+        let (filter_sql, param_values) =
+            Self::build_history_filter(limit, status_filter, action_filter, since_hours)?;
+        let sql = format!(
             "SELECT transaction_id, request_id, request_hash, action_name, \
              risk_level, status, approval_id, summary, warnings_json \
-             FROM transactions WHERE 1=1",
+             FROM transactions WHERE 1=1{filter_sql}"
         );
+        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|b| b.as_ref()).collect();
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_ref.as_slice(), |row| Ok(row_to_record(row)))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row??);
+        }
+        Ok(results)
+    }
+
+    /// Structured history for programmatic clients (the MCP `sysknife_history`
+    /// tool). Unlike [`list_transactions`](Self::list_transactions) it selects
+    /// `created_at` and returns [`JobHistoryEntry`] so `risk_level` and
+    /// `created_at` reach the caller typed, without text re-parsing.
+    pub fn list_history(
+        &self,
+        limit: u32,
+        status_filter: Option<&str>,
+        action_filter: Option<&str>,
+        since_hours: Option<u32>,
+    ) -> Result<Vec<JobHistoryEntry>, TransactionStoreError> {
+        let conn = self.connection()?;
+        let (filter_sql, param_values) =
+            Self::build_history_filter(limit, status_filter, action_filter, since_hours)?;
+        let sql = format!(
+            "SELECT transaction_id, action_name, risk_level, status, summary, created_at \
+             FROM transactions WHERE 1=1{filter_sql}"
+        );
+        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|b| b.as_ref()).collect();
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_ref.as_slice(), |row| {
+            Ok((|| {
+                Ok::<JobHistoryEntry, TransactionStoreError>(JobHistoryEntry {
+                    transaction_id: row.get(0)?,
+                    action_name: row.get(1)?,
+                    risk_level: deserialize_field(&row.get::<_, String>(2)?)?,
+                    status: deserialize_field(&row.get::<_, String>(3)?)?,
+                    summary: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })())
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row??);
+        }
+        Ok(results)
+    }
+
+    /// Build the shared `WHERE`/`ORDER BY`/`LIMIT` suffix (after `WHERE 1=1`)
+    /// and its bound parameters for the history queries, so
+    /// [`list_transactions`](Self::list_transactions) and
+    /// [`list_history`](Self::list_history) cannot filter differently.
+    fn build_history_filter(
+        limit: u32,
+        status_filter: Option<&str>,
+        action_filter: Option<&str>,
+        since_hours: Option<u32>,
+    ) -> Result<(String, Vec<Box<dyn rusqlite::types::ToSql>>), TransactionStoreError> {
+        let mut sql = String::new();
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
         if let Some(status) = status_filter {
@@ -467,19 +550,9 @@ impl TransactionStore {
         }
 
         sql.push_str(" ORDER BY seq DESC LIMIT ?");
-        param_values.push(Box::new(limit));
+        param_values.push(Box::new(limit.min(100)));
 
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            param_values.iter().map(|b| b.as_ref()).collect();
-
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_ref.as_slice(), |row| Ok(row_to_record(row)))?;
-
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row??);
-        }
-        Ok(results)
+        Ok((sql, param_values))
     }
 
     fn connection(&self) -> Result<Connection, TransactionStoreError> {
@@ -1448,6 +1521,41 @@ mod tests {
         // Most recent first (GetDiskUsage was recorded second).
         assert_eq!(results[0].action_name, "GetDiskUsage");
         assert_eq!(results[1].action_name, "UpdateSystem");
+    }
+
+    #[test]
+    fn list_history_populates_created_at_and_risk_level() {
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        store.record(queued_transaction()).unwrap();
+
+        let entries = store.list_history(10, None, None, None).unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.action_name, "UpdateSystem");
+        assert_eq!(entry.risk_level, RiskLevel::High);
+        assert_eq!(entry.status, JobState::Queued);
+        assert!(
+            !entry.created_at.is_empty(),
+            "created_at must be populated from the stored row, not left blank"
+        );
+    }
+
+    #[test]
+    fn list_history_applies_the_same_filters_as_list_transactions() {
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        store.record(queued_transaction()).unwrap();
+        let mut low = queued_transaction();
+        low.action_name = "GetDiskUsage".to_string();
+        low.risk_level = RiskLevel::Low;
+        store.record(low).unwrap();
+
+        let only = store
+            .list_history(10, None, Some("GetDiskUsage"), None)
+            .unwrap();
+        assert_eq!(only.len(), 1);
+        assert_eq!(only[0].action_name, "GetDiskUsage");
     }
 
     #[test]

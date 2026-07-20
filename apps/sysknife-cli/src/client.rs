@@ -465,6 +465,54 @@ impl DaemonClient {
         }
     }
 
+    /// Structured audit-log history for the MCP `sysknife_history` tool.
+    ///
+    /// Sends a `query_history` request and returns typed rows (with
+    /// `created_at` and `risk_level`) instead of the human-formatted
+    /// `ListJobHistory` text the CLI display path uses.
+    pub fn query_history(
+        &self,
+        limit: Option<u32>,
+        status_filter: Option<&str>,
+        action_filter: Option<&str>,
+        since_hours: Option<u32>,
+    ) -> Result<Vec<sysknife_daemon::transactions::JobHistoryEntry>, PlanningError> {
+        let mut stream = self.connect_sync()?;
+
+        let req = serde_json::to_vec(&serde_json::json!({
+            "type": "query_history",
+            "request_id": "cli-query-history",
+            "limit": limit,
+            "status_filter": status_filter,
+            "action_filter": action_filter,
+            "since_hours": since_hours,
+        }))
+        .map_err(|e| PlanningError::StateUnavailable(format!("serialize: {e}")))?;
+
+        stream
+            .write_frame(&req)
+            .map_err(|e| PlanningError::StateUnavailable(format!("send: {e}")))?;
+
+        let raw = stream
+            .read_frame()
+            .map_err(|e| PlanningError::StateUnavailable(format!("recv: {e}")))?;
+
+        let resp: Value = serde_json::from_slice(&raw)
+            .map_err(|e| PlanningError::StateUnavailable(format!("parse: {e}")))?;
+
+        match resp["type"].as_str() {
+            Some("history_response") => serde_json::from_value(resp["entries"].clone())
+                .map_err(|e| PlanningError::StateUnavailable(format!("parse entries: {e}"))),
+            Some("error_response") => Err(PlanningError::StateUnavailable(format!(
+                "daemon error: {}",
+                resp["message"].as_str().unwrap_or("unknown")
+            ))),
+            _ => Err(PlanningError::StateUnavailable(
+                "unexpected response type".into(),
+            )),
+        }
+    }
+
     // ------------------------------------------------------------------
     // Async operations
     // ------------------------------------------------------------------

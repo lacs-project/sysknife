@@ -102,6 +102,16 @@ pub trait AuditStore: Send + Sync + std::fmt::Debug {
         since_hours: Option<u32>,
     ) -> Result<Vec<TransactionRecord>, TransactionStoreError>;
 
+    /// Structured history rows (with `created_at` and typed `risk_level`) for
+    /// programmatic clients. See [`crate::transactions::JobHistoryEntry`].
+    async fn list_history(
+        &self,
+        limit: u32,
+        status_filter: Option<&str>,
+        action_filter: Option<&str>,
+        since_hours: Option<u32>,
+    ) -> Result<Vec<crate::transactions::JobHistoryEntry>, TransactionStoreError>;
+
     async fn fetch_chain_row(
         &self,
         transaction_id: &str,
@@ -248,6 +258,22 @@ impl AuditStore for SqliteStore {
         let action = action_filter.map(str::to_string);
         blocking(move || {
             inner.list_transactions(limit, status.as_deref(), action.as_deref(), since_hours)
+        })
+        .await
+    }
+
+    async fn list_history(
+        &self,
+        limit: u32,
+        status_filter: Option<&str>,
+        action_filter: Option<&str>,
+        since_hours: Option<u32>,
+    ) -> Result<Vec<crate::transactions::JobHistoryEntry>, TransactionStoreError> {
+        let inner = Arc::clone(&self.inner);
+        let status = status_filter.map(str::to_string);
+        let action = action_filter.map(str::to_string);
+        blocking(move || {
+            inner.list_history(limit, status.as_deref(), action.as_deref(), since_hours)
         })
         .await
     }

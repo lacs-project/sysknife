@@ -576,6 +576,60 @@ impl AuditStore for PostgresStore {
         rows.into_iter().map(row_to_record).collect()
     }
 
+    async fn list_history(
+        &self,
+        limit: u32,
+        status_filter: Option<&str>,
+        action_filter: Option<&str>,
+        since_hours: Option<u32>,
+    ) -> Result<Vec<crate::transactions::JobHistoryEntry>, TransactionStoreError> {
+        // Parallels list_transactions but selects created_at and returns the
+        // structured JobHistoryEntry DTO. Same filter/validation semantics.
+        let limit = limit.min(100) as i64;
+        let validated_status: Option<String> = status_filter
+            .map(|s| -> Result<String, TransactionStoreError> {
+                let parsed: JobState = deserialize(&format!("\"{s}\""))?;
+                serialize(&parsed)
+            })
+            .transpose()?;
+
+        let mut sql = String::from(
+            "SELECT transaction_id, action_name, risk_level, status, summary, created_at \
+             FROM transactions WHERE TRUE",
+        );
+        let mut idx = 1;
+        if validated_status.is_some() {
+            sql.push_str(&format!(" AND status = ${idx}"));
+            idx += 1;
+        }
+        if action_filter.is_some() {
+            sql.push_str(&format!(" AND action_name = ${idx}"));
+            idx += 1;
+        }
+        if since_hours.is_some() {
+            sql.push_str(&format!(
+                " AND created_at::timestamptz > now() - (${idx} || ' hours')::INTERVAL"
+            ));
+            idx += 1;
+        }
+        sql.push_str(&format!(" ORDER BY seq DESC LIMIT ${idx}"));
+
+        let mut q = sqlx_core::query::query(&sql);
+        if let Some(s) = &validated_status {
+            q = q.bind(s);
+        }
+        if let Some(a) = action_filter {
+            q = q.bind(a);
+        }
+        if let Some(h) = since_hours {
+            q = q.bind(h.to_string());
+        }
+        q = q.bind(limit);
+
+        let rows = q.fetch_all(&self.pool).await.map_err(map_sqlx_err)?;
+        rows.into_iter().map(row_to_history_entry).collect()
+    }
+
     async fn fetch_chain_row(
         &self,
         transaction_id: &str,
@@ -716,6 +770,22 @@ async fn insert_transaction(
 // ---------------------------------------------------------------------------
 // Row mappers
 // ---------------------------------------------------------------------------
+
+fn row_to_history_entry(
+    row: sqlx_postgres::PgRow,
+) -> Result<crate::transactions::JobHistoryEntry, TransactionStoreError> {
+    Ok(crate::transactions::JobHistoryEntry {
+        transaction_id: row.try_get("transaction_id").map_err(map_sqlx_err)?,
+        action_name: row.try_get("action_name").map_err(map_sqlx_err)?,
+        risk_level: deserialize(
+            &row.try_get::<String, _>("risk_level")
+                .map_err(map_sqlx_err)?,
+        )?,
+        status: deserialize(&row.try_get::<String, _>("status").map_err(map_sqlx_err)?)?,
+        summary: row.try_get("summary").map_err(map_sqlx_err)?,
+        created_at: row.try_get("created_at").map_err(map_sqlx_err)?,
+    })
+}
 
 fn row_to_record(row: sqlx_postgres::PgRow) -> Result<TransactionRecord, TransactionStoreError> {
     Ok(TransactionRecord {

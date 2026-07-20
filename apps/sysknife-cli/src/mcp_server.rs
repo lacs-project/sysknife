@@ -54,9 +54,7 @@ use sysknife_brain::state_client::StateClient as _;
 
 use crate::client::{DaemonClient, DescribeInfo};
 use crate::error::CliError;
-use crate::runner::{
-    build_history_params, resolve_socket_target, verify_postgres, verify_sqlite, Verifier,
-};
+use crate::runner::{resolve_socket_target, verify_postgres, verify_sqlite, Verifier};
 
 // ---------------------------------------------------------------------------
 // sysknife_plan — input / output types
@@ -172,15 +170,13 @@ pub struct HistoryInput {
 
 /// One row in the history listing.
 ///
-/// `created_at` and `risk_level` are `None` until the daemon's
-/// `ListJobHistory` IPC is extended to return structured rows. Today the
-/// daemon serialises history as a formatted text block; the MCP wrapper
-/// parses what it can — transaction ID prefix, action name, status, and
-/// summary — and leaves the structured-only fields empty.
+/// Populated from the daemon's structured `query_history` IPC, so
+/// `created_at` and `risk_level` carry real values. They stay `Option` only
+/// for wire tolerance (a future or partial row may omit them).
 #[derive(Debug, Default, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 #[serde(default)]
 pub struct HistoryEntry {
-    /// Daemon transaction ID (or its short prefix when only that is available).
+    /// Daemon transaction ID.
     pub transaction_id: String,
     /// Canonical action name from the SysKnife catalogue.
     pub action: String,
@@ -188,11 +184,9 @@ pub struct HistoryEntry {
     pub status: String,
     /// Human-readable summary from the daemon.
     pub summary: String,
-    /// UTC RFC 3339 timestamp when the transaction was created.
-    /// Currently always `None` — see struct-level docs.
+    /// ISO-8601 timestamp when the transaction was created.
     pub created_at: Option<String>,
     /// Risk level the daemon assigned (`"low"` | `"medium"` | `"high"`).
-    /// Currently always `None` — see struct-level docs.
     pub risk_level: Option<String>,
 }
 
@@ -610,65 +604,40 @@ async fn history_inner(input: HistoryInput) -> Result<Vec<HistoryEntry>, String>
         },
     };
 
-    let params = build_history_params(
-        limit.unwrap_or(HISTORY_DEFAULT_LIMIT),
-        status.as_deref(),
-        action.as_deref(),
-        since_hours,
-    );
-
+    let limit = limit.unwrap_or(HISTORY_DEFAULT_LIMIT);
     let client = DaemonClient::new(resolve_socket_target());
-    let raw = tokio::task::spawn_blocking(move || client.query_action("ListJobHistory", &params))
-        .await
-        .map_err(|e| format!("join: {e}"))?
-        .map_err(|e| format!("daemon error: {e}"))?;
+    let rows = tokio::task::spawn_blocking(move || {
+        client.query_history(
+            Some(limit),
+            status.as_deref(),
+            action.as_deref(),
+            since_hours,
+        )
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+    .map_err(|e| format!("daemon error: {e}"))?;
 
-    Ok(parse_history_text(&raw))
+    Ok(rows.into_iter().map(history_entry_from_row).collect())
 }
 
-/// Parse the daemon's formatted `ListJobHistory` output into structured rows.
-///
-/// The daemon currently returns a header line, a blank line, then one row per
-/// transaction in the format `  <8-char-prefix>  <action>  <status>  <summary>`,
-/// with action and status padded by `format_job_history` in the daemon. We
-/// split on at-least-two-spaces because the formatter uses field padding,
-/// not a delimiter character.
-///
-/// `created_at` and `risk_level` are not present in the formatted output and
-/// stay `None`. Extending the daemon-side IPC to return structured rows
-/// would let us populate them — see HistoryEntry's struct-level docs.
-fn parse_history_text(raw: &str) -> Vec<HistoryEntry> {
-    let mut entries = Vec::new();
-    for line in raw.lines() {
-        // Skip the header line ("Transaction history (N entries):"), blank
-        // lines, and the empty-result line ("No transactions found...").
-        let trimmed = line.trim_start();
-        if trimmed.is_empty()
-            || trimmed.starts_with("Transaction history")
-            || trimmed.starts_with("No transactions found")
-        {
-            continue;
-        }
-
-        // Split on runs of 2+ whitespace chars — robust to the daemon's
-        // padding without depending on exact column widths.
-        let parts: Vec<&str> = trimmed.split("  ").filter(|s| !s.is_empty()).collect();
-        if parts.len() < 4 {
-            // Malformed row — skip rather than panic. Better to drop one
-            // unparseable row than to fail the whole tool call.
-            continue;
-        }
-
-        entries.push(HistoryEntry {
-            transaction_id: parts[0].trim().to_string(),
-            action: parts[1].trim().to_string(),
-            status: parts[2].trim().to_string(),
-            summary: parts[3..].join("  ").trim().to_string(),
-            created_at: None,
-            risk_level: None,
-        });
+/// Map a daemon `JobHistoryEntry` to the MCP `HistoryEntry`, populating the
+/// `created_at` and typed `risk_level` fields the old text-parsing path always
+/// left `None`. Status is rendered lowercase to match the daemon's display.
+fn history_entry_from_row(row: sysknife_daemon::transactions::JobHistoryEntry) -> HistoryEntry {
+    let risk_level = match row.risk_level {
+        RiskLevel::Low => "low",
+        RiskLevel::Medium => "medium",
+        RiskLevel::High => "high",
+    };
+    HistoryEntry {
+        transaction_id: row.transaction_id,
+        action: row.action_name,
+        status: format!("{:?}", row.status).to_lowercase(),
+        summary: row.summary,
+        created_at: Some(row.created_at),
+        risk_level: Some(risk_level.to_string()),
     }
-    entries
 }
 
 // ---------------------------------------------------------------------------

@@ -246,6 +246,17 @@ enum DaemonRequest {
         action_name: String,
         params: Value,
     },
+    /// Structured audit-log history for programmatic clients. Unlike the
+    /// `ListJobHistory` action (which returns human-formatted text), this
+    /// returns typed rows so the MCP `sysknife_history` tool gets `created_at`
+    /// and `risk_level` without re-parsing text.
+    QueryHistory {
+        request_id: String,
+        limit: Option<u32>,
+        status_filter: Option<String>,
+        action_filter: Option<String>,
+        since_hours: Option<u32>,
+    },
     Describe {
         request_id: String,
         action_name: String,
@@ -297,6 +308,10 @@ enum DaemonResponse {
         request_id: String,
         action_name: String,
         output: String,
+    },
+    HistoryResponse {
+        request_id: String,
+        entries: Vec<crate::transactions::JobHistoryEntry>,
     },
     DescribeResponse {
         request_id: String,
@@ -824,6 +839,24 @@ async fn dispatch_loop<S>(
                 )
                 .await
             }
+            DaemonRequest::QueryHistory {
+                request_id,
+                limit,
+                status_filter,
+                action_filter,
+                since_hours,
+            } => {
+                handle_query_history(
+                    framed,
+                    &state,
+                    request_id,
+                    *limit,
+                    status_filter.clone(),
+                    action_filter.clone(),
+                    *since_hours,
+                )
+                .await
+            }
             DaemonRequest::Describe {
                 request_id,
                 action_name,
@@ -999,6 +1032,48 @@ async fn handle_query_state(
         &DaemonResponse::StateResponse {
             request_id: request_id.to_string(),
             state: collected,
+        },
+    )
+    .await
+}
+
+async fn handle_query_history(
+    framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
+    state: &DaemonState,
+    request_id: &str,
+    limit: Option<u32>,
+    status_filter: Option<String>,
+    action_filter: Option<String>,
+    since_hours: Option<u32>,
+) -> Result<(), HandlerError> {
+    // Read-only structured query. No approval gate: history is Observer-level,
+    // exactly like the `ListJobHistory` action it complements.
+    let entries = match state
+        .audit
+        .list_history(
+            limit.unwrap_or(DEFAULT_HISTORY_LIMIT),
+            status_filter.as_deref(),
+            action_filter.as_deref(),
+            since_hours,
+        )
+        .await
+    {
+        Ok(entries) => entries,
+        Err(e) => {
+            return send_error(
+                framed,
+                request_id,
+                "execution_failure",
+                format!("failed to query transaction history: {e}"),
+            )
+            .await;
+        }
+    };
+    send_response(
+        framed,
+        &DaemonResponse::HistoryResponse {
+            request_id: request_id.to_string(),
+            entries,
         },
     )
     .await
@@ -2364,6 +2439,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn query_history_returns_structured_rows_with_created_at_and_risk_level() {
+        // Regression for the null created_at/risk_level history bug: the
+        // structured query_history IPC must carry typed rows, not text.
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            unix_connection_handler(server, state, runner(), CallerRole::Observer).await;
+        });
+        let mut framed = FramedStream::new(client);
+
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "preview",
+                    "request_id": "preview-hist",
+                    "action_name": "GetSystemState",
+                    "params": {},
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let _ = framed.recv().await.unwrap();
+
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "query_history",
+                    "request_id": "hist-1",
+                    "limit": 10,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let response: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+
+        assert_eq!(response["type"], "history_response");
+        let entries = response["entries"].as_array().expect("entries array");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["action_name"], "GetSystemState");
+        assert!(
+            !entries[0]["created_at"].as_str().unwrap_or("").is_empty(),
+            "created_at must be populated over the structured IPC"
+        );
+        assert!(
+            entries[0].get("risk_level").is_some(),
+            "risk_level must be present as a typed field"
+        );
+    }
+
+    #[tokio::test]
     async fn undelivered_approval_is_revoked_so_the_user_can_retry() {
         let dir = tempdir().unwrap();
         let state = test_state(&dir);
@@ -3010,6 +3138,16 @@ mod tests {
                 since: Option<u32>,
             ) -> Result<Vec<TransactionRecord>, TransactionStoreError> {
                 self.0.list_transactions(limit, status, action, since).await
+            }
+            async fn list_history(
+                &self,
+                limit: u32,
+                status: Option<&str>,
+                action: Option<&str>,
+                since: Option<u32>,
+            ) -> Result<Vec<crate::transactions::JobHistoryEntry>, TransactionStoreError>
+            {
+                self.0.list_history(limit, status, action, since).await
             }
             async fn fetch_chain_row(
                 &self,
