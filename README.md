@@ -56,6 +56,13 @@ privileged daemon executes only what you approve, writes a tamper-evident
 Ed25519-signed audit chain, and rolls back atomic-host (rpm-ostree) changes
 automatically on failure.
 
+**Why typed actions and not a guarded shell?** Red-team research (GuardFall)
+found that **10 of 11 AI agents bypass raw-string shell guards** — an allowlist
+or regex is filtering a language rich enough to hide intent. SysKnife removes
+the shell string entirely: the model emits
+[typed actions](docs/typed-actions.md), and a
+[public-key-verifiable audit chain](docs/the-audit-chain.md) records every one.
+
 ---
 
 ## Install
@@ -164,11 +171,14 @@ mechanical: no shell strings cross the wire.
 | **Claude Computer Use** | Uncontrolled desktop automation, not system administration. |
 | **Ansible** | YAML written in advance. Not conversational. No risk classification. |
 | **shell-gpt / Copilot** | Suggests raw shell commands. You still run raw shell. |
+| **AIShell-Gate** | Closest peer, but proprietary and closed; audit is symmetric HMAC (the verifier holds the signing secret, so a proof convinces no one else). No rollback. |
 | **Manual** | No audit trail. No rollback. One typo = lost work. |
 
 SysKnife is different by construction: typed actions, an Ed25519-signed audit
 chain, explicit approval gate, automatic rollback for atomic-host (rpm-ostree)
-changes, polkit-mediated privilege boundary. The AI never holds a shell.
+changes, polkit-mediated privilege boundary. The AI never holds a shell. See the
+full [SysKnife vs. alternatives](docs/comparison.md) breakdown (AIShell-Gate,
+gate-oc-audit, MCP gateways, generic mcp-shell).
 
 ## Status
 
@@ -265,6 +275,10 @@ are scoped with clear acceptance criteria.
 
 ## Documentation
 
+- [Typed actions — why never a shell string](docs/typed-actions.md)
+- [The audit chain — Ed25519, public-key verifiable](docs/the-audit-chain.md)
+- [Automatic rollback](docs/automatic-rollback.md)
+- [SysKnife vs. alternatives](docs/comparison.md)
 - [Architecture overview](docs/architecture.md)
 - [Distro support matrix](docs/distro-support.md)
 - [Configuration](docs/configuration.md)
