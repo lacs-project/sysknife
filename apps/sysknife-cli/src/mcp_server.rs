@@ -1033,4 +1033,112 @@ mod tests {
         assert!(result.last().unwrap().contains("truncated"));
         assert!(result.last().unwrap().contains("50"));
     }
+
+    // -----------------------------------------------------------------------
+    // P4 — MCP <-> daemon IPC integration against a fake daemon.
+    //
+    // Drives the real MCP tool functions (history_inner, execute_steps_inner)
+    // over a real Unix socket + the production FramedStream, against a stub
+    // daemon that speaks the daemon wire protocol. This exercises the actual
+    // request/response shapes end to end (catching wire drift) and, crucially,
+    // proves the approval interlock: when the daemon rejects a receipt, MCP
+    // execute must surface an error, never report success.
+    //
+    // nextest runs each test in its own process, so setting SYSKNIFE_SOCKET
+    // here does not leak into other tests.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn mcp_tools_integrate_with_a_daemon_over_the_socket() {
+        use sysknife_daemon::transport::framing::FramedStream;
+        use tokio::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("fake-daemon.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+
+        // Stub daemon: one request per connection (the client opens a fresh
+        // connection per call). query_history -> structured row; execute ->
+        // error_response(stale_approval) to model a rejected receipt.
+        let server = tokio::spawn(async move {
+            loop {
+                let (stream, _) = match listener.accept().await {
+                    Ok(pair) => pair,
+                    Err(_) => break,
+                };
+                tokio::spawn(async move {
+                    let mut framed = FramedStream::new(stream);
+                    let Ok(raw) = framed.recv().await else { return };
+                    let req: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+                    let resp = match req["type"].as_str() {
+                        Some("query_history") => serde_json::json!({
+                            "type": "history_response",
+                            "request_id": req["request_id"],
+                            "entries": [{
+                                "transaction_id": "tx-abc123",
+                                "action_name": "GetDiskUsage",
+                                "risk_level": "low",
+                                "status": "succeeded",
+                                "summary": "check disk usage",
+                                "created_at": "2026-07-19T12:00:00Z"
+                            }]
+                        }),
+                        Some("execute") => serde_json::json!({
+                            "type": "error_response",
+                            "request_id": req["request_id"],
+                            "category": "stale_approval",
+                            "message": "transaction is not approved for this receipt"
+                        }),
+                        other => serde_json::json!({
+                            "type": "error_response",
+                            "request_id": req["request_id"],
+                            "category": "validation_failure",
+                            "message": format!("unexpected request: {other:?}")
+                        }),
+                    };
+                    let _ = framed.send(&serde_json::to_vec(&resp).unwrap()).await;
+                });
+            }
+        });
+
+        std::env::set_var("SYSKNIFE_SOCKET", sock.to_str().unwrap());
+
+        // History flows through the structured IPC with typed fields populated.
+        let entries = history_inner(HistoryInput {
+            status: None,
+            action: None,
+            since: None,
+            limit: Some(5),
+        })
+        .await
+        .expect("history over socket");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].action, "GetDiskUsage");
+        assert_eq!(
+            entries[0].created_at.as_deref(),
+            Some("2026-07-19T12:00:00Z")
+        );
+        assert_eq!(entries[0].risk_level.as_deref(), Some("low"));
+
+        // Interlock: the daemon rejects the receipt, so execute MUST error,
+        // never fabricate a success result.
+        let result = execute_steps_inner(vec![StepToExecute {
+            transaction_id: "tx-abc123".to_string(),
+            action_name: "GetDiskUsage".to_string(),
+            params: serde_json::json!({}),
+            approval_receipt: "receipt-the-daemon-will-reject".to_string(),
+        }])
+        .await;
+        assert!(
+            result.is_err(),
+            "a daemon-rejected receipt must surface as an MCP error, got: {result:?}"
+        );
+        assert!(
+            result.unwrap_err().contains("stale_approval"),
+            "the rejection reason must reach the caller"
+        );
+
+        std::env::remove_var("SYSKNIFE_SOCKET");
+        server.abort();
+    }
 }
