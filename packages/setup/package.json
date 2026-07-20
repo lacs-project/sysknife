@@ -2,6 +2,14 @@
   "name": "sysknife-setup",
   "version": "0.2.5",
   "description": "Zero-friction setup for SysKnife MCP server — Claude Code, Cursor, and Codex CLI",
+  "author": "Vladimir Rotariu",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lacs-project/sysknife.git",
+    "directory": "packages/setup"
+  },
+  "homepage": "https://github.com/lacs-project/sysknife#readme",
+  "bugs": "https://github.com/lacs-project/sysknife/issues",
   "bin": {
     "sysknife-setup": "index.js"
   },

@@ -4,6 +4,8 @@ version = "0.2.5"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+# Desktop GUI shell: internal/roadmap surface, never published to crates.io.
+publish = false
 
 [features]
 # Enable the hardcoded Silverblue fixture state client.
