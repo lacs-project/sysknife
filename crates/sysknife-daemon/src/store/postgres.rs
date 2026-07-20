@@ -221,7 +221,7 @@ impl PostgresStore {
             // Run statements separately for transaction-mode poolers that
             // reject multi-statement query strings.
             for statement in migration.statements {
-                sqlx_core::query::query(statement)
+                sqlx_core::query::query(*statement)
                     .execute(&mut *tx)
                     .await
                     .map_err(map_sqlx_err)?;
@@ -423,7 +423,7 @@ impl AuditStore for PostgresStore {
         }
         let queued = serialize(&JobState::Queued)?;
         let result = sqlx_core::query::query(
-            &format!(
+            sqlx_core::sql_str::AssertSqlSafe(format!(
                 "INSERT INTO transaction_approvals \
                      (transaction_id, receipt_digest, approved_at) \
                  SELECT transaction_id, $1, $2 FROM transactions \
@@ -431,7 +431,7 @@ impl AuditStore for PostgresStore {
                    AND status = $4 \
                    AND created_at::timestamptz > now() - INTERVAL '{APPROVAL_RECEIPT_TTL_MINUTES} minutes' \
                  ON CONFLICT (transaction_id) DO NOTHING"
-            ),
+            )),
         )
         .bind(receipt_digest)
         .bind(now_iso())
@@ -467,7 +467,7 @@ impl AuditStore for PostgresStore {
         let running = serialize(&JobState::Running)?;
         let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
         let result = sqlx_core::query::query(
-            &format!(
+            sqlx_core::sql_str::AssertSqlSafe(format!(
                 "UPDATE transactions SET status = $1 \
                  WHERE transaction_id = $2 \
                    AND status = $3 \
@@ -478,7 +478,7 @@ impl AuditStore for PostgresStore {
                          AND receipt_digest = $4 \
                          AND consumed_at IS NULL \
                    )"
-            ),
+            )),
         )
         .bind(&running)
         .bind(transaction_id)
@@ -506,11 +506,11 @@ impl AuditStore for PostgresStore {
         let queued = serialize(&JobState::Queued)?;
         let canceled = serialize(&JobState::Canceled)?;
         let result = sqlx_core::query::query(
-            &format!(
+            sqlx_core::sql_str::AssertSqlSafe(format!(
                 "UPDATE transactions SET status = $1 \
                  WHERE status = $2 \
                    AND created_at::timestamptz <= now() - INTERVAL '{APPROVAL_RECEIPT_TTL_MINUTES} minutes'"
-            ),
+            )),
         )
         .bind(&canceled)
         .bind(&queued)
@@ -578,7 +578,7 @@ impl AuditStore for PostgresStore {
         }
         sql.push_str(&format!(" ORDER BY seq DESC LIMIT ${idx}"));
 
-        let mut q = sqlx_core::query::query(&sql);
+        let mut q = sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(sql.as_str()));
         if let Some(s) = &validated_status {
             q = q.bind(s);
         }
@@ -632,7 +632,7 @@ impl AuditStore for PostgresStore {
         }
         sql.push_str(&format!(" ORDER BY seq DESC LIMIT ${idx}"));
 
-        let mut q = sqlx_core::query::query(&sql);
+        let mut q = sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(sql.as_str()));
         if let Some(s) = &validated_status {
             q = q.bind(s);
         }

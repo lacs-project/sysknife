@@ -12,7 +12,7 @@ categories = ["command-line-utilities", "os::linux-apis"]
 [dependencies]
 sysknife-core = { path = "../sysknife-core", version = "0.2.5" }
 sysknife-types = { path = "../sysknife-types", version = "0.2.5" }
-rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -34,17 +34,17 @@ tokio-vsock = "0.7.2"
 # so the same binary works behind transaction-mode PgBouncer (Supabase
 # pooler).
 # We pull `sqlx-postgres` and `sqlx-core` directly (not the umbrella `sqlx`
-# crate) so we don't drag in the `sqlx-sqlite` transitive dep — its
-# `libsqlite3-sys ^0.30` clashes with `rusqlite 0.39`'s `libsqlite3-sys ^0.37`
-# at the cargo `links = "sqlite3"` level.
-sqlx-core = { version = "0.8.6", default-features = false, features = [
+# crate) so we don't drag in the `sqlx-sqlite` transitive dep. Its bundled
+# `libsqlite3-sys` would clash with `rusqlite`'s at the cargo
+# `links = "sqlite3"` level (only one crate may link the native `sqlite3`).
+sqlx-core = { version = "0.9", default-features = false, features = [
     "_rt-tokio",
     "_tls-rustls-ring-webpki",
     "json",
     "uuid",
     "chrono",
 ] }
-sqlx-postgres = { version = "0.8.6", default-features = false, features = [
+sqlx-postgres = { version = "0.9", default-features = false, features = [
     "json",
     "uuid",
     "chrono",
