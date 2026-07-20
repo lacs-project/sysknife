@@ -76,8 +76,9 @@ What this does:
 2. Asks for your LLM provider + key (OpenAI / Anthropic / Gemini / Ollama).
 3. Asks which AI integration to wire up, or lets you pick `--claude`,
    `--cursor`, `--codex`, or `--all` directly.
-4. Writes the integration-specific MCP config so the next chat session sees
-   `sysknife_plan` and `sysknife_execute` as first-class tools.
+4. Writes the integration-specific MCP config so the next chat session sees the
+   `sysknife_*` tools — `sysknife_plan`, `sysknife_execute`, `sysknife_history`,
+   `sysknife_doctor`, `sysknife_audit_verify` — as first-class tools.
 
 | Client          | Files written                                        |
 |-----------------|------------------------------------------------------|
@@ -179,7 +180,7 @@ milestone.
 | `sysknife-brain` — LLM planner, tool loop, safety fence | ✅ |
 | `sysknife-daemon` — 140+ typed actions, auth, preview, transactions | ✅ |
 | Live IPC + streaming + atomic-host rollback (rpm-ostree) | ✅ |
-| Tauri shell — intent, plan, approval gate | ✅ |
+| Terminal approval gate — one-time, TTL-bounded receipts | ✅ |
 | MCP server (Claude Code / Cursor / any MCP client) | ✅ |
 | Tamper-evident Ed25519-signed audit chain | ✅ |
 | RFC 5424 syslog forwarding (Splunk / Sentinel / QRadar) | ✅ |
