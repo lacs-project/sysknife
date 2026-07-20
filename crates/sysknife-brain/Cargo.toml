@@ -14,8 +14,10 @@ async-trait = { workspace = true }
 futures = "0.3"
 sysknife-core = { path = "../sysknife-core", version = "0.2.5" }
 sysknife-types = { path = "../sysknife-types", version = "0.2.5" }
-async-openai = { version = "0.36", features = ["chat-completion"] }
-rig-core = "0.35.0"
+async-openai = { version = "0.41", features = ["chat-completion"] }
+# rig-core 0.40 renamed its lib crate `rig` -> `rig_core`; alias it back to `rig`
+# so existing `use rig::...` paths keep working.
+rig = { package = "rig-core", version = "0.40.0" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

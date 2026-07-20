@@ -199,8 +199,10 @@ fn to_rig_messages(system: &str, messages: &[Message]) -> Vec<RigMessage> {
                 for block in &msg.content {
                     match block {
                         ContentBlock::Text { text } => {
-                            assistant_content
-                                .push(AssistantContent::Text(Text { text: text.clone() }));
+                            assistant_content.push(AssistantContent::Text(Text {
+                                text: text.clone(),
+                                additional_params: None,
+                            }));
                         }
                         ContentBlock::ToolUse {
                             id,
@@ -549,6 +551,7 @@ mod tests {
     fn from_rig_response_text_only_returns_end_turn() {
         let choice = OneOrMany::one(AssistantContent::Text(Text {
             text: "Hello!".into(),
+            additional_params: None,
         }));
         let completion = from_rig_response(choice).unwrap();
         assert_eq!(completion.stop_reason, StopReason::EndTurn);
@@ -576,6 +579,7 @@ mod tests {
         let items = vec![
             AssistantContent::Text(Text {
                 text: "Thinking...".into(),
+                additional_params: None,
             }),
             AssistantContent::ToolCall(ToolCall::new(
                 "tu_1".into(),
@@ -601,7 +605,10 @@ mod tests {
     fn from_rig_response_empty_text_only_returns_ok_empty() {
         // An empty text block is filtered, producing empty content.
         // The OneOrMany is non-empty, so the guard should fire.
-        let choice = OneOrMany::one(AssistantContent::Text(Text { text: "".into() }));
+        let choice = OneOrMany::one(AssistantContent::Text(Text {
+            text: "".into(),
+            additional_params: None,
+        }));
         let err = from_rig_response(choice).unwrap_err();
         match err {
             ProviderError::Parse(msg) => {

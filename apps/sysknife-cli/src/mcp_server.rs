@@ -37,9 +37,9 @@ use std::path::PathBuf;
 use rmcp::{
     handler::server::wrapper::{Json, Parameters},
     model::{
-        AnnotateAble, Implementation, ListResourceTemplatesResult, ListResourcesResult,
-        PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult, Resource,
-        ResourceContents, ServerCapabilities, ServerInfo,
+        Implementation, ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams,
+        ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents,
+        ServerCapabilities, ServerInfo,
     },
     schemars, tool, tool_handler, tool_router,
     transport::stdio,
@@ -279,11 +279,10 @@ const SYSKNIFE_DISCOVERY_DESCRIPTION: &str = "Discovery resource for Codex and o
 const SYSKNIFE_DISCOVERY_BODY: &str = "SysKnife exposes a small tool set for planning and executing Linux system administration tasks.\n\nUse `sysknife_plan` first and present the plan to the user. The user must run `sysknife approve <transaction-id>` in a terminal for every accepted step. Call `sysknife_execute` only with the one-time receipts printed by those commands. MCP cannot issue approval receipts.\n\nAvailable read-only tools: `sysknife_history`, `sysknife_doctor`, and `sysknife_audit_verify`.";
 
 fn sysknife_about_resource() -> Resource {
-    rmcp::model::RawResource::new(SYSKNIFE_DISCOVERY_URI, SYSKNIFE_DISCOVERY_NAME)
+    rmcp::model::Resource::new(SYSKNIFE_DISCOVERY_URI, SYSKNIFE_DISCOVERY_NAME)
         .with_title(SYSKNIFE_DISCOVERY_TITLE)
         .with_description(SYSKNIFE_DISCOVERY_DESCRIPTION)
         .with_mime_type("text/plain")
-        .no_annotation()
 }
 
 #[tool_router]

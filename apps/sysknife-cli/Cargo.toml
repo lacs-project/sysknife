@@ -28,7 +28,7 @@ indicatif  = "0.18"
 owo-colors = { version = "4", features = ["supports-colors"] }
 rustyline = { version = "18", features = ["with-file-history"] }
 
-rmcp = { version = "1.4", features = ["transport-io"] }
+rmcp = { version = "2", features = ["transport-io"] }
 serde_json = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "signal", "net", "io-util", "io-std", "sync"] }

@@ -63,10 +63,12 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
         "transactions",
         "schema_migrations",
     ] {
-        sqlx_core::query::query(&format!("DROP TABLE IF EXISTS {table}"))
-            .execute(&admin)
-            .await
-            .expect("reset test schema");
+        sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(format!(
+            "DROP TABLE IF EXISTS {table}"
+        )))
+        .execute(&admin)
+        .await
+        .expect("reset test schema");
     }
 
     sqlx_core::query::query(
