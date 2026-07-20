@@ -380,17 +380,19 @@ pub async fn review_execution(
 
 #[tauri::command]
 pub fn cancel_job(_app: AppHandle, _job_id: String) -> Result<(), ShellError> {
-    // The daemon does not yet expose a cancellation endpoint. Emitting a local
-    // `sysknife:job-canceled` event would have made the GUI *look* like the
-    // job stopped while the daemon kept executing — a particularly nasty
-    // failure mode for high-risk operations. Refuse explicitly until the
-    // daemon-side hook lands; the frontend can present "cancellation not
-    // supported yet" rather than silently desyncing from reality.
+    // The daemon's `Cancel` verb only cancels a still-QUEUED transaction; it
+    // deliberately never interrupts a Running job (a half-applied privileged
+    // mutation is worse than letting it finish). This GUI command targets a
+    // running job_id, for which cancellation remains unsupported by design.
+    // Emitting a local `sysknife:job-canceled` event would make the GUI *look*
+    // like the job stopped while the daemon kept executing — a nasty failure
+    // mode for high-risk operations — so refuse explicitly rather than desync.
+    // (The GUI is frozen; it is not wired to the queued-cancel verb.)
     Err(ShellError {
         code: "not_implemented".to_string(),
-        message: "cancel_job: daemon does not yet support job cancellation. \
-                  Wait for the running job to complete or terminate the daemon \
-                  process to abort it."
+        message: "cancel_job: a running job cannot be canceled (the daemon \
+                  never interrupts an in-flight privileged action). Wait for it \
+                  to complete, or terminate the daemon process to abort it."
             .to_string(),
         system_changed: false,
     })

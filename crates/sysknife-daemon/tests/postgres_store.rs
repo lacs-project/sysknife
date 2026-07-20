@@ -223,6 +223,7 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
             .status,
         JobState::Running
     );
+
     assert_eq!(
         store.verify_audit_chain(&key).await.expect("verify chain"),
         VerifyOutcome::Intact { rows_checked: 1 }
@@ -232,6 +233,27 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
             .await
             .expect("verify Postgres chain with public key only"),
         VerifyOutcome::Intact { rows_checked: 1 }
+    );
+
+    // cancel_queued success path on Postgres: a fresh, never-claimed Queued
+    // transaction must cancel (return true) and flip to Canceled. Placed after
+    // the rows_checked assertions above because recording it adds a chain row.
+    let fresh = store.record(new_transaction()).await.expect("record fresh");
+    assert!(
+        store
+            .cancel_queued(&fresh.transaction_id)
+            .await
+            .expect("cancel queued"),
+        "a queued transaction must be cancelable on Postgres"
+    );
+    assert_eq!(
+        store
+            .get(&fresh.transaction_id)
+            .await
+            .expect("load")
+            .expect("exists")
+            .status,
+        JobState::Canceled
     );
 
     let _reconnected = PostgresStore::connect(&config, Arc::clone(&key))
