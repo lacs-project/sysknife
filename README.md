@@ -77,13 +77,25 @@ npx sysknife-setup
 
 [![npm version](https://img.shields.io/npm/v/sysknife-setup?style=flat-square&logo=npm)](https://www.npmjs.com/package/sysknife-setup)
 
+> **Pre-launch:** the binary auto-download resolves against a published GitHub
+> Release, which isn't tagged yet — until the first release lands, run
+> `npx sysknife-setup --no-binary` and build the binaries with the **Manual
+> install** steps below.
+
 What this does:
 
-1. Detects the sysknife binary (or tells you how to build it).
-2. Asks for your LLM provider + key (OpenAI / Anthropic / Gemini / Ollama).
-3. Asks which AI integration to wire up, or lets you pick `--claude`,
+1. **Downloads the prebuilt `sysknife` + `sysknife-daemon` binaries** for your
+   architecture (x86_64 / aarch64) from GitHub Releases, **SHA-256-verifies**
+   each against the release checksum file — a mismatch aborts the install — and
+   places them in `~/.local/bin` (no sudo). Pass `--no-binary` to skip the
+   download and build from source instead.
+2. **Installs and starts the daemon as a service** — a systemd *user* service by
+   default (no sudo; kept alive across logout via linger). Pick the system-level
+   service for a production, multi-user host.
+3. Asks for your LLM provider + key (OpenAI / Anthropic / Gemini / Ollama).
+4. Asks which AI integration to wire up, or lets you pick `--claude`,
    `--cursor`, `--codex`, or `--all` directly.
-4. Writes the integration-specific MCP config so the next chat session sees the
+5. Writes the integration-specific MCP config so the next chat session sees the
    `sysknife_*` tools — `sysknife_plan`, `sysknife_execute`, `sysknife_history`,
    `sysknife_doctor`, `sysknife_audit_verify` — as first-class tools.
 
