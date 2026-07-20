@@ -520,6 +520,24 @@ impl AuditStore for PostgresStore {
         Ok(result.rows_affected())
     }
 
+    async fn cancel_queued(&self, transaction_id: &str) -> Result<bool, TransactionStoreError> {
+        // Option A: the `status = $3` (Queued) guard means a Running (in-flight)
+        // transaction is never cancelled.
+        let queued = serialize(&JobState::Queued)?;
+        let canceled = serialize(&JobState::Canceled)?;
+        let result = sqlx_core::query::query(
+            "UPDATE transactions SET status = $1 \
+             WHERE transaction_id = $2 AND status = $3",
+        )
+        .bind(&canceled)
+        .bind(transaction_id)
+        .bind(&queued)
+        .execute(&self.pool)
+        .await
+        .map_err(map_sqlx_err)?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn list_transactions(
         &self,
         limit: u32,

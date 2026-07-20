@@ -94,6 +94,12 @@ pub trait AuditStore: Send + Sync + std::fmt::Debug {
 
     async fn cleanup_stale_queued(&self) -> Result<u64, TransactionStoreError>;
 
+    /// Cancel one still-`Queued` transaction (`Queued → Canceled`). Returns
+    /// `true` iff a queued row was transitioned; a `Running` (in-flight) or
+    /// terminal transaction is never cancelled. See
+    /// [`crate::transactions::TransactionStore::cancel_queued`].
+    async fn cancel_queued(&self, transaction_id: &str) -> Result<bool, TransactionStoreError>;
+
     async fn list_transactions(
         &self,
         limit: u32,
@@ -244,6 +250,12 @@ impl AuditStore for SqliteStore {
     async fn cleanup_stale_queued(&self) -> Result<u64, TransactionStoreError> {
         let inner = Arc::clone(&self.inner);
         blocking(move || inner.cleanup_stale_queued()).await
+    }
+
+    async fn cancel_queued(&self, transaction_id: &str) -> Result<bool, TransactionStoreError> {
+        let inner = Arc::clone(&self.inner);
+        let id = transaction_id.to_string();
+        blocking(move || inner.cancel_queued(&id)).await
     }
 
     async fn list_transactions(

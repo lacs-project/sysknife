@@ -238,8 +238,12 @@ enum DaemonRequest {
         params: Value,
         approval_receipt: ApprovalReceipt,
     },
+    /// Cancel a still-queued transaction (before it is claimed for execution).
+    /// Identified by transaction_id — a queued transaction has no job_id yet.
+    /// Option A: an in-flight (Running) action is never interrupted.
     Cancel {
-        job_id: String,
+        request_id: String,
+        transaction_id: TransactionId,
     },
     QueryAction {
         request_id: String,
@@ -312,6 +316,10 @@ enum DaemonResponse {
     HistoryResponse {
         request_id: String,
         entries: Vec<crate::transactions::JobHistoryEntry>,
+    },
+    CancelResponse {
+        request_id: String,
+        transaction_id: String,
     },
     DescribeResponse {
         request_id: String,
@@ -862,16 +870,10 @@ async fn dispatch_loop<S>(
                 action_name,
                 params,
             } => handle_describe(framed, action_name, params, request_id).await,
-            DaemonRequest::Cancel { job_id } => {
-                // MVP: cancel acknowledgement only. Active-job signaling is a follow-up.
-                send_error(
-                    framed,
-                    job_id,
-                    "not_implemented",
-                    "cancel not yet implemented",
-                )
-                .await
-            }
+            DaemonRequest::Cancel {
+                request_id,
+                transaction_id,
+            } => handle_cancel(framed, &state, request_id, transaction_id.as_str()).await,
         };
 
         if let Err(e) = result {
@@ -1035,6 +1037,46 @@ async fn handle_query_state(
         },
     )
     .await
+}
+
+async fn handle_cancel(
+    framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
+    state: &DaemonState,
+    request_id: &str,
+    transaction_id: &str,
+) -> Result<(), HandlerError> {
+    match state.audit.cancel_queued(transaction_id).await {
+        Ok(true) => {
+            send_response(
+                framed,
+                &DaemonResponse::CancelResponse {
+                    request_id: request_id.to_string(),
+                    transaction_id: transaction_id.to_string(),
+                },
+            )
+            .await
+        }
+        // Fail closed and informative: the only cancelable state is Queued.
+        // A Running action is deliberately never interrupted (Option A).
+        Ok(false) => {
+            send_error(
+                framed,
+                request_id,
+                "not_cancelable",
+                "transaction cannot be canceled: it is missing, already executing, or finished",
+            )
+            .await
+        }
+        Err(e) => {
+            send_error(
+                framed,
+                request_id,
+                "transient_infrastructure_failure",
+                format!("failed to cancel transaction: {e}"),
+            )
+            .await
+        }
+    }
 }
 
 async fn handle_query_history(
@@ -2559,6 +2601,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancel_queued_transaction_succeeds_and_marks_it_canceled() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let handler_state = state.clone();
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            unix_connection_handler(server, handler_state, runner(), CallerRole::Observer).await;
+        });
+        let mut framed = FramedStream::new(client);
+
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "preview",
+                    "request_id": "preview-cancel",
+                    "action_name": "GetSystemState",
+                    "params": {},
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let preview: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        let transaction_id = preview["transaction_id"].as_str().unwrap().to_string();
+
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "cancel",
+                    "request_id": "cancel-1",
+                    "transaction_id": transaction_id,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let response: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+
+        assert_eq!(response["type"], "cancel_response");
+        assert_eq!(
+            state
+                .audit
+                .get(&transaction_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            JobState::Canceled
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_running_transaction_is_rejected_and_left_running() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let handler_state = state.clone();
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            unix_connection_handler(server, handler_state, runner(), CallerRole::Observer).await;
+        });
+        let mut framed = FramedStream::new(client);
+        let (transaction_id, receipt) =
+            preview_and_approve(&mut framed, "GetSystemState", json!({})).await;
+        // Claim it (Queued -> Running) so it is in-flight from the store's view.
+        assert!(state
+            .audit
+            .claim_approved_for_execution(&transaction_id, &receipt_digest(&receipt))
+            .await
+            .unwrap());
+
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "cancel",
+                    "request_id": "cancel-running",
+                    "transaction_id": transaction_id,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let response: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+
+        assert_eq!(response["type"], "error_response");
+        assert_eq!(response["category"], "not_cancelable");
+        assert_eq!(
+            state
+                .audit
+                .get(&transaction_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            JobState::Running,
+            "an in-flight action must not be disturbed by cancel"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_missing_transaction_is_rejected() {
+        let dir = tempdir().unwrap();
+        let responses = exchange(
+            test_state(&dir),
+            CallerRole::Observer,
+            vec![json!({
+                "type": "cancel",
+                "request_id": "cancel-missing",
+                "transaction_id": "no-such-transaction",
+            })],
+            1,
+        )
+        .await;
+        assert_eq!(responses[0]["type"], "error_response");
+        assert_eq!(responses[0]["category"], "not_cancelable");
+    }
+
+    #[tokio::test]
     async fn undelivered_approval_is_revoked_so_the_user_can_retry() {
         let dir = tempdir().unwrap();
         let state = test_state(&dir);
@@ -3196,6 +3355,9 @@ mod tests {
             }
             async fn cleanup_stale_queued(&self) -> Result<u64, TransactionStoreError> {
                 self.0.cleanup_stale_queued().await
+            }
+            async fn cancel_queued(&self, id: &str) -> Result<bool, TransactionStoreError> {
+                self.0.cancel_queued(id).await
             }
             async fn list_transactions(
                 &self,

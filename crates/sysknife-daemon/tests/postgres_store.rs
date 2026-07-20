@@ -204,6 +204,25 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
         .await
         .expect("filter mismatch returns empty")
         .is_empty());
+
+    // cancel_queued (P6): the transaction is Running by now (claimed above), so
+    // Option A must refuse to cancel it and leave it Running.
+    assert!(
+        !store
+            .cancel_queued(transaction_id)
+            .await
+            .expect("cancel_queued query"),
+        "a Running transaction must not be cancelable on Postgres"
+    );
+    assert_eq!(
+        store
+            .get(transaction_id)
+            .await
+            .expect("load")
+            .expect("exists")
+            .status,
+        JobState::Running
+    );
     assert_eq!(
         store.verify_audit_chain(&key).await.expect("verify chain"),
         VerifyOutcome::Intact { rows_checked: 1 }

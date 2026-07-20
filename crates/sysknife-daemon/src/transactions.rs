@@ -438,6 +438,26 @@ impl TransactionStore {
         Ok(rows_affected as u64)
     }
 
+    /// Cancel one still-`Queued` transaction (`Queued → Canceled`). Returns
+    /// `true` iff a queued row was transitioned.
+    ///
+    /// Option A semantics: the `status = ?3` (Queued) guard means a `Running`
+    /// transaction — one whose privileged action is already executing — is
+    /// never cancelled, so we never leave a half-applied root mutation behind
+    /// a `Canceled` record. Missing or already-terminal transactions return
+    /// `false`.
+    pub fn cancel_queued(&self, transaction_id: &str) -> Result<bool, TransactionStoreError> {
+        let conn = self.connection()?;
+        let canceled_json = serialize_field(&JobState::Canceled)?;
+        let queued_json = serialize_field(&JobState::Queued)?;
+        let rows_affected = conn.execute(
+            "UPDATE transactions SET status = ?1 \
+             WHERE transaction_id = ?2 AND status = ?3",
+            params![canceled_json, transaction_id, queued_json],
+        )?;
+        Ok(rows_affected > 0)
+    }
+
     /// List transactions with optional filters, ordered by newest first.
     ///
     /// - `limit`: max number of rows (capped at 100)
@@ -1263,6 +1283,57 @@ mod tests {
         assert_eq!(updated.action_name, "UpdateSystem");
         assert_eq!(updated.risk_level, RiskLevel::High);
         assert_eq!(updated.status, JobState::Failed);
+    }
+
+    #[test]
+    fn cancel_queued_cancels_a_queued_transaction_once() {
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let tx = store.record(queued_transaction()).unwrap();
+
+        assert!(
+            store.cancel_queued(&tx.transaction_id).unwrap(),
+            "a queued transaction is cancelable"
+        );
+        assert_eq!(
+            store.get(&tx.transaction_id).unwrap().unwrap().status,
+            JobState::Canceled
+        );
+        assert!(
+            !store.cancel_queued(&tx.transaction_id).unwrap(),
+            "an already-canceled transaction is not cancelable again"
+        );
+        assert!(
+            !store.cancel_queued("no-such-transaction").unwrap(),
+            "a missing transaction is not cancelable"
+        );
+    }
+
+    #[test]
+    fn cancel_queued_refuses_a_running_transaction() {
+        // Option A: never cancel an in-flight privileged action. Once a
+        // transaction is claimed (Running), cancel must refuse and leave it.
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let tx = store.record(queued_transaction()).unwrap();
+        let receipt = store
+            .approve_transaction(&tx.transaction_id)
+            .unwrap()
+            .expect("approved");
+        let digest = audit_chain::approval_receipt_digest(&receipt);
+        assert!(store
+            .claim_approved_for_execution(&tx.transaction_id, &digest)
+            .unwrap());
+
+        assert!(
+            !store.cancel_queued(&tx.transaction_id).unwrap(),
+            "a running transaction must not be cancelable"
+        );
+        assert_eq!(
+            store.get(&tx.transaction_id).unwrap().unwrap().status,
+            JobState::Running,
+            "cancel must not disturb a running transaction"
+        );
     }
 
     #[test]
