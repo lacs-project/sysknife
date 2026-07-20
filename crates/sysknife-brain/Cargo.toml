@@ -18,6 +18,12 @@ async-openai = { version = "0.41", features = ["chat-completion"] }
 # rig-core 0.40 renamed its lib crate `rig` -> `rig_core`; alias it back to `rig`
 # so existing `use rig::...` paths keep working.
 rig = { package = "rig-core", version = "0.40.0" }
+# Used to classify structured provider error status codes (rig's
+# `CompletionError::provider_response_status()` and async-openai's
+# `ApiErrorResponse::status_code` both return this type). Already present
+# transitively via async-openai/rig-core/reqwest; declared directly here
+# because we match on its constants in our own code.
+http = "1"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

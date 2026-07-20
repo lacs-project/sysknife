@@ -165,8 +165,8 @@ pub enum ProviderError {
     #[error("authentication failed: {0}")]
     Auth(String),
 
-    #[error("rate limited")]
-    RateLimit,
+    #[error("rate limited: {0}")]
+    RateLimit(String),
 
     #[error("invalid response: {0}")]
     Parse(String),

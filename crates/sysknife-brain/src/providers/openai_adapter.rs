@@ -365,13 +365,48 @@ fn map_openai_error(err: async_openai::error::OpenAIError) -> ProviderError {
     // from misconfigured proxies or HTTP-level transport failures.
     let msg = sanitize_error_msg(&err.to_string());
 
+    // Prefer the structured status async-openai attaches to `ApiError` — it is
+    // the HTTP status code the OpenAI API itself returned, so it is far more
+    // reliable than matching on the SDK's rendered error text.
+    if let async_openai::error::OpenAIError::ApiError(ref api_err) = err {
+        return match super::classify_status(api_err.status_code) {
+            super::StatusClass::Auth => {
+                // Log the sanitized message for operator diagnostics but do not
+                // propagate it to the caller — auth errors can echo key-adjacent
+                // context.
+                tracing::error!(
+                    target: "sysknife_brain::openai_adapter",
+                    "OpenAI authentication error: {}",
+                    msg
+                );
+                ProviderError::Auth("OpenAI authentication failed — check your API key".to_string())
+            }
+            super::StatusClass::RateLimit => {
+                tracing::warn!(
+                    target: "sysknife_brain::openai_adapter",
+                    "OpenAI rate limit hit: {}",
+                    msg
+                );
+                ProviderError::RateLimit(msg)
+            }
+            super::StatusClass::Other => {
+                tracing::error!(
+                    target: "sysknife_brain::openai_adapter",
+                    "OpenAI error: {}",
+                    msg
+                );
+                ProviderError::Request(msg)
+            }
+        };
+    }
+
+    // Fall back to string matching for non-`ApiError` variants (e.g.
+    // `Reqwest`, `JSONDeserialize`), which carry no structured HTTP status.
     if msg.contains("401")
         || msg.to_lowercase().contains("authentication")
         || msg.to_lowercase().contains("api key")
         || msg.to_lowercase().contains("incorrect api key")
     {
-        // Log the sanitized message for operator diagnostics but do not propagate
-        // it to the caller — auth errors can echo key-adjacent context.
         tracing::error!(
             target: "sysknife_brain::openai_adapter",
             "OpenAI authentication error: {}",
@@ -384,7 +419,7 @@ fn map_openai_error(err: async_openai::error::OpenAIError) -> ProviderError {
             "OpenAI rate limit hit: {}",
             msg
         );
-        ProviderError::RateLimit
+        ProviderError::RateLimit(msg)
     } else {
         tracing::error!(
             target: "sysknife_brain::openai_adapter",
@@ -875,6 +910,101 @@ mod tests {
                 "auth classification wrong for: {msg}"
             );
         }
+    }
+
+    #[test]
+    fn map_openai_error_classifies_401_as_auth_via_real_api_error() {
+        let err =
+            async_openai::error::OpenAIError::ApiError(async_openai::error::ApiErrorResponse {
+                status_code: http::StatusCode::UNAUTHORIZED,
+                api_error: async_openai::error::ApiError {
+                    message: "Incorrect API key provided".into(),
+                    r#type: Some("invalid_request_error".into()),
+                    param: None,
+                    code: Some("invalid_api_key".into()),
+                },
+            });
+        let mapped = map_openai_error(err);
+        assert!(
+            matches!(mapped, ProviderError::Auth(_)),
+            "expected Auth, got {mapped:?}"
+        );
+        if let ProviderError::Auth(msg) = mapped {
+            assert_eq!(
+                msg, "OpenAI authentication failed — check your API key",
+                "auth message must be the fixed key-safe string, not the raw SDK text"
+            );
+        }
+    }
+
+    #[test]
+    fn map_openai_error_classifies_403_as_auth_via_real_api_error() {
+        let err =
+            async_openai::error::OpenAIError::ApiError(async_openai::error::ApiErrorResponse {
+                status_code: http::StatusCode::FORBIDDEN,
+                api_error: async_openai::error::ApiError {
+                    message: "forbidden".into(),
+                    r#type: None,
+                    param: None,
+                    code: None,
+                },
+            });
+        let mapped = map_openai_error(err);
+        assert!(
+            matches!(mapped, ProviderError::Auth(_)),
+            "expected Auth, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_openai_error_classifies_429_as_rate_limit_via_real_api_error() {
+        let err =
+            async_openai::error::OpenAIError::ApiError(async_openai::error::ApiErrorResponse {
+                status_code: http::StatusCode::TOO_MANY_REQUESTS,
+                api_error: async_openai::error::ApiError {
+                    message: "Rate limit reached for requests".into(),
+                    r#type: Some("rate_limit_error".into()),
+                    param: None,
+                    code: None,
+                },
+            });
+        let mapped = map_openai_error(err);
+        assert!(
+            matches!(mapped, ProviderError::RateLimit(_)),
+            "expected RateLimit, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_openai_error_classifies_other_4xx_as_request_via_real_api_error() {
+        let err =
+            async_openai::error::OpenAIError::ApiError(async_openai::error::ApiErrorResponse {
+                status_code: http::StatusCode::BAD_REQUEST,
+                api_error: async_openai::error::ApiError {
+                    message: "model not found".into(),
+                    r#type: None,
+                    param: None,
+                    code: None,
+                },
+            });
+        let mapped = map_openai_error(err);
+        assert!(
+            matches!(mapped, ProviderError::Request(_)),
+            "expected Request, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_openai_error_falls_back_to_substring_for_non_api_error_variant() {
+        // `JSONDeserialize` carries no structured HTTP status, so this
+        // exercises the substring-fallback path in `map_openai_error`.
+        let json_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let err = async_openai::error::OpenAIError::JSONDeserialize(json_err, "not json".into());
+        let mapped = map_openai_error(err);
+        assert!(
+            matches!(mapped, ProviderError::Request(_)),
+            "expected Request via fallback, got {mapped:?}"
+        );
     }
 
     #[test]

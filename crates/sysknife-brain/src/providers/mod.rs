@@ -1,6 +1,31 @@
 pub mod openai_adapter;
 pub mod rig_adapter;
 
+/// Coarse classification of a provider's HTTP status code, shared by every
+/// adapter that maps SDK errors onto [`crate::provider::ProviderError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StatusClass {
+    /// 401 Unauthorized / 403 Forbidden — credentials are missing or invalid.
+    Auth,
+    /// 429 Too Many Requests.
+    RateLimit,
+    /// Any other 4xx/5xx status — a generic request error.
+    Other,
+}
+
+/// Classifies a structured HTTP status code from a provider response.
+///
+/// This is the preferred classification path: adapters should only fall back
+/// to substring matching against SDK error messages when no structured status
+/// is available (e.g. a transport-level failure with no HTTP response).
+pub(super) fn classify_status(status: http::StatusCode) -> StatusClass {
+    match status {
+        http::StatusCode::UNAUTHORIZED | http::StatusCode::FORBIDDEN => StatusClass::Auth,
+        http::StatusCode::TOO_MANY_REQUESTS => StatusClass::RateLimit,
+        _ => StatusClass::Other,
+    }
+}
+
 /// Redact common key-bearing query parameters from error messages to prevent
 /// API key leakage in logs. Handles both first-position (`?key=`, `?api_key=`)
 /// and subsequent-position (`&key=`, `&api_key=`) query params, and redacts

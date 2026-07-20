@@ -380,18 +380,30 @@ fn from_rig_response(choice: OneOrMany<AssistantContent>) -> Result<Completion, 
 
 fn map_rig_error(err: rig::completion::CompletionError) -> ProviderError {
     let msg = sanitize_error_msg(&err.to_string());
-
-    // NOTE: This classification relies on string matching against Rig's error
-    // messages, which is inherently fragile — a Rig version bump could change
-    // the wording and break our categorisation. We accept this trade-off
-    // because Rig does not expose structured error variants for HTTP status
-    // codes. If Rig adds typed error variants in the future, prefer those.
     eprintln!("[sysknife-brain] Rig completion error: {msg}");
 
+    // Prefer the structured HTTP status Rig preserves via
+    // `provider_response_status()` (see `impl_provider_response_helpers!` in
+    // rig-core's `provider_response` module). This is available whenever Rig
+    // captured a real HTTP response, success or failure.
+    if let Some(status) = err.provider_response_status() {
+        return match super::classify_status(status) {
+            super::StatusClass::Auth => ProviderError::Auth(msg),
+            super::StatusClass::RateLimit => ProviderError::RateLimit(msg),
+            super::StatusClass::Other => ProviderError::Request(msg),
+        };
+    }
+
+    // Fall back to string matching against Rig's error messages only when no
+    // structured status is available (e.g. a non-HTTP transport such as a
+    // gRPC/SDK-based provider, or a transport-level failure with no response).
+    // This fallback is inherently fragile — a Rig version bump could change
+    // the wording and break our categorisation — but there is no structured
+    // alternative in that case.
     if msg.contains("401") || msg.to_lowercase().contains("auth") {
         ProviderError::Auth(msg)
     } else if msg.contains("429") || msg.to_lowercase().contains("rate") {
-        ProviderError::RateLimit
+        ProviderError::RateLimit(msg)
     } else {
         ProviderError::Request(msg)
     }
@@ -616,5 +628,78 @@ mod tests {
             }
             other => panic!("expected Parse error, got {other:?}"),
         }
+    }
+
+    // --- map_rig_error ---------------------------------------------------
+
+    #[test]
+    fn map_rig_error_classifies_401_as_auth() {
+        let err = rig::completion::CompletionError::from_http_response(
+            http::StatusCode::UNAUTHORIZED,
+            r#"{"error":"unauthorized"}"#,
+        );
+        let mapped = map_rig_error(err);
+        assert!(
+            matches!(mapped, ProviderError::Auth(_)),
+            "expected Auth, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_rig_error_classifies_403_as_auth() {
+        let err = rig::completion::CompletionError::from_http_response(
+            http::StatusCode::FORBIDDEN,
+            "forbidden",
+        );
+        let mapped = map_rig_error(err);
+        assert!(
+            matches!(mapped, ProviderError::Auth(_)),
+            "expected Auth, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_rig_error_classifies_429_as_rate_limit() {
+        let err = rig::completion::CompletionError::from_http_response(
+            http::StatusCode::TOO_MANY_REQUESTS,
+            r#"{"error":"rate limited"}"#,
+        );
+        let mapped = map_rig_error(err);
+        assert!(
+            matches!(mapped, ProviderError::RateLimit(_)),
+            "expected RateLimit, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_rig_error_classifies_other_4xx_as_request() {
+        let err = rig::completion::CompletionError::from_http_response(
+            http::StatusCode::BAD_REQUEST,
+            "bad request",
+        );
+        let mapped = map_rig_error(err);
+        assert!(
+            matches!(mapped, ProviderError::Request(_)),
+            "expected Request, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_rig_error_falls_back_to_substring_when_no_structured_status() {
+        // `ProviderError(String)` carries no HTTP status — this is the
+        // non-HTTP-transport case (e.g. gRPC/SDK-based providers) where the
+        // substring fallback in `map_rig_error` is the only option.
+        let err =
+            rig::completion::CompletionError::ProviderError("401 unauthorized from grpc".into());
+        assert_eq!(
+            err.provider_response_status(),
+            None,
+            "sanity check: this variant must carry no structured status"
+        );
+        let mapped = map_rig_error(err);
+        assert!(
+            matches!(mapped, ProviderError::Auth(_)),
+            "expected Auth via substring fallback, got {mapped:?}"
+        );
     }
 }
