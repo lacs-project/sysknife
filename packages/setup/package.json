@@ -21,7 +21,9 @@
     "index.js",
     "install-binary.js",
     "install-daemon.js",
-    "mcp-launcher.js"
+    "mcp-config.js",
+    "mcp-launcher.js",
+    "providers.js"
   ],
   "keywords": [
     "sysknife",

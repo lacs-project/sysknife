@@ -51,6 +51,29 @@ impl CommandRunner for RealCommandRunner {
     }
 }
 
+/// Run a best-effort state probe, returning the parsed value or its default.
+///
+/// A missing binary (`NotFound`) is expected on distros that don't ship the
+/// tool (e.g. `rpm-ostree`/`toolbox` on Ubuntu), so it stays quiet. Any other
+/// error means the tool exists but the probe broke — log it (instead of
+/// silently swallowing) so an operator can tell "genuinely empty" from
+/// "collection failed".
+fn probe_or_warn<T: Default>(
+    label: &str,
+    result: Result<String, io::Error>,
+    parse: impl FnOnce(&str) -> T,
+) -> T {
+    match result {
+        Ok(s) => parse(&s),
+        Err(e) => {
+            if e.kind() != io::ErrorKind::NotFound {
+                eprintln!("[sysknife-daemon] state: {label} probe failed ({e}); reporting empty");
+            }
+            T::default()
+        }
+    }
+}
+
 /// Collect a system state snapshot using the provided runner.
 ///
 /// Only `host_name` is required. All other fields (`deployment`, `services`,
@@ -67,16 +90,18 @@ pub fn collect_state(runner: &dyn CommandRunner) -> Result<CollectedState, Colle
         })?;
 
     // Call rpm-ostree once and reuse for both deployment and layered_packages.
-    let rpm_ostree_output = runner
-        .run("rpm-ostree", &["status", "--booted", "--json"])
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
+    let rpm_ostree_output = probe_or_warn(
+        "rpm-ostree",
+        runner.run("rpm-ostree", &["status", "--booted", "--json"]),
+        |s| s.trim().to_string(),
+    );
 
     let deployment = parse_deployment_summary(&rpm_ostree_output);
     let layered_packages = parse_layered_packages(&rpm_ostree_output);
 
-    let services = runner
-        .run(
+    let services = probe_or_warn(
+        "systemctl",
+        runner.run(
             "systemctl",
             &[
                 "list-units",
@@ -86,29 +111,33 @@ pub fn collect_state(runner: &dyn CommandRunner) -> Result<CollectedState, Colle
                 "--no-pager",
                 "--plain",
             ],
-        )
-        .map(|s| parse_service_lines(&s))
-        .unwrap_or_default();
+        ),
+        parse_service_lines,
+    );
 
-    let flatpaks = runner
-        .run("flatpak", &["list", "--columns=application"])
-        .map(|s| parse_lines(&s))
-        .unwrap_or_default();
+    let flatpaks = probe_or_warn(
+        "flatpak",
+        runner.run("flatpak", &["list", "--columns=application"]),
+        parse_lines,
+    );
 
-    let toolboxes = runner
-        .run("toolbox", &["list", "--containers"])
-        .map(|s| parse_lines(&s))
-        .unwrap_or_default();
+    let toolboxes = probe_or_warn(
+        "toolbox",
+        runner.run("toolbox", &["list", "--containers"]),
+        parse_lines,
+    );
 
-    let containers = runner
-        .run("podman", &["ps", "--format", "{{.Names}}"])
-        .map(|s| parse_lines(&s))
-        .unwrap_or_default();
+    let containers = probe_or_warn(
+        "podman",
+        runner.run("podman", &["ps", "--format", "{{.Names}}"]),
+        parse_lines,
+    );
 
-    let users = runner
-        .run("getent", &["passwd", "--service", "files"])
-        .map(|s| parse_local_users(&s))
-        .unwrap_or_default();
+    let users = probe_or_warn(
+        "getent",
+        runner.run("getent", &["passwd", "--service", "files"]),
+        parse_local_users,
+    );
 
     Ok(CollectedState {
         host_name,

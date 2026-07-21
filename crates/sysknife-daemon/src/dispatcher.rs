@@ -1526,7 +1526,19 @@ async fn handle_preview(
         request_hash: sysknife_types::RequestHash::new(request_hash.to_string()),
     };
 
-    let preview = preview_action(&envelope, current_state, proposed_change);
+    // If state collection failed above, current_state is Null (collect_state
+    // never yields null on success). Surface that in the client-visible
+    // warnings — not just daemon stderr — so a human approving a high-risk
+    // action knows the "current state" backing this preview is missing.
+    let state_unavailable = current_state.is_null();
+    let mut preview = preview_action(&envelope, current_state, proposed_change);
+    if state_unavailable {
+        preview.warnings.push(
+            "System state could not be collected; this preview was generated without it. \
+             Review the action carefully before approving."
+                .to_string(),
+        );
+    }
 
     // Persist a pending transaction so execute can verify a prior preview.
     let new_tx = NewTransaction {
