@@ -217,21 +217,11 @@ function serverToToml(key, server) {
 // Configuration
 // ---------------------------------------------------------------------------
 
-const PROVIDERS = ['openai', 'anthropic', 'gemini', 'ollama'];
-
-const MODEL_DEFAULTS = {
-  openai:    'gpt-4.1',
-  anthropic: 'claude-sonnet-4-6',
-  gemini:    'gemini-2.5-pro',
-  ollama:    'qwen3:8b',
-};
-
-const API_KEY_VARS = {
-  openai:    'OPENAI_API_KEY',
-  anthropic: 'ANTHROPIC_API_KEY',
-  gemini:    'GEMINI_API_KEY',
-  ollama:    null,
-};
+// Provider list, model defaults, and API-key env vars live in providers.js so
+// the "wizard offers what the engine supports" invariant is unit-testable. All
+// eight sysknife-brain providers are offered; the flow below is data-driven off
+// these maps, so no per-provider branching is needed.
+const { PROVIDERS, MODEL_DEFAULTS, API_KEY_VARS } = require('./providers.js');
 
 const ARG_SET = new Set(process.argv.slice(2));
 const WANT_CLAUDE     = ARG_SET.has('--claude');
@@ -931,9 +921,11 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
   Run from the root of your project directory.
 
 \x1b[1mENVIRONMENT\x1b[0m
-  OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY
-      If set in your shell environment the wizard detects them and avoids
-      writing them to config files in plain text.
+  OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY /
+  GROQ_API_KEY / DEEPSEEK_API_KEY / MISTRAL_API_KEY / XAI_API_KEY
+      The provider's key var (Ollama needs none). If set in your shell
+      environment the wizard detects it and avoids writing it to config
+      files in plain text.
 
 \x1b[1mEXAMPLES\x1b[0m
   \x1b[2m# Pick one integration interactively\x1b[0m

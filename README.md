@@ -89,15 +89,19 @@ What this does:
    each against the release checksum file — a mismatch aborts the install — and
    places them in `~/.local/bin` (no sudo). Pass `--no-binary` to skip the
    download and build from source instead.
-2. **Installs and starts the daemon as a service** — a systemd *user* service by
-   default (no sudo; kept alive across logout via linger). Pick the system-level
-   service for a production, multi-user host.
-3. Asks for your LLM provider + key (OpenAI / Anthropic / Gemini / Ollama).
-4. Asks which AI integration to wire up, or lets you pick `--claude`,
-   `--cursor`, `--codex`, or `--all` directly.
-5. Writes the integration-specific MCP config so the next chat session sees the
-   `sysknife_*` tools — `sysknife_plan`, `sysknife_execute`, `sysknife_history`,
-   `sysknife_doctor`, `sysknife_audit_verify` — as first-class tools.
+2. Asks for your **LLM provider, key, and model** — OpenAI / Anthropic / Gemini
+   / Ollama / Groq / DeepSeek / Mistral / xAI (Ollama needs no key). The key
+   prompt is skipped when the matching env var is already set.
+3. Asks **which AI integration** to wire up (or pick `--claude` / `--cursor` /
+   `--codex` / `--all`) and your **daemon target(s)** — socket, plus an optional
+   vsock token for a remote VM.
+4. **Writes the integration-specific MCP config** (merging into any existing
+   file, never clobbering) so the next chat session sees the `sysknife_*` tools —
+   `sysknife_plan`, `sysknife_execute`, `sysknife_history`, `sysknife_doctor`,
+   `sysknife_audit_verify` — as first-class tools.
+5. **Installs and starts the daemon as a service** (last step) — a systemd
+   *user* service by default (no sudo; kept alive across logout via linger).
+   Pick the system-level service for a production, multi-user host.
 
 | Client          | Files written                                        |
 |-----------------|------------------------------------------------------|
@@ -118,15 +122,15 @@ the prompt, enforces the receipt boundary.
 <summary><strong>Manual install — Ubuntu LTS · Fedora Atomic</strong></summary>
 
 ```sh
-# Build + install the daemon the wizard configures
 git clone https://github.com/lacs-project/sysknife
 cd sysknife
-make build
-sudo make install
+make build                            # builds sysknife (CLI) + sysknife-daemon
+sudo make install                     # installs both; daemon runs as a system service
 sudo systemctl enable --now sysknife-daemon
 
-# Then run the published setup wizard
-npx sysknife-setup
+# Then wire your IDE — --no-binary skips the download since you just built them
+# (choose "skip" at the daemon-service prompt; make install already set it up)
+npx sysknife-setup --no-binary
 ```
 
 Ubuntu 24.04 is validated with 65/65 stories on a live VM. Ubuntu 22.04 and
@@ -211,7 +215,7 @@ milestone.
 | **Ubuntu 22.04 / 26.04 VM tooling** — smoke tests pass on all three LTSes | ✅ |
 | Telegram approval interface | 📋 roadmap |
 
-**1,259 Rust tests and 72 frontend tests** form the current deterministic
+**1,269 Rust tests and 72 frontend tests** form the current deterministic
 release baseline.
 
 ## Configure your LLM
