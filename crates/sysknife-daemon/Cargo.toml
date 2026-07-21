@@ -21,7 +21,7 @@ tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process"
 tracing = "0.1"
 uuid = { version = "1", features = ["serde", "v4"] }
 sha2 = "0.11"
-ed25519-dalek = { version = "2", features = ["zeroize"] }
+ed25519-dalek = { version = "3", features = ["zeroize"] }
 hex = "0.4"
 subtle = "2"
 zeroize = { version = "1", features = ["derive"] }
