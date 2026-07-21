@@ -35,7 +35,7 @@ const PROVIDERS = [
 const MODEL_DEFAULTS = {
   openai:   'gpt-4.1',
   anthropic:'claude-sonnet-4-6',
-  gemini:   'gemini-2.5-pro',
+  gemini:   'gemini-2.0-flash',
   ollama:   'qwen3:8b',
   groq:     'llama-3.3-70b-versatile',
   deepseek: 'deepseek-chat',

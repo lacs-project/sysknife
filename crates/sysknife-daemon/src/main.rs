@@ -11,6 +11,11 @@ use sysknife_daemon::transport::listen::{bind_unix_listener, ListenTarget};
 use tokio::net::UnixListener;
 use tokio::sync::Semaphore;
 
+/// How often the daemon sweeps `Queued` transactions that outlived the approval
+/// TTL and cancels them. A third of the 15-minute TTL, so an abandoned preview
+/// clears within ~5 min of expiry without hammering the store.
+const STALE_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Maximum number of concurrent IPC connections the daemon accepts.
 ///
 /// Each shell instance opens one connection per plan step. 16 slots allow
@@ -94,6 +99,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let semaphore = Arc::new(Semaphore::new(MAX_CONNECTIONS));
 
     eprintln!("[sysknife-daemon] listening on {listen_uri}");
+
+    // Periodically cancel Queued transactions that outlived the approval TTL, so
+    // an abandoned preview does not linger forever as a phantom "queued" row in
+    // `sysknife history`. cleanup_stale_queued only touches expired Queued rows
+    // (never Running/Approved) — see the transactions.rs regression tests.
+    {
+        let sweep = state.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(STALE_SWEEP_INTERVAL);
+            loop {
+                ticker.tick().await;
+                match sweep.audit.cleanup_stale_queued().await {
+                    Ok(n) if n > 0 => {
+                        eprintln!(
+                            "[sysknife-daemon] swept {n} stale queued transaction(s) past TTL"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!("[sysknife-daemon] stale-queued sweep failed: {e}"),
+                }
+            }
+        });
+    }
 
     match listen_target {
         ListenTarget::Unix(path) => {

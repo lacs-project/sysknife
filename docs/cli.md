@@ -270,6 +270,10 @@ to override.
 | `ANTHROPIC_API_KEY` | Use the Anthropic provider (default model: `claude-sonnet-4-6`) |
 | `OPENAI_API_KEY` | Use the OpenAI provider (default model: `gpt-4.1`) |
 | `GEMINI_API_KEY` | Use the Gemini provider (default model: `gemini-2.0-flash`) |
+| `GROQ_API_KEY` | Use the Groq provider (default model: `llama-3.3-70b-versatile`) |
+| `DEEPSEEK_API_KEY` | Use the DeepSeek provider (default model: `deepseek-chat`) |
+| `MISTRAL_API_KEY` | Use the Mistral provider (default model: `mistral-large-latest`) |
+| `XAI_API_KEY` | Use the xAI provider (default model: `grok-3`) |
 | `SYSKNIFE_ANTHROPIC_URL` | Override the Anthropic base URL (default: `https://api.anthropic.com`) |
 | `SYSKNIFE_OLLAMA_URL` | Override the Ollama base URL (default: `http://localhost:11434`) |
 | `SYSKNIFE_BRAIN_MAX_TURNS` | Planning loop turn limit — integer ≥ 1 (default: `10`) |

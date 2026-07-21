@@ -162,25 +162,29 @@ socket   = "/run/sysknife/daemon.sock"    # raw path, not URI
 database = "/var/lib/sysknife/daemon.sqlite"
 
 [llm]
-provider   = "ollama"                 # "ollama" | "anthropic"
+provider   = "ollama"                 # ollama | anthropic | openai | gemini | groq | deepseek | mistral | xai
 model      = "llama3.2:3b"
 ollama_url = "http://localhost:11434"
-max_turns  = 5
+max_turns  = 10
 ```
 
 Config file values act as defaults. Environment variables always win.
 
 | Variable | Default | Description |
 |---|---|---|
-| `SYSKNIFE_LISTEN_URI` | `unix:///tmp/sysknife-daemon.sock` | Daemon socket path |
-| `SYSKNIFE_DATABASE_PATH` | `/tmp/sysknife-daemon.sqlite` | SQLite database path |
-| `SYSKNIFE_LLM_PROVIDER` | auto-detect | `anthropic`, `openai`, `gemini`, or `ollama` |
+| `SYSKNIFE_LISTEN_URI` | `$XDG_RUNTIME_DIR/sysknife/daemon.sock` (prod: `/run/sysknife/daemon.sock`) | Daemon socket URI |
+| `SYSKNIFE_DATABASE_PATH` | `$XDG_STATE_HOME/sysknife/daemon.sqlite` (fallback `~/.local/state/sysknife/daemon.sqlite`) | SQLite database path |
+| `SYSKNIFE_LLM_PROVIDER` | auto-detect | `anthropic`, `openai`, `gemini`, `ollama`, `groq`, `deepseek`, `mistral`, or `xai` |
 | `ANTHROPIC_API_KEY` | — | Required for the Anthropic provider |
 | `OPENAI_API_KEY` | — | Required for the OpenAI provider |
 | `GEMINI_API_KEY` | — | Required for the Gemini provider |
+| `GROQ_API_KEY` | — | Required for the Groq provider |
+| `DEEPSEEK_API_KEY` | — | Required for the DeepSeek provider |
+| `MISTRAL_API_KEY` | — | Required for the Mistral provider |
+| `XAI_API_KEY` | — | Required for the xAI provider |
 | `SYSKNIFE_OLLAMA_URL` | `http://localhost:11434` | Ollama base URL |
 | `SYSKNIFE_LLM_MODEL` | provider default | Override the model name |
-| `SYSKNIFE_BRAIN_MAX_TURNS` | `5` | Planning loop turn limit |
+| `SYSKNIFE_BRAIN_MAX_TURNS` | `10` | Planning loop turn limit |
 
 ## User Preferences
 

@@ -1,7 +1,10 @@
 # SysKnife Action Reference
 
-All 78 daemon actions, their underlying commands, whether they are
-destructive, and what they do.
+The Fedora / rpm-ostree (atomic-host) action family — each action's underlying
+command, whether it is destructive, and what it does. Ubuntu-family actions
+(apt, snap, ufw, netplan, distrobox, …) are documented in the
+[Ubuntu action reference](ubuntu-action-reference.md). Across all families
+SysKnife defines 140+ typed actions.
 
 > **Destructive** — mutates persistent system state (package installs,
 > deployment changes, user/group writes, firewall rules, reboots).

@@ -42,8 +42,14 @@ test('maps each new provider to its engine API-key env var', () => {
   assert.equal(API_KEY_VARS.ollama, null);
 });
 
-test('new provider model defaults match the engine defaults', () => {
-  // Must equal DEFAULT_*_MODEL in crates/sysknife-brain/src/config.rs.
+test('all eight model defaults match the engine defaults', () => {
+  // Must equal the DEFAULT_*_MODEL constants in
+  // crates/sysknife-brain/src/config.rs (all 8, not just the new 4 — a stale
+  // pre-existing default is drift too).
+  assert.equal(MODEL_DEFAULTS.openai, 'gpt-4.1');
+  assert.equal(MODEL_DEFAULTS.anthropic, 'claude-sonnet-4-6');
+  assert.equal(MODEL_DEFAULTS.gemini, 'gemini-2.0-flash');
+  assert.equal(MODEL_DEFAULTS.ollama, 'qwen3:8b');
   assert.equal(MODEL_DEFAULTS.groq, 'llama-3.3-70b-versatile');
   assert.equal(MODEL_DEFAULTS.deepseek, 'deepseek-chat');
   assert.equal(MODEL_DEFAULTS.mistral, 'mistral-large-latest');
