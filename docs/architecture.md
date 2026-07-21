@@ -23,7 +23,7 @@ produced. Provides:
 
 - `LlmPlanner` — the planning loop entry point
 - `BrainConfig` — provider and model selection
-- Provider adapters: Anthropic, OpenAI, Gemini, Ollama
+- Provider adapters: Anthropic, OpenAI, Gemini, Ollama, Groq, DeepSeek, Mistral, xAI
 - Planning tools: `get_system_state`, `query_*`, `propose_plan`, `remember`, `forget`
 - Safety fence: validates every action name and risk level before a plan
   leaves the brain

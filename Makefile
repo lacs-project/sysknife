@@ -1,4 +1,4 @@
-# SysKnife Makefile — build, install, and uninstall the daemon and shell.
+# SysKnife Makefile — build, install, and uninstall the daemon and CLI.
 #
 # Typical usage (as root or via sudo):
 #   make build
@@ -28,19 +28,28 @@ HELPERS     ?= /usr/lib/sysknife
 
 CARGO_BUILD_FLAGS ?= --release --locked
 
-.PHONY: build install uninstall daemon-install daemon-uninstall check
+.PHONY: build install uninstall daemon-install cli-install daemon-uninstall cli-uninstall check
 
 ## ── Build ────────────────────────────────────────────────────────────────────
 
+# Builds both binaries: the privileged daemon (sysknife-daemon) and the user CLI
+# (sysknife), which provides `mcp-server` and `approve`. Docs run `sysknife` right
+# after `make install`, so `install` must place both — see cli-install below.
 build:
-	cargo build $(CARGO_BUILD_FLAGS) -p sysknife-daemon
-	@echo "Build complete. Binary: target/release/sysknife-daemon"
+	cargo build $(CARGO_BUILD_FLAGS) -p sysknife-daemon -p sysknife-cli
+	@echo "Build complete. Binaries: target/release/sysknife-daemon, target/release/sysknife"
 
 ## ── Install ──────────────────────────────────────────────────────────────────
 
-install: daemon-install
+install: daemon-install cli-install
 	@echo ""
-	@echo "SysKnife daemon installed. Run 'sudo systemctl enable --now sysknife-daemon' to start."
+	@echo "SysKnife daemon + CLI installed. Run 'sudo systemctl enable --now sysknife-daemon' to start."
+
+# The `sysknife` CLI is what the setup wizard (`--no-binary`) and the MCP server
+# invoke, so a from-source install must place it on PATH alongside the daemon.
+cli-install: build
+	install -Dm 755 target/release/sysknife $(BINDIR)/sysknife
+	@echo "CLI installed: $(BINDIR)/sysknife"
 
 daemon-install: build
 	install -Dm 755 target/release/sysknife-daemon $(BINDIR)/sysknife-daemon
@@ -69,7 +78,11 @@ daemon-install: build
 
 ## ── Uninstall ────────────────────────────────────────────────────────────────
 
-uninstall: daemon-uninstall
+uninstall: daemon-uninstall cli-uninstall
+
+cli-uninstall:
+	rm -f $(BINDIR)/sysknife
+	@echo "CLI uninstalled: $(BINDIR)/sysknife"
 
 daemon-uninstall:
 	-systemctl disable --now sysknife-daemon 2>/dev/null || true
