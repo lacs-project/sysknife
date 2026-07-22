@@ -28,6 +28,8 @@ fn services_family_covers_list_control_and_logs() {
             "ListTimers",
             "ReloadDaemon",
             "CreateScheduledJob",
+            "GetServiceResourceLimits",
+            "SetServiceResourceLimits",
         ]
     );
 }

@@ -125,6 +125,10 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "fetch recent journald log lines for a service — param: unit*"),
     ("GetServiceStatus",
      "show detailed status of a service — param: unit*"),
+    ("GetServiceResourceLimits",
+     "show a service's cgroup limits (MemoryMax/CPUQuota/TasksMax) via systemctl show — param: unit*; read-only"),
+    ("SetServiceResourceLimits",
+     "cap a service's resources via systemctl set-property (applies live + persists) — params: unit*, plus at least one of memory_max (e.g. '500M' or 'infinity'), memory_high, cpu_quota (e.g. '50%'), tasks_max (integer or 'infinity'); High risk; undo with systemctl revert"),
     // Network
     ("GetFirewallState",
      "show current firewalld zones, open services, and port rules — no params"),

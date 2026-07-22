@@ -16,7 +16,58 @@ pub fn specs() -> Vec<ActionSpec> {
         list_timers(),
         reload_daemon(),
         create_scheduled_job("sysknife-example", "/usr/bin/true", "*-*-* 02:00:00"),
+        get_service_resource_limits("nginx.service"),
+        set_service_resource_limits(
+            "nginx.service",
+            &["MemoryMax=500M".to_string(), "CPUQuota=50%".to_string()],
+        ),
     ]
+}
+
+/// Read a service's cgroup resource limits (`systemctl show --property=…`).
+///
+/// Read-only. `CPUQuota` is reported by systemd as `CPUQuotaPerSecUSec`, so
+/// that is the property name queried here.
+pub fn get_service_resource_limits(unit: &str) -> ActionSpec {
+    ActionSpec {
+        action_name: "GetServiceResourceLimits",
+        mechanism: command_mechanism(
+            "systemctl",
+            [
+                "show",
+                unit,
+                "--property=MemoryMax,MemoryHigh,CPUQuotaPerSecUSec,TasksMax",
+            ],
+        ),
+        risk_level: RiskLevel::Low,
+        reboot_required: false,
+        rollback_available: false,
+    }
+}
+
+/// Set a service's cgroup resource limits (`sudo systemctl set-property …`).
+///
+/// Risk: High. `set-property` both applies the limit live and writes a
+/// persistent drop-in under `/etc/systemd/system.control/<unit>.d/`; the change
+/// is undone with `systemctl revert <unit>`. Using systemd's own verb (rather
+/// than a hand-written drop-in helper) means systemd validates and manages the
+/// unit files. `assignments` are pre-validated `PROPERTY=VALUE` pairs
+/// (`MemoryMax=`, `CPUQuota=`, `TasksMax=`); the executor guarantees at least
+/// one is present.
+pub fn set_service_resource_limits(unit: &str, assignments: &[String]) -> ActionSpec {
+    let mut args = vec![
+        "systemctl".to_string(),
+        "set-property".to_string(),
+        unit.to_string(),
+    ];
+    args.extend(assignments.iter().cloned());
+    ActionSpec {
+        action_name: "SetServiceResourceLimits",
+        mechanism: command_mechanism("sudo", args),
+        risk_level: RiskLevel::High,
+        reboot_required: false,
+        rollback_available: false,
+    }
 }
 
 /// Installed path of the privileged scheduled-job helper script.
@@ -199,5 +250,50 @@ pub fn get_service_logs(unit: &str) -> ActionSpec {
         risk_level: RiskLevel::Low,
         reboot_required: false,
         rollback_available: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::ActionMechanism;
+
+    fn args_of(spec: &ActionSpec) -> (&'static str, Vec<String>) {
+        match &spec.mechanism {
+            ActionMechanism::Command { program, args } => (program, args.clone()),
+            other => panic!("expected Command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_resource_limits_is_read_only_show() {
+        let spec = get_service_resource_limits("nginx.service");
+        let (program, args) = args_of(&spec);
+        assert_eq!(program, "systemctl");
+        assert_eq!(args[0], "show");
+        assert_eq!(args[1], "nginx.service");
+        assert!(args[2].contains("MemoryMax") && args[2].contains("CPUQuotaPerSecUSec"));
+        assert_eq!(spec.risk_level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn set_resource_limits_builds_set_property() {
+        let spec = set_service_resource_limits(
+            "nginx.service",
+            &["MemoryMax=500M".to_string(), "CPUQuota=50%".to_string()],
+        );
+        let (program, args) = args_of(&spec);
+        assert_eq!(program, "sudo");
+        assert_eq!(
+            args,
+            vec![
+                "systemctl",
+                "set-property",
+                "nginx.service",
+                "MemoryMax=500M",
+                "CPUQuota=50%"
+            ]
+        );
+        assert_eq!(spec.risk_level, RiskLevel::High);
     }
 }

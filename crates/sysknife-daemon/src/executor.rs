@@ -4,10 +4,11 @@ use crate::actions::{
     ppa, processes, reboot, release_upgrade, resolvectl, services, snap, ssh, sysctl, system_info,
     toolbox, ubuntu_pro, ufw, users,
     validate::{
-        validated_apparmor_profile, validated_group, validated_hostname, validated_journal_grep,
-        validated_journal_priority, validated_journal_time, validated_locale, validated_lvm_name,
-        validated_lvm_size, validated_port_or_service, validated_ppa_name, validated_safe_arg,
-        validated_sysctl_key, validated_sysctl_value, validated_timezone, validated_unit_name,
+        validated_apparmor_profile, validated_cpu_quota, validated_group, validated_hostname,
+        validated_journal_grep, validated_journal_priority, validated_journal_time,
+        validated_locale, validated_lvm_name, validated_lvm_size, validated_memory_limit,
+        validated_port_or_service, validated_ppa_name, validated_safe_arg, validated_sysctl_key,
+        validated_sysctl_value, validated_tasks_max, validated_timezone, validated_unit_name,
         validated_username,
     },
     ActionMechanism, ActionSpec,
@@ -440,6 +441,32 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
                 return Err(ExecutorError::InvalidParam("schedule"));
             }
             Ok(services::create_scheduled_job(name, command, schedule))
+        }
+        "GetServiceResourceLimits" => {
+            let unit = validated_unit_name(require_str(params, "unit")?, "unit")?;
+            Ok(services::get_service_resource_limits(&unit))
+        }
+        "SetServiceResourceLimits" => {
+            let unit = validated_unit_name(require_str(params, "unit")?, "unit")?;
+            // Build validated PROPERTY=VALUE assignments from whichever limits
+            // were supplied; at least one is required.
+            let mut assignments = Vec::new();
+            if let Some(v) = optional_validated(params, "memory_max", validated_memory_limit)? {
+                assignments.push(format!("MemoryMax={v}"));
+            }
+            if let Some(v) = optional_validated(params, "memory_high", validated_memory_limit)? {
+                assignments.push(format!("MemoryHigh={v}"));
+            }
+            if let Some(v) = optional_validated(params, "cpu_quota", validated_cpu_quota)? {
+                assignments.push(format!("CPUQuota={v}"));
+            }
+            if let Some(v) = optional_validated(params, "tasks_max", validated_tasks_max)? {
+                assignments.push(format!("TasksMax={v}"));
+            }
+            if assignments.is_empty() {
+                return Err(ExecutorError::MissingParam("memory_max"));
+            }
+            Ok(services::set_service_resource_limits(&unit, &assignments))
         }
 
         // ── Toolbox ───────────────────────────────────────────────────────

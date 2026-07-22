@@ -47,6 +47,7 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "ListServices"
         | "GetServiceLogs"
         | "GetServiceStatus"
+        | "GetServiceResourceLimits"
         | "ListTimers"
         | "ListToolboxes"
         | "GetFirewallState"
@@ -239,6 +240,10 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         // net.* / vm.* / kernel.* value can degrade networking, memory
         // behaviour, or security posture, so it is Admin/High.
         | "SetSysctl"
+        // SetServiceResourceLimits caps a service's memory/CPU/tasks via
+        // set-property; too tight a MemoryMax can OOM-kill the service, so it
+        // is Admin/High.
+        | "SetServiceResourceLimits"
         | "DeleteUser"
         | "AddAuthorizedKey"
         | "RemoveAuthorizedKey"

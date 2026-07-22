@@ -109,6 +109,8 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     "UnmaskService",
     "GetServiceLogs",
     "GetServiceStatus",
+    "GetServiceResourceLimits",
+    "SetServiceResourceLimits",
     "GetFirewallState",
     "GetNetworkStatus",
     "GetListeningPorts",
