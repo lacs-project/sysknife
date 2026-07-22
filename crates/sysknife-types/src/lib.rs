@@ -148,6 +148,11 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     "RemoveLogRotation",
     "ConfigureRemoteSyslog",
     "RemoveRemoteSyslog",
+    // PAM password policy (cross-distro)
+    "GetPasswordAging",
+    "SetPasswordAging",
+    "SetPasswordPolicy",
+    "SetAccountLockout",
     "GetDateTime",
     "SetHostname",
     "SetTimezone",

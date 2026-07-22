@@ -23,6 +23,7 @@ pub mod multipass;
 pub mod netplan;
 pub mod network;
 pub mod package_repos;
+pub mod pam;
 pub mod ppa;
 pub mod processes;
 pub mod reboot;

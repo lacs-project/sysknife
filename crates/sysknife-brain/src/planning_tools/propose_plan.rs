@@ -206,6 +206,15 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "forward all logs to a remote collector via rsyslog (validated with rsyslogd -N1) — params: host*, port* (1-65535), protocol* (tcp|udp); High risk — logs leave the host"),
     ("RemoveRemoteSyslog",
      "stop remote syslog forwarding (remove the rsyslog drop-in) — no params; High risk"),
+    // PAM password policy
+    ("GetPasswordAging",
+     "show a user's password-aging fields (chage -l) — param: user*; read-only"),
+    ("SetPasswordAging",
+     "set a user's password aging (chage) — params: user*, plus at least one of max_days/min_days/warn_days (0-99999); High risk"),
+    ("SetPasswordPolicy",
+     "set password-quality rules via pwquality — params: at least one of minlen (1-128), dcredit/ucredit/lcredit/ocredit (-64..64); High risk — needs libpam-pwquality enabled in the PAM stack to take effect"),
+    ("SetAccountLockout",
+     "configure account lockout via faillock — params: at least one of deny (1-1000), unlock_time/fail_interval (seconds, 0-604800); High risk — needs pam_faillock enabled in the PAM stack to take effect"),
     // Identity / time / locale
     ("GetDateTime",
      "current date, time, timezone, and NTP status (timedatectl) — no params"),

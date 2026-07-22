@@ -1,7 +1,7 @@
 use crate::actions::{
     apparmor, apt, apt_preferences, cloudinit, containers, deployment, distrobox, fail2ban,
     filesystem, flatpak, grub, identity, journald, layering, livepatch, logging, lvm, mounts,
-    multipass, netplan, network, package_repos, ppa, processes, reboot, release_upgrade,
+    multipass, netplan, network, package_repos, pam, ppa, processes, reboot, release_upgrade,
     resolvectl, services, snap, ssh, sudoers, sysctl, system_info, toolbox, ubuntu_pro, ufw, users,
     validate::{
         validated_apparmor_profile, validated_apt_package, validated_apt_pin_expr,
@@ -770,6 +770,87 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             ))
         }
         "RemoveRemoteSyslog" => Ok(logging::remove_remote_syslog()),
+
+        // ── PAM password policy ───────────────────────────────────────────
+        "GetPasswordAging" => {
+            let user = validated_username(require_str(params, "user")?, "user")?;
+            Ok(pam::get_password_aging(&user))
+        }
+        "SetPasswordAging" => {
+            let user = validated_username(require_str(params, "user")?, "user")?;
+            // chage days: 0..=99999 (chage's own ceiling). At least one required.
+            let mut flags = Vec::new();
+            for (key, opt) in [("max_days", "-M"), ("min_days", "-m"), ("warn_days", "-W")] {
+                if let Some(n) = params.get(key).and_then(|v| v.as_u64()) {
+                    if n > 99999 {
+                        return Err(ExecutorError::InvalidParam(key));
+                    }
+                    flags.push(opt.to_string());
+                    flags.push(n.to_string());
+                }
+            }
+            if flags.is_empty() {
+                return Err(ExecutorError::MissingParam("max_days"));
+            }
+            Ok(pam::set_password_aging(&user, &flags))
+        }
+        "SetPasswordPolicy" => {
+            // minlen 1..=128; *credit knobs -64..=64 (negative = require that
+            // many chars of the class). At least one required.
+            let mut extra = Vec::new();
+            if let Some(n) = params.get("minlen").and_then(|v| v.as_u64()) {
+                if !(1..=128).contains(&n) {
+                    return Err(ExecutorError::InvalidParam("minlen"));
+                }
+                extra.push("--minlen".to_string());
+                extra.push(n.to_string());
+            }
+            for (key, flag) in [
+                ("dcredit", "--dcredit"),
+                ("ucredit", "--ucredit"),
+                ("lcredit", "--lcredit"),
+                ("ocredit", "--ocredit"),
+            ] {
+                if let Some(n) = params.get(key).and_then(|v| v.as_i64()) {
+                    if !(-64..=64).contains(&n) {
+                        return Err(ExecutorError::InvalidParam(key));
+                    }
+                    extra.push(flag.to_string());
+                    extra.push(n.to_string());
+                }
+            }
+            if extra.is_empty() {
+                return Err(ExecutorError::MissingParam("minlen"));
+            }
+            Ok(pam::set_password_policy(&extra))
+        }
+        "SetAccountLockout" => {
+            // deny 1..=1000; unlock_time/fail_interval seconds 0..=604800 (7d).
+            let mut extra = Vec::new();
+            if let Some(n) = params.get("deny").and_then(|v| v.as_u64()) {
+                if !(1..=1000).contains(&n) {
+                    return Err(ExecutorError::InvalidParam("deny"));
+                }
+                extra.push("--deny".to_string());
+                extra.push(n.to_string());
+            }
+            for (key, flag) in [
+                ("unlock_time", "--unlock-time"),
+                ("fail_interval", "--fail-interval"),
+            ] {
+                if let Some(n) = params.get(key).and_then(|v| v.as_u64()) {
+                    if n > 604800 {
+                        return Err(ExecutorError::InvalidParam(key));
+                    }
+                    extra.push(flag.to_string());
+                    extra.push(n.to_string());
+                }
+            }
+            if extra.is_empty() {
+                return Err(ExecutorError::MissingParam("deny"));
+            }
+            Ok(pam::set_account_lockout(&extra))
+        }
 
         // ── System info ──────────────────────────────────────────────────
         "GetMemoryInfo" => Ok(system_info::get_memory_info_spec()),

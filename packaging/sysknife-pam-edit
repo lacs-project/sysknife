@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+# sysknife-pam-edit — manage PAM password-quality and account-lockout policy.
+#
+# Install to: /usr/lib/sysknife/pam-edit
+# Mode:       0755
+# Owner:      root:root
+#
+# Invoked exclusively by the sysknife-daemon via one of:
+#   sudo /usr/lib/sysknife/pam-edit --op pwquality \
+#        [--minlen N] [--dcredit N] [--ucredit N] [--lcredit N] [--ocredit N]
+#   sudo /usr/lib/sysknife/pam-edit --op faillock \
+#        [--deny N] [--unlock-time N] [--fail-interval N]
+#
+# Inputs are re-validated here (defense-in-depth). `pwquality` writes a managed
+# drop-in at /etc/security/pwquality.conf.d/60-sysknife.conf. `faillock` edits
+# /etc/security/faillock.conf in place, replacing only a marker-delimited
+# `# >>> sysknife managed >>>` block so the distro's documented defaults survive.
+#
+# NOTE (network-gated): pam_pwquality.so ships in `libpam-pwquality`, which is
+# NOT on the minimal cloud image and cannot be installed offline; pam_faillock.so
+# ships in libpam-modules (present) but is not wired into the PAM auth stack by
+# default. This helper only manages the *config*; enabling the modules in
+# /etc/pam.d (e.g. via `pam-auth-update`) is a deliberate, separate admin step
+# SysKnife does not perform (a wrong auth-stack edit can lock out every account).
+
+import argparse
+import os
+import re
+import sys
+import tempfile
+
+PWQUALITY_D = "/etc/security/pwquality.conf.d"
+PWQUALITY_FILE = os.path.join(PWQUALITY_D, "60-sysknife.conf")
+FAILLOCK_FILE = "/etc/security/faillock.conf"
+
+BEGIN = "# >>> sysknife managed (set_account_lockout) >>>"
+END = "# <<< sysknife managed <<<"
+
+# pwquality knobs: minlen is an absolute minimum length; the *credit knobs are
+# the classic pam_pwquality form where a negative value means "require at least
+# |N| chars of this class" and a positive value grants length credit.
+PWQUALITY_CREDITS = ("dcredit", "ucredit", "lcredit", "ocredit")
+
+
+def die(msg: str) -> None:
+    print(f"sysknife-pam-edit: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def atomic_write(path: str, content: str, mode: int = 0o644) -> None:
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".sysknife-pam-")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(content)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        die(f"cannot write {path}: {exc}")
+
+
+def require_range(name: str, value, lo: int, hi: int) -> None:
+    if value is None:
+        return
+    if value < lo or value > hi:
+        die(f"{name} out of range [{lo}, {hi}]")
+
+
+def op_pwquality(args) -> None:
+    # minlen: a sane floor of 1 (pwquality itself enforces >= 6 at runtime, but
+    # we allow explicit lower values for testing) up to 128.
+    require_range("minlen", args.minlen, 1, 128)
+    for c in PWQUALITY_CREDITS:
+        require_range(c, getattr(args, c), -64, 64)
+
+    lines = ["# Managed by SysKnife (set_password_policy). Do not edit by hand."]
+    if args.minlen is not None:
+        lines.append(f"minlen = {args.minlen}")
+    for c in PWQUALITY_CREDITS:
+        v = getattr(args, c)
+        if v is not None:
+            lines.append(f"{c} = {v}")
+    if len(lines) == 1:
+        die("pwquality requires at least one of --minlen/--dcredit/--ucredit/--lcredit/--ocredit")
+    atomic_write(PWQUALITY_FILE, "\n".join(lines) + "\n")
+
+
+def op_faillock(args) -> None:
+    # deny: consecutive failures before lockout. unlock_time/fail_interval in
+    # seconds (0 = never auto-unlock / a single interval); cap at 7 days.
+    require_range("deny", args.deny, 1, 1000)
+    require_range("unlock-time", args.unlock_time, 0, 604800)
+    require_range("fail-interval", args.fail_interval, 0, 604800)
+
+    body = [BEGIN, "# Managed by SysKnife (set_account_lockout). Do not edit by hand."]
+    if args.deny is not None:
+        body.append(f"deny = {args.deny}")
+    if args.unlock_time is not None:
+        body.append(f"unlock_time = {args.unlock_time}")
+    if args.fail_interval is not None:
+        body.append(f"fail_interval = {args.fail_interval}")
+    if len(body) == 2:
+        die("faillock requires at least one of --deny/--unlock-time/--fail-interval")
+    body.append(END)
+
+    prev = ""
+    if os.path.exists(FAILLOCK_FILE):
+        with open(FAILLOCK_FILE) as fh:
+            prev = fh.read()
+    # Strip any prior sysknife block, then append the fresh one.
+    stripped = re.sub(
+        re.escape(BEGIN) + r".*?" + re.escape(END) + r"\n?",
+        "",
+        prev,
+        flags=re.DOTALL,
+    )
+    if stripped and not stripped.endswith("\n"):
+        stripped += "\n"
+    atomic_write(FAILLOCK_FILE, stripped + "\n".join(body) + "\n")
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="Manage PAM pwquality + faillock policy.")
+    p.add_argument("--op", required=True, choices=["pwquality", "faillock"])
+    p.add_argument("--minlen", type=int)
+    p.add_argument("--dcredit", type=int)
+    p.add_argument("--ucredit", type=int)
+    p.add_argument("--lcredit", type=int)
+    p.add_argument("--ocredit", type=int)
+    p.add_argument("--deny", type=int)
+    p.add_argument("--unlock-time", type=int, dest="unlock_time")
+    p.add_argument("--fail-interval", type=int, dest="fail_interval")
+    args = p.parse_args()
+
+    if args.op == "pwquality":
+        op_pwquality(args)
+    else:
+        op_faillock(args)
+
+
+if __name__ == "__main__":
+    main()

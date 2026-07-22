@@ -422,7 +422,7 @@ GetAuthorizedKeys, ListPackageRepositories, ListContainers, GetContainerInfo,
 ListUsers, ListGroups, ListJobHistory,
 ResolvectlStatus,
 GetJournalLog, GetLvmReport, GetSysctl, GetServiceResourceLimits, GetMounts, GetSudoGrants,
-GetLogrotateStatus
+GetLogrotateStatus, GetPasswordAging
 
 ### Medium risk — cross-distro (approval required before execution)
 
@@ -449,7 +449,8 @@ ExtendLogicalVolume, CreateLogicalVolume, CreateLvSnapshot,
 SetSysctl, SetServiceResourceLimits,
 AddMount, RemoveMount, AddSwap, RemoveSwap,
 GrantSudoAccess, RevokeSudoAccess,
-ConfigureRemoteSyslog, RemoveRemoteSyslog
+ConfigureRemoteSyslog, RemoveRemoteSyslog,
+SetPasswordAging, SetPasswordPolicy, SetAccountLockout
 
 ## Risk classification rules
 
@@ -553,6 +554,12 @@ Use `"username"` as the key — NOT `"user"`.
 - `RemoveLogRotation`: `{"name":"nginx"}`.
 - `ConfigureRemoteSyslog`: `{"host":"logs.example.com","port":514,"protocol":"tcp"}`.
 - `RemoveRemoteSyslog`: `{}`.
+
+**PAM password policy** (password hardening; lockout settings take effect only when the PAM module is enabled in the auth stack):
+- `GetPasswordAging`: `{"user":"alice"}` (read-only; runs `chage -l`).
+- `SetPasswordAging`: `{"user":"alice","max_days":90,"min_days":1,"warn_days":7}` (at least one of max/min/warn; days 0..99999).
+- `SetPasswordPolicy`: `{"minlen":12,"dcredit":-1,"ucredit":-1,"lcredit":-1,"ocredit":-1}` (pwquality; at least one; a negative credit requires that many chars of the class).
+- `SetAccountLockout`: `{"deny":5,"unlock_time":900,"fail_interval":900}` (faillock; at least one; deny 1..1000, times in seconds 0..604800).
 
 **Scoped sudoers.d**:
 - `GetSudoGrants`: `{}` (read-only).
