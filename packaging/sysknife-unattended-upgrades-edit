@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+# sysknife-unattended-upgrades-edit — enable/disable Ubuntu automatic security
+# updates.
+#
+# Install to: /usr/lib/sysknife/unattended-upgrades-edit
+# Mode:       0755
+# Owner:      root:root
+#
+# Invoked exclusively by the sysknife-daemon via:
+#   sudo /usr/lib/sysknife/unattended-upgrades-edit --enable
+#   sudo /usr/lib/sysknife/unattended-upgrades-edit --disable
+#
+# The sudoers entry grants NOPASSWD only on this exact helper path. The helper
+# takes no free-form input — it writes one of two FIXED file contents to
+# /etc/apt/apt.conf.d/20auto-upgrades — so there is no injection surface. When
+# enabling, it first ensures the `unattended-upgrades` package is installed
+# (idempotent, non-interactive).
+
+import argparse
+import subprocess
+import sys
+
+CONFIG = "/etc/apt/apt.conf.d/20auto-upgrades"
+
+ENABLED = (
+    'APT::Periodic::Update-Package-Lists "1";\n'
+    'APT::Periodic::Unattended-Upgrade "1";\n'
+)
+DISABLED = (
+    'APT::Periodic::Update-Package-Lists "0";\n'
+    'APT::Periodic::Unattended-Upgrade "0";\n'
+)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Enable or disable Ubuntu automatic (unattended) upgrades."
+    )
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--enable", action="store_true")
+    group.add_argument("--disable", action="store_true")
+    args = parser.parse_args()
+
+    if args.enable:
+        # Ensure the package is present (idempotent). We already run as root via
+        # sudo, so apt-get needs no further privilege escalation.
+        result = subprocess.run(
+            [
+                "/usr/bin/env",
+                "DEBIAN_FRONTEND=noninteractive",
+                "apt-get",
+                "install",
+                "-y",
+                "unattended-upgrades",
+            ],
+            check=False,
+        )
+        if result.returncode != 0:
+            print(
+                "sysknife-unattended-upgrades-edit: failed to install "
+                "unattended-upgrades",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        content = ENABLED
+    else:
+        content = DISABLED
+
+    try:
+        with open(CONFIG, "w") as fh:
+            fh.write(content)
+    except OSError as exc:
+        print(
+            f"sysknife-unattended-upgrades-edit: cannot write {CONFIG}: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

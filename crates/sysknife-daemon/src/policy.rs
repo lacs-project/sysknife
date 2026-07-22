@@ -207,6 +207,10 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "LockUserAccount"
         | "UnlockUserAccount"
         | "SignalProcess"
+        // SetSshdOption can lock out remote access; ConfigureUnattendedUpgrades
+        // changes the system's automatic-update posture. Both are Admin/High.
+        | "SetSshdOption"
+        | "ConfigureUnattendedUpgrades"
         | "DeleteUser"
         | "AddAuthorizedKey"
         | "RemoveAuthorizedKey"
@@ -957,7 +961,13 @@ mod tests {
 
     #[test]
     fn process_and_account_control_require_admin() {
-        for action in ["SignalProcess", "LockUserAccount", "UnlockUserAccount"] {
+        for action in [
+            "SignalProcess",
+            "LockUserAccount",
+            "UnlockUserAccount",
+            "SetSshdOption",
+            "ConfigureUnattendedUpgrades",
+        ] {
             assert_eq!(
                 min_role_for_action(action),
                 Some(CallerRole::Admin),

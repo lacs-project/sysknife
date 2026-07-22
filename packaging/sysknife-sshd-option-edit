@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+# sysknife-sshd-option-edit — set an allowlisted sshd option via a drop-in.
+#
+# Install to: /usr/lib/sysknife/sshd-option-edit
+# Mode:       0755
+# Owner:      root:root
+#
+# Invoked exclusively by the sysknife-daemon via:
+#   sudo /usr/lib/sysknife/sshd-option-edit --option <Option> --value <value>
+#
+# The sudoers entry grants NOPASSWD only on this exact helper path. This is NOT
+# an arbitrary sshd_config editor: both the option name and its value are
+# checked against a fixed allowlist (defense-in-depth — the daemon validates
+# them too). The option is written to a per-option drop-in under
+# /etc/ssh/sshd_config.d/, the full config is validated with `sshd -t`, and the
+# ssh service is reloaded. On validation failure the change is rolled back and
+# the helper exits non-zero so the daemon surfaces the error.
+
+import argparse
+import os
+import subprocess
+import sys
+
+# Allowlist: option -> permitted values. Keep in sync with the daemon-side
+# allowlist in actions/ssh.rs / executor.rs.
+ALLOWED = {
+    "PermitRootLogin": {"yes", "no", "prohibit-password", "forced-commands-only"},
+    "PasswordAuthentication": {"yes", "no"},
+    "PubkeyAuthentication": {"yes", "no"},
+    "X11Forwarding": {"yes", "no"},
+    "PermitEmptyPasswords": {"yes", "no"},
+}
+
+DROPIN_DIR = "/etc/ssh/sshd_config.d"
+SSHD = "/usr/sbin/sshd"
+SYSTEMCTL = "/usr/bin/systemctl"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Set an allowlisted sshd option.")
+    parser.add_argument("--option", required=True)
+    parser.add_argument("--value", required=True)
+    args = parser.parse_args()
+
+    if args.option not in ALLOWED:
+        print(
+            f"sysknife-sshd-option-edit: option {args.option!r} is not allowlisted",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if args.value not in ALLOWED[args.option]:
+        print(
+            f"sysknife-sshd-option-edit: value {args.value!r} not allowed for "
+            f"{args.option}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    os.makedirs(DROPIN_DIR, exist_ok=True)
+    # Deterministic per-option filename so repeated sets overwrite cleanly.
+    path = os.path.join(DROPIN_DIR, f"60-sysknife-{args.option.lower()}.conf")
+
+    backup = None
+    if os.path.exists(path):
+        backup = path + ".sysknife.bak"
+        try:
+            with open(path) as fh:
+                previous = fh.read()
+            with open(backup, "w") as fh:
+                fh.write(previous)
+        except OSError:
+            backup = None
+
+    try:
+        with open(path, "w") as fh:
+            fh.write(f"{args.option} {args.value}\n")
+    except OSError as exc:
+        print(f"sysknife-sshd-option-edit: cannot write {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate the *entire* effective sshd configuration before reloading.
+    if subprocess.run([SSHD, "-t"], check=False).returncode != 0:
+        # Roll back: restore the previous drop-in, or remove ours if new.
+        if backup and os.path.exists(backup):
+            os.replace(backup, path)
+        else:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        print(
+            "sysknife-sshd-option-edit: `sshd -t` rejected the config; reverted",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if backup and os.path.exists(backup):
+        try:
+            os.remove(backup)
+        except OSError:
+            pass
+
+    # Reload sshd. The unit is `ssh` on Debian/Ubuntu and `sshd` on Fedora;
+    # try both. A reload failure is non-fatal — the validated config takes
+    # effect on the next restart regardless.
+    for unit in ("ssh", "sshd"):
+        if subprocess.run([SYSTEMCTL, "reload", unit], check=False).returncode == 0:
+            break
+    else:
+        print(
+            "sysknife-sshd-option-edit: warning: could not reload the ssh service; "
+            "the (valid) change applies on next restart",
+            file=sys.stderr,
+        )
+
+
+if __name__ == "__main__":
+    main()

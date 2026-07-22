@@ -340,12 +340,22 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "exact approval required".to_string(),
             ],
         },
+        "ConfigureUnattendedUpgrades" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec![
+                "the automatic security-update policy will change".to_string()
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec!["approval required".to_string()],
+        },
         "AddUserToGroup"
         | "RemoveUserFromGroup"
         | "CreateGroup"
         | "DeleteGroup"
         | "LockUserAccount"
         | "UnlockUserAccount"
+        | "SetSshdOption"
         | "DeleteUser"
         | "AddAuthorizedKey"
         | "RemoveAuthorizedKey" => PreviewProfile {

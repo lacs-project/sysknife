@@ -6,7 +6,34 @@ pub fn specs() -> Vec<ActionSpec> {
         get_authorized_keys("alice"),
         add_authorized_key("alice", "ssh-ed25519 AAAA..."),
         remove_authorized_key("alice", "ssh-ed25519 AAAA..."),
+        set_sshd_option("PermitRootLogin", "prohibit-password"),
     ]
+}
+
+/// Installed path of the privileged sshd-option helper script.
+/// See `packaging/sysknife-sshd-option-edit` and the matching NOPASSWD grant in
+/// `packaging/sysknife-sudoers`.
+const SSHD_OPTION_HELPER: &str = "/usr/lib/sysknife/sshd-option-edit";
+
+/// Set an allowlisted sshd option via a drop-in under
+/// `/etc/ssh/sshd_config.d/`, validated with `sshd -t` and applied by reloading
+/// the ssh service.
+///
+/// Risk: High. A misconfigured sshd can lock out remote access; the helper
+/// gates every change on `sshd -t` and rolls back on failure. `option` and
+/// `value` are checked against a fixed allowlist by both the daemon and the
+/// helper — this is deliberately NOT an arbitrary `sshd_config` editor.
+pub fn set_sshd_option(option: &str, value: &str) -> ActionSpec {
+    ActionSpec {
+        action_name: "SetSshdOption",
+        mechanism: command_mechanism(
+            "sudo",
+            [SSHD_OPTION_HELPER, "--option", option, "--value", value],
+        ),
+        risk_level: RiskLevel::High,
+        reboot_required: false,
+        rollback_available: false,
+    }
 }
 
 pub fn get_authorized_keys(username: &str) -> ActionSpec {

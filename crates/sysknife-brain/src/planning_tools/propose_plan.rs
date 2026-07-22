@@ -208,6 +208,8 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "append an SSH public key to a user's authorized_keys — params: username*, public_key* (full key string)"),
     ("RemoveAuthorizedKey",
      "remove an SSH public key from a user's authorized_keys — params: username*, public_key* (full key string)"),
+    ("SetSshdOption",
+     "harden sshd by setting an allowlisted option via a validated drop-in — params: option* (one of PermitRootLogin, PasswordAuthentication, PubkeyAuthentication, X11Forwarding, PermitEmptyPasswords), value* (per-option: yes/no, or prohibit-password/forced-commands-only for PermitRootLogin)"),
     // Job history — all params optional
     ("ListJobHistory",
      "show SysKnife's own job log — optional params: limit (int), status_filter, action_filter, since_hours (int)"),
@@ -238,6 +240,8 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "list packages with available upgrades — no params; Ubuntu only; read-only. Use for 'are there pending updates?' or 'what updates are available?'"),
     ("AptHistoryList",
      "show recent apt transaction history — no params; Ubuntu only; read-only"),
+    ("ConfigureUnattendedUpgrades",
+     "enable or disable automatic security updates (unattended-upgrades) — param: enabled* (bool); Ubuntu only; High risk"),
     // ── Ubuntu / ppa — Launchpad PPAs ─────────────────────────────────────────
     ("AddPpa",
      "add a Launchpad PPA — param: name* in <user>/<ppa> format (e.g. 'deadsnakes/ppa'); Ubuntu only; requires software-properties-common"),

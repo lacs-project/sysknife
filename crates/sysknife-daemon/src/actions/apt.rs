@@ -59,7 +59,30 @@ pub fn specs() -> Vec<ActionSpec> {
         apt_show("curl"),
         apt_list_upgradable(),
         apt_history_list(),
+        configure_unattended_upgrades(true),
     ]
+}
+
+/// Installed path of the privileged unattended-upgrades helper script.
+/// See `packaging/sysknife-unattended-upgrades-edit` and the matching NOPASSWD
+/// grant in `packaging/sysknife-sudoers`.
+const UNATTENDED_UPGRADES_HELPER: &str = "/usr/lib/sysknife/unattended-upgrades-edit";
+
+/// Enable or disable Ubuntu automatic (unattended) security updates.
+///
+/// Risk: High. Delegates to the root-owned helper, which writes the fixed
+/// `/etc/apt/apt.conf.d/20auto-upgrades` content (no free-form input) and, when
+/// enabling, ensures the `unattended-upgrades` package is installed. Changing
+/// the automatic-update posture is a security-relevant, system-wide operation.
+pub fn configure_unattended_upgrades(enabled: bool) -> ActionSpec {
+    let flag = if enabled { "--enable" } else { "--disable" };
+    ActionSpec {
+        action_name: "ConfigureUnattendedUpgrades",
+        mechanism: command_mechanism("sudo", [UNATTENDED_UPGRADES_HELPER, flag]),
+        risk_level: RiskLevel::High,
+        reboot_required: false,
+        rollback_available: false,
+    }
 }
 
 // ---------------------------------------------------------------------------

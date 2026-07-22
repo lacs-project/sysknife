@@ -147,6 +147,7 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     "GetAuthorizedKeys",
     "AddAuthorizedKey",
     "RemoveAuthorizedKey",
+    "SetSshdOption",
     "ListJobHistory",
     // Ubuntu / apt
     "AptUpdate",
@@ -162,6 +163,7 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     "AptShow",
     "AptListUpgradable",
     "AptHistoryList",
+    "ConfigureUnattendedUpgrades",
     // Ubuntu / ppa
     "AddPpa",
     "RemovePpa",
