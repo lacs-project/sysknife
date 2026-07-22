@@ -458,6 +458,28 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
 
         // ── Processes ────────────────────────────────────────────────────
         "ListProcesses" => Ok(processes::list_processes_spec()),
+        "SignalProcess" => {
+            // pid may arrive as a JSON number or a numeric string.
+            let pid = params
+                .get("pid")
+                .and_then(|v| {
+                    v.as_u64()
+                        .or_else(|| v.as_str().and_then(|s| s.trim().parse::<u64>().ok()))
+                })
+                .ok_or(ExecutorError::MissingParam("pid"))?;
+            // Reject pid 0 (whole process group) and 1 (init/systemd); anything
+            // outside the u32 pid space is invalid.
+            if pid < 2 || pid > u32::MAX as u64 {
+                return Err(ExecutorError::InvalidParam("pid"));
+            }
+            let signal = validated_kill_signal(
+                params
+                    .get("signal")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("TERM"),
+            )?;
+            Ok(processes::signal_process(pid as u32, signal))
+        }
 
         // ── System info ──────────────────────────────────────────────────
         "GetMemoryInfo" => Ok(system_info::get_memory_info_spec()),
@@ -543,6 +565,14 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "DeleteGroup" => {
             let group = validated_group(require_str(params, "group")?, "group")?;
             Ok(users::delete_group(&group))
+        }
+        "LockUserAccount" => {
+            let username = validated_username(resolve_username(params)?, "username")?;
+            Ok(users::lock_user_account(&username))
+        }
+        "UnlockUserAccount" => {
+            let username = validated_username(resolve_username(params)?, "username")?;
+            Ok(users::unlock_user_account(&username))
         }
 
         // ── SSH ──────────────────────────────────────────────────────────
@@ -1169,6 +1199,24 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
         return Err(ExecutorError::InvalidParam(param));
     }
     Ok(())
+}
+
+/// Validate a `kill` signal against a strict allowlist, returning the canonical
+/// signal name for `kill -s <name>`.
+///
+/// Only stop/reload signals are permitted (`TERM`, `KILL`, `HUP`, `INT`); this
+/// blocks exotic or numeric signals and, combined with the caller's `pid >= 2`
+/// check, keeps `SignalProcess` from becoming an arbitrary-signal primitive.
+/// Accepts case-insensitive input with an optional `SIG` prefix.
+fn validated_kill_signal(s: &str) -> Result<&'static str, ExecutorError> {
+    let normalized = s.trim().to_ascii_uppercase();
+    match normalized.strip_prefix("SIG").unwrap_or(&normalized) {
+        "TERM" => Ok("TERM"),
+        "KILL" => Ok("KILL"),
+        "HUP" => Ok("HUP"),
+        "INT" => Ok("INT"),
+        _ => Err(ExecutorError::InvalidParam("signal")),
+    }
 }
 
 /// Return the rollback [`ActionSpec`] for `action_name`, or `None` if no
@@ -1945,6 +1993,56 @@ mod tests {
             validated_safe_kernel_arg("1", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
+    }
+
+    #[test]
+    fn signal_process_guardrails() {
+        // Reject pid 0 (whole process group) and 1 (init/systemd).
+        for bad_pid in [0, 1] {
+            let err = build_action_spec("SignalProcess", &json!({ "pid": bad_pid })).unwrap_err();
+            assert!(
+                matches!(err, ExecutorError::InvalidParam("pid")),
+                "pid {bad_pid} must be rejected, got {err:?}"
+            );
+        }
+        // Reject a signal outside the allowlist.
+        let err = build_action_spec("SignalProcess", &json!({ "pid": 4242, "signal": "STOP" }))
+            .unwrap_err();
+        assert!(
+            matches!(err, ExecutorError::InvalidParam("signal")),
+            "got {err:?}"
+        );
+        // Missing pid is a MissingParam.
+        assert!(matches!(
+            build_action_spec("SignalProcess", &json!({})).unwrap_err(),
+            ExecutorError::MissingParam("pid")
+        ));
+        // A valid pid + signal builds, and accepts a numeric string + SIG prefix.
+        let spec = build_action_spec(
+            "SignalProcess",
+            &json!({ "pid": "4242", "signal": "sigkill" }),
+        )
+        .unwrap();
+        assert_eq!(spec.action_name, "SignalProcess");
+        assert_eq!(
+            spec.mechanism,
+            ActionMechanism::Command {
+                program: "sudo",
+                args: vec![
+                    "kill".to_string(),
+                    "-s".to_string(),
+                    "KILL".to_string(),
+                    "4242".to_string()
+                ],
+            }
+        );
+        // Default signal is TERM when omitted.
+        let spec = build_action_spec("SignalProcess", &json!({ "pid": 4242 })).unwrap();
+        if let ActionMechanism::Command { args, .. } = spec.mechanism {
+            assert_eq!(args, vec!["kill", "-s", "TERM", "4242"]);
+        } else {
+            panic!("expected Command mechanism");
+        }
     }
 
     #[test]

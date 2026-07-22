@@ -475,7 +475,39 @@ fn users_family_covers_listing_and_account_management() {
             "RemoveUserFromGroup",
             "CreateGroup",
             "DeleteGroup",
+            "LockUserAccount",
+            "UnlockUserAccount",
         ]
+    );
+}
+
+#[test]
+fn account_lock_unlock_uses_sudo_usermod() {
+    let lock = users::lock_user_account("alice");
+    let unlock = users::unlock_user_account("alice");
+    assert_eq!(lock.risk_level, RiskLevel::High);
+    assert_eq!(unlock.risk_level, RiskLevel::High);
+    assert_eq!(
+        lock.mechanism,
+        ActionMechanism::Command {
+            program: "sudo",
+            args: vec![
+                "usermod".to_string(),
+                "--lock".to_string(),
+                "alice".to_string()
+            ],
+        }
+    );
+    assert_eq!(
+        unlock.mechanism,
+        ActionMechanism::Command {
+            program: "sudo",
+            args: vec![
+                "usermod".to_string(),
+                "--unlock".to_string(),
+                "alice".to_string()
+            ],
+        }
     );
 }
 

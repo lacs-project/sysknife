@@ -330,10 +330,22 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             rollback_available: false,
             warnings: vec!["approval required".to_string()],
         },
+        "SignalProcess" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec!["the target process will be terminated".to_string()],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec![
+                "the process and its in-flight work will stop".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
         "AddUserToGroup"
         | "RemoveUserFromGroup"
         | "CreateGroup"
         | "DeleteGroup"
+        | "LockUserAccount"
+        | "UnlockUserAccount"
         | "DeleteUser"
         | "AddAuthorizedKey"
         | "RemoveAuthorizedKey" => PreviewProfile {
