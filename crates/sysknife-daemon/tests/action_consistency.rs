@@ -14,7 +14,7 @@ use sysknife_brain::planning_tools::propose_plan::KNOWN_ACTIONS;
 use sysknife_daemon::actions::{
     apparmor, apt, apt_preferences, cloudinit, containers, deployment, distrobox, fail2ban,
     filesystem, flatpak, grub, identity, journald, layering, livepatch, logging, lvm, mounts,
-    multipass, netplan, network, package_repos, ppa, processes, reboot, release_upgrade,
+    multipass, netplan, network, package_repos, pam, ppa, processes, reboot, release_upgrade,
     resolvectl, services, snap, ssh, sudoers, sysctl, system_info, toolbox, ubuntu_pro, ufw, users,
 };
 use sysknife_daemon::executor::build_action_spec;
@@ -77,6 +77,9 @@ fn all_spec_action_names() -> BTreeSet<&'static str> {
         names.insert(spec.action_name);
     }
     for spec in logging::specs() {
+        names.insert(spec.action_name);
+    }
+    for spec in pam::specs() {
         names.insert(spec.action_name);
     }
     for spec in identity::specs() {

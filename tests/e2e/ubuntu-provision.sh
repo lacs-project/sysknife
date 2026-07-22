@@ -261,6 +261,9 @@ install -Dm 755 packaging/sysknife-apt-pin-edit /usr/lib/sysknife/apt-pin-edit \
 # log-edit: invoked by ConfigureLogRotation/RemoveLogRotation + ConfigureRemoteSyslog/RemoveRemoteSyslog.
 install -Dm 755 packaging/sysknife-log-edit /usr/lib/sysknife/log-edit \
     || fail "Install sysknife-log-edit"
+# pam-edit: invoked by SetPasswordPolicy (pwquality) + SetAccountLockout (faillock).
+install -Dm 755 packaging/sysknife-pam-edit /usr/lib/sysknife/pam-edit \
+    || fail "Install sysknife-pam-edit"
 
 # ---------------------------------------------------------------------------
 # Step 6: Add VM user to sysknife groups

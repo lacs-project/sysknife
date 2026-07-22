@@ -69,6 +69,8 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "GetSudoGrants"
         // ── Log management read-only ──────────────────────────────────────
         | "GetLogrotateStatus"
+        // ── PAM read-only ─────────────────────────────────────────────────
+        | "GetPasswordAging"
         | "GetAuthorizedKeys"
         | "ListUsers"
         | "ListGroups"
@@ -282,6 +284,10 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         // data-exfiltration vector — so it is Admin/High.
         | "ConfigureRemoteSyslog"
         | "RemoveRemoteSyslog"
+        // ── PAM password policy (auth-hardening; lockout can deny logins) ─
+        | "SetPasswordAging"
+        | "SetPasswordPolicy"
+        | "SetAccountLockout"
         | "DeleteUser"
         | "AddAuthorizedKey"
         | "RemoveAuthorizedKey"

@@ -152,6 +152,15 @@ sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/apt-pin-edit *
 # runs bare `logrotate -d` (dry-run) and needs no grant.
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/log-edit *
 
+# PAM password policy. SetPasswordAging runs `chage` directly (fully scoped by
+# argv). SetPasswordPolicy/SetAccountLockout delegate to the root-owned pam-edit
+# helper, which re-validates ranges and writes a pwquality drop-in or a
+# marker-delimited block in /etc/security/faillock.conf. GetPasswordAging runs
+# bare `chage -l` (read-only) and needs no grant. (pam_pwquality enforcement
+# additionally needs libpam-pwquality installed + enabled in the auth stack.)
+sysknife ALL=(root) NOPASSWD: /usr/bin/chage
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/pam-edit *
+
 # Snap write operations (install / remove / refresh / hold / revert).
 sysknife ALL=(root) NOPASSWD: /usr/bin/snap
 

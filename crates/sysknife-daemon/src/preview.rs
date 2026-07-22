@@ -95,6 +95,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "GetMounts"
         | "GetSudoGrants"
         | "GetLogrotateStatus"
+        | "GetPasswordAging"
         | "GetAuthorizedKeys"
         | "GetDateTime"
         | "ListJobHistory"
@@ -411,6 +412,30 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             rollback_available: false,
             warnings: vec![
                 "forwarding sends log data off-host (exfiltration surface)".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+
+        // ── PAM password policy ───────────────────────────────────────────
+        "SetPasswordAging" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec![
+                "the target account's password-aging limits will change".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec!["exact approval required".to_string()],
+        },
+        "SetPasswordPolicy" | "SetAccountLockout" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec![
+                "a system-wide PAM policy file will be written".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec![
+                "affects password/lockout rules for all accounts".to_string(),
+                "takes effect only if the PAM module is enabled in the auth stack".to_string(),
                 "exact approval required".to_string(),
             ],
         },
