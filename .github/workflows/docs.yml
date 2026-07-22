@@ -20,6 +20,11 @@ concurrency:
 
 jobs:
   build:
+    # GitHub Pages is only enabled while the repo is public; the deploy step
+    # 404s otherwise. Gate the whole workflow on visibility (same pattern as
+    # codeql.yml / ci.yml) so it stays green — not red — while the repo is
+    # private, and resumes automatically on the public flip.
+    if: github.event.repository.visibility == 'public'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -47,6 +52,7 @@ jobs:
           path: book
 
   deploy:
+    if: github.event.repository.visibility == 'public'
     needs: build
     runs-on: ubuntu-latest
     environment:

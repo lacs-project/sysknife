@@ -18,6 +18,11 @@ permissions:
 
 jobs:
   analysis:
+    # Scorecard publishes results and uploads SARIF to code scanning, both of
+    # which require the repo to be public (GHAS). Gate on visibility (same
+    # pattern as codeql.yml) so the run stays green while private and resumes
+    # automatically on the public flip.
+    if: github.event.repository.visibility == 'public'
     runs-on: ubuntu-latest
     permissions:
       security-events: write  # upload SARIF to code scanning
