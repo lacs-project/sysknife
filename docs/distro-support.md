@@ -21,7 +21,7 @@ release.
 |---|---|---|---|
 | **Ubuntu 24.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | 65/65 stories on a live VM with `gpt-4.1` | **Validated** |
 | **Ubuntu 22.04 LTS** | Ubuntu/apt family | VM bootstrap and smoke tests | **Smoke-tested** |
-| **Ubuntu 26.04 LTS** | Ubuntu/apt family | VM bootstrap and smoke tests | **Smoke-tested** |
+| **Ubuntu 26.04 LTS** | Ubuntu/apt family | VM bootstrap, smoke tests, and sudo-rs sudoers verification (26.04 ships sudo-rs 0.2.x; `visudo -cf` parses the SysKnife sudoers and every grant — including the trailing-`*` wildcard grants — is honoured) | **Smoke-tested** |
 | **Fedora Silverblue 44** | rpm-ostree, Flatpak, toolbox, firewalld, systemd, containers | Harness and fixture coverage; current live-VM run must be recorded before release | **Current validation required** |
 | **Other Fedora Atomic 41+ variants** | rpm-ostree family | Detection and shared action tests | **Experimental** until variant-specific VM evidence exists |
 | **Fedora Workstation / Server** | `dnf` family incomplete | Detection tests only | **Experimental** |

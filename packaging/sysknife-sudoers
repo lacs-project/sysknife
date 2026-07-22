@@ -15,9 +15,17 @@
 #
 # IMPORTANT: test with `visudo -cf /etc/sudoers.d/sysknife` before deploying.
 #
-# Note: `Defaults:sysknife !requiretty` was removed. The requiretty token was
-# dropped from sudo in 1.9.13 (Ubuntu 26.04 ships 1.9.15+). The sysknife daemon
-# runs as a non-interactive service so no tty is involved anyway.
+# Note: `Defaults:sysknife !requiretty` was removed. Ubuntu 26.04 ships sudo-rs
+# (0.2.x — the memory-safe Rust reimplementation, now the default; verified on a
+# live 26.04 VM), which has no requiretty concept at all; on traditional sudo
+# the token was dropped in 1.9.13. Either way the sysknife daemon runs as a
+# non-interactive service, so no tty is involved.
+#
+# sudo-rs compatibility (verified 2026-07-22 on 26.04, sudo-rs 0.2.13):
+# `visudo -cf` parses this file OK and every grant is honoured, including the
+# trailing-`*` wildcard grants. sudo-rs permits `*` ONLY as the final argument
+# (non-final wildcards like `find * -exec *` are rejected as a privesc vector) —
+# which is the only wildcard form this file uses, so no grant needs reworking.
 
 # User management — create and delete system/human accounts.
 # useradd: called by CreateUser  (sudo useradd --create-home ...)
