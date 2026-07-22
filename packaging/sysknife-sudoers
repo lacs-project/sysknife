@@ -181,6 +181,22 @@ sysknife ALL=(root) NOPASSWD: /usr/sbin/aa-complain
 # fail2ban-client — Fail2banStatus (read-only) / BanIp / UnbanIp.
 sysknife ALL=(root) NOPASSWD: /usr/bin/fail2ban-client
 
+# fail2ban jail config — ConfigureFail2banJail delegates to this root-owned
+# helper, which writes /etc/fail2ban/jail.d/sysknife-<name>.local, tests it with
+# `fail2ban-client -t`, and reloads (rolling back on rejection). Requires the
+# fail2ban package installed to test/reload; writes the override either way.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/fail2ban-jail-edit *
+
+# auditd file-watch rules — AddAuditRule/RemoveAuditRule delegate to this helper,
+# which writes /etc/audit/rules.d/sysknife-<key>.rules and loads via augenrules.
+# GetAuditRules runs bare `auditctl -l` (read-only) and needs no grant.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/audit-edit *
+
+# certbot / ACME — ObtainCertificate / RenewCertificates (mutating; write TLS
+# material). GetCertificates runs bare `certbot certificates` (read-only). Path
+# is the apt install location; a snap install lives at /snap/bin/certbot.
+sysknife ALL=(root) NOPASSWD: /usr/bin/certbot
+
 # Ubuntu Pro CLI — ProAttach / ProDetach (mutating). ProStatus is read-only and
 # does not require root, but `pro` itself is allowed for symmetry.
 sysknife ALL=(root) NOPASSWD: /usr/bin/pro

@@ -26,7 +26,7 @@ system.
    `state.planner.plan_intent(intent)`.
 
 4. **LLM planning loop** (`crates/sysknife-brain/src/planner.rs:318`)
-   Turn 0: LLM receives system prompt (182-action catalogue, risk rules) +
+   Turn 0: LLM receives system prompt (189-action catalogue, risk rules) +
    user message. LLM calls `get_system_state`.
 
 5. **State injection** (`crates/sysknife-brain/src/planner.rs:366`)

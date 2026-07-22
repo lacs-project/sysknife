@@ -72,12 +72,16 @@ fn jail_is_valid(jail: &str) -> bool {
 // specs() — for action_consistency tests
 // ---------------------------------------------------------------------------
 
+/// Root-owned helper that writes a jail override to `/etc/fail2ban/jail.d/`.
+const JAIL_HELPER: &str = "/usr/lib/sysknife/fail2ban-jail-edit";
+
 /// Return one representative `ActionSpec` per fail2ban action name.
 pub fn specs() -> Vec<ActionSpec> {
     vec![
         fail2ban_status(None),
         fail2ban_ban_ip("sshd", "192.0.2.1").expect("valid IP in specs()"),
         fail2ban_unban_ip("sshd", "192.0.2.1").expect("valid IP in specs()"),
+        configure_fail2ban_jail("sshd", &["--maxretry".to_string(), "3".to_string()]),
     ]
 }
 
@@ -147,6 +151,30 @@ pub fn fail2ban_unban_ip(jail: &str, ip: &str) -> Result<ActionSpec, Fail2banErr
         reboot_required: false,
         rollback_available: false,
     })
+}
+
+/// Write a fail2ban jail override via the helper (`configure_fail2ban_jail`).
+///
+/// `extra` is a pre-validated list of `--maxretry`/`--bantime`/`--findtime`/
+/// `--enabled` flag pairs. The helper writes `/etc/fail2ban/jail.d/sysknife-<name>.local`,
+/// tests it with `fail2ban-client -t`, and reloads (rolling back on rejection).
+///
+/// Risk: High — tuning a jail changes who gets banned (too strict → locks out
+/// legitimate users; too loose → weakens brute-force protection).
+pub fn configure_fail2ban_jail(name: &str, extra: &[String]) -> ActionSpec {
+    let mut args = vec![
+        JAIL_HELPER.to_string(),
+        "--name".to_string(),
+        name.to_string(),
+    ];
+    args.extend(extra.iter().cloned());
+    ActionSpec {
+        action_name: "ConfigureFail2banJail",
+        mechanism: command_mechanism("sudo", args),
+        risk_level: RiskLevel::High,
+        reboot_required: false,
+        rollback_available: false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -306,11 +334,25 @@ mod tests {
         assert!(matches!(err, Fail2banError::InvalidJail(_)));
     }
 
+    #[test]
+    fn configure_jail_routes_through_helper() {
+        let spec = configure_fail2ban_jail("sshd", &["--maxretry".to_string(), "3".to_string()]);
+        let (program, args) = extract_args(&spec);
+        assert_eq!(program, "sudo");
+        assert_eq!(args, vec![JAIL_HELPER, "--name", "sshd", "--maxretry", "3"]);
+        assert_eq!(spec.risk_level, RiskLevel::High);
+    }
+
     // ── specs() completeness ─────────────────────────────────────────────────
 
     #[test]
     fn specs_covers_all_action_names() {
-        let expected = ["Fail2banStatus", "Fail2banBanIp", "Fail2banUnbanIp"];
+        let expected = [
+            "Fail2banStatus",
+            "Fail2banBanIp",
+            "Fail2banUnbanIp",
+            "ConfigureFail2banJail",
+        ];
         let spec_names: Vec<&str> = specs().iter().map(|s| s.action_name).collect();
         for name in &expected {
             assert!(spec_names.contains(name), "specs() missing {name}");

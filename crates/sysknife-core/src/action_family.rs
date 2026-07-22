@@ -99,6 +99,7 @@ pub const DEBIAN_ONLY_ACTIONS: &[&str] = &[
     "Fail2banStatus",
     "Fail2banBanIp",
     "Fail2banUnbanIp",
+    "ConfigureFail2banJail",
     // Tier 3
     "UbuntuReleaseUpgrade",
     "ProStatus",

@@ -773,9 +773,115 @@ pub fn validated_pro_service(s: &str, param: &'static str) -> Result<String, Exe
     }
 }
 
+/// Validate an auditd watch path: absolute, no `..`, charset `[A-Za-z0-9/._-]`
+/// (no `*` — audit watches a concrete file/dir), 1..=255. Mirrors `PATH_RE` in
+/// `packaging/sysknife-audit-edit`.
+pub fn validated_audit_path(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if !s.starts_with('/') || s.len() > 255 || s.contains("..") {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
+/// Validate auditd watch permissions: a subset of `r`/`w`/`x`/`a`, 1..=4 chars,
+/// no repeats. Mirrors `PERMS_RE` + the repeat check in the helper.
+pub fn validated_audit_perms(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s.is_empty() || s.len() > 4 || !s.chars().all(|c| matches!(c, 'r' | 'w' | 'x' | 'a')) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    // no repeated flags
+    let mut seen = [false; 4];
+    for c in s.chars() {
+        let i = match c {
+            'r' => 0,
+            'w' => 1,
+            'x' => 2,
+            _ => 3,
+        };
+        if seen[i] {
+            return Err(ExecutorError::InvalidParam(param));
+        }
+        seen[i] = true;
+    }
+    Ok(s.to_string())
+}
+
+/// Validate a DNS domain for certbot: labels of `[A-Za-z0-9-]` joined by `.`,
+/// no leading `-`/`.`, no `..`, total 1..=253. Blocks option/argument injection.
+pub fn validated_domain(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s.is_empty()
+        || s.len() > 253
+        || s.contains("..")
+        || s.starts_with('-')
+        || s.starts_with('.')
+        || s.ends_with('.')
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
+/// Validate an email address for certbot registration: exactly one `@`,
+/// non-empty local + domain parts, conservative charset, 3..=254. Not a full
+/// RFC 5322 parser — just enough to block injection and obvious garbage.
+pub fn validated_email(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s.len() < 3 || s.len() > 254 {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    let parts: Vec<&str> = s.split('@').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() || !parts[1].contains('.') {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '_' | '+' | '-'))
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_path_and_perms() {
+        assert!(validated_audit_path("/etc/passwd", "p").is_ok());
+        assert!(validated_audit_path("relative", "p").is_err());
+        assert!(validated_audit_path("/etc/../shadow", "p").is_err());
+        assert!(validated_audit_path("/var/log/*.log", "p").is_err()); // no glob
+        assert!(validated_audit_perms("wa", "p").is_ok());
+        assert!(validated_audit_perms("rwxa", "p").is_ok());
+        assert!(validated_audit_perms("ww", "p").is_err()); // repeat
+        assert!(validated_audit_perms("z", "p").is_err());
+        assert!(validated_audit_perms("", "p").is_err());
+    }
+
+    #[test]
+    fn domain_and_email() {
+        assert!(validated_domain("example.com", "d").is_ok());
+        assert!(validated_domain("a.b.example.co.uk", "d").is_ok());
+        assert!(validated_domain("-bad.com", "d").is_err());
+        assert!(validated_domain("a..b.com", "d").is_err());
+        assert!(validated_domain("ex ample.com", "d").is_err());
+        assert!(validated_email("ops@example.com", "e").is_ok());
+        assert!(validated_email("no-at-sign", "e").is_err());
+        assert!(validated_email("a@b", "e").is_err()); // domain needs a dot
+        assert!(validated_email("a@b@c.com", "e").is_err());
+    }
 
     #[test]
     fn pro_service_allowlist() {

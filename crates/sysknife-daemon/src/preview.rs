@@ -96,6 +96,8 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "GetSudoGrants"
         | "GetLogrotateStatus"
         | "GetPasswordAging"
+        | "GetAuditRules"
+        | "GetCertificates"
         | "GetAuthorizedKeys"
         | "GetDateTime"
         | "ListJobHistory"
@@ -279,6 +281,61 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             warnings: vec![
                 "exact approval required".to_string(),
                 "after detach, this machine no longer receives Pro security patches".to_string(),
+            ],
+        },
+
+        // ── auditd file-watch rules ─────────────────────────────────────
+        "AddAuditRule" | "RemoveAuditRule" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec![
+                "a persistent audit rule will be written/removed and reloaded".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec![
+                "requires the auditd package installed to take effect".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+
+        // ── certbot / ACME ──────────────────────────────────────────────
+        "ObtainCertificate" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec![
+                "certbot will obtain a TLS certificate (ACME challenge)".to_string(),
+                "TLS material will be written under /etc/letsencrypt".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec![
+                "contacts a public ACME CA over the network".to_string(),
+                "requires certbot installed + a reachable DNS/HTTP challenge".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+        "RenewCertificates" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec!["certbot will renew due certificates".to_string()],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec![
+                "contacts a public ACME CA over the network".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+
+        // ── fail2ban jail config ────────────────────────────────────────
+        "ConfigureFail2banJail" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec![
+                "a fail2ban jail override will be written and the daemon reloaded".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec![
+                "changes who gets banned (too strict can lock out real users)".to_string(),
+                "requires the fail2ban package installed to take effect".to_string(),
+                "exact approval required".to_string(),
             ],
         },
 

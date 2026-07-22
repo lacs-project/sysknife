@@ -153,6 +153,14 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     "SetPasswordAging",
     "SetPasswordPolicy",
     "SetAccountLockout",
+    // auditd file-watch rules (cross-distro)
+    "GetAuditRules",
+    "AddAuditRule",
+    "RemoveAuditRule",
+    // certbot / ACME (cross-distro)
+    "GetCertificates",
+    "ObtainCertificate",
+    "RenewCertificates",
     "GetDateTime",
     "SetHostname",
     "SetTimezone",
@@ -254,6 +262,7 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     "Fail2banStatus",
     "Fail2banBanIp",
     "Fail2banUnbanIp",
+    "ConfigureFail2banJail",
     // Ubuntu / release upgrade (Tier 3)
     "UbuntuReleaseUpgrade",
     // Ubuntu / Ubuntu Pro (Tier 3)
