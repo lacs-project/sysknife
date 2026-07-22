@@ -81,6 +81,8 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "AptShow"
         | "AptListUpgradable"
         | "AptHistoryList"
+        // ── Ubuntu / apt pinning read-only ────────────────────────────────
+        | "GetAptPins"
         // ── Ubuntu / snap read-only ───────────────────────────────────────
         | "SnapList"
         | "SnapInfo"
@@ -172,6 +174,9 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         // package provenance (supply-chain vector) but are reversible.
         | "AddPpa"
         | "RemovePpa"
+        // ── Ubuntu / apt pinning (reversible; steers version resolution) ──
+        | "SetAptPin"
+        | "RemoveAptPin"
         // ── Ubuntu / Flatpak medium-risk ───────────────────────────────────
         | "UbuntuInstallFlatpak"
         | "UbuntuRemoveFlatpak"

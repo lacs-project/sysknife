@@ -652,6 +652,42 @@ pub fn validated_sudoers_name(s: &str, param: &'static str) -> Result<String, Ex
     Ok(s.to_string())
 }
 
+/// Validate an apt pin drop-in name: `^[a-z0-9][a-z0-9_-]{0,63}$` (no dots — apt
+/// ignores preferences.d files with unexpected extensions). File lands at
+/// `/etc/apt/preferences.d/sysknife-<name>`. Mirrors `NAME_RE` in the helper.
+pub fn validated_apt_pin_name(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    validated_sudoers_name(s, param)
+}
+
+/// Validate an apt package-name glob (`[A-Za-z0-9.+*?_:-]`, 1..=128).
+pub fn validated_apt_package(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s.is_empty()
+        || s.len() > 128
+        || !s.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '*' | '?' | '_' | ':' | '-')
+        })
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
+/// Validate an apt `Pin:` expression (e.g. `release a=noble-security`,
+/// `version 1.2.*`). Charset only, no control characters, 1..=200. Mirrors
+/// `PIN_RE` in the helper.
+pub fn validated_apt_pin_expr(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s.is_empty()
+        || s.len() > 200
+        || !s.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, ' ' | '=' | '.' | ',' | ':' | '/' | '*' | '_' | '+' | '-')
+        })
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
 /// Validate a sudoers command spec: the literal `ALL`, or a comma-separated
 /// list of ABSOLUTE command paths with no wildcards, no `..`, and no shell
 /// metacharacters. Mirrors `build_rule`/`CMD_RE` in the helper.
@@ -1390,5 +1426,20 @@ mod tests {
         assert!(validated_sudo_commands("/usr/bin/*", "c").is_err()); // wildcard
         assert!(validated_sudo_commands("/usr/bin/../bin/sh", "c").is_err()); // traversal
         assert!(validated_sudo_commands("/bin/sh; rm -rf /", "c").is_err()); // metachars
+    }
+
+    // ── apt-pin validators ────────────────────────────────────────────────
+
+    #[test]
+    fn apt_pin_name_package_expr() {
+        assert!(validated_apt_pin_name("hold-nginx", "n").is_ok());
+        assert!(validated_apt_pin_name("bad.name", "n").is_err()); // dot
+        assert!(validated_apt_package("nginx", "p").is_ok());
+        assert!(validated_apt_package("libc6*", "p").is_ok()); // glob
+        assert!(validated_apt_package("bad pkg", "p").is_err()); // space
+        assert!(validated_apt_pin_expr("release a=noble-security", "e").is_ok());
+        assert!(validated_apt_pin_expr("version 1.24.*", "e").is_ok());
+        assert!(validated_apt_pin_expr("origin\nrepo", "e").is_err()); // newline
+        assert!(validated_apt_pin_expr("", "e").is_err());
     }
 }

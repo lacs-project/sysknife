@@ -181,6 +181,13 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "create a swap file, enable it, and persist to /etc/fstab — params: file* (absolute path), size_mb* (integer MB); High risk"),
     ("RemoveSwap",
      "disable a swap file, remove it, and drop its /etc/fstab entry — param: file*; High risk"),
+    // apt pinning (preferences.d) — Ubuntu/Debian only
+    ("GetAptPins",
+     "show apt pin priorities (apt-cache policy) — param: package (optional); Ubuntu only; read-only"),
+    ("SetAptPin",
+     "pin a package to a version/release via /etc/apt/preferences.d — params: name*, package* (glob), pin* (e.g. 'version 1.24.*' or 'release a=noble-security'), priority* (int -1..1000); Ubuntu only; Medium risk"),
+    ("RemoveAptPin",
+     "remove a SysKnife-managed apt pin — param: name*; Ubuntu only; Medium risk"),
     // Scoped sudoers.d
     ("GetSudoGrants",
      "list SysKnife-managed sudoers.d drop-ins — no params; read-only"),

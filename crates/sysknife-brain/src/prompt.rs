@@ -759,7 +759,7 @@ const DEBIAN_RISK_TABLES: &str = r#"
 ### Low risk (Debian-specific)
 
 AptUpdate, AptSearch, AptListInstalled, AptShow, AptAutoremove,
-AptListUpgradable, AptHistoryList,
+AptListUpgradable, AptHistoryList, GetAptPins,
 CheckPendingReboot,
 SnapList, SnapInfo,
 UfwStatus, NetplanGetConfig,
@@ -776,6 +776,7 @@ AptInstall, AptRemove, AptPurge, AptHold, AptUnhold,
 SnapInstall, SnapRemove, SnapRefresh, SnapHold, SnapUnhold,
 SnapRevert, SnapClassicInstall,
 AddPpa, RemovePpa,
+SetAptPin, RemoveAptPin,
 DistroboxCreate, DistroboxRemove,
 AppArmorComplain,
 UbuntuInstallFlatpak, UbuntuRemoveFlatpak, UbuntuUpdateFlatpak,

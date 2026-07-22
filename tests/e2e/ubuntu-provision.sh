@@ -255,6 +255,9 @@ install -Dm 755 packaging/sysknife-mount-edit /usr/lib/sysknife/mount-edit \
 # sudoers-edit: invoked by GrantSudoAccess/RevokeSudoAccess/GetSudoGrants.
 install -Dm 755 packaging/sysknife-sudoers-edit /usr/lib/sysknife/sudoers-edit \
     || fail "Install sysknife-sudoers-edit"
+# apt-pin-edit: invoked by SetAptPin/RemoveAptPin.
+install -Dm 755 packaging/sysknife-apt-pin-edit /usr/lib/sysknife/apt-pin-edit \
+    || fail "Install sysknife-apt-pin-edit"
 
 # ---------------------------------------------------------------------------
 # Step 6: Add VM user to sysknife groups

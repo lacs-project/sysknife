@@ -1,10 +1,11 @@
 use crate::actions::{
-    apparmor, apt, cloudinit, containers, deployment, distrobox, fail2ban, filesystem, flatpak,
-    grub, identity, journald, layering, livepatch, lvm, mounts, multipass, netplan, network,
-    package_repos, ppa, processes, reboot, release_upgrade, resolvectl, services, snap, ssh,
-    sudoers, sysctl, system_info, toolbox, ubuntu_pro, ufw, users,
+    apparmor, apt, apt_preferences, cloudinit, containers, deployment, distrobox, fail2ban,
+    filesystem, flatpak, grub, identity, journald, layering, livepatch, lvm, mounts, multipass,
+    netplan, network, package_repos, ppa, processes, reboot, release_upgrade, resolvectl, services,
+    snap, ssh, sudoers, sysctl, system_info, toolbox, ubuntu_pro, ufw, users,
     validate::{
-        validated_apparmor_profile, validated_cpu_quota, validated_fstype, validated_group,
+        validated_apparmor_profile, validated_apt_package, validated_apt_pin_expr,
+        validated_apt_pin_name, validated_cpu_quota, validated_fstype, validated_group,
         validated_hostname, validated_journal_grep, validated_journal_priority,
         validated_journal_time, validated_locale, validated_lvm_name, validated_lvm_size,
         validated_memory_limit, validated_mount_device, validated_mount_options,
@@ -697,6 +698,31 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "RevokeSudoAccess" => {
             let name = validated_sudoers_name(require_str(params, "name")?, "name")?;
             Ok(sudoers::revoke_sudo_access(&name))
+        }
+
+        // ── apt pinning (preferences.d) ─────────────────────────────────────
+        "GetAptPins" => {
+            let package = optional_validated(params, "package", validated_apt_package)?;
+            Ok(apt_preferences::get_apt_pins(package.as_deref()))
+        }
+        "SetAptPin" => {
+            let name = validated_apt_pin_name(require_str(params, "name")?, "name")?;
+            let package = validated_apt_package(require_str(params, "package")?, "package")?;
+            let pin = validated_apt_pin_expr(require_str(params, "pin")?, "pin")?;
+            let priority = params
+                .get("priority")
+                .and_then(|v| v.as_i64())
+                .ok_or(ExecutorError::MissingParam("priority"))?;
+            if !(-1..=1000).contains(&priority) {
+                return Err(ExecutorError::InvalidParam("priority"));
+            }
+            Ok(apt_preferences::set_apt_pin(
+                &name, &package, &pin, priority,
+            ))
+        }
+        "RemoveAptPin" => {
+            let name = validated_apt_pin_name(require_str(params, "name")?, "name")?;
+            Ok(apt_preferences::remove_apt_pin(&name))
         }
 
         // ── System info ──────────────────────────────────────────────────
