@@ -28,6 +28,7 @@ pub mod resolvectl;
 pub mod services;
 pub mod snap;
 pub mod ssh;
+pub mod sysctl;
 pub mod system_info;
 pub mod toolbox;
 pub mod ubuntu_pro;

@@ -1,13 +1,14 @@
 use crate::actions::{
     apparmor, apt, cloudinit, containers, deployment, distrobox, fail2ban, filesystem, flatpak,
     grub, identity, journald, layering, livepatch, lvm, multipass, netplan, network, package_repos,
-    ppa, processes, reboot, release_upgrade, resolvectl, services, snap, ssh, system_info, toolbox,
-    ubuntu_pro, ufw, users,
+    ppa, processes, reboot, release_upgrade, resolvectl, services, snap, ssh, sysctl, system_info,
+    toolbox, ubuntu_pro, ufw, users,
     validate::{
         validated_apparmor_profile, validated_group, validated_hostname, validated_journal_grep,
         validated_journal_priority, validated_journal_time, validated_locale, validated_lvm_name,
         validated_lvm_size, validated_port_or_service, validated_ppa_name, validated_safe_arg,
-        validated_timezone, validated_unit_name, validated_username,
+        validated_sysctl_key, validated_sysctl_value, validated_timezone, validated_unit_name,
+        validated_username,
     },
     ActionMechanism, ActionSpec,
 };
@@ -588,6 +589,18 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             let snapshot = validated_lvm_name(require_str(params, "snapshot")?, "snapshot")?;
             let size = validated_lvm_size(require_str(params, "size")?, "size")?;
             Ok(lvm::create_lv_snapshot(&vg, &origin, &snapshot, &size))
+        }
+
+        // ── Kernel / sysctl ─────────────────────────────────────────────────
+        "GetSysctl" => {
+            // `key` is optional — absent means dump the whole table (sysctl -a).
+            let key = optional_validated(params, "key", validated_sysctl_key)?;
+            Ok(sysctl::get_sysctl(key.as_deref()))
+        }
+        "SetSysctl" => {
+            let key = validated_sysctl_key(require_str(params, "key")?, "key")?;
+            let value = validated_sysctl_value(require_str(params, "value")?, "value")?;
+            Ok(sysctl::set_sysctl(&key, &value))
         }
 
         // ── System info ──────────────────────────────────────────────────

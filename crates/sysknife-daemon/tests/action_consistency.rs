@@ -14,8 +14,8 @@ use sysknife_brain::planning_tools::propose_plan::KNOWN_ACTIONS;
 use sysknife_daemon::actions::{
     apparmor, apt, cloudinit, containers, deployment, distrobox, fail2ban, filesystem, flatpak,
     grub, identity, journald, layering, livepatch, lvm, multipass, netplan, network, package_repos,
-    ppa, processes, reboot, release_upgrade, resolvectl, services, snap, ssh, system_info, toolbox,
-    ubuntu_pro, ufw, users,
+    ppa, processes, reboot, release_upgrade, resolvectl, services, snap, ssh, sysctl, system_info,
+    toolbox, ubuntu_pro, ufw, users,
 };
 use sysknife_daemon::executor::build_action_spec;
 use sysknife_daemon::policy::min_role_for_action;
@@ -65,6 +65,9 @@ fn all_spec_action_names() -> BTreeSet<&'static str> {
         names.insert(spec.action_name);
     }
     for spec in lvm::specs() {
+        names.insert(spec.action_name);
+    }
+    for spec in sysctl::specs() {
         names.insert(spec.action_name);
     }
     for spec in identity::specs() {

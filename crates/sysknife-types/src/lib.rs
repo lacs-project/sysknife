@@ -127,6 +127,9 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     "ExtendLogicalVolume",
     "CreateLogicalVolume",
     "CreateLvSnapshot",
+    // Kernel / sysctl (cross-distro)
+    "GetSysctl",
+    "SetSysctl",
     "GetDateTime",
     "SetHostname",
     "SetTimezone",

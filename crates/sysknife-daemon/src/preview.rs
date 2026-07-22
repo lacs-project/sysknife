@@ -90,6 +90,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "GetListeningPorts"
         | "GetJournalLog"
         | "GetLvmReport"
+        | "GetSysctl"
         | "GetAuthorizedKeys"
         | "GetDateTime"
         | "ListJobHistory"
@@ -366,6 +367,21 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             rollback_available: false,
             warnings: vec![
                 "consumes VG capacity; snapshots fill as the origin changes".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+
+        // ── Kernel / sysctl mutation ──────────────────────────────────────
+        "SetSysctl" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec![
+                "a kernel parameter will change immediately".to_string(),
+                "the value will persist across reboots (/etc/sysctl.d)".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec![
+                "a wrong net.*/vm.*/kernel.* value can degrade or lock the host".to_string(),
                 "exact approval required".to_string(),
             ],
         },
