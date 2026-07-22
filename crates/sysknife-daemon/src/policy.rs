@@ -65,6 +65,8 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "GetSysctl"
         // ── Filesystem mounts read-only ───────────────────────────────────
         | "GetMounts"
+        // ── Scoped sudoers.d read-only ────────────────────────────────────
+        | "GetSudoGrants"
         | "GetAuthorizedKeys"
         | "ListUsers"
         | "ListGroups"
@@ -256,6 +258,14 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "RemoveMount"
         | "AddSwap"
         | "RemoveSwap"
+        // ── Scoped sudoers.d mutations ────────────────────────────────────
+        //
+        // Grant/RevokeSudoAccess configure privilege escalation itself — the
+        // highest-consequence mutating family. Admin/High (the helper's
+        // visudo -cf gate prevents a syntactically broken drop-in, but the
+        // grant is still a real privilege change).
+        | "GrantSudoAccess"
+        | "RevokeSudoAccess"
         | "DeleteUser"
         | "AddAuthorizedKey"
         | "RemoveAuthorizedKey"

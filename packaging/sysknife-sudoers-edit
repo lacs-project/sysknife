@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+# sysknife-sudoers-edit — create/remove a scoped sudoers drop-in, or list the
+# SysKnife-managed ones.
+#
+# Install to: /usr/lib/sysknife/sudoers-edit
+# Mode:       0755
+# Owner:      root:root
+#
+# Invoked exclusively by the sysknife-daemon via one of:
+#   sudo /usr/lib/sysknife/sudoers-edit --op grant --name <name> --user <user> \
+#        --commands <ALL|/abs/cmd1,/abs/cmd2> [--runas <user|ALL>] [--nopasswd]
+#   sudo /usr/lib/sysknife/sudoers-edit --op revoke --name <name>
+#        /usr/lib/sysknife/sudoers-edit --op list        (read-only; daemon is root)
+#
+# This helper writes to /etc/sudoers.d/ — a mistake here can lock out sudo or
+# grant unintended root. Guards:
+#   - name: ^[a-z0-9][a-z0-9_-]{0,63}$  (no dots/tildes — sudo SILENTLY ignores
+#     drop-in files containing them, which would make a "grant" not apply).
+#     Files are namespaced `sysknife-grant-<name>` so revoke/list only ever
+#     touch SysKnife's own drop-ins.
+#   - commands: literal `ALL`, or a comma list of ABSOLUTE paths with no shell
+#     metacharacters and no wildcards.
+#   - user / runas: validated identifiers (runas may be `ALL`).
+#   - The rule is written to a temp file and validated with `visudo -cf` BEFORE
+#     being atomically moved into place (0440). If visudo rejects it, nothing
+#     is installed. This is the core safety property.
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+SUDOERS_D = "/etc/sudoers.d"
+VISUDO = "/usr/sbin/visudo"
+PREFIX = "sysknife-grant-"
+
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+IDENT_RE = re.compile(r"^[a-z_][a-z0-9_-]*\$?$")  # unix user/group name
+CMD_RE = re.compile(r"^/[A-Za-z0-9/._-]+$")
+
+
+def die(msg: str) -> None:
+    print(f"sysknife-sudoers-edit: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def validated_ident(value: str, what: str) -> str:
+    if value == "ALL":
+        return value
+    if len(value) > 32 or not IDENT_RE.match(value):
+        die(f"invalid {what} {value!r}")
+    return value
+
+
+def build_rule(user: str, runas: str, nopasswd: bool, commands: str) -> str:
+    if commands == "ALL":
+        cmd_spec = "ALL"
+    else:
+        cmds = [c for c in commands.split(",") if c]
+        if not cmds:
+            die("no commands given")
+        for c in cmds:
+            if not CMD_RE.match(c) or ".." in c or "*" in c:
+                die(f"invalid command path {c!r} (absolute, no wildcards, no ..)")
+        cmd_spec = ", ".join(cmds)
+    tag = "NOPASSWD: " if nopasswd else ""
+    return f"{user} ALL=({runas}) {tag}{cmd_spec}\n"
+
+
+def op_grant(args) -> None:
+    if not NAME_RE.match(args.name):
+        die(f"invalid name {args.name!r}")
+    user = validated_ident(args.user, "user")
+    if user == "ALL":
+        die("refusing to grant to ALL users")
+    runas = validated_ident(args.runas or "root", "runas")
+    rule = build_rule(user, runas, args.nopasswd, args.commands)
+
+    header = f"# Managed by SysKnife (grant_sudo_access: {args.name}). Do not edit by hand.\n"
+    content = header + rule
+    dest = os.path.join(SUDOERS_D, PREFIX + args.name)
+
+    fd, tmp = tempfile.mkstemp(dir=SUDOERS_D, prefix=".sysknife-sudoers-")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(content)
+        os.chmod(tmp, 0o440)
+        # Validate BEFORE installing — the core safety gate.
+        check = subprocess.run([VISUDO, "-cf", tmp], check=False, stderr=subprocess.PIPE)
+        if check.returncode != 0:
+            die(f"visudo rejected the rule: {check.stderr.decode(errors='replace').strip()}")
+        os.replace(tmp, dest)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        die(f"cannot install drop-in: {exc}")
+
+
+def op_revoke(args) -> None:
+    if not NAME_RE.match(args.name):
+        die(f"invalid name {args.name!r}")
+    dest = os.path.join(SUDOERS_D, PREFIX + args.name)
+    if os.path.exists(dest):
+        try:
+            os.unlink(dest)
+        except OSError as exc:
+            die(f"cannot remove drop-in: {exc}")
+
+
+def op_list(_args) -> None:
+    try:
+        names = sorted(n for n in os.listdir(SUDOERS_D) if n.startswith(PREFIX))
+    except OSError as exc:
+        die(f"cannot read {SUDOERS_D}: {exc}")
+    for n in names:
+        path = os.path.join(SUDOERS_D, n)
+        try:
+            with open(path, "r") as fh:
+                body = "".join(
+                    ln for ln in fh if ln.strip() and not ln.lstrip().startswith("#")
+                ).strip()
+        except OSError:
+            body = "(unreadable)"
+        print(f"{n[len(PREFIX):]}\t{body}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Manage scoped sudoers.d drop-ins.")
+    parser.add_argument("--op", required=True, choices=["grant", "revoke", "list"])
+    parser.add_argument("--name")
+    parser.add_argument("--user")
+    parser.add_argument("--commands")
+    parser.add_argument("--runas")
+    parser.add_argument("--nopasswd", action="store_true")
+    args = parser.parse_args()
+
+    if args.op == "grant":
+        if not (args.name and args.user and args.commands):
+            die("grant requires --name, --user, --commands")
+        op_grant(args)
+    elif args.op == "revoke":
+        if not args.name:
+            die("revoke requires --name")
+        op_revoke(args)
+    else:
+        op_list(args)
+
+
+if __name__ == "__main__":
+    main()

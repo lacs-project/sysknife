@@ -629,6 +629,57 @@ pub fn validated_swap_path(s: &str, param: &'static str) -> Result<String, Execu
     Ok(s.to_string())
 }
 
+/// Validate a SysKnife sudoers drop-in name: `^[a-z0-9][a-z0-9_-]{0,63}$`.
+///
+/// No dots or tildes: sudo SILENTLY ignores drop-in files whose names contain
+/// them, which would make a "grant" quietly not apply. Mirrors `NAME_RE` in
+/// `packaging/sysknife-sudoers-edit`. The file lands at
+/// `/etc/sudoers.d/sysknife-grant-<name>`.
+pub fn validated_sudoers_name(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s.is_empty() || s.len() > 64 {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    let first = s.chars().next().unwrap();
+    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-'))
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
+/// Validate a sudoers command spec: the literal `ALL`, or a comma-separated
+/// list of ABSOLUTE command paths with no wildcards, no `..`, and no shell
+/// metacharacters. Mirrors `build_rule`/`CMD_RE` in the helper.
+pub fn validated_sudo_commands(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s == "ALL" {
+        return Ok(s.to_string());
+    }
+    if s.is_empty() || s.len() > 1024 {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    let cmds: Vec<&str> = s.split(',').filter(|c| !c.is_empty()).collect();
+    if cmds.is_empty() {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    for c in cmds {
+        if !c.starts_with('/')
+            || c.contains("..")
+            || c.contains('*')
+            || !c
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-'))
+        {
+            return Err(ExecutorError::InvalidParam(param));
+        }
+    }
+    Ok(s.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1316,5 +1367,28 @@ mod tests {
         assert!(validated_swap_path("/var/swap/sk.swap", "p").is_ok());
         assert!(validated_swap_path("swapfile", "p").is_err()); // not absolute
         assert!(validated_swap_path("/../etc/x", "p").is_err()); // traversal
+    }
+
+    // ── sudoers validators ────────────────────────────────────────────────
+
+    #[test]
+    fn sudoers_name_no_dots_or_tildes() {
+        assert!(validated_sudoers_name("deploy-restart", "n").is_ok());
+        assert!(validated_sudoers_name("ci_01", "n").is_ok());
+        assert!(validated_sudoers_name("bad.name", "n").is_err()); // dot → sudo ignores file
+        assert!(validated_sudoers_name("bad~", "n").is_err()); // tilde
+        assert!(validated_sudoers_name("-lead", "n").is_err());
+        assert!(validated_sudoers_name("", "n").is_err());
+    }
+
+    #[test]
+    fn sudo_commands_all_or_abs_paths() {
+        assert!(validated_sudo_commands("ALL", "c").is_ok());
+        assert!(validated_sudo_commands("/usr/bin/systemctl", "c").is_ok());
+        assert!(validated_sudo_commands("/usr/bin/systemctl,/usr/sbin/service", "c").is_ok());
+        assert!(validated_sudo_commands("systemctl", "c").is_err()); // not absolute
+        assert!(validated_sudo_commands("/usr/bin/*", "c").is_err()); // wildcard
+        assert!(validated_sudo_commands("/usr/bin/../bin/sh", "c").is_err()); // traversal
+        assert!(validated_sudo_commands("/bin/sh; rm -rf /", "c").is_err()); // metachars
     }
 }

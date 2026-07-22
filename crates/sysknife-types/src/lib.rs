@@ -138,6 +138,10 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     "RemoveMount",
     "AddSwap",
     "RemoveSwap",
+    // Scoped sudoers.d (cross-distro)
+    "GetSudoGrants",
+    "GrantSudoAccess",
+    "RevokeSudoAccess",
     "GetDateTime",
     "SetHostname",
     "SetTimezone",

@@ -29,6 +29,7 @@ pub mod resolvectl;
 pub mod services;
 pub mod snap;
 pub mod ssh;
+pub mod sudoers;
 pub mod sysctl;
 pub mod system_info;
 pub mod toolbox;

@@ -181,6 +181,13 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "create a swap file, enable it, and persist to /etc/fstab — params: file* (absolute path), size_mb* (integer MB); High risk"),
     ("RemoveSwap",
      "disable a swap file, remove it, and drop its /etc/fstab entry — param: file*; High risk"),
+    // Scoped sudoers.d
+    ("GetSudoGrants",
+     "list SysKnife-managed sudoers.d drop-ins — no params; read-only"),
+    ("GrantSudoAccess",
+     "grant a scoped sudo rule (validated with visudo before install) — params: name* (^[a-z0-9][a-z0-9_-]*$), user*, commands* ('ALL' or comma-separated ABSOLUTE paths), runas (default root, or 'ALL'), nopasswd (bool); High risk — this configures privilege escalation"),
+    ("RevokeSudoAccess",
+     "remove a SysKnife-managed sudoers.d drop-in — param: name*; High risk"),
     // Identity / time / locale
     ("GetDateTime",
      "current date, time, timezone, and NTP status (timedatectl) — no params"),

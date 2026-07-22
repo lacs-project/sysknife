@@ -252,6 +252,9 @@ install -Dm 755 packaging/sysknife-sysctl-edit /usr/lib/sysknife/sysctl-edit \
 # mount-edit: invoked by AddMount/RemoveMount/AddSwap/RemoveSwap.
 install -Dm 755 packaging/sysknife-mount-edit /usr/lib/sysknife/mount-edit \
     || fail "Install sysknife-mount-edit"
+# sudoers-edit: invoked by GrantSudoAccess/RevokeSudoAccess/GetSudoGrants.
+install -Dm 755 packaging/sysknife-sudoers-edit /usr/lib/sysknife/sudoers-edit \
+    || fail "Install sysknife-sudoers-edit"
 
 # ---------------------------------------------------------------------------
 # Step 6: Add VM user to sysknife groups

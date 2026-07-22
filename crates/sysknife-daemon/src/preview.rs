@@ -93,6 +93,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "GetLvmReport"
         | "GetSysctl"
         | "GetMounts"
+        | "GetSudoGrants"
         | "GetAuthorizedKeys"
         | "GetDateTime"
         | "ListJobHistory"
@@ -384,6 +385,21 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             rollback_available: false,
             warnings: vec![
                 "too tight a MemoryMax can OOM-kill the service".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+
+        // ── Scoped sudoers.d ──────────────────────────────────────────────
+        "GrantSudoAccess" | "RevokeSudoAccess" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec![
+                "a sudoers.d drop-in will be created/removed".to_string(),
+                "the target user's sudo privileges will change".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec![
+                "this configures privilege escalation — review the rule carefully".to_string(),
                 "exact approval required".to_string(),
             ],
         },
