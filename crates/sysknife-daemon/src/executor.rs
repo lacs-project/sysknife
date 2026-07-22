@@ -1,15 +1,16 @@
 use crate::actions::{
     apparmor, apt, cloudinit, containers, deployment, distrobox, fail2ban, filesystem, flatpak,
-    grub, identity, journald, layering, livepatch, lvm, multipass, netplan, network, package_repos,
-    ppa, processes, reboot, release_upgrade, resolvectl, services, snap, ssh, sysctl, system_info,
-    toolbox, ubuntu_pro, ufw, users,
+    grub, identity, journald, layering, livepatch, lvm, mounts, multipass, netplan, network,
+    package_repos, ppa, processes, reboot, release_upgrade, resolvectl, services, snap, ssh,
+    sysctl, system_info, toolbox, ubuntu_pro, ufw, users,
     validate::{
-        validated_apparmor_profile, validated_cpu_quota, validated_group, validated_hostname,
-        validated_journal_grep, validated_journal_priority, validated_journal_time,
-        validated_locale, validated_lvm_name, validated_lvm_size, validated_memory_limit,
-        validated_port_or_service, validated_ppa_name, validated_safe_arg, validated_sysctl_key,
-        validated_sysctl_value, validated_tasks_max, validated_timezone, validated_unit_name,
-        validated_username,
+        validated_apparmor_profile, validated_cpu_quota, validated_fstype, validated_group,
+        validated_hostname, validated_journal_grep, validated_journal_priority,
+        validated_journal_time, validated_locale, validated_lvm_name, validated_lvm_size,
+        validated_memory_limit, validated_mount_device, validated_mount_options,
+        validated_mount_point, validated_port_or_service, validated_ppa_name, validated_safe_arg,
+        validated_swap_path, validated_sysctl_key, validated_sysctl_value, validated_tasks_max,
+        validated_timezone, validated_unit_name, validated_username,
     },
     ActionMechanism, ActionSpec,
 };
@@ -628,6 +629,40 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             let key = validated_sysctl_key(require_str(params, "key")?, "key")?;
             let value = validated_sysctl_value(require_str(params, "value")?, "value")?;
             Ok(sysctl::set_sysctl(&key, &value))
+        }
+
+        // ── Filesystem mounts / swap ────────────────────────────────────────
+        "GetMounts" => Ok(mounts::get_mounts()),
+        "AddMount" => {
+            let device = validated_mount_device(require_str(params, "device")?, "device")?;
+            let mountpoint =
+                validated_mount_point(require_str(params, "mountpoint")?, "mountpoint")?;
+            let fstype = validated_fstype(require_str(params, "fstype")?, "fstype")?;
+            let options = optional_validated(params, "options", validated_mount_options)?;
+            Ok(mounts::add_mount(
+                &device,
+                &mountpoint,
+                &fstype,
+                options.as_deref(),
+            ))
+        }
+        "RemoveMount" => {
+            let mountpoint =
+                validated_mount_point(require_str(params, "mountpoint")?, "mountpoint")?;
+            Ok(mounts::remove_mount(&mountpoint))
+        }
+        "AddSwap" => {
+            let file = validated_swap_path(require_str(params, "file")?, "file")?;
+            let size_mb = require_u32(params, "size_mb")?;
+            // 1 MiB .. 1 TiB — reject 0 (empty) and absurdly large requests.
+            if !(1..=1_048_576).contains(&size_mb) {
+                return Err(ExecutorError::InvalidParam("size_mb"));
+            }
+            Ok(mounts::add_swap(&file, size_mb))
+        }
+        "RemoveSwap" => {
+            let file = validated_swap_path(require_str(params, "file")?, "file")?;
+            Ok(mounts::remove_swap(&file))
         }
 
         // ── System info ──────────────────────────────────────────────────

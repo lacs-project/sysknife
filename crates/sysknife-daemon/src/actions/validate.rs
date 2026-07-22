@@ -505,6 +505,130 @@ pub fn validated_tasks_max(s: &str, param: &'static str) -> Result<String, Execu
     Ok(s.to_string())
 }
 
+/// Filesystem types SysKnife will mount. Mirrors `FSTYPE_ALLOW` in
+/// `packaging/sysknife-mount-edit`.
+const FSTYPE_ALLOW: &[&str] = &[
+    "ext4", "ext3", "ext2", "xfs", "btrfs", "vfat", "exfat", "ntfs3", "nfs", "nfs4", "cifs",
+];
+
+/// Mountpoints SysKnife must never touch (remounting them can break the box).
+/// Mirrors `CRITICAL_MOUNTPOINTS` in the helper.
+const CRITICAL_MOUNTPOINTS: &[&str] = &[
+    "/",
+    "/boot",
+    "/boot/efi",
+    "/etc",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/var",
+    "/home",
+    "/root",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/run",
+];
+
+/// Validate a mount source: a `/dev/…` node, `UUID=…`, `LABEL=…`, a cifs
+/// `//host/share`, or an nfs `host:/export`. No leading dash / shell metachars.
+pub fn validated_mount_device(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s.is_empty() || s.len() > 256 || s.starts_with('-') || s.contains("..") {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    let dev_like = s.starts_with("/dev/")
+        && s[5..]
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '.' | '-'));
+    let uuid = s
+        .strip_prefix("UUID=")
+        .is_some_and(|u| u.len() >= 8 && u.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
+    let label = s.strip_prefix("LABEL=").is_some_and(|l| {
+        !l.is_empty()
+            && l.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-'))
+    });
+    let cifs = s.starts_with("//")
+        && s.matches('/').count() >= 3
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'));
+    let nfs = {
+        match s.split_once(":/") {
+            Some((host, _)) => {
+                !host.is_empty()
+                    && !host.starts_with('/')
+                    && s.chars().all(|c| {
+                        c.is_ascii_alphanumeric() || matches!(c, ':' | '/' | '.' | '_' | '-')
+                    })
+            }
+            None => false,
+        }
+    };
+    if dev_like || uuid || label || cifs || nfs {
+        Ok(s.to_string())
+    } else {
+        Err(ExecutorError::InvalidParam(param))
+    }
+}
+
+/// Validate a mountpoint: absolute, no `..`, safe charset, and not a critical
+/// system mountpoint. Mirrors `valid_mountpoint` in the helper.
+pub fn validated_mount_point(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if !s.starts_with('/') || s.len() > 256 || s.contains("..") {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '.' | '-'))
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if CRITICAL_MOUNTPOINTS.contains(&s) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
+/// Validate a filesystem type against the mount allowlist.
+pub fn validated_fstype(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if FSTYPE_ALLOW.contains(&s) {
+        Ok(s.to_string())
+    } else {
+        Err(ExecutorError::InvalidParam(param))
+    }
+}
+
+/// Validate a comma-separated mount options string (charset only; the helper
+/// forces `nofail` in). Empty is allowed (helper defaults to `defaults`).
+pub fn validated_mount_options(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s.len() > 256 {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if !s.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(c, '=' | ',' | '.' | '_' | ':' | '@' | '/' | '+' | '-')
+    }) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
+/// Validate an absolute file path for a swap file (no `..`, safe charset).
+pub fn validated_swap_path(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if !s.starts_with('/') || s.len() > 256 || s.contains("..") {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '.' | '-'))
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1147,5 +1271,50 @@ mod tests {
         assert!(validated_tasks_max("40.5", "t").is_err());
         assert!(validated_tasks_max("-1", "t").is_err());
         assert!(validated_tasks_max("", "t").is_err());
+    }
+
+    // ── mount / swap validators ───────────────────────────────────────────
+
+    #[test]
+    fn mount_device_accepts_forms_and_rejects_junk() {
+        assert!(validated_mount_device("/dev/sdb1", "d").is_ok());
+        assert!(validated_mount_device("UUID=1234abcd-5678", "d").is_ok());
+        assert!(validated_mount_device("LABEL=data", "d").is_ok());
+        assert!(validated_mount_device("//nas/share", "d").is_ok());
+        assert!(validated_mount_device("nas.local:/export", "d").is_ok());
+        assert!(validated_mount_device("-rf", "d").is_err()); // option injection
+        assert!(validated_mount_device("/dev/../etc", "d").is_err()); // traversal
+        assert!(validated_mount_device("$(id)", "d").is_err());
+    }
+
+    #[test]
+    fn mount_point_rejects_critical_and_traversal() {
+        assert!(validated_mount_point("/mnt/data", "m").is_ok());
+        assert!(validated_mount_point("/srv/backups", "m").is_ok());
+        assert!(validated_mount_point("/", "m").is_err()); // critical
+        assert!(validated_mount_point("/boot", "m").is_err()); // critical
+        assert!(validated_mount_point("/etc", "m").is_err()); // critical
+        assert!(validated_mount_point("/mnt/../etc", "m").is_err()); // traversal
+        assert!(validated_mount_point("relative", "m").is_err()); // not absolute
+    }
+
+    #[test]
+    fn fstype_allowlist() {
+        assert!(validated_fstype("ext4", "f").is_ok());
+        assert!(validated_fstype("xfs", "f").is_ok());
+        assert!(validated_fstype("nfs", "f").is_ok());
+        assert!(validated_fstype("proc", "f").is_err());
+        assert!(validated_fstype("", "f").is_err());
+    }
+
+    #[test]
+    fn mount_options_and_swap_path() {
+        assert!(validated_mount_options("noatime,ro", "o").is_ok());
+        assert!(validated_mount_options("", "o").is_ok()); // helper defaults it
+        assert!(validated_mount_options("bad opt", "o").is_err()); // space
+        assert!(validated_swap_path("/swapfile", "p").is_ok());
+        assert!(validated_swap_path("/var/swap/sk.swap", "p").is_ok());
+        assert!(validated_swap_path("swapfile", "p").is_err()); // not absolute
+        assert!(validated_swap_path("/../etc/x", "p").is_err()); // traversal
     }
 }

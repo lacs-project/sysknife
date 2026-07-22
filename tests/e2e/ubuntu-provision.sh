@@ -249,6 +249,9 @@ install -Dm 755 packaging/sysknife-scheduled-job-edit /usr/lib/sysknife/schedule
 # sysctl-edit: invoked by SetSysctl.
 install -Dm 755 packaging/sysknife-sysctl-edit /usr/lib/sysknife/sysctl-edit \
     || fail "Install sysknife-sysctl-edit"
+# mount-edit: invoked by AddMount/RemoveMount/AddSwap/RemoveSwap.
+install -Dm 755 packaging/sysknife-mount-edit /usr/lib/sysknife/mount-edit \
+    || fail "Install sysknife-mount-edit"
 
 # ---------------------------------------------------------------------------
 # Step 6: Add VM user to sysknife groups

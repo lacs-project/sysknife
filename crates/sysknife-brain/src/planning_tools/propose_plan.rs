@@ -170,6 +170,17 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "read a kernel parameter (sysctl) — param: key (optional, dotted e.g. 'net.ipv4.ip_forward'; omit to dump all); read-only"),
     ("SetSysctl",
      "set AND persist a kernel parameter (runtime + /etc/sysctl.d drop-in) — params: key* (dotted, e.g. 'vm.swappiness'), value* (number or space-separated list); High risk"),
+    // Filesystem mounts / swap
+    ("GetMounts",
+     "list mounted filesystems as JSON (findmnt) — no params; read-only"),
+    ("AddMount",
+     "mount a device and persist it to /etc/fstab with nofail — params: device* (/dev/.., UUID=.., LABEL=.., //host/share, or host:/export), mountpoint* (absolute; not a system dir), fstype* (ext4/xfs/btrfs/vfat/nfs/cifs/…), options (csv, optional); High risk"),
+    ("RemoveMount",
+     "unmount and drop the /etc/fstab entry for a mountpoint — param: mountpoint*; High risk"),
+    ("AddSwap",
+     "create a swap file, enable it, and persist to /etc/fstab — params: file* (absolute path), size_mb* (integer MB); High risk"),
+    ("RemoveSwap",
+     "disable a swap file, remove it, and drop its /etc/fstab entry — param: file*; High risk"),
     // Identity / time / locale
     ("GetDateTime",
      "current date, time, timezone, and NTP status (timedatectl) — no params"),
