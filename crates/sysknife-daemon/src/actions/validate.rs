@@ -463,6 +463,48 @@ pub fn validated_sysctl_value(s: &str, param: &'static str) -> Result<String, Ex
     Ok(s.to_string())
 }
 
+/// Validate a systemd memory limit (`MemoryMax` / `MemoryHigh`): a byte count
+/// with an optional `K`/`M`/`G`/`T` suffix, or the literal `infinity`.
+pub fn validated_memory_limit(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s == "infinity" {
+        return Ok(s.to_string());
+    }
+    if s.len() > 24 {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    let digits = match s.chars().last() {
+        Some('K' | 'M' | 'G' | 'T') => &s[..s.len() - 1],
+        _ => s,
+    };
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
+/// Validate a systemd `CPUQuota`: `<n>%` where `n` is a positive integer (values
+/// above 100% are legal — they mean more than one core's worth).
+pub fn validated_cpu_quota(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    let digits = s
+        .strip_suffix('%')
+        .ok_or(ExecutorError::InvalidParam(param))?;
+    if digits.is_empty() || digits.len() > 7 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
+/// Validate a systemd `TasksMax`: a positive integer or the literal `infinity`.
+pub fn validated_tasks_max(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s == "infinity" {
+        return Ok(s.to_string());
+    }
+    if s.is_empty() || s.len() > 12 || !s.chars().all(|c| c.is_ascii_digit()) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1073,5 +1115,37 @@ mod tests {
         assert!(validated_sysctl_value("bad\nvalue", "value").is_err());
         assert!(validated_sysctl_value("v$(id)", "value").is_err()); // shell metachar
         assert!(validated_sysctl_value("", "value").is_err());
+    }
+
+    // ── systemd resource-limit validators ─────────────────────────────────
+
+    #[test]
+    fn memory_limit_accepts_bytes_suffix_infinity() {
+        assert!(validated_memory_limit("infinity", "m").is_ok());
+        assert!(validated_memory_limit("500M", "m").is_ok());
+        assert!(validated_memory_limit("2G", "m").is_ok());
+        assert!(validated_memory_limit("1048576", "m").is_ok()); // bare bytes
+        assert!(validated_memory_limit("500m", "m").is_err()); // lowercase suffix
+        assert!(validated_memory_limit("500MB", "m").is_err()); // two-char suffix
+        assert!(validated_memory_limit("-5M", "m").is_err());
+        assert!(validated_memory_limit("", "m").is_err());
+    }
+
+    #[test]
+    fn cpu_quota_requires_percent() {
+        assert!(validated_cpu_quota("50%", "q").is_ok());
+        assert!(validated_cpu_quota("200%", "q").is_ok()); // >100% = multi-core
+        assert!(validated_cpu_quota("50", "q").is_err()); // no percent
+        assert!(validated_cpu_quota("%", "q").is_err());
+        assert!(validated_cpu_quota("5.5%", "q").is_err());
+    }
+
+    #[test]
+    fn tasks_max_positive_int_or_infinity() {
+        assert!(validated_tasks_max("4096", "t").is_ok());
+        assert!(validated_tasks_max("infinity", "t").is_ok());
+        assert!(validated_tasks_max("40.5", "t").is_err());
+        assert!(validated_tasks_max("-1", "t").is_err());
+        assert!(validated_tasks_max("", "t").is_err());
     }
 }

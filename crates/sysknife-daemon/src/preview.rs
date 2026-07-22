@@ -75,6 +75,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "ListServices"
         | "GetServiceLogs"
         | "GetServiceStatus"
+        | "GetServiceResourceLimits"
         | "ListTimers"
         | "GetFirewallState"
         | "ListUsers"
@@ -367,6 +368,21 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             rollback_available: false,
             warnings: vec![
                 "consumes VG capacity; snapshots fill as the origin changes".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+
+        // ── systemd resource limits ───────────────────────────────────────
+        "SetServiceResourceLimits" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec![
+                "the service's memory/CPU/task limits will change immediately".to_string(),
+                "a persistent drop-in will be written (undo: systemctl revert)".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec![
+                "too tight a MemoryMax can OOM-kill the service".to_string(),
                 "exact approval required".to_string(),
             ],
         },
