@@ -188,6 +188,9 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     "AptListUpgradable",
     "AptHistoryList",
     "ConfigureUnattendedUpgrades",
+    "GetAptPins",
+    "SetAptPin",
+    "RemoveAptPin",
     // Ubuntu / ppa
     "AddPpa",
     "RemovePpa",

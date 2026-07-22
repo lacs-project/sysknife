@@ -101,6 +101,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "AptSearch"
         | "AptListInstalled"
         | "AptShow"
+        | "GetAptPins"
         // Ubuntu snap read-only
         | "SnapList"
         | "SnapInfo"
@@ -387,6 +388,18 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "too tight a MemoryMax can OOM-kill the service".to_string(),
                 "exact approval required".to_string(),
             ],
+        },
+
+        // ── Ubuntu apt pinning ────────────────────────────────────────────
+        "SetAptPin" | "RemoveAptPin" => PreviewProfile {
+            risk_level: RiskLevel::Medium,
+            expected_side_effects: vec![
+                "apt version/origin preferences will change".to_string(),
+                "a /etc/apt/preferences.d drop-in will be written/removed".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec!["approval required".to_string()],
         },
 
         // ── Scoped sudoers.d ──────────────────────────────────────────────

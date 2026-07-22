@@ -137,6 +137,13 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/apt-mark
 # AddPpa / RemovePpa.
 sysknife ALL=(root) NOPASSWD: /usr/bin/add-apt-repository
 
+# apt-pin edit — SetAptPin/RemoveAptPin delegate to this root-owned helper,
+# which validates the name (no dots), package glob, Pin expression, and
+# priority ([-1,1000]) and writes /etc/apt/preferences.d/sysknife-<name>.
+# GetAptPins reads via bare `apt-cache policy` (no root needed) and needs no
+# grant. A bare editor/apt grant is NOT given.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/apt-pin-edit *
+
 # Snap write operations (install / remove / refresh / hold / revert).
 sysknife ALL=(root) NOPASSWD: /usr/bin/snap
 

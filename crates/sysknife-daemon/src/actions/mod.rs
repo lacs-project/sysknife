@@ -2,6 +2,7 @@ use sysknife_types::RiskLevel;
 
 pub mod apparmor;
 pub mod apt;
+pub mod apt_preferences;
 pub mod cloudinit;
 pub mod containers;
 pub mod deployment;
