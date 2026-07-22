@@ -19,7 +19,8 @@
 # empty string, but at least one must be non-empty (exit 2 otherwise).
 #
 # Behaviour:
-#   1. Validates every karg token against the allowed-character pattern.
+#   1. Validates every karg token against the allowed-character pattern, and
+#      rejects dangerous --append tokens (denylist mirrors the daemon).
 #   2. Backs up /etc/default/grub to /etc/default/grub.sysknife.bak.
 #   3. Edits GRUB_CMDLINE_LINUX_DEFAULT="..." in-place.
 #   4. Calls /usr/sbin/update-grub. On failure, restores the backup and exits
@@ -44,6 +45,17 @@ GRUB_BACKUP = "/etc/default/grub.sysknife.bak"
 # No leading dash (kernel args may contain '=' but cannot start with '-').
 KARG_PATTERN = re.compile(r"^[A-Za-z0-9_.+@:/=-]+$")
 
+# Defense-in-depth denylist — mirrors validated_safe_kernel_arg in executor.rs.
+# The daemon already rejects these before invoking the helper, but the helper is
+# directly sudo-invocable via the wildcard NOPASSWD grant, so it must enforce the
+# same policy independently. Applied to --append only; removing an arg (--delete)
+# is always safe. Blocks args that bypass boot security (init=, selinux=0,
+# enforcing=0, security=, module_blacklist=) or drop to a single-user root shell
+# (bare single/s/1, or systemd.unit= pointing at emergency/rescue/single).
+DENY_APPEND_PREFIXES = ("init=", "selinux=0", "enforcing=0", "security=", "module_blacklist=")
+DENY_APPEND_EXACT = ("single", "s", "1")
+DENY_UNIT_TARGETS = ("emergency", "rescue", "single")
+
 UPDATE_GRUB = "/usr/sbin/update-grub"
 
 
@@ -59,6 +71,27 @@ def validate_kargs(tokens: list[str], label: str) -> None:
             print(
                 f"sysknife-grub-kargs-edit: invalid {label} karg {tok!r} "
                 "(only [A-Za-z0-9_.+@:/=-] allowed)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+
+def reject_dangerous_append(tokens: list[str]) -> None:
+    """Raise SystemExit(1) if any --append token could compromise boot security."""
+    for tok in tokens:
+        lower = tok.lower()
+        base = lower.split("=", 1)[0]
+        unit_val = lower[len("systemd.unit="):] if lower.startswith("systemd.unit=") else ""
+        blocked = (
+            any(lower.startswith(p) for p in DENY_APPEND_PREFIXES)
+            or lower in DENY_APPEND_EXACT
+            or base in DENY_APPEND_EXACT
+            or any(unit_val.startswith(u) for u in DENY_UNIT_TARGETS)
+        )
+        if blocked:
+            print(
+                f"sysknife-grub-kargs-edit: refusing dangerous --append karg {tok!r} "
+                "(would bypass boot security or drop to a single-user root shell)",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -122,6 +155,7 @@ def main() -> None:
 
     validate_kargs(append_tokens, "--append")
     validate_kargs(delete_tokens, "--delete")
+    reject_dangerous_append(append_tokens)
 
     # Read grub config.
     try:

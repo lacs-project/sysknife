@@ -64,14 +64,18 @@ pub fn apparmor_enforce(profile_path: &str) -> ActionSpec {
 
 /// Put an AppArmor profile into complain (learning) mode (`sudo aa-complain <profile_path>`).
 ///
-/// Risk: Medium. Violations are logged but not blocked; the application runs
-/// with fewer restrictions than in enforce mode. Use to audit a profile before
-/// enforcing it, or to temporarily relax enforcement for diagnostics.
+/// Risk: High. Complain mode stops a profile from *blocking* violations — it
+/// disables mandatory-access-control enforcement for that profile (violations
+/// are logged only). Applied to an enforcing security profile this neutralizes
+/// the control (T1562.001 Impair Defenses), the inverse of `AppArmorEnforce`.
+/// Gated at Admin to match `AppArmorEnforce`. The audit-before-enforce workflow
+/// (complain first, then enforce) is still recommended, but both directions
+/// alter enforcement of a security control and carry the same privilege bar.
 pub fn apparmor_complain(profile_path: &str) -> ActionSpec {
     ActionSpec {
         action_name: "AppArmorComplain",
         mechanism: command_mechanism("sudo", ["aa-complain", profile_path]),
-        risk_level: RiskLevel::Medium,
+        risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
     }
@@ -154,10 +158,12 @@ mod tests {
     }
 
     #[test]
-    fn apparmor_complain_risk_is_medium() {
+    fn apparmor_complain_risk_is_high() {
+        // Complain mode disables MAC enforcement for the profile — parity with
+        // AppArmorEnforce, which also alters enforcement of a security control.
         assert_eq!(
             apparmor_complain("/etc/apparmor.d/usr.bin.firefox").risk_level,
-            RiskLevel::Medium
+            RiskLevel::High
         );
     }
 

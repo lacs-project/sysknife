@@ -37,13 +37,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
+      # CodeQL code scanning requires GitHub Advanced Security, which is free on
+      # public repositories but a paid add-on on private ones. The repo is
+      # private during the launch hold and goes public at release, so gate the
+      # analysis on visibility: these steps no-op (job stays green) while private
+      # and run for real once public. The job always runs, so this required
+      # check always reports a status.
       - name: Initialize CodeQL
+        if: github.event.repository.visibility == 'public'
         uses: github/codeql-action/init@e0647621c2984b5ed2f768cb892365bf2a616ad1  # v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
 
       - name: Perform CodeQL analysis
+        if: github.event.repository.visibility == 'public'
         uses: github/codeql-action/analyze@e0647621c2984b5ed2f768cb892365bf2a616ad1  # v4
         with:
           category: "/language:${{ matrix.language }}"

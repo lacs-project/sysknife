@@ -378,6 +378,13 @@ fn from_rig_response(choice: OneOrMany<AssistantContent>) -> Result<Completion, 
 // Error mapping
 // ---------------------------------------------------------------------------
 
+/// Caller-facing message for authentication failures. Deliberately fixed and
+/// generic: even after `sanitize_error_msg`, provider auth-error text can echo
+/// key-adjacent context (the request URL with a key query param, a truncated
+/// token), so we never propagate it to the caller. The sanitized detail is
+/// still logged for operator diagnostics. Mirrors `openai_adapter`.
+const AUTH_FAILURE_MSG: &str = "provider authentication failed — check your API key";
+
 fn map_rig_error(err: rig::completion::CompletionError) -> ProviderError {
     let msg = sanitize_error_msg(&err.to_string());
     eprintln!("[sysknife-brain] Rig completion error: {msg}");
@@ -388,7 +395,7 @@ fn map_rig_error(err: rig::completion::CompletionError) -> ProviderError {
     // captured a real HTTP response, success or failure.
     if let Some(status) = err.provider_response_status() {
         return match super::classify_status(status) {
-            super::StatusClass::Auth => ProviderError::Auth(msg),
+            super::StatusClass::Auth => ProviderError::Auth(AUTH_FAILURE_MSG.to_string()),
             super::StatusClass::RateLimit => ProviderError::RateLimit(msg),
             super::StatusClass::Other => ProviderError::Request(msg),
         };
@@ -401,7 +408,7 @@ fn map_rig_error(err: rig::completion::CompletionError) -> ProviderError {
     // the wording and break our categorisation — but there is no structured
     // alternative in that case.
     if msg.contains("401") || msg.to_lowercase().contains("auth") {
-        ProviderError::Auth(msg)
+        ProviderError::Auth(AUTH_FAILURE_MSG.to_string())
     } else if msg.contains("429") || msg.to_lowercase().contains("rate") {
         ProviderError::RateLimit(msg)
     } else {
@@ -656,6 +663,26 @@ mod tests {
             matches!(mapped, ProviderError::Auth(_)),
             "expected Auth, got {mapped:?}"
         );
+    }
+
+    #[test]
+    fn auth_error_message_is_fixed_and_does_not_leak_provider_text() {
+        // The caller-facing Auth message must be the fixed generic string, never
+        // the provider's raw error body (which can echo key-adjacent context).
+        let err = rig::completion::CompletionError::from_http_response(
+            http::StatusCode::UNAUTHORIZED,
+            r#"{"error":"invalid key sk-secret-abc123 at https://api.example/v1?key=sk-secret-abc123"}"#,
+        );
+        match map_rig_error(err) {
+            ProviderError::Auth(m) => {
+                assert_eq!(m, AUTH_FAILURE_MSG);
+                assert!(
+                    !m.contains("sk-secret"),
+                    "auth message leaked key text: {m}"
+                );
+            }
+            other => panic!("expected Auth, got {other:?}"),
+        }
     }
 
     #[test]

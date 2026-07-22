@@ -1,11 +1,19 @@
 use crate::executor::ExecutorError;
 
-/// Validate a username: `[a-zA-Z0-9._-]`, 1-32 chars, must not start with `-`.
+/// Validate a username: `[a-zA-Z0-9._-]`, 1-32 chars, must not start with `-`
+/// or `.`, and must not contain `..`.
+///
+/// The leading-`-` guard blocks option injection; the leading-`.` and `..`
+/// guards block path traversal, because usernames are interpolated directly
+/// into `/home/<username>/...` filesystem paths (see `actions/ssh.rs`). Without
+/// them a username of `..` yields `/home/../.ssh/authorized_keys` = `/.ssh/...`,
+/// escaping the per-user home directory. `.` and `..` are also caught by the
+/// leading-`.` check; the `..` substring guard additionally rejects `a..b`.
 pub fn validated_username(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     if s.is_empty() || s.len() > 32 {
         return Err(ExecutorError::InvalidParam(param));
     }
-    if s.starts_with('-') {
+    if s.starts_with('-') || s.starts_with('.') || s.contains("..") {
         return Err(ExecutorError::InvalidParam(param));
     }
     if !s
@@ -22,9 +30,14 @@ pub fn validated_group(s: &str, param: &'static str) -> Result<String, ExecutorE
     validated_username(s, param)
 }
 
-/// Validate a systemd unit name: must match `[a-zA-Z0-9@._:-]+` (no slashes, no spaces).
+/// Validate a systemd unit name: must match `[a-zA-Z0-9@._:-]+` (no slashes, no
+/// spaces), and must not start with `-`.
+///
+/// The leading-`-` guard prevents a unit name from being parsed as an option by
+/// `systemctl` (option injection). This intentionally rejects the special
+/// `-.mount` root-mount unit, which SysKnife's service actions never target.
 pub fn validated_unit_name(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.is_empty() {
+    if s.is_empty() || s.starts_with('-') {
         return Err(ExecutorError::InvalidParam(param));
     }
     if !s
@@ -36,9 +49,13 @@ pub fn validated_unit_name(s: &str, param: &'static str) -> Result<String, Execu
     Ok(s.to_string())
 }
 
-/// Validate a hostname per RFC 1123: `[a-zA-Z0-9.-]`, 1-253 chars, labels 1-63 chars.
+/// Validate a hostname per RFC 1123: `[a-zA-Z0-9.-]`, 1-253 chars, labels 1-63
+/// chars, must not start with `-`.
+///
+/// A leading `-` is both invalid per RFC 1123 (labels start alphanumeric) and
+/// an option-injection vector when interpolated into `hostnamectl set-hostname`.
 pub fn validated_hostname(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.is_empty() || s.len() > 253 {
+    if s.is_empty() || s.len() > 253 || s.starts_with('-') {
         return Err(ExecutorError::InvalidParam(param));
     }
     if !s
@@ -56,9 +73,12 @@ pub fn validated_hostname(s: &str, param: &'static str) -> Result<String, Execut
     Ok(s.to_string())
 }
 
-/// Validate a timezone: `[a-zA-Z0-9/_+-]`, no `..`.
+/// Validate a timezone: `[a-zA-Z0-9/_+-]`, no `..`, must not start with `-`.
+///
+/// The leading-`-` guard prevents option injection into `timedatectl
+/// set-timezone`; no IANA timezone name begins with `-`.
 pub fn validated_timezone(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.is_empty() {
+    if s.is_empty() || s.starts_with('-') {
         return Err(ExecutorError::InvalidParam(param));
     }
     if s.contains("..") {
@@ -73,9 +93,12 @@ pub fn validated_timezone(s: &str, param: &'static str) -> Result<String, Execut
     Ok(s.to_string())
 }
 
-/// Validate a locale: `[a-zA-Z0-9._-]`.
+/// Validate a locale: `[a-zA-Z0-9._-]`, must not start with `-`.
+///
+/// The leading-`-` guard prevents option injection into `localectl set-locale`;
+/// no locale identifier begins with `-`.
 pub fn validated_locale(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.is_empty() {
+    if s.is_empty() || s.starts_with('-') {
         return Err(ExecutorError::InvalidParam(param));
     }
     if !s
@@ -131,7 +154,7 @@ const APPARMOR_PROFILE_NAME_MAX: usize = 128;
 /// - **Absolute path** — must start with `/etc/apparmor.d/`, must not contain
 ///   `..` anywhere, and the suffix after the prefix must consist only of
 ///   `[A-Za-z0-9._/-]`.
-/// - **Profile name** (no `/`) — `[A-Za-z0-9._-]` only, no leading dot,
+/// - **Profile name** (no `/`) — `[A-Za-z0-9._-]` only, no leading dot or dash,
 ///   length 1–[`APPARMOR_PROFILE_NAME_MAX`].
 pub fn validated_apparmor_profile(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     const PREFIX: &str = "/etc/apparmor.d/";
@@ -163,7 +186,9 @@ pub fn validated_apparmor_profile(s: &str, param: &'static str) -> Result<String
         if s.contains('/') {
             return Err(ExecutorError::InvalidParam(param));
         }
-        if s.starts_with('.') {
+        // Reject leading `.` (hidden-file form) and leading `-` (option
+        // injection into `aa-complain` / `aa-enforce`).
+        if s.starts_with('.') || s.starts_with('-') {
             return Err(ExecutorError::InvalidParam(param));
         }
         if s.len() > APPARMOR_PROFILE_NAME_MAX {
@@ -317,6 +342,15 @@ mod tests {
     }
 
     #[test]
+    fn username_rejects_traversal_forms() {
+        // Path-traversal guard: usernames feed `/home/<username>/...` in ssh.rs.
+        assert!(validated_username("..", "username").is_err());
+        assert!(validated_username(".", "username").is_err());
+        assert!(validated_username(".hidden", "username").is_err());
+        assert!(validated_username("a..b", "username").is_err());
+    }
+
+    #[test]
     fn username_rejects_too_long() {
         let long = "a".repeat(33);
         assert!(validated_username(&long, "username").is_err());
@@ -364,6 +398,13 @@ mod tests {
     #[test]
     fn unit_name_rejects_empty() {
         assert!(validated_unit_name("", "unit").is_err());
+    }
+
+    #[test]
+    fn unit_name_rejects_leading_dash() {
+        // Option-injection guard for `systemctl <verb> <unit>`.
+        assert!(validated_unit_name("--version", "unit").is_err());
+        assert!(validated_unit_name("-.mount", "unit").is_err());
     }
 
     #[test]
@@ -436,6 +477,12 @@ mod tests {
         assert!(validated_hostname("my_host", "hostname").is_err());
     }
 
+    #[test]
+    fn hostname_rejects_leading_dash() {
+        // Invalid per RFC 1123 and an option-injection vector for hostnamectl.
+        assert!(validated_hostname("-host", "hostname").is_err());
+    }
+
     // ── validated_timezone ───────────────────────────────────────────────
 
     #[test]
@@ -460,6 +507,11 @@ mod tests {
     #[test]
     fn timezone_rejects_spaces() {
         assert!(validated_timezone("US/ Eastern", "timezone").is_err());
+    }
+
+    #[test]
+    fn timezone_rejects_leading_dash() {
+        assert!(validated_timezone("-America/Mexico_City", "timezone").is_err());
     }
 
     #[test]
@@ -489,6 +541,11 @@ mod tests {
     #[test]
     fn locale_rejects_slashes() {
         assert!(validated_locale("en/US", "locale").is_err());
+    }
+
+    #[test]
+    fn locale_rejects_leading_dash() {
+        assert!(validated_locale("-en_US.UTF-8", "locale").is_err());
     }
 
     #[test]

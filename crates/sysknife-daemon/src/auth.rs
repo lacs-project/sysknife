@@ -108,14 +108,14 @@ pub fn validate_token_against_file(
 
 /// Return the `CallerRole` granted to token-authenticated vsock connections.
 ///
-/// Reads `SYSKNIFE_TOKEN_ROLE` env var; defaults to `Dev`. Invalid values
-/// fall back to `Dev` with a warning.
+/// Reads `SYSKNIFE_TOKEN_ROLE` env var (surrounding whitespace is trimmed).
+/// When unset or empty it defaults to `Dev` — the documented default for
+/// token-authenticated vsock guests. An **unrecognized** value fails *closed*
+/// to `Observer` (read-only) with a warning, rather than silently granting the
+/// mutating `Dev` tier on an operator typo.
 pub fn token_role() -> CallerRole {
-    match std::env::var("SYSKNIFE_TOKEN_ROLE")
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
+    let raw = std::env::var("SYSKNIFE_TOKEN_ROLE").unwrap_or_default();
+    match raw.trim().to_ascii_lowercase().as_str() {
         "observer" => CallerRole::Observer,
         "admin" => CallerRole::Admin,
         "boot" => CallerRole::Boot,
@@ -123,9 +123,9 @@ pub fn token_role() -> CallerRole {
         other => {
             eprintln!(
                 "[sysknife-daemon] WARNING: unknown SYSKNIFE_TOKEN_ROLE={other:?}; \
-                 defaulting to Dev"
+                 failing closed to Observer (read-only)"
             );
-            CallerRole::Dev
+            CallerRole::Observer
         }
     }
 }
@@ -340,15 +340,26 @@ mod tests {
     }
 
     #[test]
-    fn token_role_unknown_value_falls_back_to_dev() {
+    fn token_role_unknown_value_fails_closed_to_observer() {
+        // An unrecognized value is a misconfiguration; fail closed to the
+        // least-privileged (read-only) role rather than granting Dev.
         with_role_env(Some("superuser"), || {
-            assert_eq!(token_role(), CallerRole::Dev)
+            assert_eq!(token_role(), CallerRole::Observer)
         });
     }
 
     #[test]
     fn token_role_is_case_insensitive() {
         with_role_env(Some("ADMIN"), || {
+            assert_eq!(token_role(), CallerRole::Admin)
+        });
+    }
+
+    #[test]
+    fn token_role_trims_surrounding_whitespace() {
+        // Env values sourced from files often carry a trailing newline; it must
+        // not turn a valid role into an unknown value.
+        with_role_env(Some("  admin\n"), || {
             assert_eq!(token_role(), CallerRole::Admin)
         });
     }

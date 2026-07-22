@@ -94,6 +94,44 @@ pub trait AuditStore: Send + Sync + std::fmt::Debug {
 
     async fn cleanup_stale_queued(&self) -> Result<u64, TransactionStoreError>;
 
+    /// Reconcile transactions orphaned by a daemon crash or restart.
+    ///
+    /// A row still in `Running` means the daemon was mid-execution of that
+    /// action when it exited. On the next start the in-flight work is orphaned
+    /// and its true outcome is unknown, so each such row is transitioned
+    /// `Running → Failed` (the conservative outcome — the operator must
+    /// re-check) and the transition is recorded in the audit chain. Intended to
+    /// run exactly once at startup, before the daemon begins accepting
+    /// connections, so clients never observe a phantom in-flight row.
+    ///
+    /// Returns the number of transactions reconciled. The default implementation
+    /// is backend-agnostic: it pages through `Running` rows via
+    /// [`list_transactions`](Self::list_transactions) and applies
+    /// [`update_status`](Self::update_status), both of which every backend
+    /// already implements with identical semantics.
+    async fn reconcile_interrupted_running(&self) -> Result<u64, TransactionStoreError> {
+        let mut total = 0u64;
+        loop {
+            let running = self
+                .list_transactions(100, Some("running"), None, None)
+                .await?;
+            if running.is_empty() {
+                break;
+            }
+            let batch = running.len();
+            for tx in running {
+                self.update_status(&tx.transaction_id, JobState::Failed)
+                    .await?;
+            }
+            total += batch as u64;
+            // A short page means we drained every remaining Running row.
+            if batch < 100 {
+                break;
+            }
+        }
+        Ok(total)
+    }
+
     /// Cancel one still-`Queued` transaction (`Queued → Canceled`). Returns
     /// `true` iff a queued row was transitioned; a `Running` (in-flight) or
     /// terminal transaction is never cancelled. See
@@ -319,3 +357,92 @@ impl AuditStore for SqliteStore {
 
 // Re-export the postgres impl so call sites can `use store::PostgresStore`.
 pub use postgres::PostgresStore;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audit_chain::AuditKey;
+    use crate::transactions::NewTransaction;
+    use sysknife_types::RiskLevel;
+    use tempfile::tempdir;
+
+    fn sqlite_store(path: std::path::PathBuf) -> SqliteStore {
+        let key = Arc::new(AuditKey::from_bytes(vec![0x42; 32]));
+        SqliteStore::new(crate::transactions::TransactionStore::open_with_key(path, key).unwrap())
+    }
+
+    fn new_tx(request_id: &str) -> NewTransaction {
+        NewTransaction {
+            request_id: request_id.to_string(),
+            request_hash: format!("hash-{request_id}"),
+            action_name: "UpdateSystem".to_string(),
+            risk_level: RiskLevel::High,
+            approval_id: None,
+            summary: "Upgrade the system".to_string(),
+            warnings: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn reconcile_interrupted_running_fails_only_running_rows() {
+        let dir = tempdir().unwrap();
+        let store = sqlite_store(dir.path().join("tx.db"));
+
+        // A row left Running by a crash, plus two rows in terminal/other states
+        // that reconciliation must not touch.
+        let running = store.record(new_tx("running")).await.unwrap();
+        store
+            .update_status(&running.transaction_id, JobState::Running)
+            .await
+            .unwrap();
+
+        let queued = store.record(new_tx("queued")).await.unwrap();
+
+        let succeeded = store.record(new_tx("succeeded")).await.unwrap();
+        store
+            .update_status(&succeeded.transaction_id, JobState::Running)
+            .await
+            .unwrap();
+        store
+            .update_status(&succeeded.transaction_id, JobState::Succeeded)
+            .await
+            .unwrap();
+
+        let reconciled = store.reconcile_interrupted_running().await.unwrap();
+        assert_eq!(reconciled, 1, "only the one Running row is reconciled");
+
+        assert_eq!(
+            store
+                .get(&running.transaction_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            JobState::Failed,
+            "orphaned Running row must become Failed"
+        );
+        assert_eq!(
+            store
+                .get(&queued.transaction_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            JobState::Queued,
+            "Queued row is untouched"
+        );
+        assert_eq!(
+            store
+                .get(&succeeded.transaction_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            JobState::Succeeded,
+            "terminal Succeeded row is untouched"
+        );
+
+        // Idempotent: a second pass finds nothing left to reconcile.
+        assert_eq!(store.reconcile_interrupted_running().await.unwrap(), 0);
+    }
+}

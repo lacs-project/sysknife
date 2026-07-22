@@ -632,8 +632,9 @@ const FEDORA_SELECTION_RULES: &str = r#"
   `UpdateSystem` applies them (HIGH) — only propose when the user says "update" or
   "apply updates".
 - For "what's layered on this system?", use `GetLayeredPackages` (LOW, no params).
-- **DNS configuration**: prefer `ResolvectlSetDns` (cross-distro, MEDIUM) over
-  the NetworkManager-only `SetDnsServers` (also MEDIUM). `resolvectl` works on
+- **DNS configuration**: prefer `ResolvectlSetDns` (cross-distro, HIGH) over
+  the NetworkManager-only `SetDnsServers` (also HIGH — redirecting DNS is a
+  MitM primitive). `resolvectl` works on
   any systemd-resolved host regardless of whether NetworkManager,
   systemd-networkd, or netplan is the active backend. Only use `SetDnsServers`
   when the user explicitly wants the NetworkManager *profile* updated (so the
@@ -790,7 +791,7 @@ const DEBIAN_SELECTION_RULES: &str = r#"
 - `MultipassList` lists Multipass VMs — LOW, read-only. Use for "list VMs", "show multipass instances".
 - `UbuntuReleaseUpgrade` upgrades to the next Ubuntu release — HIGH. Tier 3: takes 20–45 minutes, requires reboot. Only propose when the user explicitly requests a distribution upgrade. Do NOT propose for routine `apt upgrade`.
 - For system package installation, use `AptInstall`. Never propose rpm-ostree actions on this distro.
-- `AppArmorStatus` shows all loaded profiles — LOW, read-only. `AppArmorComplain` puts a profile into learning mode (logs violations but does not block) — MEDIUM. `AppArmorEnforce` activates enforcement (violations are blocked) — HIGH. Always prefer `AppArmorComplain` first to audit a profile before enforcing it.
+- `AppArmorStatus` shows all loaded profiles — LOW, read-only. `AppArmorComplain` puts a profile into learning mode (logs violations but does not block) — HIGH, because complain mode disables MAC enforcement for that profile. `AppArmorEnforce` activates enforcement (violations are blocked) — HIGH. Prefer `AppArmorComplain` first to audit a *new* profile before enforcing it, but note both require Admin.
 - `CloudInitStatus` shows the cloud-init provisioning result — LOW, read-only. Use for "did cloud-init run correctly?" or "were there provisioning errors?". Ubuntu/Debian only — Fedora Atomic uses Ignition instead.
 - `UbuntuListFlatpaks` lists installed Flatpak apps — LOW, read-only. `UbuntuInstallFlatpak`, `UbuntuRemoveFlatpak`, `UbuntuUpdateFlatpak` manage Flatpak apps on Ubuntu — MEDIUM.
 - `Fail2banStatus` shows jail status — LOW, read-only. `Fail2banUnbanIp` removes a ban — MEDIUM. `Fail2banBanIp` immediately bans an IP address — HIGH (banning the admin's own IP will lock out SSH access).
@@ -816,7 +817,7 @@ const DEBIAN_COUNTERINTUITIVE: &str = r#"
 - `AptUpgrade` is HIGH — upgrades every installed package on the system (large blast radius).
 - `DistroboxCreate` is MEDIUM — the container is isolated and can be cleanly removed with `DistroboxRemove`.
 - `AppArmorEnforce` is HIGH — activating enforcement can immediately block operations the application relies on.
-- `AppArmorComplain` is MEDIUM — learning mode; violations are logged but not blocked.
+- `AppArmorComplain` is HIGH — learning mode disables MAC enforcement for the profile (a defense-evasion lever); violations are logged but not blocked.
 - `AppArmorStatus` is LOW — read-only query.
 - `CloudInitStatus` is LOW — read-only; inspects provisioning status only.
 - `Fail2banBanIp` is HIGH — immediately blocks an IP; banning the wrong address (e.g. the admin's own IP on the sshd jail) will sever SSH access.

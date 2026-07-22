@@ -197,7 +197,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             // Reject dangerous kernel arguments that could bypass security
             // mechanisms or give unauthenticated root access on next boot.
             for arg in add.iter() {
-                validated_safe_kernel_arg(arg)?;
+                validated_safe_kernel_arg(arg, "add")?;
             }
             let add_refs: Vec<&str> = add.iter().map(String::as_str).collect();
             let remove_refs: Vec<&str> = remove.iter().map(String::as_str).collect();
@@ -667,9 +667,17 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
                         .collect()
                 })
                 .unwrap_or_default();
-            // Validate each arg in both lists.
+            // Validate each arg in both lists. `append` gets the charset check
+            // (rejects `=`, `,`, shell metacharacters — the latter also blocks
+            // CSV injection into the helper's comma-separated list) *and* the
+            // kernel-arg denylist, so a bare `single`/`s`/`1` cannot boot the
+            // host into a single-user root shell — parity with
+            // SetKernelArguments. `delete` only removes existing args, so the
+            // charset check alone is sufficient (removing a dangerous arg is
+            // always safe).
             for a in &append {
                 validated_safe_arg(a, "append")?;
+                validated_safe_kernel_arg(a, "append")?;
             }
             for d in &delete {
                 validated_safe_arg(d, "delete")?;
@@ -1088,19 +1096,32 @@ fn str_array_or_empty(params: &Value, key: &'static str) -> Result<Vec<String>, 
     }
 }
 
-/// Reject kernel arguments that could bypass security mechanisms or grant
-/// unauthenticated root access on the next boot. Only applies to the `add`
-/// list — removing dangerous args is always safe.
+/// Reject kernel command-line arguments that could bypass security mechanisms
+/// or drop to an unauthenticated root shell on next boot. Applies only to
+/// arguments being *added* (`SetKernelArguments`'s `add`, `GrubSetKargs`'s
+/// `append`) — removing an existing argument is always safe.
 ///
-/// Blocked prefixes (case-insensitive):
-/// - `init=`           — replaces init, can give root shell
+/// `param` names the request field being validated so the error points at the
+/// caller's actual parameter (`"add"` for `SetKernelArguments`, `"append"` for
+/// `GrubSetKargs`).
+///
+/// This is a *denylist* layered on top of the caller's charset validation —
+/// both callers run their charset check first. In particular `GrubSetKargs`
+/// runs [`validated_safe_arg`] (which already rejects `=` and `,`), so on that
+/// path the load-bearing checks here are the bare runlevel shortcuts
+/// (`single`/`s`/`1`).
+///
+/// Blocked (case-insensitive):
+///
+/// - `init=`           — replaces init, can give a root shell
 /// - `selinux=0`       — disables SELinux
 /// - `enforcing=0`     — sets SELinux to permissive
 /// - `security=`       — overrides LSM module selection
-/// - `systemd.unit=emergency` / `systemd.unit=rescue` — unprotected root shell
+/// - `systemd.unit=emergency` / `systemd.unit=rescue` / `systemd.unit=single`
+///   — unprotected root shell
 /// - `single` / `1` / `s` — single-user mode (root without password)
 /// - `module_blacklist=` — can disable security-critical kernel modules
-fn validated_safe_kernel_arg(arg: &str) -> Result<(), ExecutorError> {
+fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), ExecutorError> {
     const BLOCKED_PREFIXES: &[&str] = &[
         "init=",
         "selinux=0",
@@ -1116,10 +1137,10 @@ fn validated_safe_kernel_arg(arg: &str) -> Result<(), ExecutorError> {
     let base = lower.split('=').next().unwrap_or(&lower);
 
     if BLOCKED_PREFIXES.iter().any(|p| lower.starts_with(p)) {
-        return Err(ExecutorError::InvalidParam("add"));
+        return Err(ExecutorError::InvalidParam(param));
     }
     if BLOCKED_EXACT.iter().any(|e| lower == *e) {
-        return Err(ExecutorError::InvalidParam("add"));
+        return Err(ExecutorError::InvalidParam(param));
     }
     // Block systemd.unit= pointing to emergency/rescue/single targets.
     if let Some(unit_val) = lower.strip_prefix("systemd.unit=") {
@@ -1127,12 +1148,12 @@ fn validated_safe_kernel_arg(arg: &str) -> Result<(), ExecutorError> {
             .iter()
             .any(|u| unit_val.starts_with(u))
         {
-            return Err(ExecutorError::InvalidParam("add"));
+            return Err(ExecutorError::InvalidParam(param));
         }
     }
     // Guard against the base arg matching dangerous exact values even with =.
     if BLOCKED_EXACT.contains(&base) {
-        return Err(ExecutorError::InvalidParam("add"));
+        return Err(ExecutorError::InvalidParam(param));
     }
     Ok(())
 }
@@ -1834,20 +1855,20 @@ mod tests {
 
     #[test]
     fn kernel_arg_allows_safe_args() {
-        assert!(validated_safe_kernel_arg("quiet").is_ok());
-        assert!(validated_safe_kernel_arg("mitigations=off").is_ok());
-        assert!(validated_safe_kernel_arg("rd.driver.blacklist=nouveau").is_ok());
-        assert!(validated_safe_kernel_arg("console=ttyS0,115200").is_ok());
+        assert!(validated_safe_kernel_arg("quiet", "add").is_ok());
+        assert!(validated_safe_kernel_arg("mitigations=off", "add").is_ok());
+        assert!(validated_safe_kernel_arg("rd.driver.blacklist=nouveau", "add").is_ok());
+        assert!(validated_safe_kernel_arg("console=ttyS0,115200", "add").is_ok());
     }
 
     #[test]
     fn kernel_arg_blocks_init_override() {
         assert!(matches!(
-            validated_safe_kernel_arg("init=/bin/sh"),
+            validated_safe_kernel_arg("init=/bin/sh", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
         assert!(matches!(
-            validated_safe_kernel_arg("INIT=/sbin/bash"),
+            validated_safe_kernel_arg("INIT=/sbin/bash", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
     }
@@ -1855,11 +1876,11 @@ mod tests {
     #[test]
     fn kernel_arg_blocks_selinux_disable() {
         assert!(matches!(
-            validated_safe_kernel_arg("selinux=0"),
+            validated_safe_kernel_arg("selinux=0", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
         assert!(matches!(
-            validated_safe_kernel_arg("enforcing=0"),
+            validated_safe_kernel_arg("enforcing=0", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
     }
@@ -1867,7 +1888,7 @@ mod tests {
     #[test]
     fn kernel_arg_blocks_security_override() {
         assert!(matches!(
-            validated_safe_kernel_arg("security=none"),
+            validated_safe_kernel_arg("security=none", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
     }
@@ -1875,7 +1896,7 @@ mod tests {
     #[test]
     fn kernel_arg_blocks_module_blacklist() {
         assert!(matches!(
-            validated_safe_kernel_arg("module_blacklist=dm_crypt"),
+            validated_safe_kernel_arg("module_blacklist=dm_crypt", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
     }
@@ -1883,15 +1904,15 @@ mod tests {
     #[test]
     fn kernel_arg_blocks_systemd_unit_emergency_rescue() {
         assert!(matches!(
-            validated_safe_kernel_arg("systemd.unit=emergency.target"),
+            validated_safe_kernel_arg("systemd.unit=emergency.target", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
         assert!(matches!(
-            validated_safe_kernel_arg("systemd.unit=rescue.target"),
+            validated_safe_kernel_arg("systemd.unit=rescue.target", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
         assert!(matches!(
-            validated_safe_kernel_arg("systemd.unit=single.target"),
+            validated_safe_kernel_arg("systemd.unit=single.target", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
     }
@@ -1900,17 +1921,42 @@ mod tests {
     fn kernel_arg_blocks_single_user_shortcuts() {
         // Runlevel shortcuts that drop to a root shell.
         assert!(matches!(
-            validated_safe_kernel_arg("single"),
+            validated_safe_kernel_arg("single", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
         assert!(matches!(
-            validated_safe_kernel_arg("s"),
+            validated_safe_kernel_arg("s", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
         assert!(matches!(
-            validated_safe_kernel_arg("1"),
+            validated_safe_kernel_arg("1", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
+    }
+
+    #[test]
+    fn grub_set_kargs_append_blocks_single_user_shortcut() {
+        // Regression: GrubSetKargs previously used only the charset validator,
+        // which accepts the bare `single`/`s`/`1` runlevel shortcuts. The
+        // kernel-arg denylist must apply to `append` too — booting into a
+        // single-user root shell is exactly the SetKernelArguments threat.
+        for dangerous in ["single", "s", "1"] {
+            let err = build_action_spec(
+                "GrubSetKargs",
+                &json!({ "append": [dangerous], "delete": [] }),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(err, ExecutorError::InvalidParam("append")),
+                "GrubSetKargs must reject append=[{dangerous:?}] via the denylist, got {err:?}"
+            );
+        }
+        // A benign flag still builds successfully.
+        assert!(build_action_spec(
+            "GrubSetKargs",
+            &json!({ "append": ["quiet"], "delete": [] })
+        )
+        .is_ok());
     }
 
     #[test]

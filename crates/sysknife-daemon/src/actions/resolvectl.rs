@@ -70,7 +70,12 @@ pub fn resolvectl_set_dns(interface: &str, servers: &[IpAddr]) -> ActionSpec {
                 full
             },
         },
-        risk_level: RiskLevel::Medium,
+        // High: setting an interface's DNS servers redirects all name
+        // resolution through an operator-chosen resolver — a DNS-hijack / MitM
+        // primitive (T1557; NIST SC-7), identical in effect to `SetDnsServers`.
+        // Per-interface scope is not a mitigation: the primary interface is the
+        // attack surface. Gated at Admin to match `SetDnsServers`.
+        risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
     }
@@ -134,10 +139,11 @@ mod tests {
     }
 
     #[test]
-    fn resolvectl_set_dns_risk_is_medium() {
+    fn resolvectl_set_dns_risk_is_high() {
+        // Parity with SetDnsServers: redirecting DNS is a MitM primitive.
         assert_eq!(
             resolvectl_set_dns("eth0", &[ip("1.1.1.1")]).risk_level,
-            RiskLevel::Medium
+            RiskLevel::High
         );
     }
 

@@ -5,7 +5,13 @@
 #
 # These commands are not controllable via D-Bus / polkit and therefore
 # require a direct sudo invocation by the daemon process.
-# Only the exact commands listed here are allowed — no shell or wildcard.
+#
+# Most grants are narrow (an exact binary, no wildcard) for defense-in-depth.
+# Two grants are intentionally broad — `/usr/bin/sh` and `/usr/sbin/runuser` —
+# because a handful of operations have no argv-only form (see the SECURITY NOTE
+# on the `sh` grant below). Those make the daemon effectively root-capable, so
+# the security boundary is the daemon's own authorization + validation + audit,
+# not this file. See each grant's comment for its exact call sites and rationale.
 #
 # IMPORTANT: test with `visudo -cf /etc/sudoers.d/sysknife` before deploying.
 #
@@ -25,10 +31,9 @@ sysknife ALL=(root) NOPASSWD: /usr/sbin/userdel
 sysknife ALL=(root) NOPASSWD: /usr/sbin/usermod
 sysknife ALL=(root) NOPASSWD: /usr/bin/gpasswd
 
-# Group management — create, delete, and modify groups.
-sysknife ALL=(root) NOPASSWD: /usr/sbin/groupadd
-sysknife ALL=(root) NOPASSWD: /usr/sbin/groupdel
-sysknife ALL=(root) NOPASSWD: /usr/sbin/groupmod
+# (No groupadd/groupdel/groupmod grants: SysKnife has no group create/delete/
+# modify action. Only group *membership* changes exist — usermod / gpasswd
+# above — so those binaries are intentionally not granted, per least privilege.)
 
 # Service management — start, stop, restart, reload, enable, disable, mask, unmask,
 # daemon-reload. All systemctl write operations require root on Fedora.
@@ -52,14 +57,34 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree
 # OSTree admin operations — pin/unpin deployments require root filesystem access.
 sysknife ALL=(root) NOPASSWD: /usr/bin/ostree
 
-# Shell for multi-step operations that require root and involve piping or conditional
-# logic (firewall --permanent + --reload, group membership ensure + usermod/gpasswd).
-# Restricted to NOPASSWD invocations only — sysknife cannot launch an interactive shell.
-# ME1 audit (2026-04-26): /usr/bin/sh is used by ConfigureFirewall (network.rs) for the
-# compound `firewall-cmd --permanent ... && firewall-cmd --reload` operation. No direct
-# argv alternative exists for firewalld's two-step permanent+reload flow. This entry is
-# kept and documented here rather than silently present with no explanation.
+# Shell for the few multi-step root operations with no argv-only equivalent:
+#   - ConfigureFirewall (network.rs): `firewall-cmd --permanent … && firewall-cmd --reload`
+#   - AddAuthorizedKey / RemoveAuthorizedKey (ssh.rs): grep-guarded append / sed delete
+#     against a user's authorized_keys file (0600, owned by the target user).
+#
+# SECURITY NOTE — this is the widest grant in this file, and it means sudoers is NOT the
+# security boundary. `sudo sh -c '<script>'` has no argument constraint, so the sysknife
+# daemon is effectively root-capable. The real boundary is the daemon itself: IPC
+# caller-role authorization (SO_PEERCRED), the one-time approval interlock, per-argument
+# input validation (actions/validate.rs), and the signed audit chain. The narrow grants
+# above limit the blast radius of an *argv*-construction bug in a specific action; they
+# cannot contain a `sh -c` script — every script the daemon passes to `sh -c` is built
+# only from values already run through the validators in validate.rs.
+# TODO(post-launch hardening): refactor ConfigureFirewall + the ssh key ops to shell-free
+# argv forms so this grant (and the runuser `-c` grant below) can be dropped.
 sysknife ALL=(root) NOPASSWD: /usr/bin/sh
+
+# runuser — run tooling as the target (non-root) user for user-scoped operations:
+#   - Flatpak user installs (flatpak.rs): `runuser -u <user> -- flatpak …` (shell-free)
+#   - Rootless Podman / Toolbox / Distrobox (containers.rs, toolbox.rs):
+#     `runuser -l <user> -c '<cmd>'` — needs a login context for XDG_RUNTIME_DIR and the
+#     sub-UID/GID ranges rootless containers require.
+# Without this grant every user-scoped Flatpak/container/toolbox action fails
+# non-interactively (sudo would prompt for a password the daemon cannot supply). The
+# `-c` form is arbitrary-command and, like `sh` above, cannot be narrowed in sudoers; it
+# adds no privilege beyond the existing `sh` grant. Usernames and arguments are validated
+# upstream (validated_username / validated_safe_arg). On Ubuntu runuser is /usr/sbin/runuser.
+sysknife ALL=(root) NOPASSWD: /usr/sbin/runuser
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Ubuntu / Debian-family binaries
@@ -74,9 +99,12 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/env DEBIAN_FRONTEND=noninteractive NEEDRE
 
 # Apt write operations:
 #   apt-mark hold/unhold             → AptHold / AptUnhold
-#   apt-get install/remove/purge/…   → invoked via sudo env apt-get
+#   apt-get install/remove/purge/…   → ONLY via the env-wrapped grant above.
+# No bare `/usr/bin/apt-get` grant: apt.rs always invokes apt-get through the
+# `env DEBIAN_FRONTEND=… apt-get *` form, and a bare apt-get NOPASSWD grant is a
+# GTFOBins root-shell escape (e.g. `apt-get -o APT::Update::Pre-Invoke=…`), so it
+# is deliberately omitted.
 sysknife ALL=(root) NOPASSWD: /usr/bin/apt-mark
-sysknife ALL=(root) NOPASSWD: /usr/bin/apt-get
 
 # add-apt-repository — provided by software-properties-common.
 # AddPpa / RemovePpa.

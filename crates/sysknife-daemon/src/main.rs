@@ -100,6 +100,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("[sysknife-daemon] listening on {listen_uri}");
 
+    // Reconcile transactions orphaned by a previous crash/restart before we
+    // accept any connection: a row still marked Running belonged to an execution
+    // that died with the old process, so it is marked Failed rather than left as
+    // a phantom in-flight row forever. Failure here is non-fatal — log and serve.
+    match state.audit.reconcile_interrupted_running().await {
+        Ok(0) => {}
+        Ok(n) => eprintln!(
+            "[sysknife-daemon] reconciled {n} interrupted (Running) transaction(s) as failed after restart"
+        ),
+        Err(e) => eprintln!(
+            "[sysknife-daemon] WARNING: could not reconcile interrupted transactions: {e}"
+        ),
+    }
+
     // Periodically cancel Queued transactions that outlived the approval TTL, so
     // an abandoned preview does not linger forever as a phantom "queued" row in
     // `sysknife history`. cleanup_stale_queued only touches expired Queued rows
@@ -139,6 +153,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// Resolve when the process receives a shutdown signal — either SIGINT
+/// (Ctrl-C, interactive use) or SIGTERM (what `systemctl stop` and most
+/// service supervisors send). Without the SIGTERM arm the daemon has no
+/// handler for it and the service manager hard-kills the process instead of
+/// letting the accept loop break and unwind cleanly.
+async fn shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    match signal(SignalKind::terminate()) {
+        Ok(mut sigterm) => {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = sigterm.recv() => {}
+            }
+        }
+        Err(e) => {
+            // Extremely unlikely (would require signal-handler exhaustion).
+            // Degrade to SIGINT-only rather than failing to shut down at all.
+            eprintln!(
+                "[sysknife-daemon] WARNING: cannot install SIGTERM handler ({e}); \
+                 responding to Ctrl-C (SIGINT) only"
+            );
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    }
 }
 
 async fn unix_accept_loop(
@@ -181,7 +221,7 @@ async fn unix_accept_loop(
                     },
                 }
             }
-            _ = tokio::signal::ctrl_c() => {
+            _ = shutdown_signal() => {
                 eprintln!("[sysknife-daemon] shutting down");
                 break;
             }
@@ -261,7 +301,7 @@ async fn vsock_accept_loop(
                     },
                 }
             }
-            _ = tokio::signal::ctrl_c() => {
+            _ = shutdown_signal() => {
                 eprintln!("[sysknife-daemon] shutting down");
                 break;
             }
