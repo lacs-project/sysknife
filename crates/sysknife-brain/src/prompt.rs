@@ -421,7 +421,7 @@ GetNetworkStatus, GetDiskUsage, GetDateTime, ListProcesses, GetMemoryInfo,
 GetAuthorizedKeys, ListPackageRepositories, ListContainers, GetContainerInfo,
 ListUsers, ListGroups, ListJobHistory,
 ResolvectlStatus,
-GetJournalLog, GetLvmReport, GetSysctl, GetServiceResourceLimits, GetMounts
+GetJournalLog, GetLvmReport, GetSysctl, GetServiceResourceLimits, GetMounts, GetSudoGrants
 
 ### Medium risk — cross-distro (approval required before execution)
 
@@ -446,7 +446,8 @@ AddUserToGroup, RemoveUserFromGroup, DeleteUser,
 AddAuthorizedKey, RemoveAuthorizedKey,
 ExtendLogicalVolume, CreateLogicalVolume, CreateLvSnapshot,
 SetSysctl, SetServiceResourceLimits,
-AddMount, RemoveMount, AddSwap, RemoveSwap
+AddMount, RemoveMount, AddSwap, RemoveSwap,
+GrantSudoAccess, RevokeSudoAccess
 
 ## Risk classification rules
 
@@ -543,6 +544,11 @@ Use `"username"` as the key — NOT `"user"`.
 - `RemoveMount`: `{"mountpoint":"/mnt/data"}`.
 - `AddSwap`: `{"file":"/swapfile","size_mb":2048}`.
 - `RemoveSwap`: `{"file":"/swapfile"}`.
+
+**Scoped sudoers.d**:
+- `GetSudoGrants`: `{}` (read-only).
+- `GrantSudoAccess`: `{"name":"deploy-restart","user":"deploy","commands":"/usr/bin/systemctl","runas":"root","nopasswd":true}` (`commands` is `"ALL"` or comma-separated absolute paths; `runas`/`nopasswd` optional).
+- `RevokeSudoAccess`: `{"name":"deploy-restart"}`.
 
 **Users and groups**:
 - `CreateUser`: `{"username":"alice"}` (optional: `"shell"`, `"home"`)

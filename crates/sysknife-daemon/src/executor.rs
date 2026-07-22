@@ -2,15 +2,16 @@ use crate::actions::{
     apparmor, apt, cloudinit, containers, deployment, distrobox, fail2ban, filesystem, flatpak,
     grub, identity, journald, layering, livepatch, lvm, mounts, multipass, netplan, network,
     package_repos, ppa, processes, reboot, release_upgrade, resolvectl, services, snap, ssh,
-    sysctl, system_info, toolbox, ubuntu_pro, ufw, users,
+    sudoers, sysctl, system_info, toolbox, ubuntu_pro, ufw, users,
     validate::{
         validated_apparmor_profile, validated_cpu_quota, validated_fstype, validated_group,
         validated_hostname, validated_journal_grep, validated_journal_priority,
         validated_journal_time, validated_locale, validated_lvm_name, validated_lvm_size,
         validated_memory_limit, validated_mount_device, validated_mount_options,
         validated_mount_point, validated_port_or_service, validated_ppa_name, validated_safe_arg,
-        validated_swap_path, validated_sysctl_key, validated_sysctl_value, validated_tasks_max,
-        validated_timezone, validated_unit_name, validated_username,
+        validated_sudo_commands, validated_sudoers_name, validated_swap_path, validated_sysctl_key,
+        validated_sysctl_value, validated_tasks_max, validated_timezone, validated_unit_name,
+        validated_username,
     },
     ActionMechanism, ActionSpec,
 };
@@ -663,6 +664,39 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "RemoveSwap" => {
             let file = validated_swap_path(require_str(params, "file")?, "file")?;
             Ok(mounts::remove_swap(&file))
+        }
+
+        // ── Scoped sudoers.d ────────────────────────────────────────────────
+        "GetSudoGrants" => Ok(sudoers::get_sudo_grants()),
+        "GrantSudoAccess" => {
+            let name = validated_sudoers_name(require_str(params, "name")?, "name")?;
+            let user = validated_username(require_str(params, "user")?, "user")?;
+            let commands = validated_sudo_commands(require_str(params, "commands")?, "commands")?;
+            // runas defaults to root; if given it must be "ALL" or a username.
+            let runas = match params
+                .get("runas")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                Some("ALL") => Some("ALL".to_string()),
+                Some(u) => Some(validated_username(u, "runas")?),
+                None => None,
+            };
+            let nopasswd = params
+                .get("nopasswd")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            Ok(sudoers::grant_sudo_access(
+                &name,
+                &user,
+                &commands,
+                runas.as_deref(),
+                nopasswd,
+            ))
+        }
+        "RevokeSudoAccess" => {
+            let name = validated_sudoers_name(require_str(params, "name")?, "name")?;
+            Ok(sudoers::revoke_sudo_access(&name))
         }
 
         // ── System info ──────────────────────────────────────────────────

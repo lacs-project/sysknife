@@ -209,3 +209,12 @@ sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/sysctl-edit *
 # `findmnt` and needs no grant. Bare mount/swapon grants are NOT given: they
 # would let the daemon mount arbitrary sources over arbitrary paths.
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/mount-edit *
+
+# sudoers edit — GrantSudoAccess/RevokeSudoAccess delegate to this root-owned
+# helper, which builds a scoped rule and validates it with `visudo -cf` on a
+# temp file BEFORE atomically installing it to /etc/sudoers.d/sysknife-grant-*
+# (0440). The drop-in name is charset-restricted (no dots/tildes, which sudo
+# would silently ignore) and command paths must be absolute with no wildcards.
+# GetSudoGrants reads via the bare helper (`--op list`; the daemon is root) and
+# needs no grant. A bare `visudo`/editor grant is NOT given.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/sudoers-edit *
