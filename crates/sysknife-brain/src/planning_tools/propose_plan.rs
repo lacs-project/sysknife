@@ -287,14 +287,14 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
     ("ResolvectlStatus",
      "show DNS resolution status for all network interfaces (resolvectl status) — no params; cross-distro (any systemd-resolved host); read-only"),
     ("ResolvectlSetDns",
-     "set DNS servers for a network interface — params: interface* (e.g. eth0), servers* (string[]); cross-distro; Medium risk"),
+     "set DNS servers for a network interface — params: interface* (e.g. eth0), servers* (string[]); cross-distro; High risk"),
     // ── Ubuntu / AppArmor ─────────────────────────────────────────────────────
     ("AppArmorStatus",
      "show status of all loaded AppArmor profiles (aa-status) — no params; Ubuntu only; read-only"),
     ("AppArmorEnforce",
      "put an AppArmor profile into enforce mode (aa-enforce) — param: profile_path* (e.g. /etc/apparmor.d/usr.bin.firefox); Ubuntu only; High risk"),
     ("AppArmorComplain",
-     "put an AppArmor profile into complain/learning mode (aa-complain) — param: profile_path*; Ubuntu only; Medium risk"),
+     "put an AppArmor profile into complain/learning mode (aa-complain) — param: profile_path*; Ubuntu only; High risk (disables MAC enforcement for the profile)"),
     // ── Ubuntu / cloud-init ───────────────────────────────────────────────────
     ("CloudInitStatus",
      "show cloud-init provisioning status (cloud-init status --long) — no params; Ubuntu only; read-only"),

@@ -200,6 +200,34 @@ Supported shells: `bash`, `zsh`, `fish`, `elvish`, `powershell`.
 
 ---
 
+### `sysknife mcp-server`
+
+Start an MCP (Model Context Protocol) server over stdio, so Claude Code, Claude
+Desktop, Cursor, Codex, and any other MCP-capable agent can drive SysKnife.
+
+```sh
+sysknife mcp-server
+```
+
+It exposes five tools backed by the SysKnife daemon: `sysknife_plan`,
+`sysknife_execute`, `sysknife_history`, `sysknife_doctor`, and
+`sysknife_audit_verify`. Planning and execution stay behind the same approval
+interlock as the CLI — `sysknife_plan` returns typed steps with daemon-issued
+transaction IDs, and each step still requires an explicit
+`sysknife approve <transaction-id>` in a real terminal before it can run.
+
+Register it with your agent by pointing it at the binary, e.g. in
+`claude_desktop_config.json`:
+
+```json
+{ "mcpServers": { "sysknife": { "command": "sysknife", "args": ["mcp-server"] } } }
+```
+
+`npx sysknife-setup` writes this configuration for the common clients
+automatically.
+
+---
+
 ### REPL (no arguments)
 
 ```sh
@@ -247,12 +275,13 @@ All flags apply to every subcommand and to free-form intents.
 | Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | Planning failed (LLM error, provider unreachable, …) |
-| `2` | User rejected the plan or a step |
-| `3` | Non-interactive mode but approval was required |
-| `4` | Configuration or daemon error |
-| `5` | Risk ceiling exceeded |
-| `124` | Operation timed out (`--timeout`) |
+| `1` | Plan or step **refused** — you rejected it, it exceeded the configured risk ceiling, or approval was required but the session is non-interactive |
+| `2` | **Execution failed** — the action ran but returned an error (also returned when `--timeout` expires) |
+| `3` | **Planning failed** — LLM error, provider unreachable, or the intent could not be turned into a plan |
+| `4` | **Configuration or daemon error** — invalid configuration, or the daemon could not be reached |
+
+Subcommands with their own semantics (for example `sysknife audit verify`) pass
+through their own exit code.
 
 ---
 
@@ -260,8 +289,9 @@ All flags apply to every subcommand and to free-form intents.
 
 ### LLM provider
 
-`sysknife` auto-detects the provider from API keys.  Set `SYSKNIFE_LLM_PROVIDER`
-to override.
+`sysknife` auto-detects between Anthropic and local Ollama from the presence of
+`ANTHROPIC_API_KEY`. Every other provider must be selected explicitly with
+`SYSKNIFE_LLM_PROVIDER` (and its matching API key set).
 
 | Variable | Description |
 |---|---|
@@ -279,12 +309,15 @@ to override.
 | `SYSKNIFE_BRAIN_MAX_TURNS` | Planning loop turn limit — integer ≥ 1 (default: `10`) |
 | `SYSKNIFE_OLLAMA_THINK` | Set `true`/`false` to override thinking-mode detection for Ollama models |
 
-**Auto-detection order** (when `SYSKNIFE_LLM_PROVIDER` is not set):
+**Auto-detection** (when `SYSKNIFE_LLM_PROVIDER` is not set):
 
 1. `ANTHROPIC_API_KEY` present and non-empty → `anthropic`
-2. `OPENAI_API_KEY` present → `openai`
-3. `GEMINI_API_KEY` present → `gemini`
-4. Otherwise → `ollama` (must be running locally)
+2. Otherwise → `ollama` (must be running locally)
+
+The other providers (`openai`, `gemini`, `groq`, `deepseek`, `mistral`, `xai`)
+are **not** auto-detected from their API-key variables. To use one, set
+`SYSKNIFE_LLM_PROVIDER` to its name and provide the matching key from the table
+above.
 
 ### Daemon socket
 

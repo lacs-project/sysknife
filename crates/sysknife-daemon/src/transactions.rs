@@ -1455,6 +1455,44 @@ mod tests {
     }
 
     #[test]
+    fn stale_iso_timestamp_cannot_be_claimed_for_execution() {
+        // The TTL is enforced at *execute* (claim) time too, not only at approve
+        // time. An approval that ages past the 15-minute window between approve
+        // and execute must not be claimable — the predicate is duplicated at
+        // both sites, so both need coverage.
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let tx = store.record(queued_transaction()).unwrap();
+        let receipt = store
+            .approve_transaction(&tx.transaction_id)
+            .unwrap()
+            .expect("a fresh approval succeeds");
+        let digest = audit_chain::approval_receipt_digest(&receipt);
+
+        // Age the row past the TTL window *after* the approval was issued.
+        let conn = store.connection().unwrap();
+        conn.execute(
+            "UPDATE transactions \
+             SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-20 minutes') \
+             WHERE transaction_id = ?1",
+            params![tx.transaction_id],
+        )
+        .unwrap();
+
+        assert!(
+            !store
+                .claim_approved_for_execution(&tx.transaction_id, &digest)
+                .unwrap(),
+            "an approval aged past the TTL must not be claimable at execute time"
+        );
+        assert_eq!(
+            store.get(&tx.transaction_id).unwrap().unwrap().status,
+            JobState::Queued,
+            "a TTL-expired claim must leave the transaction Queued, never Running"
+        );
+    }
+
+    #[test]
     fn cleanup_stale_queued_cancels_old_records() {
         let dir = tempdir().unwrap();
         let store = test_store(dir.path().join("tx.db"));

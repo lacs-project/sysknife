@@ -82,6 +82,10 @@ pub struct PlanStepOutput {
     pub command: String,
     /// Daemon-issued identity of the immutable persisted preview.
     pub transaction_id: String,
+    /// Preview-time warnings for this step (e.g. reboot-required, platform
+    /// caveats). Surfaced so the calling agent can relay them to the operator
+    /// before approval; empty when the preview produced none.
+    pub warnings: Vec<String>,
 }
 
 /// The full plan returned by `sysknife_plan`.
@@ -307,7 +311,8 @@ impl SysknifeMcpServer {
         let mut output: PlanOutput = serde_json::from_value(value).map_err(|e| {
             ErrorData::internal_error(format!("output deserialization error: {e}"), None)
         })?;
-        enrich_with_commands(&mut output)
+        let client = DaemonClient::new(resolve_socket_target());
+        enrich_with_commands(&mut output, &client)
             .await
             .map_err(|e| ErrorData::internal_error(e, None))?;
         Ok(Json(output))
@@ -468,8 +473,10 @@ async fn plan_intent_inner(intent: &str) -> Result<serde_json::Value, String> {
 /// Resolve and persist every step against the daemon. Planning fails closed if
 /// any step cannot be described or previewed; a synthetic transaction ID must
 /// never be presented as executable.
-async fn enrich_with_commands(output: &mut PlanOutput) -> Result<(), String> {
-    let client = DaemonClient::new(resolve_socket_target());
+async fn enrich_with_commands(
+    output: &mut PlanOutput,
+    client: &DaemonClient,
+) -> Result<(), String> {
     for step in &mut output.steps {
         let DescribeInfo { command, .. } =
             client
@@ -489,6 +496,9 @@ async fn enrich_with_commands(output: &mut PlanOutput) -> Result<(), String> {
             RiskLevel::High => "high",
         }
         .to_string();
+        // Carry the preview's warnings through to the plan output rather than
+        // discarding them — the agent needs them to inform the operator.
+        step.warnings = prepared.preview.warnings.clone();
     }
     Ok(())
 }
@@ -895,6 +905,38 @@ pub async fn run_mcp_server() -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn enrich_with_commands_fails_closed_when_daemon_unreachable() {
+        // Fail-closed contract: if the daemon cannot describe/preview a step,
+        // planning must error out — it must never hand back a step carrying a
+        // synthetic or empty transaction_id that a client could then try to
+        // execute. This guards the MCP approval interlock.
+        let mut output = PlanOutput {
+            intent: "set the timezone".to_string(),
+            summary: "plan".to_string(),
+            explanation: String::new(),
+            steps: vec![PlanStepOutput {
+                action_name: "SetTimezone".to_string(),
+                params: serde_json::json!({ "timezone": "UTC" }),
+                ..Default::default()
+            }],
+        };
+        // A socket path that cannot exist → describe()/preview() fail fast.
+        let client = DaemonClient::new(std::path::PathBuf::from(
+            "/nonexistent/sysknife-unreachable.sock",
+        ));
+
+        let result = enrich_with_commands(&mut output, &client).await;
+        assert!(
+            result.is_err(),
+            "enrich must fail closed when the daemon is unreachable"
+        );
+        assert!(
+            output.steps[0].transaction_id.is_empty(),
+            "no synthetic transaction_id may be presented for an un-previewed step"
+        );
+    }
 
     // -----------------------------------------------------------------------
     // T11 — tool registration round-trip via the rmcp ToolRouter

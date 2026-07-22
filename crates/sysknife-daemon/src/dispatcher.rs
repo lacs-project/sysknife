@@ -510,6 +510,60 @@ fn authorize_action(
     policy.action_allowed(caller, action_name)
 }
 
+/// Authorize a caller to act on an existing transaction (approve / cancel /
+/// view details), keyed on the transaction's own action. Transaction IDs are
+/// enumerable by any Observer-tier caller via history, so without this a
+/// low-privilege caller could mint, consume, or cancel the one-time approval
+/// slot of an action they are not allowed to run — defeating the human-approval
+/// boundary. Only a caller authorized for the action may touch its approval.
+///
+/// Returns `Ok(true)` when authorized (proceed). Returns `Ok(false)` when a
+/// response has already been sent (transaction missing, load error, or denied)
+/// and the caller must return early.
+async fn authorize_for_transaction(
+    framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
+    state: &DaemonState,
+    caller_role: &CallerRole,
+    request_id: &str,
+    transaction_id: &str,
+    missing_category: &str,
+    missing_message: &str,
+) -> Result<bool, HandlerError> {
+    match state.audit.get(transaction_id).await {
+        Ok(Some(transaction)) => {
+            if authorize_action(&state.policy, caller_role, &transaction.action_name) {
+                Ok(true)
+            } else {
+                send_error(
+                    framed,
+                    request_id,
+                    "authorization_failure",
+                    format!(
+                        "action '{}' is not allowed for {caller_role:?} role",
+                        transaction.action_name
+                    ),
+                )
+                .await?;
+                Ok(false)
+            }
+        }
+        Ok(None) => {
+            send_error(framed, request_id, missing_category, missing_message).await?;
+            Ok(false)
+        }
+        Err(e) => {
+            send_error(
+                framed,
+                request_id,
+                "transient_infrastructure_failure",
+                format!("failed to load transaction: {e}"),
+            )
+            .await?;
+            Ok(false)
+        }
+    }
+}
+
 // Family-specific action lists come from the single source of truth in
 // `sysknife-core::action_family`, shared with the CLI routing guard and the
 // brain prompt so the execution fence can never drift out of parity.
@@ -858,11 +912,29 @@ async fn dispatch_loop<S>(
             DaemonRequest::Approve {
                 request_id,
                 transaction_id,
-            } => handle_approve(framed, &state, request_id, transaction_id.as_str()).await,
+            } => {
+                handle_approve(
+                    framed,
+                    &state,
+                    &caller_role,
+                    request_id,
+                    transaction_id.as_str(),
+                )
+                .await
+            }
             DaemonRequest::ApprovalDetails {
                 request_id,
                 transaction_id,
-            } => handle_approval_details(framed, &state, request_id, transaction_id.as_str()).await,
+            } => {
+                handle_approval_details(
+                    framed,
+                    &state,
+                    &caller_role,
+                    request_id,
+                    transaction_id.as_str(),
+                )
+                .await
+            }
             DaemonRequest::QueryAction {
                 request_id,
                 action_name,
@@ -904,7 +976,16 @@ async fn dispatch_loop<S>(
             DaemonRequest::Cancel {
                 request_id,
                 transaction_id,
-            } => handle_cancel(framed, &state, request_id, transaction_id.as_str()).await,
+            } => {
+                handle_cancel(
+                    framed,
+                    &state,
+                    &caller_role,
+                    request_id,
+                    transaction_id.as_str(),
+                )
+                .await
+            }
         };
 
         if let Err(e) = result {
@@ -922,9 +1003,23 @@ fn receipt_digest(receipt: &str) -> String {
 async fn handle_approve(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     state: &DaemonState,
+    caller_role: &CallerRole,
     request_id: &str,
     transaction_id: &str,
 ) -> Result<(), HandlerError> {
+    if !authorize_for_transaction(
+        framed,
+        state,
+        caller_role,
+        request_id,
+        transaction_id,
+        "stale_approval",
+        "transaction is missing, expired, already approved, or no longer queued",
+    )
+    .await?
+    {
+        return Ok(());
+    }
     let receipt = match state.audit.approve_transaction(transaction_id).await {
         Ok(receipt) => receipt,
         // A `DatabaseInvariant` here means the stored approval commitment does
@@ -983,6 +1078,7 @@ async fn handle_approve(
 async fn handle_approval_details(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     state: &DaemonState,
+    caller_role: &CallerRole,
     request_id: &str,
     transaction_id: &str,
 ) -> Result<(), HandlerError> {
@@ -1007,6 +1103,18 @@ async fn handle_approval_details(
             .await;
         }
     };
+    if !authorize_action(&state.policy, caller_role, &transaction.action_name) {
+        return send_error(
+            framed,
+            request_id,
+            "authorization_failure",
+            format!(
+                "action '{}' is not allowed for {caller_role:?} role",
+                transaction.action_name
+            ),
+        )
+        .await;
+    }
     let preview = match state.audit.get_preview(transaction_id).await {
         Ok(Some(preview)) => preview,
         Ok(None) => {
@@ -1073,9 +1181,23 @@ async fn handle_query_state(
 async fn handle_cancel(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     state: &DaemonState,
+    caller_role: &CallerRole,
     request_id: &str,
     transaction_id: &str,
 ) -> Result<(), HandlerError> {
+    if !authorize_for_transaction(
+        framed,
+        state,
+        caller_role,
+        request_id,
+        transaction_id,
+        "not_cancelable",
+        "transaction cannot be canceled: it is missing, already executing, or finished",
+    )
+    .await?
+    {
+        return Ok(());
+    }
     match state.audit.cancel_queued(transaction_id).await {
         Ok(true) => {
             send_response(
@@ -2612,9 +2734,9 @@ mod tests {
             !entries[0]["created_at"].as_str().unwrap_or("").is_empty(),
             "created_at must be populated over the structured IPC"
         );
-        assert!(
-            entries[0].get("risk_level").is_some(),
-            "risk_level must be present as a typed field"
+        assert_eq!(
+            entries[0]["risk_level"], "low",
+            "GetSystemState is a low-risk action; risk_level must carry the exact typed value"
         );
     }
 
@@ -2807,6 +2929,7 @@ mod tests {
         assert!(handle_approve(
             &mut broken_framed,
             &state,
+            &CallerRole::Admin,
             "approve-undelivered",
             transaction_id,
         )
@@ -2815,9 +2938,15 @@ mod tests {
 
         let (retry_stream, receiver) = tokio::io::duplex(4096);
         let mut retry_framed = FramedStream::new(retry_stream);
-        handle_approve(&mut retry_framed, &state, "approve-retry", transaction_id)
-            .await
-            .unwrap();
+        handle_approve(
+            &mut retry_framed,
+            &state,
+            &CallerRole::Admin,
+            "approve-retry",
+            transaction_id,
+        )
+        .await
+        .unwrap();
         let mut receiver = FramedStream::new(receiver);
         let response: Value = serde_json::from_slice(&receiver.recv().await.unwrap()).unwrap();
         assert_eq!(response["type"], "approval_response");
@@ -3002,6 +3131,104 @@ mod tests {
 
         assert_eq!(resps[0]["type"], "error_response");
         assert_eq!(resps[0]["category"], "authorization_failure");
+    }
+
+    #[tokio::test]
+    async fn under_privileged_caller_cannot_act_on_admin_transaction() {
+        // Regression: authorization must be enforced on approve / cancel /
+        // approval-details, not only at preview time. An Admin-tier transaction
+        // that was previewed by an Admin caller must be untouchable by an
+        // under-privileged caller on a *different* connection, yet remain
+        // actionable by an authorized caller.
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+
+        // An Admin caller previews an Admin-tier action, persisting a queued tx.
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let handler_state = state.clone();
+        tokio::spawn(async move {
+            unix_connection_handler(server, handler_state, runner(), CallerRole::Admin).await;
+        });
+        let mut framed = FramedStream::new(client);
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "preview",
+                    "request_id": "preview-admin",
+                    "action_name": "UpdateSystem",
+                    "params": {},
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let preview: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        assert_eq!(preview["type"], "preview_response");
+        let transaction_id = preview["transaction_id"].as_str().unwrap().to_string();
+
+        // Every mutating/reading verb an Observer might try must be refused with
+        // authorization_failure while leaving the transaction untouched.
+        for (request_id, verb) in [
+            ("obs-approve", "approve"),
+            ("obs-cancel", "cancel"),
+            ("obs-details", "details"),
+        ] {
+            let (stream, rx) = tokio::io::duplex(4096);
+            let mut caller = FramedStream::new(stream);
+            match verb {
+                "approve" => handle_approve(
+                    &mut caller,
+                    &state,
+                    &CallerRole::Observer,
+                    request_id,
+                    &transaction_id,
+                )
+                .await
+                .unwrap(),
+                "cancel" => handle_cancel(
+                    &mut caller,
+                    &state,
+                    &CallerRole::Observer,
+                    request_id,
+                    &transaction_id,
+                )
+                .await
+                .unwrap(),
+                _ => handle_approval_details(
+                    &mut caller,
+                    &state,
+                    &CallerRole::Observer,
+                    request_id,
+                    &transaction_id,
+                )
+                .await
+                .unwrap(),
+            }
+            let mut rx = FramedStream::new(rx);
+            let resp: Value = serde_json::from_slice(&rx.recv().await.unwrap()).unwrap();
+            assert_eq!(resp["type"], "error_response", "{verb} must be refused");
+            assert_eq!(
+                resp["category"], "authorization_failure",
+                "{verb} refusal must be an authorization failure"
+            );
+        }
+
+        // The transaction survived the refusals: an authorized caller can still
+        // approve it, proving we blocked only the unauthorized path.
+        let (stream, rx) = tokio::io::duplex(4096);
+        let mut admin = FramedStream::new(stream);
+        handle_approve(
+            &mut admin,
+            &state,
+            &CallerRole::Admin,
+            "admin-approve",
+            &transaction_id,
+        )
+        .await
+        .unwrap();
+        let mut rx = FramedStream::new(rx);
+        let resp: Value = serde_json::from_slice(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(resp["type"], "approval_response");
     }
 
     #[tokio::test]

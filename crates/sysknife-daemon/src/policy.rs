@@ -160,17 +160,6 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         // package provenance (supply-chain vector) but are reversible.
         | "AddPpa"
         | "RemovePpa"
-        // ── Cross-distro / resolvectl medium-risk ──────────────────────────
-        //
-        // ResolvectlSetDns changes DNS resolution for a named interface.
-        // Risk mirrors SetDnsServers (DNS hijacking / MitM vector — NIST SC-7)
-        // but is scoped to one interface, so Dev (not Admin) is appropriate.
-        | "ResolvectlSetDns"
-        // ── Ubuntu / AppArmor medium-risk ──────────────────────────────────
-        //
-        // AppArmorComplain puts a profile in learning mode. Violations are
-        // logged but not blocked; reversible by re-enforcing.
-        | "AppArmorComplain"
         // ── Ubuntu / Flatpak medium-risk ───────────────────────────────────
         | "UbuntuInstallFlatpak"
         | "UbuntuRemoveFlatpak"
@@ -220,6 +209,10 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "MaskService"
         | "AddPackageRepository"
         | "SetDnsServers"
+        // ResolvectlSetDns runs the same interface DNS change as SetDnsServers
+        // (DNS hijacking / MitM — T1557; NIST SC-7). Per-interface scope is not
+        // a mitigation, so it is Admin/High, not Dev.
+        | "ResolvectlSetDns"
         // ── Ubuntu / apt high-risk ────────────────────────────────────────
         //
         // AptUpdate: low-risk (Observer tier, listed above).
@@ -250,8 +243,12 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         //
         // AppArmorEnforce activates enforcement. Blocking violations that the
         // application relies on can immediately cause it to fail or lose data.
-        // (T1562.001 Impair Defenses — if misapplied to security tools.)
+        // AppArmorComplain is the inverse: it stops a profile from *blocking*
+        // violations (learning mode), disabling MAC enforcement for that
+        // profile — a defense-evasion lever. Both directions alter enforcement
+        // of a security control (T1562.001 Impair Defenses), so both are Admin.
         | "AppArmorEnforce"
+        | "AppArmorComplain"
         // ── Ubuntu / fail2ban high-risk ───────────────────────────────────
         //
         // Fail2banBanIp immediately blocks an IP for all traffic passing
@@ -908,5 +905,31 @@ mod tests {
         assert_eq!(role_for_risk_level(RiskLevel::Low), CallerRole::Observer);
         assert_eq!(role_for_risk_level(RiskLevel::Medium), CallerRole::Dev);
         assert_eq!(role_for_risk_level(RiskLevel::High), CallerRole::Admin);
+    }
+
+    #[test]
+    fn dns_and_apparmor_mutations_require_admin() {
+        // Regression: ResolvectlSetDns (DNS-hijack primitive, parity with
+        // SetDnsServers) and AppArmorComplain (disables MAC enforcement, inverse
+        // of AppArmorEnforce) were previously Dev-gated. Both are High-risk and
+        // must require Admin so they align with role_for_risk_level(High).
+        assert_eq!(
+            min_role_for_action("ResolvectlSetDns"),
+            Some(CallerRole::Admin)
+        );
+        assert_eq!(
+            min_role_for_action("SetDnsServers"),
+            min_role_for_action("ResolvectlSetDns"),
+            "ResolvectlSetDns must match SetDnsServers"
+        );
+        assert_eq!(
+            min_role_for_action("AppArmorComplain"),
+            Some(CallerRole::Admin)
+        );
+        assert_eq!(
+            min_role_for_action("AppArmorEnforce"),
+            min_role_for_action("AppArmorComplain"),
+            "AppArmorComplain must match AppArmorEnforce"
+        );
     }
 }

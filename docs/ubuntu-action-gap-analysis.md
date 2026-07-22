@@ -151,10 +151,10 @@ here, not just different."
 | Proposed action | CLI invocation | Risk | Reversibility | Effort | Server | Desktop | Core | Source URL |
 |---|---|:---:|---|:---:|:---:|:---:|:---:|---|
 | `ResolvectlStatus` | `resolvectl status` | Low | Read-only | Small | ✅ | ✅ | ✅ | <https://manpages.ubuntu.com/manpages/noble/en/man1/resolvectl.1.html> |
-| `ResolvectlSetDns` | `sudo resolvectl dns <iface> <server1> [server2…]` | Medium | `resolvectl revert <iface>` | Small | ✅ | ✅ | ✅ | <https://manpages.ubuntu.com/manpages/noble/en/man1/resolvectl.1.html> |
+| `ResolvectlSetDns` | `sudo resolvectl dns <iface> <server1> [server2…]` | High | `resolvectl revert <iface>` | Small | ✅ | ✅ | ✅ | <https://manpages.ubuntu.com/manpages/noble/en/man1/resolvectl.1.html> |
 | `AppArmorStatus` | `sudo aa-status` | Low | Read-only | Small | ✅ | ✅ | ✅ | <https://manpages.ubuntu.com/manpages//noble/man8/aa-enforce.8.html> |
 | `AppArmorEnforce` | `sudo aa-enforce <profile-path>` | High | `AppArmorComplain` | Small | ✅ | ✅ | ✅ | <https://manpages.ubuntu.com/manpages//noble/man8/aa-enforce.8.html> |
-| `AppArmorComplain` | `sudo aa-complain <profile-path>` | Medium | `AppArmorEnforce` | Small | ✅ | ✅ | ✅ | <https://manpages.ubuntu.com/manpages/bionic/man8/aa-complain.8.html> |
+| `AppArmorComplain` | `sudo aa-complain <profile-path>` | High | `AppArmorEnforce` | Small | ✅ | ✅ | ✅ | <https://manpages.ubuntu.com/manpages/bionic/man8/aa-complain.8.html> |
 | `CloudInitStatus` | `cloud-init status --long` | Low | Read-only | Small | ✅ | ✅ | ✅ | <https://manpages.ubuntu.com/manpages/noble/man1/cloud-init.1.html> |
 | `UbuntuInstallFlatpak` | `sudo runuser -u <user> -- flatpak install --user -y <remote> <app>` | Medium | `UbuntuRemoveFlatpak` | Small | ✅ | ✅ | ❌ | Identical to Fedora `InstallFlatpak` — wire to same implementation |
 | `UbuntuRemoveFlatpak` | `sudo runuser -u <user> -- flatpak uninstall --user -y <app>` | Medium | `UbuntuInstallFlatpak` | Small | ✅ | ✅ | ❌ | |

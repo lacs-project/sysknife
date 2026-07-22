@@ -191,6 +191,15 @@ pub fn print_step_done(result: &ResultEnvelope, log: &Logger) {
             "⚠".if_supports_color(Stream::Stdout, |t| t.yellow())
         ));
     }
+    // Surface post-execution warnings (e.g. "audit trail update failed"). These
+    // are non-fatal — the action itself succeeded — but the operator must see
+    // them, so they are never silently dropped.
+    for w in &result.warnings {
+        log.println(&format!(
+            "    {} {w}",
+            "!".if_supports_color(Stream::Stdout, |t| t.yellow())
+        ));
+    }
     if let Some(ref id) = result.job_id {
         log.println(&format!("    job  {id}"));
     }
