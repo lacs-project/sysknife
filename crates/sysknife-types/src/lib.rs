@@ -99,6 +99,7 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     "ListServices",
     "ListTimers",
     "ReloadDaemon",
+    "CreateScheduledJob",
     "StartService",
     "StopService",
     "RestartService",

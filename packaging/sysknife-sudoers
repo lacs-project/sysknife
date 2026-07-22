@@ -168,3 +168,9 @@ sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/unattended-upgrades-edit *
 # with `sshd -t`, and reloads ssh (rolling back on failure). Allowlisted keys
 # and values only — not an arbitrary sshd_config editor.
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/sshd-option-edit *
+
+# scheduled-job edit — CreateScheduledJob delegates to this root-owned helper,
+# which validates the name/command/schedule (rejecting control characters and
+# validating the OnCalendar expression with systemd-analyze), writes a
+# service+timer unit pair, daemon-reloads, and enables+starts the timer.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/scheduled-job-edit *

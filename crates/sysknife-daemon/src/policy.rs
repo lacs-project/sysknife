@@ -211,6 +211,8 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         // changes the system's automatic-update posture. Both are Admin/High.
         | "SetSshdOption"
         | "ConfigureUnattendedUpgrades"
+        // CreateScheduledJob installs a persistent root-scheduled systemd timer.
+        | "CreateScheduledJob"
         | "DeleteUser"
         | "AddAuthorizedKey"
         | "RemoveAuthorizedKey"
@@ -967,6 +969,7 @@ mod tests {
             "UnlockUserAccount",
             "SetSshdOption",
             "ConfigureUnattendedUpgrades",
+            "CreateScheduledJob",
         ] {
             assert_eq!(
                 min_role_for_action(action),

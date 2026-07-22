@@ -243,6 +243,9 @@ install -Dm 755 packaging/sysknife-unattended-upgrades-edit /usr/lib/sysknife/un
 # sshd-option-edit: invoked by SetSshdOption.
 install -Dm 755 packaging/sysknife-sshd-option-edit /usr/lib/sysknife/sshd-option-edit \
     || fail "Install sysknife-sshd-option-edit"
+# scheduled-job-edit: invoked by CreateScheduledJob.
+install -Dm 755 packaging/sysknife-scheduled-job-edit /usr/lib/sysknife/scheduled-job-edit \
+    || fail "Install sysknife-scheduled-job-edit"
 
 # ---------------------------------------------------------------------------
 # Step 6: Add VM user to sysknife groups

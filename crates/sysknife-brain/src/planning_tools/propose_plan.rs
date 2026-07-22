@@ -105,6 +105,8 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "list all systemd timer units with next trigger time — no params"),
     ("ReloadDaemon",
      "run systemctl daemon-reload to pick up changed unit files — no params"),
+    ("CreateScheduledJob",
+     "schedule a recurring command as a systemd timer — params: name* (unit-safe id), command* (executable line), schedule* (systemd OnCalendar, e.g. \"*-*-* 02:00:00\" or \"daily\")"),
     ("StartService",
      "start a systemd service — param: unit* (e.g. sshd.service)"),
     ("StopService",
