@@ -8,6 +8,7 @@ pub fn specs() -> Vec<ActionSpec> {
         configure_firewall("public", "ssh", true),
         get_firewall_state(),
         get_network_status(),
+        get_listening_ports(),
     ]
 }
 
@@ -108,6 +109,22 @@ pub fn get_network_status() -> ActionSpec {
     ActionSpec {
         action_name: "GetNetworkStatus",
         mechanism: command_mechanism("ip", ["-brief", "addr"]),
+        risk_level: RiskLevel::Low,
+        reboot_required: false,
+        rollback_available: false,
+    }
+}
+
+/// List listening TCP/UDP sockets and, where the daemon has permission, the
+/// owning process (`ss -tulpnH`). Read-only; answers "what is listening on port
+/// X?". Run without sudo (like `GetNetworkStatus`'s `ip`); the socket/port list
+/// is complete regardless of privilege, process attribution is best-effort.
+pub fn get_listening_ports() -> ActionSpec {
+    ActionSpec {
+        action_name: "GetListeningPorts",
+        // -t tcp, -u udp, -l listening only, -p show process, -n numeric
+        // (no DNS/service-name lookups), -H suppress the header row.
+        mechanism: command_mechanism("ss", ["-tulpnH"]),
         risk_level: RiskLevel::Low,
         reboot_required: false,
         rollback_available: false,

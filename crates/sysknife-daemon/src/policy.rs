@@ -51,6 +51,7 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "ListToolboxes"
         | "GetFirewallState"
         | "GetNetworkStatus"
+        | "GetListeningPorts"
         | "GetDiskUsage"
         | "GetDateTime"
         | "ListProcesses"
@@ -201,6 +202,8 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "RemoveBasePackage"
         | "AddUserToGroup"
         | "RemoveUserFromGroup"
+        | "CreateGroup"
+        | "DeleteGroup"
         | "DeleteUser"
         | "AddAuthorizedKey"
         | "RemoveAuthorizedKey"
@@ -931,5 +934,21 @@ mod tests {
             min_role_for_action("AppArmorComplain"),
             "AppArmorComplain must match AppArmorEnforce"
         );
+    }
+
+    #[test]
+    fn group_lifecycle_is_admin_and_listening_ports_is_observer() {
+        // CreateGroup/DeleteGroup are privilege-relevant → Admin, matching the
+        // rest of the user/group family.
+        assert_eq!(min_role_for_action("CreateGroup"), Some(CallerRole::Admin));
+        assert_eq!(min_role_for_action("DeleteGroup"), Some(CallerRole::Admin));
+        assert!(!action_allowed(&CallerRole::Dev, "CreateGroup"));
+        assert!(action_allowed(&CallerRole::Admin, "DeleteGroup"));
+        // GetListeningPorts is a read-only diagnostic → Observer.
+        assert_eq!(
+            min_role_for_action("GetListeningPorts"),
+            Some(CallerRole::Observer)
+        );
+        assert!(action_allowed(&CallerRole::Observer, "GetListeningPorts"));
     }
 }

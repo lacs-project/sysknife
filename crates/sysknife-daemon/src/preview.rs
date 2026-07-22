@@ -87,6 +87,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "ListProcesses"
         | "GetMemoryInfo"
         | "GetNetworkStatus"
+        | "GetListeningPorts"
         | "GetAuthorizedKeys"
         | "GetDateTime"
         | "ListJobHistory"
@@ -331,6 +332,8 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         },
         "AddUserToGroup"
         | "RemoveUserFromGroup"
+        | "CreateGroup"
+        | "DeleteGroup"
         | "DeleteUser"
         | "AddAuthorizedKey"
         | "RemoveAuthorizedKey" => PreviewProfile {

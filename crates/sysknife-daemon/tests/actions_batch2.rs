@@ -240,7 +240,22 @@ fn network_family_covers_wifi_dns_and_firewall() {
             "ConfigureFirewall",
             "GetFirewallState",
             "GetNetworkStatus",
+            "GetListeningPorts",
         ]
+    );
+}
+
+#[test]
+fn get_listening_ports_uses_ss_listening_flags() {
+    let spec = network::get_listening_ports();
+    assert_eq!(spec.risk_level, RiskLevel::Low, "read-only diagnostic");
+    assert!(!spec.reboot_required && !spec.rollback_available);
+    assert_eq!(
+        spec.mechanism,
+        ActionMechanism::Command {
+            program: "ss",
+            args: vec!["-tulpnH".to_string()],
+        }
     );
 }
 
@@ -458,7 +473,46 @@ fn users_family_covers_listing_and_account_management() {
             "DeleteUser",
             "AddUserToGroup",
             "RemoveUserFromGroup",
+            "CreateGroup",
+            "DeleteGroup",
         ]
+    );
+}
+
+#[test]
+fn group_lifecycle_uses_sudo_groupadd_groupdel() {
+    let create = users::create_group("developers", false);
+    let create_system = users::create_group("svc", true);
+    let delete = users::delete_group("developers");
+
+    // Both are Admin/High (group membership gates privilege).
+    assert_eq!(create.risk_level, RiskLevel::High);
+    assert_eq!(delete.risk_level, RiskLevel::High);
+
+    assert_eq!(
+        create.mechanism,
+        ActionMechanism::Command {
+            program: "sudo",
+            args: vec!["groupadd".to_string(), "developers".to_string()],
+        }
+    );
+    assert_eq!(
+        create_system.mechanism,
+        ActionMechanism::Command {
+            program: "sudo",
+            args: vec![
+                "groupadd".to_string(),
+                "--system".to_string(),
+                "svc".to_string()
+            ],
+        }
+    );
+    assert_eq!(
+        delete.mechanism,
+        ActionMechanism::Command {
+            program: "sudo",
+            args: vec!["groupdel".to_string(), "developers".to_string()],
+        }
     );
 }
 
