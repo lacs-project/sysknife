@@ -10,9 +10,10 @@ use crate::actions::{
         validated_journal_time, validated_locale, validated_log_path, validated_lvm_name,
         validated_lvm_size, validated_memory_limit, validated_mount_device,
         validated_mount_options, validated_mount_point, validated_port_or_service,
-        validated_ppa_name, validated_safe_arg, validated_sudo_commands, validated_sudoers_name,
-        validated_swap_path, validated_sysctl_key, validated_sysctl_value, validated_syslog_host,
-        validated_tasks_max, validated_timezone, validated_unit_name, validated_username,
+        validated_ppa_name, validated_pro_service, validated_safe_arg, validated_sudo_commands,
+        validated_sudoers_name, validated_swap_path, validated_sysctl_key, validated_sysctl_value,
+        validated_syslog_host, validated_tasks_max, validated_timezone, validated_unit_name,
+        validated_username,
     },
     ActionMechanism, ActionSpec,
 };
@@ -1192,6 +1193,14 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             Ok(ubuntu_pro::pro_attach(&token))
         }
         "ProDetach" => Ok(ubuntu_pro::pro_detach()),
+        "EnableProService" => {
+            let service = validated_pro_service(require_str(params, "service")?, "service")?;
+            Ok(ubuntu_pro::enable_pro_service(&service))
+        }
+        "DisableProService" => {
+            let service = validated_pro_service(require_str(params, "service")?, "service")?;
+            Ok(ubuntu_pro::disable_pro_service(&service))
+        }
 
         // ── Livepatch ─────────────────────────────────────────────────────
         "LivepatchStatus" => Ok(livepatch::livepatch_status()),

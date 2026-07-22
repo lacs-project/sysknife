@@ -260,6 +260,8 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     "ProStatus",
     "ProAttach",
     "ProDetach",
+    "EnableProService",
+    "DisableProService",
     // Ubuntu / Livepatch (Tier 3)
     "LivepatchStatus",
     // Ubuntu / Multipass (Tier 3)

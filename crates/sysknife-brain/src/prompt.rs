@@ -807,7 +807,7 @@ UfwEnable, UfwDisable, UfwAllow, UfwDeny, UfwReset, UfwDeleteRule, UfwLimit,
 NetplanApply, NetplanSet,
 AppArmorEnforce,
 Fail2banBanIp,
-ProAttach, ProDetach,
+ProAttach, ProDetach, EnableProService, DisableProService,
 UbuntuReleaseUpgrade
 "#;
 
@@ -837,6 +837,7 @@ const DEBIAN_SELECTION_RULES: &str = r#"
 - `ProStatus` shows Ubuntu Pro subscription state — LOW, read-only. Use for "is Ubuntu Pro active?", "what Pro services are enabled?".
 - `ProAttach` binds the machine to an Ubuntu Pro subscription — HIGH. Requires a token param (treated as a credential — never log or echo it). Use only when the user provides an explicit token.
 - `ProDetach` removes the active Ubuntu Pro subscription — HIGH. No params.
+- `EnableProService` / `DisableProService` toggle a single Pro service — HIGH. Param `service` must be one of the fixed allowlist (esm-apps, esm-infra, livepatch, usg, fips, …). Use for "enable ESM", "turn on livepatch". Requires an attached subscription.
 - `LivepatchStatus` shows Canonical Livepatch kernel-patch state — LOW, read-only. Requires `canonical-livepatch` installed and Ubuntu Pro; surfaces "command not found" if binary is absent.
 - `MultipassList` lists Multipass VMs — LOW, read-only. Use for "list VMs", "show multipass instances".
 - `UbuntuReleaseUpgrade` upgrades to the next Ubuntu release — HIGH. Tier 3: takes 20–45 minutes, requires reboot. Only propose when the user explicitly requests a distribution upgrade. Do NOT propose for routine `apt upgrade`.
@@ -922,6 +923,7 @@ ProStatus, ProDetach, LivepatchStatus, MultipassList, UbuntuReleaseUpgrade.
 - `ProStatus`: `{}`
 - `ProAttach`: `{"token":"<ubuntu-pro-token>"}` — token is a credential; never echo or log it
 - `ProDetach`: `{}`
+- `EnableProService` / `DisableProService`: `{"service":"esm-apps"}` (service ∈ the fixed allowlist)
 
 **Distrobox**:
 - `DistroboxList`: `{}`
