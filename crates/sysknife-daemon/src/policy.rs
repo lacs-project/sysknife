@@ -204,6 +204,9 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "RemoveUserFromGroup"
         | "CreateGroup"
         | "DeleteGroup"
+        | "LockUserAccount"
+        | "UnlockUserAccount"
+        | "SignalProcess"
         | "DeleteUser"
         | "AddAuthorizedKey"
         | "RemoveAuthorizedKey"
@@ -950,5 +953,20 @@ mod tests {
             Some(CallerRole::Observer)
         );
         assert!(action_allowed(&CallerRole::Observer, "GetListeningPorts"));
+    }
+
+    #[test]
+    fn process_and_account_control_require_admin() {
+        for action in ["SignalProcess", "LockUserAccount", "UnlockUserAccount"] {
+            assert_eq!(
+                min_role_for_action(action),
+                Some(CallerRole::Admin),
+                "{action} must require Admin"
+            );
+            assert!(
+                !action_allowed(&CallerRole::Dev, action),
+                "{action} must reject Dev"
+            );
+        }
     }
 }

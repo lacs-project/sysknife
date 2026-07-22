@@ -141,6 +141,8 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "show disk space usage for all mounted filesystems (df -h) — no params"),
     ("ListProcesses",
      "list running processes with CPU and memory usage — no params"),
+    ("SignalProcess",
+     "send a signal to a process to stop it — params: pid* (integer > 1); signal (TERM|KILL|HUP|INT, default TERM)"),
     ("GetMemoryInfo",
      "show RAM and swap usage (free -h) — no params"),
     // Identity / time / locale
@@ -195,6 +197,10 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "create a local group — param: group*; optional: system (bool → system GID range)"),
     ("DeleteGroup",
      "delete a local group — param: group*; irreversible"),
+    ("LockUserAccount",
+     "disable password login for a user without deleting it — param: username*"),
+    ("UnlockUserAccount",
+     "re-enable password login for a locked user — param: username*"),
     // SSH — all require username
     ("GetAuthorizedKeys",
      "list SSH authorized_keys for a user — param: username*"),

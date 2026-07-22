@@ -11,6 +11,8 @@ pub fn specs() -> Vec<ActionSpec> {
         remove_user_from_group("alice", "wheel"),
         create_group("developers", false),
         delete_group("developers"),
+        lock_user_account("alice"),
+        unlock_user_account("alice"),
     ]
 }
 
@@ -143,6 +145,35 @@ pub fn delete_group(group: &str) -> ActionSpec {
     ActionSpec {
         action_name: "DeleteGroup",
         mechanism: command_mechanism("sudo", ["groupdel", group]),
+        risk_level: RiskLevel::High,
+        reboot_required: false,
+        rollback_available: false,
+    }
+}
+
+/// Lock a user account (`sudo usermod --lock <username>`).
+///
+/// High risk: disables password login for the account without deleting it
+/// (reversible via [`unlock_user_account`]). Note this does not terminate the
+/// user's existing sessions or disable SSH-key logins.
+pub fn lock_user_account(username: &str) -> ActionSpec {
+    ActionSpec {
+        action_name: "LockUserAccount",
+        mechanism: command_mechanism("sudo", ["usermod", "--lock", username]),
+        risk_level: RiskLevel::High,
+        reboot_required: false,
+        rollback_available: false,
+    }
+}
+
+/// Unlock a previously locked user account (`sudo usermod --unlock <username>`).
+///
+/// High risk: re-enables password login — an access-control change on par with
+/// the rest of the user/group family.
+pub fn unlock_user_account(username: &str) -> ActionSpec {
+    ActionSpec {
+        action_name: "UnlockUserAccount",
+        mechanism: command_mechanism("sudo", ["usermod", "--unlock", username]),
         risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,

@@ -39,6 +39,12 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/gpasswd
 sysknife ALL=(root) NOPASSWD: /usr/sbin/groupadd
 sysknife ALL=(root) NOPASSWD: /usr/sbin/groupdel
 
+# Process control — SignalProcess sends an allowlisted signal to a pid.
+# kill is not a shell-spawner (no GTFOBins escalation); the daemon validates
+# pid >= 2 and the signal name before invoking it. (LockUserAccount /
+# UnlockUserAccount reuse the /usr/sbin/usermod grant above — no new grant.)
+sysknife ALL=(root) NOPASSWD: /usr/bin/kill
+
 # Service management — start, stop, restart, reload, enable, disable, mask, unmask,
 # daemon-reload. All systemctl write operations require root on Fedora.
 sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl
