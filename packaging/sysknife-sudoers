@@ -157,3 +157,14 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/do-release-upgrade
 # eliminating the previous unconstrained grants for cp, python3, and
 # update-grub (red-team findings HI2 and HI3).
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/grub-kargs-edit *
+
+# Unattended-upgrades edit — ConfigureUnattendedUpgrades delegates to this
+# root-owned helper, which writes the fixed /etc/apt/apt.conf.d/20auto-upgrades
+# content (no free-form input) and ensures the package is installed.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/unattended-upgrades-edit *
+
+# sshd option edit — SetSshdOption delegates to this root-owned helper, which
+# writes an allowlisted option to a /etc/ssh/sshd_config.d/ drop-in, validates
+# with `sshd -t`, and reloads ssh (rolling back on failure). Allowlisted keys
+# and values only — not an arbitrary sshd_config editor.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/sshd-option-edit *

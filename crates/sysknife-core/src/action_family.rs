@@ -56,6 +56,7 @@ pub const DEBIAN_ONLY_ACTIONS: &[&str] = &[
     "AptShow",
     "AptListUpgradable",
     "AptHistoryList",
+    "ConfigureUnattendedUpgrades",
     "AddPpa",
     "RemovePpa",
     "SnapInstall",

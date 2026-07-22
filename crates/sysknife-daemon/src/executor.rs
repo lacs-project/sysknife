@@ -590,6 +590,25 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             let public_key = validated_public_key(require_str(params, "public_key")?)?;
             Ok(ssh::remove_authorized_key(&username, &public_key))
         }
+        "SetSshdOption" => {
+            // Allowlist the option name and its permitted values (the helper
+            // re-validates as defense-in-depth). This is deliberately not an
+            // arbitrary sshd_config editor.
+            let option = require_str(params, "option")?;
+            let value = require_str(params, "value")?;
+            let allowed_values: &[&str] = match option {
+                "PermitRootLogin" => &["yes", "no", "prohibit-password", "forced-commands-only"],
+                "PasswordAuthentication"
+                | "PubkeyAuthentication"
+                | "X11Forwarding"
+                | "PermitEmptyPasswords" => &["yes", "no"],
+                _ => return Err(ExecutorError::InvalidParam("option")),
+            };
+            if !allowed_values.contains(&value) {
+                return Err(ExecutorError::InvalidParam("value"));
+            }
+            Ok(ssh::set_sshd_option(option, value))
+        }
 
         // ── apt ──────────────────────────────────────────────────────────
         "AptUpdate" => Ok(apt::apt_update()),
@@ -626,6 +645,9 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         }
         "AptListUpgradable" => Ok(apt::apt_list_upgradable()),
         "AptHistoryList" => Ok(apt::apt_history_list()),
+        "ConfigureUnattendedUpgrades" => Ok(apt::configure_unattended_upgrades(require_bool(
+            params, "enabled",
+        )?)),
 
         // ── ppa ──────────────────────────────────────────────────────────
         "AddPpa" => {
@@ -2043,6 +2065,72 @@ mod tests {
         } else {
             panic!("expected Command mechanism");
         }
+    }
+
+    #[test]
+    fn set_sshd_option_allowlist_guardrails() {
+        // Non-allowlisted option rejected.
+        assert!(matches!(
+            build_action_spec(
+                "SetSshdOption",
+                &json!({ "option": "Ciphers", "value": "aes256-gcm@openssh.com" })
+            )
+            .unwrap_err(),
+            ExecutorError::InvalidParam("option")
+        ));
+        // Allowlisted option, disallowed value.
+        assert!(matches!(
+            build_action_spec(
+                "SetSshdOption",
+                &json!({ "option": "PermitRootLogin", "value": "maybe" })
+            )
+            .unwrap_err(),
+            ExecutorError::InvalidParam("value")
+        ));
+        // Valid combo routes through the scoped helper.
+        let spec = build_action_spec(
+            "SetSshdOption",
+            &json!({ "option": "PasswordAuthentication", "value": "no" }),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.mechanism,
+            ActionMechanism::Command {
+                program: "sudo",
+                args: vec![
+                    "/usr/lib/sysknife/sshd-option-edit".to_string(),
+                    "--option".to_string(),
+                    "PasswordAuthentication".to_string(),
+                    "--value".to_string(),
+                    "no".to_string(),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn configure_unattended_upgrades_toggles_helper_flag() {
+        for (enabled, flag) in [(true, "--enable"), (false, "--disable")] {
+            let spec = build_action_spec(
+                "ConfigureUnattendedUpgrades",
+                &json!({ "enabled": enabled }),
+            )
+            .unwrap();
+            assert_eq!(
+                spec.mechanism,
+                ActionMechanism::Command {
+                    program: "sudo",
+                    args: vec![
+                        "/usr/lib/sysknife/unattended-upgrades-edit".to_string(),
+                        flag.to_string(),
+                    ],
+                }
+            );
+        }
+        assert!(matches!(
+            build_action_spec("ConfigureUnattendedUpgrades", &json!({})).unwrap_err(),
+            ExecutorError::MissingParam("enabled")
+        ));
     }
 
     #[test]

@@ -237,6 +237,12 @@ install -Dm 440 packaging/sysknife-sudoers "${SUDOERS_DIR}/sysknife" \
 # Replaces the previous unconstrained python3/cp/update-grub grants (HI1/HI2/HI3).
 install -Dm 755 packaging/sysknife-grub-kargs-edit /usr/lib/sysknife/grub-kargs-edit \
     || fail "Install sysknife-grub-kargs-edit"
+# unattended-upgrades-edit: invoked by ConfigureUnattendedUpgrades.
+install -Dm 755 packaging/sysknife-unattended-upgrades-edit /usr/lib/sysknife/unattended-upgrades-edit \
+    || fail "Install sysknife-unattended-upgrades-edit"
+# sshd-option-edit: invoked by SetSshdOption.
+install -Dm 755 packaging/sysknife-sshd-option-edit /usr/lib/sysknife/sshd-option-edit \
+    || fail "Install sysknife-sshd-option-edit"
 
 # ---------------------------------------------------------------------------
 # Step 6: Add VM user to sysknife groups
