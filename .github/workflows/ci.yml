@@ -227,6 +227,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Review dependency changes
+        # dependency-review requires GitHub Advanced Security + the dependency
+        # graph, which are free on public repositories but a paid add-on on
+        # private ones. The repo is private during the launch hold and goes
+        # public at release, so gate the review on visibility: the step no-ops
+        # (job stays green) while private and runs for real once public. The
+        # job itself always runs, so this required check always reports a status.
+        if: github.event.repository.visibility == 'public'
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v4
         with:
           fail-on-severity: high
