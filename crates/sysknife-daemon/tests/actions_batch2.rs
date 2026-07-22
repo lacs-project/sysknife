@@ -27,6 +27,7 @@ fn services_family_covers_list_control_and_logs() {
             "ReloadService",
             "ListTimers",
             "ReloadDaemon",
+            "CreateScheduledJob",
         ]
     );
 }

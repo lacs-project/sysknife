@@ -349,6 +349,18 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             rollback_available: false,
             warnings: vec!["approval required".to_string()],
         },
+        "CreateScheduledJob" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec![
+                "a systemd timer will run the command on a recurring schedule".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec![
+                "persistent root-scheduled execution".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
         "AddUserToGroup"
         | "RemoveUserFromGroup"
         | "CreateGroup"

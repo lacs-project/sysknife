@@ -403,6 +403,42 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         }
         "ListTimers" => Ok(services::list_timers()),
         "ReloadDaemon" => Ok(services::reload_daemon()),
+        "CreateScheduledJob" => {
+            // Job name: safe unit stem (no path/dot/@ templating).
+            let name = require_str(params, "name")?;
+            if name.is_empty()
+                || name.len() > 64
+                || !name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphanumeric())
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                return Err(ExecutorError::InvalidParam("name"));
+            }
+            // Command: reject control characters (newlines would inject extra
+            // unit directives). systemd argv-splits ExecStart with no shell.
+            let command = require_str(params, "command")?;
+            if command.is_empty() || command.len() > 512 || command.chars().any(|c| c.is_control())
+            {
+                return Err(ExecutorError::InvalidParam("command"));
+            }
+            // Schedule: OnCalendar charset; the helper validates it semantically
+            // with `systemd-analyze calendar`.
+            let schedule = require_str(params, "schedule")?;
+            if schedule.is_empty()
+                || schedule.len() > 128
+                || !schedule.chars().all(|c| {
+                    c.is_ascii_alphanumeric()
+                        || matches!(c, ' ' | ':' | ',' | '*' | '/' | '.' | '~' | '+' | '-')
+                })
+            {
+                return Err(ExecutorError::InvalidParam("schedule"));
+            }
+            Ok(services::create_scheduled_job(name, command, schedule))
+        }
 
         // ── Toolbox ───────────────────────────────────────────────────────
         // Toolbox operations require a `username` param — toolbox containers are
@@ -2065,6 +2101,58 @@ mod tests {
         } else {
             panic!("expected Command mechanism");
         }
+    }
+
+    #[test]
+    fn create_scheduled_job_validates_name_command_schedule() {
+        // A newline in the command would inject extra unit directives.
+        assert!(matches!(
+            build_action_spec(
+                "CreateScheduledJob",
+                &json!({ "name": "backup", "command": "/bin/true\nExecStartPre=/evil", "schedule": "daily" })
+            )
+            .unwrap_err(),
+            ExecutorError::InvalidParam("command")
+        ));
+        // A path-like / dotted name is rejected (must be a safe unit stem).
+        assert!(matches!(
+            build_action_spec(
+                "CreateScheduledJob",
+                &json!({ "name": "../evil", "command": "/bin/true", "schedule": "daily" })
+            )
+            .unwrap_err(),
+            ExecutorError::InvalidParam("name")
+        ));
+        // A schedule with shell metacharacters is rejected by the charset gate.
+        assert!(matches!(
+            build_action_spec(
+                "CreateScheduledJob",
+                &json!({ "name": "backup", "command": "/bin/true", "schedule": "daily; rm -rf /" })
+            )
+            .unwrap_err(),
+            ExecutorError::InvalidParam("schedule")
+        ));
+        // A valid job routes through the scoped helper with the right argv.
+        let spec = build_action_spec(
+            "CreateScheduledJob",
+            &json!({ "name": "nightly-backup", "command": "/usr/bin/backup --full", "schedule": "*-*-* 02:00:00" }),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.mechanism,
+            ActionMechanism::Command {
+                program: "sudo",
+                args: vec![
+                    "/usr/lib/sysknife/scheduled-job-edit".to_string(),
+                    "--name".to_string(),
+                    "nightly-backup".to_string(),
+                    "--command".to_string(),
+                    "/usr/bin/backup --full".to_string(),
+                    "--schedule".to_string(),
+                    "*-*-* 02:00:00".to_string(),
+                ],
+            }
+        );
     }
 
     #[test]

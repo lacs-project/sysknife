@@ -15,7 +15,42 @@ pub fn specs() -> Vec<ActionSpec> {
         reload_service("nginx.service"),
         list_timers(),
         reload_daemon(),
+        create_scheduled_job("sysknife-example", "/usr/bin/true", "*-*-* 02:00:00"),
     ]
+}
+
+/// Installed path of the privileged scheduled-job helper script.
+/// See `packaging/sysknife-scheduled-job-edit` and the matching NOPASSWD grant
+/// in `packaging/sysknife-sudoers`.
+const SCHEDULED_JOB_HELPER: &str = "/usr/lib/sysknife/scheduled-job-edit";
+
+/// Create a recurring scheduled job as a systemd `.service` + `.timer` pair.
+///
+/// Risk: High. Persistent root-scheduled execution. Delegates to the root-owned
+/// helper, which re-validates the job name, rejects control characters in the
+/// command (blocking unit-file injection), validates the `OnCalendar`
+/// expression with `systemd-analyze calendar`, writes the units,
+/// `daemon-reload`s, and enables+starts the timer. The command is written to
+/// `ExecStart`, which systemd argv-splits with no shell.
+pub fn create_scheduled_job(name: &str, command: &str, schedule: &str) -> ActionSpec {
+    ActionSpec {
+        action_name: "CreateScheduledJob",
+        mechanism: command_mechanism(
+            "sudo",
+            [
+                SCHEDULED_JOB_HELPER,
+                "--name",
+                name,
+                "--command",
+                command,
+                "--schedule",
+                schedule,
+            ],
+        ),
+        risk_level: RiskLevel::High,
+        reboot_required: false,
+        rollback_available: false,
+    }
 }
 
 pub fn list_services() -> ActionSpec {

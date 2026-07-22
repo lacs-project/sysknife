@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+# sysknife-scheduled-job-edit — create a recurring scheduled job as a systemd
+# service+timer unit pair.
+#
+# Install to: /usr/lib/sysknife/scheduled-job-edit
+# Mode:       0755
+# Owner:      root:root
+#
+# Invoked exclusively by the sysknife-daemon via:
+#   sudo /usr/lib/sysknife/scheduled-job-edit \
+#        --name <name> --command <command> --schedule <OnCalendar>
+#
+# The sudoers entry grants NOPASSWD only on this exact helper path. All three
+# inputs are re-validated here (defense-in-depth — the daemon validates them
+# too):
+#   - name: must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ (safe unit stem; no
+#     path separators, dots, or `@` templating).
+#   - command: no control characters (blocks unit-file directive injection via
+#     newlines); `%` is escaped to `%%` so it is never read as a systemd
+#     specifier. Written verbatim to ExecStart, which systemd argv-splits with
+#     NO shell.
+#   - schedule: validated semantically with `systemd-analyze calendar`.
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+
+UNIT_DIR = "/etc/systemd/system"
+SYSTEMCTL = "/usr/bin/systemctl"
+SYSTEMD_ANALYZE = "/usr/bin/systemd-analyze"
+
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def die(msg: str) -> None:
+    print(f"sysknife-scheduled-job-edit: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Create a systemd timer job.")
+    parser.add_argument("--name", required=True)
+    parser.add_argument("--command", required=True)
+    parser.add_argument("--schedule", required=True)
+    args = parser.parse_args()
+
+    if not NAME_RE.match(args.name):
+        die(f"invalid job name {args.name!r}")
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in args.command):
+        die("command contains control characters")
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in args.schedule):
+        die("schedule contains control characters")
+
+    # Semantic validation of the OnCalendar expression.
+    result = subprocess.run(
+        [SYSTEMD_ANALYZE, "calendar", args.schedule],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if result.returncode != 0:
+        die(f"invalid OnCalendar schedule {args.schedule!r}")
+
+    # `%` would be read as a systemd specifier in ExecStart; escape it so the
+    # command is taken literally.
+    exec_start = args.command.replace("%", "%%")
+
+    service_path = os.path.join(UNIT_DIR, f"{args.name}.service")
+    timer_path = os.path.join(UNIT_DIR, f"{args.name}.timer")
+
+    service_unit = (
+        "[Unit]\n"
+        f"Description=SysKnife scheduled job: {args.name}\n\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"ExecStart={exec_start}\n"
+    )
+    timer_unit = (
+        "[Unit]\n"
+        f"Description=SysKnife timer for {args.name}\n\n"
+        "[Timer]\n"
+        f"OnCalendar={args.schedule}\n"
+        "Persistent=true\n\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+    )
+
+    try:
+        with open(service_path, "w") as fh:
+            fh.write(service_unit)
+        with open(timer_path, "w") as fh:
+            fh.write(timer_unit)
+    except OSError as exc:
+        die(f"cannot write unit files: {exc}")
+
+    if subprocess.run([SYSTEMCTL, "daemon-reload"], check=False).returncode != 0:
+        die("systemctl daemon-reload failed")
+
+    if (
+        subprocess.run(
+            [SYSTEMCTL, "enable", "--now", f"{args.name}.timer"], check=False
+        ).returncode
+        != 0
+    ):
+        die(f"failed to enable/start {args.name}.timer")
+
+
+if __name__ == "__main__":
+    main()
