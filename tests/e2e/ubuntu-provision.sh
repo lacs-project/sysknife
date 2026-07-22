@@ -246,6 +246,9 @@ install -Dm 755 packaging/sysknife-sshd-option-edit /usr/lib/sysknife/sshd-optio
 # scheduled-job-edit: invoked by CreateScheduledJob.
 install -Dm 755 packaging/sysknife-scheduled-job-edit /usr/lib/sysknife/scheduled-job-edit \
     || fail "Install sysknife-scheduled-job-edit"
+# sysctl-edit: invoked by SetSysctl.
+install -Dm 755 packaging/sysknife-sysctl-edit /usr/lib/sysknife/sysctl-edit \
+    || fail "Install sysknife-sysctl-edit"
 
 # ---------------------------------------------------------------------------
 # Step 6: Add VM user to sysknife groups

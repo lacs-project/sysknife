@@ -421,7 +421,7 @@ GetNetworkStatus, GetDiskUsage, GetDateTime, ListProcesses, GetMemoryInfo,
 GetAuthorizedKeys, ListPackageRepositories, ListContainers, GetContainerInfo,
 ListUsers, ListGroups, ListJobHistory,
 ResolvectlStatus,
-GetJournalLog, GetLvmReport
+GetJournalLog, GetLvmReport, GetSysctl
 
 ### Medium risk — cross-distro (approval required before execution)
 
@@ -444,7 +444,8 @@ CreateUser
 RebootSystem,
 AddUserToGroup, RemoveUserFromGroup, DeleteUser,
 AddAuthorizedKey, RemoveAuthorizedKey,
-ExtendLogicalVolume, CreateLogicalVolume, CreateLvSnapshot
+ExtendLogicalVolume, CreateLogicalVolume, CreateLvSnapshot,
+SetSysctl
 
 ## Risk classification rules
 
@@ -528,6 +529,10 @@ Use `"username"` as the key — NOT `"user"`.
 - `ExtendLogicalVolume`: `{"vg":"ubuntu-vg","lv":"ubuntu-lv","size":"+10G"}` — grows the LV **and** its filesystem; `size` is `+N<unit>` to add or `N<unit>` absolute.
 - `CreateLogicalVolume`: `{"vg":"ubuntu-vg","name":"data","size":"20G"}`.
 - `CreateLvSnapshot`: `{"vg":"ubuntu-vg","origin":"ubuntu-lv","snapshot":"ubuntu-lv-snap","size":"5G"}` — `size` is the copy-on-write reserve.
+
+**Kernel / sysctl**:
+- `GetSysctl`: `{"key":"net.ipv4.ip_forward"}` (omit `key` to dump the whole table).
+- `SetSysctl`: `{"key":"vm.swappiness","value":"10"}` — applies immediately and persists; `value` is a number or space-separated list.
 
 **Users and groups**:
 - `CreateUser`: `{"username":"alice"}` (optional: `"shell"`, `"home"`)

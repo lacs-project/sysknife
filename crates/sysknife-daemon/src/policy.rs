@@ -60,6 +60,8 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "GetJournalLog"
         // ── Storage / LVM read-only ───────────────────────────────────────
         | "GetLvmReport"
+        // ── Kernel / sysctl read-only ─────────────────────────────────────
+        | "GetSysctl"
         | "GetAuthorizedKeys"
         | "ListUsers"
         | "ListGroups"
@@ -231,6 +233,12 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "ExtendLogicalVolume"
         | "CreateLogicalVolume"
         | "CreateLvSnapshot"
+        // ── Kernel / sysctl mutation ──────────────────────────────────────
+        //
+        // SetSysctl changes a live kernel parameter and persists it. A wrong
+        // net.* / vm.* / kernel.* value can degrade networking, memory
+        // behaviour, or security posture, so it is Admin/High.
+        | "SetSysctl"
         | "DeleteUser"
         | "AddAuthorizedKey"
         | "RemoveAuthorizedKey"

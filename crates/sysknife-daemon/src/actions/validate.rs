@@ -423,6 +423,46 @@ pub fn validated_journal_grep(s: &str, param: &'static str) -> Result<String, Ex
     Ok(s.to_string())
 }
 
+/// Validate a sysctl key in dotted form (`net.ipv4.ip_forward`, `vm.swappiness`).
+///
+/// First character must be alphanumeric (blocks the leading-dash
+/// option-injection vector); the rest is `[a-z0-9._-]`. Slashes are rejected —
+/// SysKnife always uses the dotted form, never `net/ipv4/...`. Length ≤ 128.
+/// Mirrors `KEY_RE` in `packaging/sysknife-sysctl-edit`.
+pub fn validated_sysctl_key(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s.is_empty() || s.len() > 128 {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    let first = s.chars().next().unwrap();
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
+/// Validate a sysctl value: printable, no control characters, from a
+/// numeric/token/list allowlist (sysctl values are numbers or space-separated
+/// lists such as `4096 87380 6291456`). Length 1..=200. Mirrors `VALUE_RE` in
+/// `packaging/sysknife-sysctl-edit`.
+pub fn validated_sysctl_value(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s.is_empty() || s.len() > 200 {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '_' | '/' | ':' | ',' | '-'))
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1010,5 +1050,28 @@ mod tests {
         assert!(validated_journal_grep("err.*fatal", "grep").is_ok());
         assert!(validated_journal_grep("bad\nline", "grep").is_err());
         assert!(validated_journal_grep("", "grep").is_err());
+    }
+
+    // ── sysctl validators ─────────────────────────────────────────────────
+
+    #[test]
+    fn sysctl_key_accepts_dotted_and_rejects_injection() {
+        assert!(validated_sysctl_key("net.ipv4.ip_forward", "key").is_ok());
+        assert!(validated_sysctl_key("vm.swappiness", "key").is_ok());
+        assert!(validated_sysctl_key("kernel.kptr_restrict", "key").is_ok());
+        assert!(validated_sysctl_key("-net.ipv4.ip_forward", "key").is_err()); // injection
+        assert!(validated_sysctl_key("net/ipv4/ip_forward", "key").is_err()); // slash form
+        assert!(validated_sysctl_key("Net.Ipv4", "key").is_err()); // uppercase
+        assert!(validated_sysctl_key("", "key").is_err());
+    }
+
+    #[test]
+    fn sysctl_value_accepts_numbers_and_lists() {
+        assert!(validated_sysctl_value("1", "value").is_ok());
+        assert!(validated_sysctl_value("4096 87380 6291456", "value").is_ok()); // multi-value
+        assert!(validated_sysctl_value("kernel.core", "value").is_ok());
+        assert!(validated_sysctl_value("bad\nvalue", "value").is_err());
+        assert!(validated_sysctl_value("v$(id)", "value").is_err()); // shell metachar
+        assert!(validated_sysctl_value("", "value").is_err());
     }
 }

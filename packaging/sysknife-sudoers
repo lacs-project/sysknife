@@ -183,3 +183,12 @@ sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/sshd-option-edit *
 # validating the OnCalendar expression with systemd-analyze), writes a
 # service+timer unit pair, daemon-reloads, and enables+starts the timer.
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/scheduled-job-edit *
+
+# sysctl edit — SetSysctl delegates to this root-owned helper, which validates
+# the key (dotted form, no injection) and value (numeric/token allowlist),
+# applies it with `sysctl -w`, and persists a `key = value` line to
+# /etc/sysctl.d/60-sysknife.conf. A bare `sysctl` grant is deliberately NOT
+# given: `sysctl -p <file>` would let the daemon load an arbitrary attacker
+# file, so only this narrow helper path is allowed. GetSysctl reads via bare
+# `sysctl` (the daemon is root) and needs no grant.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/sysctl-edit *

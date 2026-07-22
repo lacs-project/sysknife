@@ -161,6 +161,11 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "create a new logical volume in a volume group (lvcreate) — params: vg*, name*, size* (e.g. '20G'); High risk"),
     ("CreateLvSnapshot",
      "snapshot a logical volume before risky changes (lvcreate -s) — params: vg*, origin* (LV to snapshot), snapshot* (new name), size* (copy-on-write reserve, e.g. '5G'); High risk"),
+    // Kernel / sysctl
+    ("GetSysctl",
+     "read a kernel parameter (sysctl) — param: key (optional, dotted e.g. 'net.ipv4.ip_forward'; omit to dump all); read-only"),
+    ("SetSysctl",
+     "set AND persist a kernel parameter (runtime + /etc/sysctl.d drop-in) — params: key* (dotted, e.g. 'vm.swappiness'), value* (number or space-separated list); High risk"),
     // Identity / time / locale
     ("GetDateTime",
      "current date, time, timezone, and NTP status (timedatectl) — no params"),
