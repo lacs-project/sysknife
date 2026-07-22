@@ -195,6 +195,17 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "grant a scoped sudo rule (validated with visudo before install) — params: name* (^[a-z0-9][a-z0-9_-]*$), user*, commands* ('ALL' or comma-separated ABSOLUTE paths), runas (default root, or 'ALL'), nopasswd (bool); High risk — this configures privilege escalation"),
     ("RevokeSudoAccess",
      "remove a SysKnife-managed sudoers.d drop-in — param: name*; High risk"),
+    // Log management
+    ("GetLogrotateStatus",
+     "dry-run logrotate to show what would rotate (logrotate -d) — param: config (optional path); read-only"),
+    ("ConfigureLogRotation",
+     "write a logrotate drop-in (validated with logrotate -d) — params: name*, path* (log file/glob under /var/log), frequency* (daily|weekly|monthly), rotate* (count 0-1000), compress (bool); Medium risk"),
+    ("RemoveLogRotation",
+     "remove a SysKnife-managed logrotate drop-in — param: name*; Medium risk"),
+    ("ConfigureRemoteSyslog",
+     "forward all logs to a remote collector via rsyslog (validated with rsyslogd -N1) — params: host*, port* (1-65535), protocol* (tcp|udp); High risk — logs leave the host"),
+    ("RemoveRemoteSyslog",
+     "stop remote syslog forwarding (remove the rsyslog drop-in) — no params; High risk"),
     // Identity / time / locale
     ("GetDateTime",
      "current date, time, timezone, and NTP status (timedatectl) — no params"),

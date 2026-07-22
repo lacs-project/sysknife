@@ -142,6 +142,12 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     "GetSudoGrants",
     "GrantSudoAccess",
     "RevokeSudoAccess",
+    // Log management (cross-distro)
+    "GetLogrotateStatus",
+    "ConfigureLogRotation",
+    "RemoveLogRotation",
+    "ConfigureRemoteSyslog",
+    "RemoveRemoteSyslog",
     "GetDateTime",
     "SetHostname",
     "SetTimezone",
