@@ -67,6 +67,15 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree
 # OSTree admin operations — pin/unpin deployments require root filesystem access.
 sysknife ALL=(root) NOPASSWD: /usr/bin/ostree
 
+# Storage / LVM — ExtendLogicalVolume / CreateLogicalVolume / CreateLvSnapshot.
+# lvextend/lvcreate rewrite VG metadata and require root. `lvextend -r` also
+# spawns resize2fs/xfs_growfs itself (as root), so no separate resize grant is
+# needed. GetLvmReport reads metadata via bare `lvs` (the daemon is already
+# root) and needs no grant. vg/lv/snapshot names and sizes are validated
+# upstream (validated_lvm_name / validated_lvm_size in actions/validate.rs).
+sysknife ALL=(root) NOPASSWD: /usr/sbin/lvextend
+sysknife ALL=(root) NOPASSWD: /usr/sbin/lvcreate
+
 # Shell for the few multi-step root operations with no argv-only equivalent:
 #   - ConfigureFirewall (network.rs): `firewall-cmd --permanent … && firewall-cmd --reload`
 #   - AddAuthorizedKey / RemoveAuthorizedKey (ssh.rs): grep-guarded append / sed delete

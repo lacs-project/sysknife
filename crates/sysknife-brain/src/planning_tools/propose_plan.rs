@@ -147,6 +147,20 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "send a signal to a process to stop it — params: pid* (integer > 1); signal (TERM|KILL|HUP|INT, default TERM)"),
     ("GetMemoryInfo",
      "show RAM and swap usage (free -h) — no params"),
+    // Observability / journald
+    ("GetJournalLog",
+     "read filtered systemd journal entries as JSON (journalctl) — all params optional: unit (e.g. 'ssh.service'), priority (0-7 or name like 'err', or a range '0..3'), boot (bool, current boot only), kernel (bool, kernel messages only), since/until (e.g. '2026-07-22 10:00:00', 'yesterday', '-1h'), grep (regex on MESSAGE), lines (default 100, max 10000); read-only"),
+    ("VacuumJournal",
+     "reclaim journal disk space — supply exactly one of size_mb (cap total journal size) or retain_days (delete entries older than N days)"),
+    // Storage / LVM
+    ("GetLvmReport",
+     "list logical volumes with VG, size, attributes, and usage as JSON (lvs) — no params; read-only"),
+    ("ExtendLogicalVolume",
+     "grow a logical volume AND its filesystem in one step (lvextend -r) — params: vg*, lv*, size* (e.g. '+10G' to add, or '50G' absolute); High risk"),
+    ("CreateLogicalVolume",
+     "create a new logical volume in a volume group (lvcreate) — params: vg*, name*, size* (e.g. '20G'); High risk"),
+    ("CreateLvSnapshot",
+     "snapshot a logical volume before risky changes (lvcreate -s) — params: vg*, origin* (LV to snapshot), snapshot* (new name), size* (copy-on-write reserve, e.g. '5G'); High risk"),
     // Identity / time / locale
     ("GetDateTime",
      "current date, time, timezone, and NTP status (timedatectl) — no params"),

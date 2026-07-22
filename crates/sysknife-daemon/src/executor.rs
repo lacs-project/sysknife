@@ -1,12 +1,13 @@
 use crate::actions::{
     apparmor, apt, cloudinit, containers, deployment, distrobox, fail2ban, filesystem, flatpak,
-    grub, identity, layering, livepatch, multipass, netplan, network, package_repos, ppa,
-    processes, reboot, release_upgrade, resolvectl, services, snap, ssh, system_info, toolbox,
+    grub, identity, journald, layering, livepatch, lvm, multipass, netplan, network, package_repos,
+    ppa, processes, reboot, release_upgrade, resolvectl, services, snap, ssh, system_info, toolbox,
     ubuntu_pro, ufw, users,
     validate::{
-        validated_apparmor_profile, validated_group, validated_hostname, validated_locale,
-        validated_port_or_service, validated_ppa_name, validated_safe_arg, validated_timezone,
-        validated_unit_name, validated_username,
+        validated_apparmor_profile, validated_group, validated_hostname, validated_journal_grep,
+        validated_journal_priority, validated_journal_time, validated_locale, validated_lvm_name,
+        validated_lvm_size, validated_port_or_service, validated_ppa_name, validated_safe_arg,
+        validated_timezone, validated_unit_name, validated_username,
     },
     ActionMechanism, ActionSpec,
 };
@@ -515,6 +516,78 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
                     .unwrap_or("TERM"),
             )?;
             Ok(processes::signal_process(pid as u32, signal))
+        }
+
+        // ── Journald ──────────────────────────────────────────────────────
+        "GetJournalLog" => {
+            let unit = optional_validated(params, "unit", validated_unit_name)?;
+            let priority = optional_validated(params, "priority", validated_journal_priority)?;
+            let since = optional_validated(params, "since", validated_journal_time)?;
+            let until = optional_validated(params, "until", validated_journal_time)?;
+            let grep = optional_validated(params, "grep", validated_journal_grep)?;
+            // `lines` defaults to 100 and is clamped so an enormous value cannot
+            // make the daemon buffer an unbounded journal dump.
+            let lines = params
+                .get("lines")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(100)
+                .clamp(1, 10_000) as u32;
+            let boot = params
+                .get("boot")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let kernel = params
+                .get("kernel")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            Ok(journald::get_journal_log(&journald::JournalQuery {
+                lines,
+                unit: unit.as_deref(),
+                priority: priority.as_deref(),
+                boot,
+                kernel,
+                since: since.as_deref(),
+                until: until.as_deref(),
+                grep: grep.as_deref(),
+            }))
+        }
+        "VacuumJournal" => {
+            // Exactly one of size_mb / retain_days selects the vacuum mode.
+            let size_mb = params.get("size_mb").and_then(|v| v.as_u64());
+            let retain_days = params.get("retain_days").and_then(|v| v.as_u64());
+            match (size_mb, retain_days) {
+                (Some(mb), None) if (1..=u32::MAX as u64).contains(&mb) => {
+                    Ok(journald::vacuum_journal_by_size(mb as u32))
+                }
+                (None, Some(days)) if (1..=u32::MAX as u64).contains(&days) => {
+                    Ok(journald::vacuum_journal_by_time(days as u32))
+                }
+                (None, None) => Err(ExecutorError::MissingParam("size_mb")),
+                // both supplied, or an out-of-range value
+                _ => Err(ExecutorError::InvalidParam("size_mb")),
+            }
+        }
+
+        // ── Storage / LVM ───────────────────────────────────────────────────
+        "GetLvmReport" => Ok(lvm::get_lvm_report()),
+        "ExtendLogicalVolume" => {
+            let vg = validated_lvm_name(require_str(params, "vg")?, "vg")?;
+            let lv = validated_lvm_name(require_str(params, "lv")?, "lv")?;
+            let size = validated_lvm_size(require_str(params, "size")?, "size")?;
+            Ok(lvm::extend_logical_volume(&vg, &lv, &size))
+        }
+        "CreateLogicalVolume" => {
+            let vg = validated_lvm_name(require_str(params, "vg")?, "vg")?;
+            let name = validated_lvm_name(require_str(params, "name")?, "name")?;
+            let size = validated_lvm_size(require_str(params, "size")?, "size")?;
+            Ok(lvm::create_logical_volume(&vg, &name, &size))
+        }
+        "CreateLvSnapshot" => {
+            let vg = validated_lvm_name(require_str(params, "vg")?, "vg")?;
+            let origin = validated_lvm_name(require_str(params, "origin")?, "origin")?;
+            let snapshot = validated_lvm_name(require_str(params, "snapshot")?, "snapshot")?;
+            let size = validated_lvm_size(require_str(params, "size")?, "size")?;
+            Ok(lvm::create_lv_snapshot(&vg, &origin, &snapshot, &size))
         }
 
         // ── System info ──────────────────────────────────────────────────
@@ -1056,6 +1129,27 @@ fn require_str<'a>(params: &'a Value, key: &'static str) -> Result<&'a str, Exec
     match params.get(key) {
         None => Err(ExecutorError::MissingParam(key)),
         Some(v) => v.as_str().ok_or(ExecutorError::InvalidParam(key)),
+    }
+}
+
+/// Extract an optional string param and validate it. An absent key or an empty
+/// string yields `None` (the filter is simply omitted); a present non-empty
+/// value is passed through `validator`, propagating any validation error.
+fn optional_validated<F>(
+    params: &Value,
+    key: &'static str,
+    validator: F,
+) -> Result<Option<String>, ExecutorError>
+where
+    F: FnOnce(&str, &'static str) -> Result<String, ExecutorError>,
+{
+    match params
+        .get(key)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        Some(s) => Ok(Some(validator(s, key)?)),
+        None => Ok(None),
     }
 }
 

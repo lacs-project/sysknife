@@ -420,11 +420,12 @@ ListServices, GetServiceLogs, GetServiceStatus, ListTimers,
 GetNetworkStatus, GetDiskUsage, GetDateTime, ListProcesses, GetMemoryInfo,
 GetAuthorizedKeys, ListPackageRepositories, ListContainers, GetContainerInfo,
 ListUsers, ListGroups, ListJobHistory,
-ResolvectlStatus
+ResolvectlStatus,
+GetJournalLog, GetLvmReport
 
 ### Medium risk — cross-distro (approval required before execution)
 
-ResolvectlSetDns
+ResolvectlSetDns, VacuumJournal
 "#;
 
 const CROSS_DISTRO_RISK_RULES: &str = r#"
@@ -442,7 +443,8 @@ CreateUser
 
 RebootSystem,
 AddUserToGroup, RemoveUserFromGroup, DeleteUser,
-AddAuthorizedKey, RemoveAuthorizedKey
+AddAuthorizedKey, RemoveAuthorizedKey,
+ExtendLogicalVolume, CreateLogicalVolume, CreateLvSnapshot
 
 ## Risk classification rules
 
@@ -516,6 +518,16 @@ Use `"username"` as the key — NOT `"user"`.
 **Services** — require `"unit"` (systemd unit name, e.g. `"sshd.service"`):
 - `StartService` / `StopService` / `RestartService` / `ReloadService` / `MaskService` / `UnmaskService` / `GetServiceLogs` / `GetServiceStatus`: `{"unit":"sshd.service"}`
 - `SetServiceEnabled`: `{"unit":"sshd.service","enabled":true}`
+
+**Journald** (read-only query + maintenance):
+- `GetJournalLog`: all params optional — `{"unit":"ssh.service","priority":"err","boot":true,"lines":100,"since":"-1h","grep":"timeout"}`; kernel ring buffer only: `{"kernel":true}`. `priority` is `0`–`7`, a name (`err`), or a range (`0..3`).
+- `VacuumJournal`: exactly ONE of `{"size_mb":500}` (cap total size) or `{"retain_days":7}` (age out older entries).
+
+**Storage / LVM**:
+- `GetLvmReport`: `{}` (read-only volume inventory).
+- `ExtendLogicalVolume`: `{"vg":"ubuntu-vg","lv":"ubuntu-lv","size":"+10G"}` — grows the LV **and** its filesystem; `size` is `+N<unit>` to add or `N<unit>` absolute.
+- `CreateLogicalVolume`: `{"vg":"ubuntu-vg","name":"data","size":"20G"}`.
+- `CreateLvSnapshot`: `{"vg":"ubuntu-vg","origin":"ubuntu-lv","snapshot":"ubuntu-lv-snap","size":"5G"}` — `size` is the copy-on-write reserve.
 
 **Users and groups**:
 - `CreateUser`: `{"username":"alice"}` (optional: `"shell"`, `"home"`)

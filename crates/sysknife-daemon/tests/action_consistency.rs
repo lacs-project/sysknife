@@ -13,8 +13,8 @@ use serde_json::json;
 use sysknife_brain::planning_tools::propose_plan::KNOWN_ACTIONS;
 use sysknife_daemon::actions::{
     apparmor, apt, cloudinit, containers, deployment, distrobox, fail2ban, filesystem, flatpak,
-    grub, identity, layering, livepatch, multipass, netplan, network, package_repos, ppa,
-    processes, reboot, release_upgrade, resolvectl, services, snap, ssh, system_info, toolbox,
+    grub, identity, journald, layering, livepatch, lvm, multipass, netplan, network, package_repos,
+    ppa, processes, reboot, release_upgrade, resolvectl, services, snap, ssh, system_info, toolbox,
     ubuntu_pro, ufw, users,
 };
 use sysknife_daemon::executor::build_action_spec;
@@ -59,6 +59,12 @@ fn all_spec_action_names() -> BTreeSet<&'static str> {
         names.insert(spec.action_name);
     }
     for spec in processes::specs() {
+        names.insert(spec.action_name);
+    }
+    for spec in journald::specs() {
+        names.insert(spec.action_name);
+    }
+    for spec in lvm::specs() {
         names.insert(spec.action_name);
     }
     for spec in identity::specs() {
