@@ -465,6 +465,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         // ── Network ───────────────────────────────────────────────────────
         "GetFirewallState" => Ok(network::get_firewall_state()),
         "GetNetworkStatus" => Ok(network::get_network_status()),
+        "GetListeningPorts" => Ok(network::get_listening_ports()),
         "ConfigureWifi" => {
             let ssid = validated_safe_arg(require_str(params, "ssid")?, "ssid")?;
             // password is optional — open networks connect without one.
@@ -530,6 +531,18 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             let username = validated_username(resolve_username(params)?, "username")?;
             let group = validated_group(require_str(params, "group")?, "group")?;
             Ok(users::remove_user_from_group(&username, &group))
+        }
+        "CreateGroup" => {
+            let group = validated_group(require_str(params, "group")?, "group")?;
+            let system = params
+                .get("system")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            Ok(users::create_group(&group, system))
+        }
+        "DeleteGroup" => {
+            let group = validated_group(require_str(params, "group")?, "group")?;
+            Ok(users::delete_group(&group))
         }
 
         // ── SSH ──────────────────────────────────────────────────────────

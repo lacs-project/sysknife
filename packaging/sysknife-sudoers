@@ -31,9 +31,13 @@ sysknife ALL=(root) NOPASSWD: /usr/sbin/userdel
 sysknife ALL=(root) NOPASSWD: /usr/sbin/usermod
 sysknife ALL=(root) NOPASSWD: /usr/bin/gpasswd
 
-# (No groupadd/groupdel/groupmod grants: SysKnife has no group create/delete/
-# modify action. Only group *membership* changes exist — usermod / gpasswd
-# above — so those binaries are intentionally not granted, per least privilege.)
+# Group lifecycle — create/delete groups.
+# groupadd: called by CreateGroup  (sudo groupadd [--system] <group>)
+# groupdel: called by DeleteGroup  (sudo groupdel <group>)
+# No groupmod grant: SysKnife has no group-modify action, so that binary is
+# intentionally left ungranted per least privilege.
+sysknife ALL=(root) NOPASSWD: /usr/sbin/groupadd
+sysknife ALL=(root) NOPASSWD: /usr/sbin/groupdel
 
 # Service management — start, stop, restart, reload, enable, disable, mask, unmask,
 # daemon-reload. All systemctl write operations require root on Fedora.

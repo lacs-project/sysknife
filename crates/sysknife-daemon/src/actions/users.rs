@@ -9,6 +9,8 @@ pub fn specs() -> Vec<ActionSpec> {
         delete_user("alice"),
         add_user_to_group("alice", "wheel"),
         remove_user_from_group("alice", "wheel"),
+        create_group("developers", false),
+        delete_group("developers"),
     ]
 }
 
@@ -103,6 +105,44 @@ pub fn remove_user_from_group(username: &str, group: &str) -> ActionSpec {
         mechanism: command_mechanism("sudo", ["sh", "-c", script.as_str()]),
         // High risk: mirrors AddUserToGroup — removing from a privileged group
         // is equally impactful and should require the same Admin authorization.
+        risk_level: RiskLevel::High,
+        reboot_required: false,
+        rollback_available: false,
+    }
+}
+
+/// Create a group (`sudo groupadd [--system] <group>`).
+///
+/// High risk: groups gate access to privileged resources, so creating one is a
+/// privilege-relevant operation on par with the rest of the user/group family.
+/// `system` selects a system group (GID from the system range) via `--system`.
+pub fn create_group(group: &str, system: bool) -> ActionSpec {
+    let mut args = vec!["groupadd".to_string()];
+    if system {
+        args.push("--system".to_string());
+    }
+    args.push(group.to_string());
+    ActionSpec {
+        action_name: "CreateGroup",
+        mechanism: super::ActionMechanism::Command {
+            program: "sudo",
+            args,
+        },
+        risk_level: RiskLevel::High,
+        reboot_required: false,
+        rollback_available: false,
+    }
+}
+
+/// Delete a group (`sudo groupdel <group>`).
+///
+/// High risk: irreversible; removing a group can strip access from every member
+/// and orphan file ownership. `groupdel` itself refuses to remove a user's
+/// primary group, which is a useful built-in guard.
+pub fn delete_group(group: &str) -> ActionSpec {
+    ActionSpec {
+        action_name: "DeleteGroup",
+        mechanism: command_mechanism("sudo", ["groupdel", group]),
         risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
