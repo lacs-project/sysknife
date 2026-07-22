@@ -421,11 +421,12 @@ GetNetworkStatus, GetDiskUsage, GetDateTime, ListProcesses, GetMemoryInfo,
 GetAuthorizedKeys, ListPackageRepositories, ListContainers, GetContainerInfo,
 ListUsers, ListGroups, ListJobHistory,
 ResolvectlStatus,
-GetJournalLog, GetLvmReport, GetSysctl, GetServiceResourceLimits, GetMounts, GetSudoGrants
+GetJournalLog, GetLvmReport, GetSysctl, GetServiceResourceLimits, GetMounts, GetSudoGrants,
+GetLogrotateStatus
 
 ### Medium risk — cross-distro (approval required before execution)
 
-ResolvectlSetDns, VacuumJournal
+ResolvectlSetDns, VacuumJournal, ConfigureLogRotation, RemoveLogRotation
 "#;
 
 const CROSS_DISTRO_RISK_RULES: &str = r#"
@@ -447,7 +448,8 @@ AddAuthorizedKey, RemoveAuthorizedKey,
 ExtendLogicalVolume, CreateLogicalVolume, CreateLvSnapshot,
 SetSysctl, SetServiceResourceLimits,
 AddMount, RemoveMount, AddSwap, RemoveSwap,
-GrantSudoAccess, RevokeSudoAccess
+GrantSudoAccess, RevokeSudoAccess,
+ConfigureRemoteSyslog, RemoveRemoteSyslog
 
 ## Risk classification rules
 
@@ -544,6 +546,13 @@ Use `"username"` as the key — NOT `"user"`.
 - `RemoveMount`: `{"mountpoint":"/mnt/data"}`.
 - `AddSwap`: `{"file":"/swapfile","size_mb":2048}`.
 - `RemoveSwap`: `{"file":"/swapfile"}`.
+
+**Log management**:
+- `GetLogrotateStatus`: `{}` or `{"config":"/etc/logrotate.conf"}` (read-only dry-run).
+- `ConfigureLogRotation`: `{"name":"nginx","path":"/var/log/nginx/*.log","frequency":"daily","rotate":14,"compress":true}`.
+- `RemoveLogRotation`: `{"name":"nginx"}`.
+- `ConfigureRemoteSyslog`: `{"host":"logs.example.com","port":514,"protocol":"tcp"}`.
+- `RemoveRemoteSyslog`: `{}`.
 
 **Scoped sudoers.d**:
 - `GetSudoGrants`: `{}` (read-only).

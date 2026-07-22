@@ -1,18 +1,18 @@
 use crate::actions::{
     apparmor, apt, apt_preferences, cloudinit, containers, deployment, distrobox, fail2ban,
-    filesystem, flatpak, grub, identity, journald, layering, livepatch, lvm, mounts, multipass,
-    netplan, network, package_repos, ppa, processes, reboot, release_upgrade, resolvectl, services,
-    snap, ssh, sudoers, sysctl, system_info, toolbox, ubuntu_pro, ufw, users,
+    filesystem, flatpak, grub, identity, journald, layering, livepatch, logging, lvm, mounts,
+    multipass, netplan, network, package_repos, ppa, processes, reboot, release_upgrade,
+    resolvectl, services, snap, ssh, sudoers, sysctl, system_info, toolbox, ubuntu_pro, ufw, users,
     validate::{
         validated_apparmor_profile, validated_apt_package, validated_apt_pin_expr,
         validated_apt_pin_name, validated_cpu_quota, validated_fstype, validated_group,
         validated_hostname, validated_journal_grep, validated_journal_priority,
-        validated_journal_time, validated_locale, validated_lvm_name, validated_lvm_size,
-        validated_memory_limit, validated_mount_device, validated_mount_options,
-        validated_mount_point, validated_port_or_service, validated_ppa_name, validated_safe_arg,
-        validated_sudo_commands, validated_sudoers_name, validated_swap_path, validated_sysctl_key,
-        validated_sysctl_value, validated_tasks_max, validated_timezone, validated_unit_name,
-        validated_username,
+        validated_journal_time, validated_locale, validated_log_path, validated_lvm_name,
+        validated_lvm_size, validated_memory_limit, validated_mount_device,
+        validated_mount_options, validated_mount_point, validated_port_or_service,
+        validated_ppa_name, validated_safe_arg, validated_sudo_commands, validated_sudoers_name,
+        validated_swap_path, validated_sysctl_key, validated_sysctl_value, validated_syslog_host,
+        validated_tasks_max, validated_timezone, validated_unit_name, validated_username,
     },
     ActionMechanism, ActionSpec,
 };
@@ -724,6 +724,52 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             let name = validated_apt_pin_name(require_str(params, "name")?, "name")?;
             Ok(apt_preferences::remove_apt_pin(&name))
         }
+
+        // ── Log management (logrotate + rsyslog) ────────────────────────────
+        "GetLogrotateStatus" => {
+            let config = optional_validated(params, "config", validated_log_path)?;
+            Ok(logging::get_logrotate_status(config.as_deref()))
+        }
+        "ConfigureLogRotation" => {
+            let name = validated_sudoers_name(require_str(params, "name")?, "name")?;
+            let path = validated_log_path(require_str(params, "path")?, "path")?;
+            let frequency = require_str(params, "frequency")?;
+            if !matches!(frequency, "daily" | "weekly" | "monthly") {
+                return Err(ExecutorError::InvalidParam("frequency"));
+            }
+            let rotate = require_u32(params, "rotate")?;
+            if rotate > 1000 {
+                return Err(ExecutorError::InvalidParam("rotate"));
+            }
+            let compress = params
+                .get("compress")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            Ok(logging::configure_log_rotation(
+                &name, &path, frequency, rotate, compress,
+            ))
+        }
+        "RemoveLogRotation" => {
+            let name = validated_sudoers_name(require_str(params, "name")?, "name")?;
+            Ok(logging::remove_log_rotation(&name))
+        }
+        "ConfigureRemoteSyslog" => {
+            let host = validated_syslog_host(require_str(params, "host")?, "host")?;
+            let port = require_u32(params, "port")?;
+            if !(1..=65535).contains(&port) {
+                return Err(ExecutorError::InvalidParam("port"));
+            }
+            let protocol = require_str(params, "protocol")?;
+            if !matches!(protocol, "tcp" | "udp") {
+                return Err(ExecutorError::InvalidParam("protocol"));
+            }
+            Ok(logging::configure_remote_syslog(
+                &host,
+                port as u16,
+                protocol,
+            ))
+        }
+        "RemoveRemoteSyslog" => Ok(logging::remove_remote_syslog()),
 
         // ── System info ──────────────────────────────────────────────────
         "GetMemoryInfo" => Ok(system_info::get_memory_info_spec()),

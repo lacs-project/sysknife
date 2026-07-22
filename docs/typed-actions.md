@@ -53,7 +53,7 @@ codebase. On the daemon side (`sysknife-daemon`), each action is backed by an
 | `reboot_required` | Whether the daemon should warn the caller before proceeding |
 | `rollback_available` | Whether a failure triggers automatic rollback |
 
-As of this writing the catalogue defines **171 actions** across families such
+As of this writing the catalogue defines **176 actions** across families such
 as Deployment, Services, Package Layering, Flatpak, Containers, Toolbox,
 Network, Identity, SSH Keys, Package Repositories, apt/snap/ufw/netplan/grub
 (Debian-family), and rpm-ostree/AppArmor/cloud-init/Pro (Fedora-family). Each

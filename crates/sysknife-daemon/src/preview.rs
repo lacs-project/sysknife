@@ -94,6 +94,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "GetSysctl"
         | "GetMounts"
         | "GetSudoGrants"
+        | "GetLogrotateStatus"
         | "GetAuthorizedKeys"
         | "GetDateTime"
         | "ListJobHistory"
@@ -386,6 +387,30 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             rollback_available: false,
             warnings: vec![
                 "too tight a MemoryMax can OOM-kill the service".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+
+        // ── Log management ────────────────────────────────────────────────
+        "ConfigureLogRotation" | "RemoveLogRotation" => PreviewProfile {
+            risk_level: RiskLevel::Medium,
+            expected_side_effects: vec![
+                "a logrotate drop-in will be written/removed".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec!["approval required".to_string()],
+        },
+        "ConfigureRemoteSyslog" | "RemoveRemoteSyslog" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec![
+                "rsyslog will start/stop forwarding all logs to a remote host".to_string(),
+                "rsyslog will be restarted".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec![
+                "forwarding sends log data off-host (exfiltration surface)".to_string(),
                 "exact approval required".to_string(),
             ],
         },

@@ -67,6 +67,8 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "GetMounts"
         // ── Scoped sudoers.d read-only ────────────────────────────────────
         | "GetSudoGrants"
+        // ── Log management read-only ──────────────────────────────────────
+        | "GetLogrotateStatus"
         | "GetAuthorizedKeys"
         | "ListUsers"
         | "ListGroups"
@@ -177,6 +179,9 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         // ── Ubuntu / apt pinning (reversible; steers version resolution) ──
         | "SetAptPin"
         | "RemoveAptPin"
+        // ── Log management (logrotate; reversible config) ─────────────────
+        | "ConfigureLogRotation"
+        | "RemoveLogRotation"
         // ── Ubuntu / Flatpak medium-risk ───────────────────────────────────
         | "UbuntuInstallFlatpak"
         | "UbuntuRemoveFlatpak"
@@ -271,6 +276,12 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         // grant is still a real privilege change).
         | "GrantSudoAccess"
         | "RevokeSudoAccess"
+        // ── Remote syslog forwarding (log-exfil surface) ──────────────────
+        //
+        // ConfigureRemoteSyslog sends all logs to an external collector — a
+        // data-exfiltration vector — so it is Admin/High.
+        | "ConfigureRemoteSyslog"
+        | "RemoveRemoteSyslog"
         | "DeleteUser"
         | "AddAuthorizedKey"
         | "RemoveAuthorizedKey"

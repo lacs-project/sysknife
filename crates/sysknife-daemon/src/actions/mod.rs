@@ -16,6 +16,7 @@ pub mod journald;
 pub mod layering;
 pub mod layering_ubuntu;
 pub mod livepatch;
+pub mod logging;
 pub mod lvm;
 pub mod mounts;
 pub mod multipass;

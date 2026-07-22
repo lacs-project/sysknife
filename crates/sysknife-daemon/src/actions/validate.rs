@@ -659,6 +659,36 @@ pub fn validated_apt_pin_name(s: &str, param: &'static str) -> Result<String, Ex
     validated_sudoers_name(s, param)
 }
 
+/// Validate a log path/glob for logrotate: absolute, no `..`, charset
+/// `[A-Za-z0-9/._*-]`, 1..=255. Mirrors `PATH_RE` in `packaging/sysknife-log-edit`.
+pub fn validated_log_path(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if !s.starts_with('/') || s.len() > 255 || s.contains("..") {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '*' | '-'))
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
+/// Validate a syslog collector host: a hostname or IPv4/IPv6 literal
+/// (`[A-Za-z0-9.:_-]`, no `..`, 1..=255). Mirrors `HOST_RE` in the helper.
+pub fn validated_syslog_host(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s.is_empty() || s.len() > 255 || s.contains("..") || s.starts_with('-') {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | ':' | '_' | '-'))
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
 /// Validate an apt package-name glob (`[A-Za-z0-9.+*?_:-]`, 1..=128).
 pub fn validated_apt_package(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     if s.is_empty()
@@ -1441,5 +1471,20 @@ mod tests {
         assert!(validated_apt_pin_expr("version 1.24.*", "e").is_ok());
         assert!(validated_apt_pin_expr("origin\nrepo", "e").is_err()); // newline
         assert!(validated_apt_pin_expr("", "e").is_err());
+    }
+
+    // ── logging validators ────────────────────────────────────────────────
+
+    #[test]
+    fn log_path_and_syslog_host() {
+        assert!(validated_log_path("/var/log/nginx/*.log", "p").is_ok());
+        assert!(validated_log_path("/var/log/app.log", "p").is_ok());
+        assert!(validated_log_path("relative.log", "p").is_err());
+        assert!(validated_log_path("/var/log/../etc/x", "p").is_err());
+        assert!(validated_syslog_host("logs.example.com", "h").is_ok());
+        assert!(validated_syslog_host("10.0.0.5", "h").is_ok());
+        assert!(validated_syslog_host("fe80::1", "h").is_ok());
+        assert!(validated_syslog_host("-bad", "h").is_err());
+        assert!(validated_syslog_host("bad host", "h").is_err());
     }
 }

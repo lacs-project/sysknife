@@ -144,6 +144,14 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/add-apt-repository
 # grant. A bare editor/apt grant is NOT given.
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/apt-pin-edit *
 
+# log edit — ConfigureLogRotation/RemoveLogRotation and ConfigureRemoteSyslog/
+# RemoveRemoteSyslog delegate to this root-owned helper, which validates inputs,
+# writes /etc/logrotate.d/sysknife-<name> (checked with `logrotate -d`) or
+# /etc/rsyslog.d/60-sysknife-forward.conf (checked with `rsyslogd -N1`), rolling
+# back on rejection, and restarts rsyslog for forwarding. GetLogrotateStatus
+# runs bare `logrotate -d` (dry-run) and needs no grant.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/log-edit *
+
 # Snap write operations (install / remove / refresh / hold / revert).
 sysknife ALL=(root) NOPASSWD: /usr/bin/snap
 
