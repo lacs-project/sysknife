@@ -16,6 +16,7 @@ pub mod layering;
 pub mod layering_ubuntu;
 pub mod livepatch;
 pub mod lvm;
+pub mod mounts;
 pub mod multipass;
 pub mod netplan;
 pub mod network;

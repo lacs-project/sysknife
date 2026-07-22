@@ -92,6 +92,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "GetJournalLog"
         | "GetLvmReport"
         | "GetSysctl"
+        | "GetMounts"
         | "GetAuthorizedKeys"
         | "GetDateTime"
         | "ListJobHistory"
@@ -385,6 +386,31 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "too tight a MemoryMax can OOM-kill the service".to_string(),
                 "exact approval required".to_string(),
             ],
+        },
+
+        // ── Filesystem mounts / swap ──────────────────────────────────────
+        "AddMount" | "RemoveMount" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec![
+                "a filesystem will be (un)mounted".to_string(),
+                "/etc/fstab will be updated (managed entries carry nofail)".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec![
+                "a wrong device or mountpoint risks data or availability".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+        "AddSwap" | "RemoveSwap" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec![
+                "swap will be enabled/disabled".to_string(),
+                "a swap file will be created/removed and /etc/fstab updated".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec!["exact approval required".to_string()],
         },
 
         // ── Kernel / sysctl mutation ──────────────────────────────────────

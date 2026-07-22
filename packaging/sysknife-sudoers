@@ -200,3 +200,12 @@ sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/scheduled-job-edit *
 # file, so only this narrow helper path is allowed. GetSysctl reads via bare
 # `sysctl` (the daemon is root) and needs no grant.
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/sysctl-edit *
+
+# mount edit — AddMount/RemoveMount/AddSwap/RemoveSwap delegate to this
+# root-owned helper, which validates the device/mountpoint/fstype/options
+# (allowlisted fstypes, forbidden critical mountpoints), (un)mounts, manages
+# swap files, and keeps /etc/fstab in sync — writing every managed entry with
+# `nofail` so a bad device can never wedge the boot. GetMounts reads via bare
+# `findmnt` and needs no grant. Bare mount/swapon grants are NOT given: they
+# would let the daemon mount arbitrary sources over arbitrary paths.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/mount-edit *

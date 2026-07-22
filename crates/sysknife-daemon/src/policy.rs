@@ -63,6 +63,8 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "GetLvmReport"
         // ── Kernel / sysctl read-only ─────────────────────────────────────
         | "GetSysctl"
+        // ── Filesystem mounts read-only ───────────────────────────────────
+        | "GetMounts"
         | "GetAuthorizedKeys"
         | "ListUsers"
         | "ListGroups"
@@ -244,6 +246,16 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         // set-property; too tight a MemoryMax can OOM-kill the service, so it
         // is Admin/High.
         | "SetServiceResourceLimits"
+        // ── Filesystem mounts / swap mutations ────────────────────────────
+        //
+        // Mount/unmount and swap ops rewrite /etc/fstab and change what is
+        // mounted; a wrong device or mountpoint risks data/availability. All
+        // Admin/High (the helper forces `nofail` so a bad entry can't wedge
+        // boot, but the operation itself is still privileged).
+        | "AddMount"
+        | "RemoveMount"
+        | "AddSwap"
+        | "RemoveSwap"
         | "DeleteUser"
         | "AddAuthorizedKey"
         | "RemoveAuthorizedKey"

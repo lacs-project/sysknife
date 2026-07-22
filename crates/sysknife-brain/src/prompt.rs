@@ -421,7 +421,7 @@ GetNetworkStatus, GetDiskUsage, GetDateTime, ListProcesses, GetMemoryInfo,
 GetAuthorizedKeys, ListPackageRepositories, ListContainers, GetContainerInfo,
 ListUsers, ListGroups, ListJobHistory,
 ResolvectlStatus,
-GetJournalLog, GetLvmReport, GetSysctl, GetServiceResourceLimits
+GetJournalLog, GetLvmReport, GetSysctl, GetServiceResourceLimits, GetMounts
 
 ### Medium risk — cross-distro (approval required before execution)
 
@@ -445,7 +445,8 @@ RebootSystem,
 AddUserToGroup, RemoveUserFromGroup, DeleteUser,
 AddAuthorizedKey, RemoveAuthorizedKey,
 ExtendLogicalVolume, CreateLogicalVolume, CreateLvSnapshot,
-SetSysctl, SetServiceResourceLimits
+SetSysctl, SetServiceResourceLimits,
+AddMount, RemoveMount, AddSwap, RemoveSwap
 
 ## Risk classification rules
 
@@ -535,6 +536,13 @@ Use `"username"` as the key — NOT `"user"`.
 **Kernel / sysctl**:
 - `GetSysctl`: `{"key":"net.ipv4.ip_forward"}` (omit `key` to dump the whole table).
 - `SetSysctl`: `{"key":"vm.swappiness","value":"10"}` — applies immediately and persists; `value` is a number or space-separated list.
+
+**Filesystem mounts / swap** (managed fstab entries always get `nofail`):
+- `GetMounts`: `{}` (read-only).
+- `AddMount`: `{"device":"/dev/sdb1","mountpoint":"/mnt/data","fstype":"ext4","options":"noatime"}` (`options` optional; `device` also accepts `UUID=…`/`LABEL=…`/`//host/share`/`host:/export`; mountpoint must not be a system dir).
+- `RemoveMount`: `{"mountpoint":"/mnt/data"}`.
+- `AddSwap`: `{"file":"/swapfile","size_mb":2048}`.
+- `RemoveSwap`: `{"file":"/swapfile"}`.
 
 **Users and groups**:
 - `CreateUser`: `{"username":"alice"}` (optional: `"shell"`, `"home"`)

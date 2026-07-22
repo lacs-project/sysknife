@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+# sysknife-mount-edit — mount/unmount a filesystem or enable/disable swap, and
+# keep /etc/fstab in sync.
+#
+# Install to: /usr/lib/sysknife/mount-edit
+# Mode:       0755
+# Owner:      root:root
+#
+# Invoked exclusively by the sysknife-daemon via one of:
+#   sudo /usr/lib/sysknife/mount-edit --op mount \
+#        --device <dev|UUID=..|LABEL=..|//host/share|host:/export> \
+#        --mountpoint <abs-path> --fstype <fs> [--options <csv>]
+#   sudo /usr/lib/sysknife/mount-edit --op unmount   --mountpoint <abs-path>
+#   sudo /usr/lib/sysknife/mount-edit --op addswap   --file <abs-path> --size-mb <n>
+#   sudo /usr/lib/sysknife/mount-edit --op rmswap    --file <abs-path>
+#
+# Safety model (all inputs re-validated here — defense-in-depth):
+#   - Every fstab entry SysKnife writes carries `nofail`, so a device that is
+#     absent or wrong at boot can never wedge the boot (systemd skips it) —
+#     this is the key guard against the classic "bad fstab bricks the box".
+#   - mount: the fstab entry is appended FIRST, then `mount <mountpoint>` is run
+#     (which reads fstab). If the mount fails the just-added line is rolled back
+#     and the op fails — so a broken entry never persists.
+#   - Critical system mountpoints (/, /boot, /etc, /usr, /var, /home, …) are
+#     refused; SysKnife will not remount or shadow them.
+#   - fstype is an allowlist; device/mountpoint/options are charset-validated;
+#     fstab is rewritten atomically (temp file + os.replace).
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+FSTAB = "/etc/fstab"
+MOUNT = "/usr/bin/mount"
+UMOUNT = "/usr/bin/umount"
+MKSWAP = "/usr/sbin/mkswap"
+SWAPON = "/usr/sbin/swapon"
+SWAPOFF = "/usr/sbin/swapoff"
+DD = "/usr/bin/dd"
+
+FSTYPE_ALLOW = {
+    "ext4", "ext3", "ext2", "xfs", "btrfs", "vfat", "exfat",
+    "ntfs3", "nfs", "nfs4", "cifs",
+}
+# Mountpoints SysKnife must never touch (remounting these can break the system).
+CRITICAL_MOUNTPOINTS = {
+    "/", "/boot", "/boot/efi", "/etc", "/usr", "/bin", "/sbin", "/lib",
+    "/lib64", "/var", "/home", "/root", "/proc", "/sys", "/dev", "/run",
+}
+
+DEVICE_RE = re.compile(
+    r"^(/dev/[A-Za-z0-9/_.-]+"
+    r"|UUID=[0-9A-Fa-f-]{8,}"
+    r"|LABEL=[A-Za-z0-9_.:-]+"
+    r"|//[A-Za-z0-9._-]+/[A-Za-z0-9._/$-]+"          # cifs //host/share
+    r"|[A-Za-z0-9._-]+:/[A-Za-z0-9._/-]*)$"           # nfs host:/export
+)
+MOUNTPOINT_RE = re.compile(r"^/[A-Za-z0-9/_.-]*$")
+OPTIONS_RE = re.compile(r"^[A-Za-z0-9=,._:@/+-]*$")
+
+
+def die(msg: str) -> None:
+    print(f"sysknife-mount-edit: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def valid_mountpoint(mp: str) -> bool:
+    return (
+        bool(MOUNTPOINT_RE.match(mp))
+        and ".." not in mp
+        and mp not in CRITICAL_MOUNTPOINTS
+        and mp != ""
+    )
+
+
+def read_fstab() -> list:
+    if not os.path.exists(FSTAB):
+        return []
+    with open(FSTAB, "r") as fh:
+        return fh.readlines()
+
+
+def write_fstab(lines: list) -> None:
+    directory = os.path.dirname(FSTAB)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".sysknife-fstab-")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.writelines(lines)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, FSTAB)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        die(f"cannot write {FSTAB}: {exc}")
+
+
+def ensure_nofail(options: str) -> str:
+    opts = [o for o in options.split(",") if o]
+    if not opts:
+        opts = ["defaults"]
+    if "nofail" not in opts:
+        opts.append("nofail")
+    return ",".join(opts)
+
+
+def fstab_field2(line: str) -> str:
+    """Return the mountpoint (field 2) of an fstab line, or '' for comments."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return ""
+    parts = stripped.split()
+    return parts[1] if len(parts) >= 2 else ""
+
+
+def fstab_field1(line: str) -> str:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return ""
+    parts = stripped.split()
+    return parts[0] if len(parts) >= 1 else ""
+
+
+def op_mount(args) -> None:
+    if not DEVICE_RE.match(args.device):
+        die(f"invalid device {args.device!r}")
+    if not valid_mountpoint(args.mountpoint):
+        die(f"invalid or forbidden mountpoint {args.mountpoint!r}")
+    if args.fstype not in FSTYPE_ALLOW:
+        die(f"fstype {args.fstype!r} not in allowlist")
+    options = args.options or "defaults"
+    if not OPTIONS_RE.match(options):
+        die(f"invalid options {options!r}")
+    options = ensure_nofail(options)
+
+    try:
+        os.makedirs(args.mountpoint, exist_ok=True)
+    except OSError as exc:
+        die(f"cannot create mountpoint: {exc}")
+
+    lines = read_fstab()
+    # Refuse if this mountpoint already has an fstab entry.
+    if any(fstab_field2(ln) == args.mountpoint for ln in lines):
+        die(f"{args.mountpoint} already has an /etc/fstab entry")
+
+    entry = f"{args.device}\t{args.mountpoint}\t{args.fstype}\t{options}\t0\t0\n"
+    new_lines = lines + ([] if (not lines or lines[-1].endswith("\n")) else ["\n"]) + [entry]
+    write_fstab(new_lines)
+
+    # Validate the entry actually mounts; roll back the fstab line if not.
+    result = subprocess.run(
+        [MOUNT, args.mountpoint], check=False, stderr=subprocess.PIPE
+    )
+    if result.returncode != 0:
+        write_fstab(lines)  # rollback
+        die(f"mount failed, fstab reverted: {result.stderr.decode(errors='replace').strip()}")
+
+
+def op_unmount(args) -> None:
+    if not valid_mountpoint(args.mountpoint):
+        die(f"invalid or forbidden mountpoint {args.mountpoint!r}")
+    # Unmount if currently mounted (ignore "not mounted").
+    subprocess.run([UMOUNT, args.mountpoint], check=False, stderr=subprocess.DEVNULL)
+    lines = read_fstab()
+    kept = [ln for ln in lines if fstab_field2(ln) != args.mountpoint]
+    if len(kept) != len(lines):
+        write_fstab(kept)
+
+
+def op_addswap(args) -> None:
+    path = args.file
+    if not path.startswith("/") or ".." in path or not MOUNTPOINT_RE.match(path):
+        die(f"invalid swap file path {path!r}")
+    if args.size_mb < 1 or args.size_mb > 1_048_576:  # cap at 1 TiB
+        die("size-mb out of range")
+    if os.path.exists(path):
+        die(f"{path} already exists")
+    # Allocate with real zeros via dd — a swap file must NOT be sparse
+    # (`swapon` refuses files "with holes"), which rules out truncate/fallocate.
+    alloc = subprocess.run(
+        [DD, "if=/dev/zero", f"of={path}", "bs=1M", f"count={args.size_mb}"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    if alloc.returncode != 0:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        die(f"dd failed: {alloc.stderr.decode(errors='replace').strip()}")
+    try:
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        die(f"cannot chmod swap file: {exc}")
+    for cmd in ([MKSWAP, path], [SWAPON, path]):
+        r = subprocess.run(cmd, check=False, stderr=subprocess.PIPE)
+        if r.returncode != 0:
+            subprocess.run([SWAPOFF, path], check=False, stderr=subprocess.DEVNULL)
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            die(f"{os.path.basename(cmd[0])} failed: {r.stderr.decode(errors='replace').strip()}")
+    lines = read_fstab()
+    if not any(fstab_field1(ln) == path for ln in lines):
+        entry = f"{path}\tnone\tswap\tsw,nofail\t0\t0\n"
+        lines = lines + ([] if (not lines or lines[-1].endswith("\n")) else ["\n"]) + [entry]
+        write_fstab(lines)
+
+
+def op_rmswap(args) -> None:
+    path = args.file
+    if not path.startswith("/") or ".." in path or not MOUNTPOINT_RE.match(path):
+        die(f"invalid swap file path {path!r}")
+    subprocess.run([SWAPOFF, path], check=False, stderr=subprocess.DEVNULL)
+    lines = read_fstab()
+    kept = [ln for ln in lines if fstab_field1(ln) != path]
+    if len(kept) != len(lines):
+        write_fstab(kept)
+    if os.path.exists(path):
+        try:
+            os.unlink(path)
+        except OSError as exc:
+            die(f"cannot remove swap file: {exc}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Manage mounts/swap + /etc/fstab.")
+    parser.add_argument("--op", required=True, choices=["mount", "unmount", "addswap", "rmswap"])
+    parser.add_argument("--device")
+    parser.add_argument("--mountpoint")
+    parser.add_argument("--fstype")
+    parser.add_argument("--options")
+    parser.add_argument("--file")
+    parser.add_argument("--size-mb", type=int, dest="size_mb")
+    args = parser.parse_args()
+
+    if args.op == "mount":
+        if not (args.device and args.mountpoint and args.fstype):
+            die("mount requires --device, --mountpoint, --fstype")
+        op_mount(args)
+    elif args.op == "unmount":
+        if not args.mountpoint:
+            die("unmount requires --mountpoint")
+        op_unmount(args)
+    elif args.op == "addswap":
+        if not (args.file and args.size_mb):
+            die("addswap requires --file and --size-mb")
+        op_addswap(args)
+    elif args.op == "rmswap":
+        if not args.file:
+            die("rmswap requires --file")
+        op_rmswap(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -132,6 +132,12 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     // Kernel / sysctl (cross-distro)
     "GetSysctl",
     "SetSysctl",
+    // Filesystem mounts / swap (cross-distro)
+    "GetMounts",
+    "AddMount",
+    "RemoveMount",
+    "AddSwap",
+    "RemoveSwap",
     "GetDateTime",
     "SetHostname",
     "SetTimezone",
