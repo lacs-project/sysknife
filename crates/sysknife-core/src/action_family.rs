@@ -104,6 +104,8 @@ pub const DEBIAN_ONLY_ACTIONS: &[&str] = &[
     "ProStatus",
     "ProAttach",
     "ProDetach",
+    "EnableProService",
+    "DisableProService",
     "LivepatchStatus",
     "MultipassList",
     "UfwDeleteRule",

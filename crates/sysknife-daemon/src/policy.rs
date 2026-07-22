@@ -362,6 +362,8 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         // Valid Accounts — contract modification). ProDetach removes it.
         | "ProAttach"
         | "ProDetach"
+        | "EnableProService"
+        | "DisableProService"
         // ── Ubuntu release upgrade Tier 3 high-risk ───────────────────────
         //
         // UbuntuReleaseUpgrade upgrades the entire OS to the next release.

@@ -282,6 +282,20 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
         },
 
+        // ── Ubuntu Pro service toggles ──────────────────────────────────
+        "EnableProService" | "DisableProService" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec![
+                "a single Ubuntu Pro service will be enabled/disabled".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec![
+                "exact approval required".to_string(),
+                "requires an attached Pro subscription + network to take effect".to_string(),
+            ],
+        },
+
         // ── Ubuntu release upgrade Tier 3 ────────────────────────────────
         "UbuntuReleaseUpgrade" => PreviewProfile {
             risk_level: RiskLevel::High,

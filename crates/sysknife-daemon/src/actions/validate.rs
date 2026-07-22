@@ -746,9 +746,48 @@ pub fn validated_sudo_commands(s: &str, param: &'static str) -> Result<String, E
     Ok(s.to_string())
 }
 
+/// Validate an Ubuntu Pro service name against a fixed allowlist. Prevents both
+/// option injection and typos reaching `pro enable/disable`. The list matches
+/// the services `pro` recognises across supported releases.
+pub fn validated_pro_service(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    const SERVICES: &[&str] = &[
+        "esm-apps",
+        "esm-infra",
+        "livepatch",
+        "usg",
+        "fips",
+        "fips-updates",
+        "fips-preview",
+        "cis",
+        "ros",
+        "ros-updates",
+        "cc-eal",
+        "realtime-kernel",
+        "landscape",
+        "anbox-cloud",
+    ];
+    if SERVICES.contains(&s) {
+        Ok(s.to_string())
+    } else {
+        Err(ExecutorError::InvalidParam(param))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pro_service_allowlist() {
+        assert!(validated_pro_service("esm-apps", "service").is_ok());
+        assert!(validated_pro_service("livepatch", "service").is_ok());
+        assert!(validated_pro_service("realtime-kernel", "service").is_ok());
+        // rejects unknown names and injection attempts
+        assert!(validated_pro_service("bogus", "service").is_err());
+        assert!(validated_pro_service("--help", "service").is_err());
+        assert!(validated_pro_service("esm-apps; rm -rf /", "service").is_err());
+        assert!(validated_pro_service("", "service").is_err());
+    }
 
     // ── validated_username / validated_group ──────────────────────────────
 

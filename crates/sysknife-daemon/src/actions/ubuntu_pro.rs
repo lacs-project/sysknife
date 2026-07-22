@@ -40,7 +40,13 @@ use sysknife_types::RiskLevel;
 
 /// Return one representative `ActionSpec` per Ubuntu Pro action name.
 pub fn specs() -> Vec<ActionSpec> {
-    vec![pro_status(), pro_attach("<REDACTED>"), pro_detach()]
+    vec![
+        pro_status(),
+        pro_attach("<REDACTED>"),
+        pro_detach(),
+        enable_pro_service("esm-apps"),
+        disable_pro_service("esm-apps"),
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +102,35 @@ pub fn pro_detach() -> ActionSpec {
         risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: true,
+    }
+}
+
+/// Enable a single Ubuntu Pro service (`sudo pro enable <service> --assume-yes`).
+///
+/// Risk: High / Admin. Activates a licensed service (ESM, Livepatch, FIPS, …).
+/// `service` must be one of the allowlist in `validated_pro_service`. Requires
+/// an attached subscription + network at run time.
+pub fn enable_pro_service(service: &str) -> ActionSpec {
+    ActionSpec {
+        action_name: "EnableProService",
+        mechanism: command_mechanism("sudo", ["pro", "enable", service, "--assume-yes"]),
+        risk_level: RiskLevel::High,
+        reboot_required: false,
+        rollback_available: false,
+    }
+}
+
+/// Disable a single Ubuntu Pro service (`sudo pro disable <service> --assume-yes`).
+///
+/// Risk: High / Admin. Deactivates a licensed service. `service` must be one of
+/// the allowlist in `validated_pro_service`.
+pub fn disable_pro_service(service: &str) -> ActionSpec {
+    ActionSpec {
+        action_name: "DisableProService",
+        mechanism: command_mechanism("sudo", ["pro", "disable", service, "--assume-yes"]),
+        risk_level: RiskLevel::High,
+        reboot_required: false,
+        rollback_available: false,
     }
 }
 
@@ -234,10 +269,36 @@ mod tests {
 
     #[test]
     fn specs_covers_all_action_names() {
-        let expected = ["ProStatus", "ProAttach", "ProDetach"];
+        let expected = [
+            "ProStatus",
+            "ProAttach",
+            "ProDetach",
+            "EnableProService",
+            "DisableProService",
+        ];
         let spec_names: Vec<&str> = specs().iter().map(|s| s.action_name).collect();
         for name in &expected {
             assert!(spec_names.contains(name), "specs() missing {name}");
         }
+    }
+
+    // ── enable/disable service ──────────────────────────────────────────────
+
+    #[test]
+    fn enable_service_argv() {
+        let spec = enable_pro_service("esm-infra");
+        let (prog, args) = extract_cmd(&spec);
+        assert_eq!(prog, "sudo");
+        assert_eq!(args, vec!["pro", "enable", "esm-infra", "--assume-yes"]);
+        assert_eq!(spec.risk_level, RiskLevel::High);
+    }
+
+    #[test]
+    fn disable_service_argv() {
+        let spec = disable_pro_service("livepatch");
+        let (prog, args) = extract_cmd(&spec);
+        assert_eq!(prog, "sudo");
+        assert_eq!(args, vec!["pro", "disable", "livepatch", "--assume-yes"]);
+        assert_eq!(spec.risk_level, RiskLevel::High);
     }
 }

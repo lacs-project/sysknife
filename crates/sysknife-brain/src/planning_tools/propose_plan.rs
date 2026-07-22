@@ -420,6 +420,10 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "attach machine to an Ubuntu Pro subscription — param: token* (credential, never log); Ubuntu only; High risk"),
     ("ProDetach",
      "detach from Ubuntu Pro subscription — no params; Ubuntu only; High risk"),
+    ("EnableProService",
+     "enable one Ubuntu Pro service (pro enable <service>) — param: service* (one of esm-apps, esm-infra, livepatch, usg, fips, fips-updates, cis, ros, ros-updates, cc-eal, realtime-kernel, landscape, anbox-cloud); Ubuntu only; High risk; needs an attached subscription"),
+    ("DisableProService",
+     "disable one Ubuntu Pro service (pro disable <service>) — param: service* (same allowlist as EnableProService); Ubuntu only; High risk"),
     // ── Ubuntu / Tier 3 — Livepatch ──────────────────────────────────────────
     ("LivepatchStatus",
      "show Canonical Livepatch kernel-patch status — no params; Ubuntu only; read-only; requires canonical-livepatch installed and Ubuntu Pro"),
