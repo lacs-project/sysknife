@@ -305,6 +305,124 @@ pub fn validated_safe_arg(s: &str, param: &'static str) -> Result<String, Execut
     Ok(s.to_string())
 }
 
+/// Validate an LVM volume-group / logical-volume / snapshot name.
+///
+/// LVM permits `[a-zA-Z0-9+_.-]`; we additionally require the first character to
+/// be alphanumeric or `_` (blocks the leading `-` option-injection vector and
+/// the reserved `.`/`..` names), forbid `/` (the `vg/lv` separator is added by
+/// the action, never by the caller), and cap the length at 127. Reserved bare
+/// names `.` and `..` are rejected by the first-char rule.
+pub fn validated_lvm_name(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s.is_empty() || s.len() > 127 {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    let mut chars = s.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_alphanumeric() || first == '_') {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '_' | '.' | '-'))
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
+/// Validate an LVM size expression for `lvextend -L` / `lvcreate -L`.
+///
+/// Accepts an absolute size (`20G`, `512M`, `1.5T`) or an additive relative size
+/// (`+10G`). The leading `+` is the only sign permitted: a leading `-` is both a
+/// shrink (data-loss) and an option-injection vector, so it is rejected. The
+/// unit suffix is one of `kKmMgGtTpP` (kibi..pebi) and is optional. Percent
+/// forms (`+50%FREE`) are intentionally not accepted here — add a dedicated
+/// extent-percent path if needed rather than widening this validator.
+pub fn validated_lvm_size(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s.len() > 32 {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    let body = s.strip_prefix('+').unwrap_or(s);
+    let (digits, suffix) = match body.chars().last() {
+        Some(c) if c.is_ascii_alphabetic() => (&body[..body.len() - 1], Some(c)),
+        _ => (body, None),
+    };
+    if let Some(c) = suffix {
+        if !matches!(c, 'k' | 'K' | 'm' | 'M' | 'g' | 'G' | 't' | 'T' | 'p' | 'P') {
+            return Err(ExecutorError::InvalidParam(param));
+        }
+    }
+    // digits may carry a single decimal point (e.g. "1.5"); require at least one
+    // digit and reject anything else.
+    if digits.is_empty()
+        || digits.matches('.').count() > 1
+        || !digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+        || digits.starts_with('.')
+        || digits.ends_with('.')
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
+/// Valid `journalctl --priority` levels, lowest (most severe) to highest.
+const JOURNAL_PRIORITY_NAMES: &[&str] = &[
+    "emerg", "alert", "crit", "err", "warning", "notice", "info", "debug",
+];
+
+/// Validate a `journalctl --priority` value: a single level (numeric `0`–`7` or
+/// a name like `err`) or an inclusive range (`0..3`, `err..info`).
+pub fn validated_journal_priority(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    let is_level = |lvl: &str| -> bool {
+        matches!(lvl, "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7")
+            || JOURNAL_PRIORITY_NAMES.contains(&lvl)
+    };
+    let ok = match s.split_once("..") {
+        Some((lo, hi)) => is_level(lo) && is_level(hi),
+        None => is_level(s),
+    };
+    if ok {
+        Ok(s.to_string())
+    } else {
+        Err(ExecutorError::InvalidParam(param))
+    }
+}
+
+/// Validate a `journalctl --since=` / `--until=` time expression.
+///
+/// journalctl accepts absolute (`2026-07-22 10:00:00`), keyword (`yesterday`,
+/// `today`, `now`), and relative (`-1h`, `2 days ago`) forms. Because the value
+/// is passed in attached `--since=<value>` form there is no option-injection
+/// surface, and there is no shell, so we only enforce a printable-ASCII
+/// allowlist (letters, digits, space, and `:-+.,`) and a length cap.
+pub fn validated_journal_time(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s.is_empty() || s.len() > 64 {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | ':' | '-' | '+' | '.' | ','))
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
+/// Validate a `journalctl --grep=` regex pattern.
+///
+/// The pattern is handed to journalctl's own matcher (no shell), so any regex
+/// metacharacter is inert. We only reject control characters (which have no
+/// place in a single-line pattern) and cap the length.
+pub fn validated_journal_grep(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    if s.is_empty() || s.len() > 256 {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if s.chars().any(|c| c.is_control()) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -826,5 +944,71 @@ mod tests {
 
         let err = validated_safe_arg("-x", "name").unwrap_err();
         assert!(matches!(err, ExecutorError::InvalidParam("name")));
+    }
+
+    // ── LVM validators ────────────────────────────────────────────────────
+
+    #[test]
+    fn lvm_name_accepts_valid_and_rejects_injection() {
+        assert!(validated_lvm_name("ubuntu-vg", "vg").is_ok());
+        assert!(validated_lvm_name("root_lv.0", "lv").is_ok());
+        assert!(validated_lvm_name("data+cache", "lv").is_ok());
+        // leading dash → option injection
+        assert!(validated_lvm_name("-rf", "lv").is_err());
+        // reserved / traversal-ish
+        assert!(validated_lvm_name(".", "lv").is_err());
+        assert!(validated_lvm_name("..", "lv").is_err());
+        // slash would forge a vg/lv reference
+        assert!(validated_lvm_name("vg/lv", "lv").is_err());
+        assert!(validated_lvm_name("", "lv").is_err());
+    }
+
+    #[test]
+    fn lvm_size_accepts_absolute_relative_decimal() {
+        assert!(validated_lvm_size("20G", "size").is_ok());
+        assert!(validated_lvm_size("+10G", "size").is_ok());
+        assert!(validated_lvm_size("512M", "size").is_ok());
+        assert!(validated_lvm_size("1.5T", "size").is_ok());
+        assert!(validated_lvm_size("4096", "size").is_ok()); // unit optional
+    }
+
+    #[test]
+    fn lvm_size_rejects_shrink_and_junk() {
+        assert!(validated_lvm_size("-10G", "size").is_err()); // shrink + injection
+        assert!(validated_lvm_size("10X", "size").is_err()); // bad unit
+        assert!(validated_lvm_size("G", "size").is_err()); // no digits
+        assert!(validated_lvm_size("1.2.3G", "size").is_err()); // two dots
+        assert!(validated_lvm_size("50%FREE", "size").is_err()); // percent not supported here
+    }
+
+    // ── journald validators ───────────────────────────────────────────────
+
+    #[test]
+    fn journal_priority_accepts_levels_and_ranges() {
+        assert!(validated_journal_priority("err", "priority").is_ok());
+        assert!(validated_journal_priority("3", "priority").is_ok());
+        assert!(validated_journal_priority("0..3", "priority").is_ok());
+        assert!(validated_journal_priority("err..info", "priority").is_ok());
+        assert!(validated_journal_priority("8", "priority").is_err());
+        assert!(validated_journal_priority("fatal", "priority").is_err());
+        assert!(validated_journal_priority("err;info", "priority").is_err());
+    }
+
+    #[test]
+    fn journal_time_allows_forms_and_rejects_control() {
+        assert!(validated_journal_time("2026-07-22 10:00:00", "since").is_ok());
+        assert!(validated_journal_time("yesterday", "since").is_ok());
+        assert!(validated_journal_time("-1h", "since").is_ok());
+        assert!(validated_journal_time("2 days ago", "since").is_ok());
+        assert!(validated_journal_time("a\nb", "since").is_err());
+        assert!(validated_journal_time("", "since").is_err());
+    }
+
+    #[test]
+    fn journal_grep_rejects_control_chars() {
+        assert!(validated_journal_grep("connection timed out", "grep").is_ok());
+        assert!(validated_journal_grep("err.*fatal", "grep").is_ok());
+        assert!(validated_journal_grep("bad\nline", "grep").is_err());
+        assert!(validated_journal_grep("", "grep").is_err());
     }
 }

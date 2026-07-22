@@ -56,6 +56,10 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "GetDateTime"
         | "ListProcesses"
         | "GetMemoryInfo"
+        // ── Observability / journald read-only ────────────────────────────
+        | "GetJournalLog"
+        // ── Storage / LVM read-only ───────────────────────────────────────
+        | "GetLvmReport"
         | "GetAuthorizedKeys"
         | "ListUsers"
         | "ListGroups"
@@ -173,7 +177,13 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         //
         // NetplanGenerate regenerates backend config files without reloading
         // interfaces — a dry-run / validation step that does not apply changes.
-        | "NetplanGenerate" => CallerRole::Dev,
+        | "NetplanGenerate"
+        // ── Observability / journald maintenance ──────────────────────────
+        //
+        // VacuumJournal deletes old journal files to reclaim disk. It cannot
+        // affect running services and only ages out historical logs, so it is
+        // Dev, not Admin.
+        | "VacuumJournal" => CallerRole::Dev,
 
         // ── High-risk system mutations (Admin) ───────────────────────────
         //
@@ -213,6 +223,14 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "ConfigureUnattendedUpgrades"
         // CreateScheduledJob installs a persistent root-scheduled systemd timer.
         | "CreateScheduledJob"
+        // ── Storage / LVM mutations ───────────────────────────────────────
+        //
+        // Growing, creating, or snapshotting a logical volume rewrites storage
+        // metadata; a bad size or target can consume a VG or (for extend)
+        // resize a mounted filesystem. All Admin/High.
+        | "ExtendLogicalVolume"
+        | "CreateLogicalVolume"
+        | "CreateLvSnapshot"
         | "DeleteUser"
         | "AddAuthorizedKey"
         | "RemoveAuthorizedKey"

@@ -88,6 +88,8 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "GetMemoryInfo"
         | "GetNetworkStatus"
         | "GetListeningPorts"
+        | "GetJournalLog"
+        | "GetLvmReport"
         | "GetAuthorizedKeys"
         | "GetDateTime"
         | "ListJobHistory"
@@ -330,6 +332,44 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             rollback_available: false,
             warnings: vec!["approval required".to_string()],
         },
+        // ── Observability / journald maintenance ─────────────────────────
+        "VacuumJournal" => PreviewProfile {
+            risk_level: RiskLevel::Medium,
+            expected_side_effects: vec![
+                "old journal entries will be permanently deleted".to_string(),
+                "disk space will be reclaimed".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec!["deleted log history cannot be recovered".to_string()],
+        },
+
+        // ── Storage / LVM mutations ───────────────────────────────────────
+        "ExtendLogicalVolume" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec![
+                "the logical volume and its filesystem will be grown".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec![
+                "resizes a live filesystem; a wrong volume target risks data".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+        "CreateLogicalVolume" | "CreateLvSnapshot" => PreviewProfile {
+            risk_level: RiskLevel::High,
+            expected_side_effects: vec![
+                "volume-group free space will be consumed".to_string(),
+            ],
+            reboot_required: false,
+            rollback_available: false,
+            warnings: vec![
+                "consumes VG capacity; snapshots fill as the origin changes".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+
         "SignalProcess" => PreviewProfile {
             risk_level: RiskLevel::High,
             expected_side_effects: vec!["the target process will be terminated".to_string()],
