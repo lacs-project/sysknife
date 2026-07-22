@@ -264,6 +264,12 @@ install -Dm 755 packaging/sysknife-log-edit /usr/lib/sysknife/log-edit \
 # pam-edit: invoked by SetPasswordPolicy (pwquality) + SetAccountLockout (faillock).
 install -Dm 755 packaging/sysknife-pam-edit /usr/lib/sysknife/pam-edit \
     || fail "Install sysknife-pam-edit"
+# audit-edit: invoked by AddAuditRule/RemoveAuditRule (needs auditd to load).
+install -Dm 755 packaging/sysknife-audit-edit /usr/lib/sysknife/audit-edit \
+    || fail "Install sysknife-audit-edit"
+# fail2ban-jail-edit: invoked by ConfigureFail2banJail (needs fail2ban to test/reload).
+install -Dm 755 packaging/sysknife-fail2ban-jail-edit /usr/lib/sysknife/fail2ban-jail-edit \
+    || fail "Install sysknife-fail2ban-jail-edit"
 
 # ---------------------------------------------------------------------------
 # Step 6: Add VM user to sysknife groups

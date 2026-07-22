@@ -1,19 +1,20 @@
 use crate::actions::{
-    apparmor, apt, apt_preferences, cloudinit, containers, deployment, distrobox, fail2ban,
-    filesystem, flatpak, grub, identity, journald, layering, livepatch, logging, lvm, mounts,
-    multipass, netplan, network, package_repos, pam, ppa, processes, reboot, release_upgrade,
-    resolvectl, services, snap, ssh, sudoers, sysctl, system_info, toolbox, ubuntu_pro, ufw, users,
+    apparmor, apt, apt_preferences, auditd, certbot, cloudinit, containers, deployment, distrobox,
+    fail2ban, filesystem, flatpak, grub, identity, journald, layering, livepatch, logging, lvm,
+    mounts, multipass, netplan, network, package_repos, pam, ppa, processes, reboot,
+    release_upgrade, resolvectl, services, snap, ssh, sudoers, sysctl, system_info, toolbox,
+    ubuntu_pro, ufw, users,
     validate::{
         validated_apparmor_profile, validated_apt_package, validated_apt_pin_expr,
-        validated_apt_pin_name, validated_cpu_quota, validated_fstype, validated_group,
-        validated_hostname, validated_journal_grep, validated_journal_priority,
-        validated_journal_time, validated_locale, validated_log_path, validated_lvm_name,
-        validated_lvm_size, validated_memory_limit, validated_mount_device,
-        validated_mount_options, validated_mount_point, validated_port_or_service,
-        validated_ppa_name, validated_pro_service, validated_safe_arg, validated_sudo_commands,
-        validated_sudoers_name, validated_swap_path, validated_sysctl_key, validated_sysctl_value,
-        validated_syslog_host, validated_tasks_max, validated_timezone, validated_unit_name,
-        validated_username,
+        validated_apt_pin_name, validated_audit_path, validated_audit_perms, validated_cpu_quota,
+        validated_domain, validated_email, validated_fstype, validated_group, validated_hostname,
+        validated_journal_grep, validated_journal_priority, validated_journal_time,
+        validated_locale, validated_log_path, validated_lvm_name, validated_lvm_size,
+        validated_memory_limit, validated_mount_device, validated_mount_options,
+        validated_mount_point, validated_port_or_service, validated_ppa_name,
+        validated_pro_service, validated_safe_arg, validated_sudo_commands, validated_sudoers_name,
+        validated_swap_path, validated_sysctl_key, validated_sysctl_value, validated_syslog_host,
+        validated_tasks_max, validated_timezone, validated_unit_name, validated_username,
     },
     ActionMechanism, ActionSpec,
 };
@@ -1317,6 +1318,75 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
                 fail2ban::Fail2banError::InvalidJail(_) => ExecutorError::InvalidParam("jail"),
             })
         }
+        "ConfigureFail2banJail" => {
+            let name = validated_sudoers_name(require_str(params, "name")?, "name")?;
+            let mut extra = Vec::new();
+            if let Some(n) = params.get("enabled").and_then(|v| v.as_bool()) {
+                extra.push("--enabled".to_string());
+                extra.push(if n { "true" } else { "false" }.to_string());
+            }
+            if let Some(n) = params.get("maxretry").and_then(|v| v.as_u64()) {
+                if !(1..=100).contains(&n) {
+                    return Err(ExecutorError::InvalidParam("maxretry"));
+                }
+                extra.push("--maxretry".to_string());
+                extra.push(n.to_string());
+            }
+            for (key, flag) in [("bantime", "--bantime"), ("findtime", "--findtime")] {
+                if let Some(n) = params.get(key).and_then(|v| v.as_u64()) {
+                    if n > 2_592_000 {
+                        return Err(ExecutorError::InvalidParam(key));
+                    }
+                    extra.push(flag.to_string());
+                    extra.push(n.to_string());
+                }
+            }
+            if extra.is_empty() {
+                return Err(ExecutorError::MissingParam("maxretry"));
+            }
+            Ok(fail2ban::configure_fail2ban_jail(&name, &extra))
+        }
+
+        // ── auditd file-watch rules ───────────────────────────────────────
+        "GetAuditRules" => Ok(auditd::get_audit_rules()),
+        "AddAuditRule" => {
+            let path = validated_audit_path(require_str(params, "path")?, "path")?;
+            let perms = validated_audit_perms(require_str(params, "perms")?, "perms")?;
+            let key = validated_sudoers_name(require_str(params, "key")?, "key")?;
+            Ok(auditd::add_audit_rule(&path, &perms, &key))
+        }
+        "RemoveAuditRule" => {
+            let key = validated_sudoers_name(require_str(params, "key")?, "key")?;
+            Ok(auditd::remove_audit_rule(&key))
+        }
+
+        // ── certbot / ACME ────────────────────────────────────────────────
+        "GetCertificates" => Ok(certbot::get_certificates()),
+        "ObtainCertificate" => {
+            // Accept a "domains" array or a single "domain" string; ≥1 required.
+            let mut domains = Vec::new();
+            if let Some(arr) = params.get("domains").and_then(|v| v.as_array()) {
+                for d in arr {
+                    let s = d.as_str().ok_or(ExecutorError::InvalidParam("domains"))?;
+                    domains.push(validated_domain(s, "domains")?);
+                }
+            } else if let Some(d) = params.get("domain").and_then(|v| v.as_str()) {
+                domains.push(validated_domain(d, "domain")?);
+            }
+            if domains.is_empty() {
+                return Err(ExecutorError::MissingParam("domains"));
+            }
+            let email = validated_email(require_str(params, "email")?, "email")?;
+            let challenge = params
+                .get("challenge")
+                .and_then(|v| v.as_str())
+                .unwrap_or("standalone");
+            if !matches!(challenge, "standalone" | "nginx" | "apache") {
+                return Err(ExecutorError::InvalidParam("challenge"));
+            }
+            Ok(certbot::obtain_certificate(&domains, &email, challenge))
+        }
+        "RenewCertificates" => Ok(certbot::renew_certificates()),
 
         _ => Err(ExecutorError::UnknownAction(action_name.to_string())),
     }

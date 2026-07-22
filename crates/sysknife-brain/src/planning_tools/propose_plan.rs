@@ -400,6 +400,22 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "ban an IP address in a fail2ban jail — params: jail* (string), ip* (IPv4 or IPv6); Ubuntu only; High risk"),
     ("Fail2banUnbanIp",
      "unban an IP address from a fail2ban jail — params: jail*, ip*; Ubuntu only; Medium risk"),
+    ("ConfigureFail2banJail",
+     "write a fail2ban jail override (/etc/fail2ban/jail.d/) — params: name*, plus at least one of enabled (bool), maxretry (1-100), bantime/findtime (seconds 0-2592000); Ubuntu only; High risk; needs fail2ban installed"),
+    // ── auditd file-watch rules (cross-distro) ───────────────────────────────
+    ("GetAuditRules",
+     "list loaded audit rules (auditctl -l) — no params; read-only; needs auditd installed"),
+    ("AddAuditRule",
+     "add a persistent audit file-watch rule — params: path* (absolute file/dir), perms* (subset of r/w/x/a), key* (label); High risk; needs auditd installed"),
+    ("RemoveAuditRule",
+     "remove a SysKnife-managed audit rule by key — param: key*; High risk"),
+    // ── certbot / ACME (cross-distro) ────────────────────────────────────────
+    ("GetCertificates",
+     "list certbot-managed certificates — no params; read-only; needs certbot installed"),
+    ("ObtainCertificate",
+     "obtain a TLS certificate non-interactively (certbot certonly) — params: domains* (array) or domain* (string), email*, challenge (standalone|nginx|apache, default standalone); High risk; needs certbot + network"),
+    ("RenewCertificates",
+     "renew due certbot certificates (certbot renew) — no params; High risk; needs certbot + network"),
     // ── Ubuntu / Tier 3 — netplan extensions ─────────────────────────────────
     ("NetplanSet",
      "set a single netplan key to a value — params: key* (e.g. 'ethernets.eth0.dhcp4'), value*; Ubuntu only; High risk; run NetplanApply to activate"),

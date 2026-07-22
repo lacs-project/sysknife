@@ -71,6 +71,9 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "GetLogrotateStatus"
         // ── PAM read-only ─────────────────────────────────────────────────
         | "GetPasswordAging"
+        // ── auditd / certbot read-only ────────────────────────────────────
+        | "GetAuditRules"
+        | "GetCertificates"
         | "GetAuthorizedKeys"
         | "ListUsers"
         | "ListGroups"
@@ -288,6 +291,12 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
         | "SetPasswordAging"
         | "SetPasswordPolicy"
         | "SetAccountLockout"
+        // ── auditd rules / certbot / fail2ban jail config ─────────────────
+        | "AddAuditRule"
+        | "RemoveAuditRule"
+        | "ObtainCertificate"
+        | "RenewCertificates"
+        | "ConfigureFail2banJail"
         | "DeleteUser"
         | "AddAuthorizedKey"
         | "RemoveAuthorizedKey"

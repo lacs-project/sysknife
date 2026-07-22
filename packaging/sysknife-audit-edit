@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+# sysknife-audit-edit — manage persistent auditd file-watch rules.
+#
+# Install to: /usr/lib/sysknife/audit-edit
+# Mode:       0755
+# Owner:      root:root
+#
+# Invoked exclusively by the sysknife-daemon via one of:
+#   sudo /usr/lib/sysknife/audit-edit --op add --path <abs> --perms <rwxa> --key <key>
+#   sudo /usr/lib/sysknife/audit-edit --op remove --key <key>
+#
+# Scope: file-WATCH rules only (`-w <path> -p <perms> -k <key>`), the common
+# "audit access to this sensitive file/dir" case. Syscall rules are deliberately
+# out of scope (their grammar is a large injection surface). Each rule is written
+# to its own file /etc/audit/rules.d/sysknife-<key>.rules and loaded with
+# `augenrules --load`, so it survives reboot. Inputs are re-validated here.
+#
+# NOTE (network-gated): the `auditd`/`audit` package is NOT on the base cloud
+# image and cannot be installed offline, so the load step (augenrules/auditctl)
+# could not be live-validated in the sandbox — only the rule-file WRITE was. If
+# augenrules is absent this helper still writes the persistent rule file and
+# reports that the load was skipped (rc still 0 so the rule is in place for the
+# next boot once auditd is installed).
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+RULES_D = "/etc/audit/rules.d"
+AUGENRULES = "/sbin/augenrules"
+PREFIX = "sysknife-"
+
+KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+PATH_RE = re.compile(r"^/[A-Za-z0-9/._-]{1,255}$")
+PERMS_RE = re.compile(r"^[rwxa]{1,4}$")
+
+
+def die(msg: str) -> None:
+    print(f"sysknife-audit-edit: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def atomic_write(path: str, content: str, mode: int = 0o640) -> None:
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".sysknife-audit-")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(content)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        die(f"cannot write {path}: {exc}")
+
+
+def reload_rules() -> None:
+    # augenrules compiles every rules.d/*.rules into the running policy. If the
+    # audit package is not installed, skip cleanly — the file is still in place.
+    if not os.path.exists(AUGENRULES):
+        print("sysknife-audit-edit: augenrules not found; rule written but not loaded",
+              file=sys.stderr)
+        return
+    subprocess.run([AUGENRULES, "--load"], check=False, stderr=subprocess.DEVNULL)
+
+
+def op_add(args) -> None:
+    if not KEY_RE.match(args.key):
+        die(f"invalid key {args.key!r}")
+    if not PATH_RE.match(args.path) or ".." in args.path:
+        die(f"invalid path {args.path!r}")
+    if not PERMS_RE.match(args.perms) or len(set(args.perms)) != len(args.perms):
+        die(f"invalid perms {args.perms!r} (subset of r/w/x/a, no repeats)")
+    body = (
+        f"# Managed by SysKnife (add_audit_rule: {args.key}).\n"
+        f"-w {args.path} -p {args.perms} -k {args.key}\n"
+    )
+    atomic_write(os.path.join(RULES_D, PREFIX + args.key + ".rules"), body)
+    reload_rules()
+
+
+def op_remove(args) -> None:
+    if not KEY_RE.match(args.key):
+        die(f"invalid key {args.key!r}")
+    dest = os.path.join(RULES_D, PREFIX + args.key + ".rules")
+    if os.path.exists(dest):
+        os.unlink(dest)
+        reload_rules()
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="Manage auditd file-watch rules.")
+    p.add_argument("--op", required=True, choices=["add", "remove"])
+    p.add_argument("--path")
+    p.add_argument("--perms")
+    p.add_argument("--key", required=True)
+    args = p.parse_args()
+
+    if args.op == "add":
+        if not (args.path and args.perms):
+            die("add requires --path and --perms")
+        op_add(args)
+    else:
+        op_remove(args)
+
+
+if __name__ == "__main__":
+    main()

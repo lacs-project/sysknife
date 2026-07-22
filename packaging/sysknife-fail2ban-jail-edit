@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+# sysknife-fail2ban-jail-edit — write a fail2ban jail override.
+#
+# Install to: /usr/lib/sysknife/fail2ban-jail-edit
+# Mode:       0755
+# Owner:      root:root
+#
+# Invoked exclusively by the sysknife-daemon via:
+#   sudo /usr/lib/sysknife/fail2ban-jail-edit --name <jail> \
+#        [--maxretry N] [--bantime N] [--findtime N] [--enabled true|false]
+#
+# Writes a jail override to /etc/fail2ban/jail.d/sysknife-<name>.local. Inputs
+# are re-validated here. If `fail2ban-client` is present the config is checked
+# with `fail2ban-client -t` (test) before the daemon is reloaded, rolling back
+# on rejection. If fail2ban is not installed the override is still written and
+# the test/reload is skipped cleanly.
+#
+# NOTE (network-gated): the `fail2ban` package is NOT on the base cloud image
+# and cannot be installed offline, so the -t/reload path could not be
+# live-validated in the sandbox — only the override WRITE + validation were.
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+JAIL_D = "/etc/fail2ban/jail.d"
+FAIL2BAN_CLIENT = "/usr/bin/fail2ban-client"
+PREFIX = "sysknife-"
+
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def die(msg: str) -> None:
+    print(f"sysknife-fail2ban-jail-edit: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def atomic_write(path: str, content: str, mode: int = 0o644) -> None:
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".sysknife-f2b-")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(content)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        die(f"cannot write {path}: {exc}")
+
+
+def require_range(name: str, value, lo: int, hi: int) -> None:
+    if value is None:
+        return
+    if value < lo or value > hi:
+        die(f"{name} out of range [{lo}, {hi}]")
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="Write a fail2ban jail override.")
+    p.add_argument("--name", required=True)
+    p.add_argument("--maxretry", type=int)
+    p.add_argument("--bantime", type=int)
+    p.add_argument("--findtime", type=int)
+    p.add_argument("--enabled", choices=["true", "false"])
+    args = p.parse_args()
+
+    if not NAME_RE.match(args.name):
+        die(f"invalid jail name {args.name!r}")
+    require_range("maxretry", args.maxretry, 1, 100)
+    # bantime/findtime seconds; cap at 30 days (bantime -1 = permanent is not
+    # offered here to keep the value a simple non-negative integer).
+    require_range("bantime", args.bantime, 0, 2592000)
+    require_range("findtime", args.findtime, 1, 2592000)
+
+    lines = [f"# Managed by SysKnife (configure_fail2ban_jail: {args.name}).", f"[{args.name}]"]
+    if args.enabled is not None:
+        lines.append(f"enabled = {args.enabled}")
+    if args.maxretry is not None:
+        lines.append(f"maxretry = {args.maxretry}")
+    if args.bantime is not None:
+        lines.append(f"bantime = {args.bantime}")
+    if args.findtime is not None:
+        lines.append(f"findtime = {args.findtime}")
+    if len(lines) == 2:
+        die("at least one of --enabled/--maxretry/--bantime/--findtime is required")
+
+    dest = os.path.join(JAIL_D, PREFIX + args.name + ".local")
+    prev = None
+    if os.path.exists(dest):
+        with open(dest) as fh:
+            prev = fh.read()
+    atomic_write(dest, "\n".join(lines) + "\n")
+
+    if not os.path.exists(FAIL2BAN_CLIENT):
+        print("sysknife-fail2ban-jail-edit: fail2ban-client not found; "
+              "override written but not tested/reloaded", file=sys.stderr)
+        return
+    check = subprocess.run(
+        [FAIL2BAN_CLIENT, "-t"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+    )
+    if check.returncode != 0:
+        if prev is not None:
+            atomic_write(dest, prev)
+        else:
+            os.unlink(dest)
+        die(f"fail2ban rejected the config: {check.stderr.decode(errors='replace').strip()}")
+    subprocess.run([FAIL2BAN_CLIENT, "reload"], check=False, stderr=subprocess.DEVNULL)
+
+
+if __name__ == "__main__":
+    main()
