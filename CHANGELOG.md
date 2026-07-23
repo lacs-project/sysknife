@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [0.2.7] — 2026-07-23
+
+### Security
+
+- The CLI's `--yes` / `--max-risk` auto-approval now derives each step's risk
+  from the daemon's `ActionSpec` (the single source of truth) instead of the
+  planner's proposed risk, so a plan that under-rates an action can no longer let
+  it auto-approve. A fail-closed guard also aborts before execution if the
+  running daemon rates a step higher than the CLI approved it — closing a
+  CLI/daemon version-skew window.
+
+### Changed
+
+- Preview `reboot_required` / `rollback_available` are now derived from the
+  `ActionSpec`, fixing stale display for `RollbackDeployment`, `AddPpa`,
+  `RemovePpa`, and `GrubSetKargs`.
+- Twenty-four apt / PPA / snap / GRUB / AppArmor / Fail2ban / resolvectl /
+  Flatpak actions that previously previewed as "unclassified" now show accurate
+  side effects and warnings; a completeness test prevents the drift from
+  recurring.
+
+### Added
+
+- Dependabot now tracks Docker base images and applies a supply-chain cooldown
+  to version updates; repository vulnerability alerts and automated security
+  updates are enabled.
+
 ## [0.2.6] — 2026-07-23
 
 ### Security
@@ -84,5 +111,6 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   (non-repudiable, third-party verifiable), with signed checkpoints guarding
   against truncation.
 
+[0.2.7]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.7
 [0.2.6]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.6
 [0.2.5]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.5
