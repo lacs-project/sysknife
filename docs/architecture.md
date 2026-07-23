@@ -148,7 +148,7 @@ running anything.
 ## IPC Protocol
 
 The shell and daemon communicate over a Unix domain socket
-(`/tmp/sysknife-daemon.sock` by default, overridable via `SYSKNIFE_LISTEN_URI`).
+(`$XDG_RUNTIME_DIR/sysknife/daemon.sock` by default, overridable via `SYSKNIFE_LISTEN_URI`).
 
 The framing is a 4-byte little-endian `u32` length prefix followed by
 a UTF-8 JSON body. Each message carries a `"type"` discriminant so
@@ -161,7 +161,7 @@ dropped immediately rather than queued.
 The protocol is human-readable. You can inspect live traffic with:
 
 ```sh
-socat - UNIX-CONNECT:/tmp/sysknife-daemon.sock
+socat - UNIX-CONNECT:"$XDG_RUNTIME_DIR/sysknife/daemon.sock"
 ```
 
 See [ADR 0003](adr/0003-ipc-wire-protocol.md) for the rationale

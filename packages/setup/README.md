@@ -80,7 +80,6 @@ entry (`sysknife-web`, `sysknife-db`, …) across all written config files.
 --claude      Configure Claude Code only
 --cursor      Configure Cursor only
 --codex       Configure Codex CLI only
---codex-only  Alias for --codex
 --all         Configure Claude Code, Cursor, and Codex CLI
 --no-binary   Skip prebuilt binary download (build from source instead)
 --no-prompts  Accept all defaults non-interactively (useful for scripts/tests)

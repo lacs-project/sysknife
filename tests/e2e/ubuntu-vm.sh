@@ -82,11 +82,6 @@ SEED="${VM_DIR}/seed.iso"
 PID_FILE="${VM_DIR}/vm.pid"
 CLOUD_INIT_DIR="${VM_DIR}/cloud-init"
 
-# ---------------------------------------------------------------------------
-# Legacy noble migration shim
-# ---------------------------------------------------------------------------
-# Prior to the multi-LTS refactor, noble used tests/e2e/ubuntu-vm/ with
-# different filenames (ubuntu-overlay.qcow2, ubuntu-vm.pid).  When running
 # Dedicated passphrase-less SSH key for the VM. Shared with atomic-vm.sh.
 SSH_KEY="${SYSKNIFE_VM_SSH_KEY:-$HOME/.ssh/sysknife-vm}"
 SSH_OPTIONS=(
@@ -107,36 +102,9 @@ _MIN_IMAGE_SIZE=314572800
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-#
-# Defined BEFORE the legacy-noble migration shim below so that calling `log`
-# at module-load time does not abort with `log: command not found` under
-# `set -euo pipefail`.
 
 log()  { printf '[ubuntu-vm:%s] %s\n' "$UBUNTU_RELEASE" "$*" >&2; }
 die()  { log "ERROR: $*"; exit 1; }
-
-# ---------------------------------------------------------------------------
-# Legacy-noble migration shim (now uses log/die above)
-# ---------------------------------------------------------------------------
-# When run as noble and the per-release directory does not yet exist but the
-# legacy path does, emit a one-time migration notice. The user must either:
-#   a) run 'download' to create a fresh noble overlay in the new location, or
-#   b) manually move the files:
-#        mv tests/e2e/ubuntu-vm/ubuntu-overlay.qcow2 tests/e2e/ubuntu-vm/noble/overlay.qcow2
-#        mv tests/e2e/ubuntu-vm/seed.iso             tests/e2e/ubuntu-vm/noble/seed.iso
-# Noble VMs provisioned before this change are unaffected until merge.
-if [ "$UBUNTU_RELEASE" = "noble" ] && [ ! -d "$VM_DIR" ]; then
-    _LEGACY_DIR="${REPO_ROOT}/tests/e2e/ubuntu-vm"
-    if [ -f "${_LEGACY_DIR}/ubuntu-overlay.qcow2" ]; then
-        log "MIGRATION NOTICE: Noble VM files found at legacy path ${_LEGACY_DIR}."
-        log "  New path: ${VM_DIR}/"
-        log "  To migrate, run:"
-        log "    mkdir -p '${VM_DIR}'"
-        log "    mv '${_LEGACY_DIR}/ubuntu-overlay.qcow2' '${VM_DIR}/overlay.qcow2'"
-        log "    mv '${_LEGACY_DIR}/seed.iso'             '${VM_DIR}/seed.iso'"
-        log "  Or run '$0 download' to create a fresh noble overlay."
-    fi
-fi
 
 require_tools() {
     local missing=()

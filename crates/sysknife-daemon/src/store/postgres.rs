@@ -12,9 +12,8 @@
 //! retry on broken connections, and TLS via rustls.
 //!
 //! On connect, `PostgresStore::initialize` runs ordered, transactional schema
-//! migrations under a database advisory lock. Existing installations created
-//! before migration tracking are adopted by migration 1 without dropping or
-//! rewriting rows. The schema mirrors SQLite field-for-field; the only dialect
+//! migrations under a database advisory lock. The schema mirrors SQLite
+//! field-for-field; the only dialect
 //! difference is `BIGINT NOT NULL UNIQUE` for `seq`. `created_at` remains
 //! `TEXT` (RFC 3339 with `Z` suffix) in both backends and is cast to
 //! `timestamptz` for interval arithmetic.

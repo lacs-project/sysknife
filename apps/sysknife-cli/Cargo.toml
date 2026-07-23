@@ -1,6 +1,6 @@
 [package]
 name = "sysknife-cli"
-version = "0.2.7"
+version = "0.2.8"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -15,11 +15,11 @@ name = "sysknife"
 path = "src/main.rs"
 
 [dependencies]
-sysknife-brain = { path = "../../crates/sysknife-brain", version = "0.2.7" }
-sysknife-core = { path = "../../crates/sysknife-core", version = "0.2.7" }
-sysknife-daemon = { path = "../../crates/sysknife-daemon", version = "0.2.7" }
+sysknife-brain = { path = "../../crates/sysknife-brain", version = "0.2.8" }
+sysknife-core = { path = "../../crates/sysknife-core", version = "0.2.8" }
+sysknife-daemon = { path = "../../crates/sysknife-daemon", version = "0.2.8" }
 chrono = "0.4"
-sysknife-types = { path = "../../crates/sysknife-types", version = "0.2.7" }
+sysknife-types = { path = "../../crates/sysknife-types", version = "0.2.8" }
 
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"

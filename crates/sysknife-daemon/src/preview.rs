@@ -34,6 +34,15 @@ struct PreviewProfile {
     warnings: Vec<String>,
 }
 
+/// The two standard approval-gate warning phrases, threaded through nearly
+/// every mutating action's profile below. Named so every arm spells the same
+/// wording instead of re-typing the literal ~50 times; a copy-paste typo here
+/// would only be a cosmetic wording drift (`tests/action_consistency.rs` pins
+/// risk/role/reboot/rollback, not warning text), but a shared constant makes
+/// that drift impossible rather than merely unlikely.
+const APPROVAL_REQUIRED: &str = "approval required";
+const EXACT_APPROVAL_REQUIRED: &str = "exact approval required";
+
 pub fn preview_action(
     request: &RequestEnvelope,
     current_state: Value,
@@ -186,7 +195,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "package state will change".to_string(),
                 "services may be restarted by needrestart".to_string(),
             ],
-            warnings: vec!["approval required".to_string()],
+            warnings: vec![APPROVAL_REQUIRED.to_string()],
         },
 
         // ── Ubuntu snap medium-risk ───────────────────────────────────────
@@ -194,7 +203,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             PreviewProfile {
                 expected_side_effects: vec!["snap state will change".to_string()],
                 warnings: vec![
-                    "approval required".to_string(),
+                    APPROVAL_REQUIRED.to_string(),
                     "snap auto-refresh: install is paired with --hold by default".to_string(),
                 ],
             }
@@ -203,7 +212,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         // ── Ubuntu distrobox medium-risk ──────────────────────────────────
         "DistroboxCreate" | "DistroboxRemove" => PreviewProfile {
             expected_side_effects: vec!["container lifecycle will change".to_string()],
-            warnings: vec!["approval required".to_string()],
+            warnings: vec![APPROVAL_REQUIRED.to_string()],
         },
 
         // ── Ubuntu apt high-risk ──────────────────────────────────────────
@@ -218,7 +227,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "dist-upgrade may remove packages".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -230,7 +239,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "misconfigured rules can lock out SSH access".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -242,7 +251,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "can disconnect the current SSH session if config is wrong".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -251,7 +260,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec![
                 "backend network config files will be regenerated".to_string(),
             ],
-            warnings: vec!["approval required".to_string()],
+            warnings: vec![APPROVAL_REQUIRED.to_string()],
         },
 
         // ── Ubuntu netplan high-risk (Tier 3) ─────────────────────────────
@@ -262,7 +271,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "run NetplanApply to activate the change".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -274,7 +283,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "misconfigured rules can lock out SSH access".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -285,7 +294,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "Pro services (ESM, Livepatch, FIPS) may be enabled".to_string(),
             ],
             warnings: vec![
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
                 "token is redacted from the preview, audit log, and diagnostic output".to_string(),
             ],
         },
@@ -297,7 +306,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "ESM, Livepatch, and FIPS services will be disabled".to_string(),
             ],
             warnings: vec![
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
                 "after detach, this machine no longer receives Pro security patches".to_string(),
             ],
         },
@@ -309,7 +318,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "requires the auditd package installed to take effect".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -322,14 +331,14 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             warnings: vec![
                 "contacts a public ACME CA over the network".to_string(),
                 "requires certbot installed + a reachable DNS/HTTP challenge".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
         "RenewCertificates" => PreviewProfile {
             expected_side_effects: vec!["certbot will renew due certificates".to_string()],
             warnings: vec![
                 "contacts a public ACME CA over the network".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -341,7 +350,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             warnings: vec![
                 "changes who gets banned (too strict can lock out real users)".to_string(),
                 "requires the fail2ban package installed to take effect".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -351,7 +360,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "a single Ubuntu Pro service will be enabled/disabled".to_string(),
             ],
             warnings: vec![
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
                 "requires an attached Pro subscription + network to take effect".to_string(),
             ],
         },
@@ -366,14 +375,14 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             warnings: vec![
                 "reboot required to complete the upgrade".to_string(),
                 "long-running operation — configure timeout >= 3600 seconds".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
         "ReloadService" => PreviewProfile {
             expected_side_effects: vec!["service config will be reloaded".to_string()],
             warnings: vec![
-                "approval required".to_string(),
+                APPROVAL_REQUIRED.to_string(),
                 "requires ExecReload= to be defined in the unit file; \
                  if not defined, use RestartService instead"
                     .to_string(),
@@ -402,7 +411,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "SetNtp"
         | "CreateUser" => PreviewProfile {
             expected_side_effects: vec!["service interruption".to_string()],
-            warnings: vec!["approval required".to_string()],
+            warnings: vec![APPROVAL_REQUIRED.to_string()],
         },
         // ── Observability / journald maintenance ─────────────────────────
         "VacuumJournal" => PreviewProfile {
@@ -420,7 +429,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "resizes a live filesystem; a wrong volume target risks data".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
         "CreateLogicalVolume" | "CreateLvSnapshot" => PreviewProfile {
@@ -429,7 +438,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "consumes VG capacity; snapshots fill as the origin changes".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -441,7 +450,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "too tight a MemoryMax can OOM-kill the service".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -450,7 +459,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec![
                 "a logrotate drop-in will be written/removed".to_string(),
             ],
-            warnings: vec!["approval required".to_string()],
+            warnings: vec![APPROVAL_REQUIRED.to_string()],
         },
         "ConfigureRemoteSyslog" | "RemoveRemoteSyslog" => PreviewProfile {
             expected_side_effects: vec![
@@ -459,7 +468,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "forwarding sends log data off-host (exfiltration surface)".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -468,7 +477,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec![
                 "the target account's password-aging limits will change".to_string(),
             ],
-            warnings: vec!["exact approval required".to_string()],
+            warnings: vec![EXACT_APPROVAL_REQUIRED.to_string()],
         },
         "SetPasswordPolicy" | "SetAccountLockout" => PreviewProfile {
             expected_side_effects: vec![
@@ -477,7 +486,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             warnings: vec![
                 "affects password/lockout rules for all accounts".to_string(),
                 "takes effect only if the PAM module is enabled in the auth stack".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -487,7 +496,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "apt version/origin preferences will change".to_string(),
                 "a /etc/apt/preferences.d drop-in will be written/removed".to_string(),
             ],
-            warnings: vec!["approval required".to_string()],
+            warnings: vec![APPROVAL_REQUIRED.to_string()],
         },
 
         // ── Scoped sudoers.d ──────────────────────────────────────────────
@@ -498,7 +507,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "this configures privilege escalation — review the rule carefully".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -510,7 +519,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "a wrong device or mountpoint risks data or availability".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
         "AddSwap" | "RemoveSwap" => PreviewProfile {
@@ -518,7 +527,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "swap will be enabled/disabled".to_string(),
                 "a swap file will be created/removed and /etc/fstab updated".to_string(),
             ],
-            warnings: vec!["exact approval required".to_string()],
+            warnings: vec![EXACT_APPROVAL_REQUIRED.to_string()],
         },
 
         // ── Kernel / sysctl mutation ──────────────────────────────────────
@@ -529,7 +538,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "a wrong net.*/vm.*/kernel.* value can degrade or lock the host".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -537,14 +546,14 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec!["the target process will be terminated".to_string()],
             warnings: vec![
                 "the process and its in-flight work will stop".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
         "ConfigureUnattendedUpgrades" => PreviewProfile {
             expected_side_effects: vec![
                 "the automatic security-update policy will change".to_string()
             ],
-            warnings: vec!["approval required".to_string()],
+            warnings: vec![APPROVAL_REQUIRED.to_string()],
         },
         "CreateScheduledJob" => PreviewProfile {
             expected_side_effects: vec![
@@ -552,7 +561,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "persistent root-scheduled execution".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
         "AddUserToGroup"
@@ -570,7 +579,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec!["access control will change".to_string()],
             warnings: vec![
                 "privilege change".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
         "AddPackageRepository"
@@ -578,12 +587,12 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "EnablePackageRepository"
         | "DisablePackageRepository" => PreviewProfile {
             expected_side_effects: vec!["package repository configuration will change".to_string()],
-            warnings: vec!["approval required".to_string()],
+            warnings: vec![APPROVAL_REQUIRED.to_string()],
         },
         "CreateContainer" | "StartContainer" | "StopContainer" | "RemoveContainer" => {
             PreviewProfile {
                 expected_side_effects: vec!["container lifecycle will change".to_string()],
-                warnings: vec!["approval required".to_string()],
+                warnings: vec![APPROVAL_REQUIRED.to_string()],
             }
         }
         "UpdateSystem"
@@ -602,30 +611,30 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "reboot required".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
         "SetKernelArguments" => PreviewProfile {
             expected_side_effects: vec!["boot arguments will change".to_string()],
             warnings: vec![
                 "reboot required".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
         "RebootSystem" => PreviewProfile {
             expected_side_effects: vec!["system reboot will interrupt running work".to_string()],
             warnings: vec![
                 "reboot required".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
         "CleanupDeployments" => PreviewProfile {
             expected_side_effects: vec!["old deployments may be removed".to_string()],
-            warnings: vec!["exact approval required".to_string()],
+            warnings: vec![EXACT_APPROVAL_REQUIRED.to_string()],
         },
         "PinDeployment" | "UnpinDeployment" => PreviewProfile {
             expected_side_effects: vec!["deployment pin state will change".to_string()],
-            warnings: vec!["exact approval required".to_string()],
+            warnings: vec![EXACT_APPROVAL_REQUIRED.to_string()],
         },
         // ── Ubuntu apt: index refresh + autoremove ───────────────────────
         "AptUpdate" => PreviewProfile {
@@ -636,7 +645,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec![
                 "automatically-installed packages no longer needed will be removed".to_string(),
             ],
-            warnings: vec!["approval required".to_string()],
+            warnings: vec![APPROVAL_REQUIRED.to_string()],
         },
 
         // ── Launchpad PPAs ────────────────────────────────────────────────
@@ -647,12 +656,12 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "a PPA is a third-party package source outside the distro archive".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
         "RemovePpa" => PreviewProfile {
             expected_side_effects: vec!["a Launchpad PPA will be removed".to_string()],
-            warnings: vec!["approval required".to_string()],
+            warnings: vec![APPROVAL_REQUIRED.to_string()],
         },
 
         // ── snap revert / classic install ─────────────────────────────────
@@ -660,7 +669,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec![
                 "the snap will be reverted to its previous revision".to_string(),
             ],
-            warnings: vec!["approval required".to_string()],
+            warnings: vec![APPROVAL_REQUIRED.to_string()],
         },
         "SnapClassicInstall" => PreviewProfile {
             expected_side_effects: vec![
@@ -668,7 +677,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "classic confinement grants the snap full, unsandboxed system access".to_string(),
-                "approval required".to_string(),
+                APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -681,7 +690,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             warnings: vec![
                 "takes effect on the next reboot".to_string(),
                 "a bad kernel argument can prevent the system from booting".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -690,7 +699,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec!["DNS servers for the interface will change".to_string()],
             warnings: vec![
                 "redirecting DNS can enable interception of name resolution".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -701,7 +710,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "an over-tight profile can block a legitimate service".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
         "AppArmorComplain" => PreviewProfile {
@@ -710,7 +719,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
             warnings: vec![
                 "complain mode disables MAC enforcement for the profile".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
 
@@ -719,20 +728,20 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec!["an IP address will be banned in a fail2ban jail".to_string()],
             warnings: vec![
                 "banning can lock out legitimate access from that address".to_string(),
-                "exact approval required".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
             ],
         },
         "Fail2banUnbanIp" => PreviewProfile {
             expected_side_effects: vec![
                 "an IP address will be unbanned in a fail2ban jail".to_string(),
             ],
-            warnings: vec!["approval required".to_string()],
+            warnings: vec![APPROVAL_REQUIRED.to_string()],
         },
 
         // ── Ubuntu Flatpak (per-user) ─────────────────────────────────────
         "UbuntuInstallFlatpak" | "UbuntuRemoveFlatpak" | "UbuntuUpdateFlatpak" => PreviewProfile {
             expected_side_effects: vec!["a user's Flatpak apps will change".to_string()],
-            warnings: vec!["approval required".to_string()],
+            warnings: vec![APPROVAL_REQUIRED.to_string()],
         },
 
         _ => PreviewProfile {

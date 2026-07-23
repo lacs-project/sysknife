@@ -210,7 +210,7 @@ sudo chmod +r /boot/vmlinuz-*
 #    and SSH key. (Implemented via guestfish so it works offline,
 #    bypassing Silverblue's interactive first-boot wizard which has
 #    gnome-initial-setup quirks on some hosts.)
-./tests/e2e/atomic-vm.sh install-key
+./tests/e2e/atomic-vm.sh bootstrap
 ```
 
 > Why no `enable-ssh` step? Earlier versions of this script tried to

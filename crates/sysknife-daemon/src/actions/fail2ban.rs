@@ -51,9 +51,6 @@ impl std::fmt::Display for Fail2banError {
 
 impl std::error::Error for Fail2banError {}
 
-/// Backwards-compat alias so existing call sites keep compiling.
-pub type InvalidIpAddress = Fail2banError;
-
 /// Allowlist for fail2ban jail names: alphanumeric + `_-` + `.` (no leading
 /// dash, no shell metachars, length ≤ 64). Mirrors the `validated_safe_arg`
 /// shape used at the executor seam.

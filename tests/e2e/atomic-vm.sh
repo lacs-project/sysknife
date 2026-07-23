@@ -22,7 +22,6 @@
 #                 stopped): create user, set passwords + sudoers, install
 #                 SSH key, enable sshd, set SELinux permissive, skip
 #                 gnome-initial-setup. Idempotent.
-#   install-key — alias for `bootstrap` (kept for older docs)
 #   start       — boot the installed VM headlessly with SSH forwarding
 #   ssh        — open an SSH shell into the VM (or run a command)
 #   sync       — rsync the repo to the VM (no build, no provision)
@@ -256,7 +255,7 @@ cmd_start() {
         if ssh $(ssh_opts) -o BatchMode=yes -o ConnectTimeout=5 \
                -p "$port" "${VM_USER}@127.0.0.1" true 2>&1 \
                | grep -qE 'Permission denied|publickey|password'; then
-            log "sshd responding on port $port (key not installed; run '$0 install-key')"
+            log "sshd responding on port $port (key not installed; run '$0 bootstrap')"
             return 0
         fi
         sleep 5
@@ -288,7 +287,7 @@ cmd_sync() {
 
 cmd_provision() {
     require_tools rsync
-    [ -f "$SSH_KEY" ] || die "SSH key $SSH_KEY not found. Run '$0 keygen' then '$0 install-key' first."
+    [ -f "$SSH_KEY" ] || die "SSH key $SSH_KEY not found. Run '$0 keygen' then '$0 bootstrap' first."
     local port repo_root
     port="$(vm_ssh_port)"
     repo_root="$(git rev-parse --show-toplevel)"
@@ -427,11 +426,6 @@ EOF
     log "Bootstrap complete. Boot the VM with '$0 start'."
 }
 
-# Backwards-compatible alias (older docs/cmd).
-cmd_install_key() {
-    log "Note: 'install-key' is now a subset of 'bootstrap'. Running bootstrap..."
-    cmd_bootstrap "$@"
-}
 
 cmd_run() {
     if [ "${SYSKNIFE_ALLOW_DESTRUCTIVE:-}" = "1" ]; then
@@ -577,7 +571,6 @@ case "$cmd" in
     enable-ssh)     cmd_enable_ssh "$@" ;;
     keygen)         cmd_keygen "$@" ;;
     bootstrap)      cmd_bootstrap "$@" ;;
-    install-key)    cmd_install_key "$@" ;;
     start)          cmd_start "$@" ;;
     ssh)            cmd_ssh "$@" ;;
     sync)           cmd_sync "$@" ;;

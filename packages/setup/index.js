@@ -226,7 +226,7 @@ const { PROVIDERS, MODEL_DEFAULTS, API_KEY_VARS } = require('./providers.js');
 const ARG_SET = new Set(process.argv.slice(2));
 const WANT_CLAUDE     = ARG_SET.has('--claude');
 const WANT_CURSOR     = ARG_SET.has('--cursor');
-const WANT_CODEX      = ARG_SET.has('--codex') || ARG_SET.has('--codex-only');
+const WANT_CODEX      = ARG_SET.has('--codex');
 const WANT_ALL        = ARG_SET.has('--all');
 const NO_BINARY       = ARG_SET.has('--no-binary');
 const NO_PROMPTS      = ARG_SET.has('--no-prompts');
@@ -437,12 +437,11 @@ function targetNextStep(target) {
 
   // Sockets that live on this machine, so the daemon starts locally rather than
   // over an SSH tunnel. Includes the default user-service socket written by the
-  // wizard (matches install-daemon.js) and the two legacy system paths.
+  // wizard (matches install-daemon.js) and the systemd system-unit path.
   const userServiceSocket = path.join(os.homedir(), '.local', 'share', 'sysknife', 'daemon.sock');
   const localSockets = new Set([
     userServiceSocket,
     '/run/sysknife/daemon.sock',
-    '/tmp/sysknife-daemon.sock',
   ]);
 
   if (socket.startsWith('vsock://')) {
@@ -890,7 +889,6 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
   --claude      Configure Claude Code only.
   --cursor      Configure Cursor only.
   --codex       Configure Codex CLI only.
-  --codex-only  Alias for --codex.
   --all         Configure Claude Code, Cursor, and Codex CLI.
   --no-binary   Skip prebuilt binary download (build from source instead).
   --no-prompts  Accept all defaults non-interactively (useful for scripts/tests).

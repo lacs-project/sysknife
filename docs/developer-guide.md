@@ -73,7 +73,9 @@ You need two terminals.
 **Terminal 1 — daemon**
 
 ```sh
-# Starts on /tmp/sysknife-daemon.sock by default.
+# Binds $SYSKNIFE_LISTEN_URI, else $XDG_RUNTIME_DIR/sysknife/daemon.sock
+# (last resort /tmp/sysknife-$UID.sock). The CLI resolves the same default,
+# so `sysknife doctor` works without setting a socket env var.
 # Privileged system actions (rpm-ostree, useradd, etc.) require root.
 # For development you can run without root — read-only queries still work.
 cargo run -p sysknife-daemon
@@ -119,7 +121,7 @@ poke it manually without the GUI:
 
 ```sh
 cargo run -p sysknife-daemon &
-socat - UNIX-CONNECT:/tmp/sysknife-daemon.sock
+socat - UNIX-CONNECT:"$XDG_RUNTIME_DIR/sysknife/daemon.sock"
 ```
 
 Type or paste a JSON message (with a 4-byte LE length prefix). This
@@ -172,7 +174,8 @@ Config file values act as defaults. Environment variables always win.
 
 | Variable | Default | Description |
 |---|---|---|
-| `SYSKNIFE_LISTEN_URI` | `$XDG_RUNTIME_DIR/sysknife/daemon.sock` (prod: `/run/sysknife/daemon.sock`) | Daemon socket URI |
+| `SYSKNIFE_LISTEN_URI` | `$XDG_RUNTIME_DIR/sysknife/daemon.sock` (prod: `/run/sysknife/daemon.sock`) | Daemon socket URI (where the daemon binds) |
+| `SYSKNIFE_SOCKET` | falls back to the same default as `SYSKNIFE_LISTEN_URI` | CLI / MCP-server socket override — where the client dials (`unix://`, `vsock://`, or a bare path) |
 | `SYSKNIFE_DATABASE_PATH` | `$XDG_STATE_HOME/sysknife/daemon.sqlite` (fallback `~/.local/state/sysknife/daemon.sqlite`) | SQLite database path |
 | `SYSKNIFE_LLM_PROVIDER` | auto-detect | `anthropic`, `openai`, `gemini`, `ollama`, `groq`, `deepseek`, `mistral`, or `xai` |
 | `ANTHROPIC_API_KEY` | — | Required for the Anthropic provider |
