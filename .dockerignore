@@ -1,0 +1,11 @@
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+!crates/**
+!apps/
+!apps/sysknife-cli/
+!apps/sysknife-cli/**
+!apps/sysknife-shell/
+!apps/sysknife-shell/src-tauri/
+!apps/sysknife-shell/src-tauri/**
