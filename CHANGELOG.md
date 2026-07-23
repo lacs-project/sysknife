@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [0.2.8] — 2026-07-23
+
+### Security
+
+- Bumped the transitive `postcss` dependency of the `sysknife-shell` GUI to
+  `>= 8.5.12` via an npm `overrides` pin, resolving a high-severity advisory
+  (arbitrary file read / information disclosure via an attacker-controlled
+  `sourceMappingURL` in CSS comments).
+
+### Fixed
+
+- The CLI (and the MCP server) now resolve the daemon socket via
+  `sysknife-core`'s `default_listen_uri()` — the same resolver the daemon and
+  the Tauri GUI already use — instead of a hardcoded production path. Previously
+  `sysknife doctor` and every CLI command failed to reach a dev/non-systemd
+  daemon until `SYSKNIFE_SOCKET` was set by hand. `$SYSKNIFE_SOCKET` still takes
+  precedence as an explicit override. Thanks to Raúl Cárdenas for the report.
+
+### Changed
+
+- Dropped backwards-compatibility cruft (the project has never been deployed at
+  scale, so matched versions are an invariant): the dead `fail2ban`
+  `InvalidIpAddress` type alias, the `--codex-only` setup-wizard flag alias, the
+  `install-key` VM-script alias, the `ubuntu-vm` "legacy noble" migration shim,
+  and a phantom `/tmp/sysknife-daemon.sock` path in the setup wizard.
+- Documented the `SYSKNIFE_SOCKET` override and corrected stale daemon
+  socket-default text (`$XDG_RUNTIME_DIR/sysknife/daemon.sock`, not
+  `/tmp/sysknife-daemon.sock`) in the developer and architecture docs.
+- Internal simplification of the CLI risk-gate/socket module and the daemon
+  preview gate (de-duplication and named constants); no behavior change.
+
 ## [0.2.7] — 2026-07-23
 
 ### Security
@@ -111,6 +142,7 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   (non-repudiable, third-party verifiable), with signed checkpoints guarding
   against truncation.
 
+[0.2.8]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.8
 [0.2.7]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.7
 [0.2.6]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.6
 [0.2.5]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.5

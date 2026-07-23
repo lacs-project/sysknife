@@ -16,12 +16,11 @@
 //! `--dry-run` short-circuits before any execution: the plan is printed and
 //! the function returns `Ok(())`.
 
-use std::io::{self, Write as _};
+use std::io::{self, IsTerminal, Write as _};
 use std::path::PathBuf;
 
 use clap::CommandFactory;
 use serde_json::{json, Value};
-use std::io::IsTerminal;
 use sysknife_brain::config::BrainConfig;
 use sysknife_brain::planner::{LlmPlanner, PlanRiskLevel};
 use sysknife_brain::PlanEvent;
@@ -62,18 +61,26 @@ pub fn distro_id_to_hint(distro: &sysknife_core::distro::DistroId) -> DistroHint
 // resolve_socket / resolve_socket_target
 // ---------------------------------------------------------------------------
 
-/// Returns the daemon [`SocketTarget`] from `$SYSKNIFE_SOCKET`.
+/// Resolve the daemon [`SocketTarget`] the CLI (and MCP server) should dial.
 ///
-/// Falls back to the system-wide Unix socket default when the env var is absent.
-/// Exits the process with an error message if the env var is set but unparseable.
+/// Precedence:
+/// 1. `$SYSKNIFE_SOCKET` — explicit override; accepts `unix://`, `vsock://`, or
+///    a bare path.
+/// 2. Otherwise [`sysknife_core::default_listen_uri`] — the *same* resolver the
+///    daemon and Tauri GUI use (`$SYSKNIFE_LISTEN_URI` →
+///    `$XDG_RUNTIME_DIR/sysknife/daemon.sock` → `/tmp/sysknife-$UID.sock`). This
+///    keeps the CLI pointed at wherever the daemon actually bound in both dev
+///    and production, rather than a hardcoded production path that only matches
+///    under systemd.
+///
+/// Exits the process if the resolved target string is unparseable.
 pub fn resolve_socket_target() -> SocketTarget {
-    match std::env::var("SYSKNIFE_SOCKET") {
-        Ok(s) => SocketTarget::try_from_str(&s).unwrap_or_else(|e| {
-            eprintln!("sysknife: invalid SYSKNIFE_SOCKET: {e}");
-            std::process::exit(1);
-        }),
-        Err(_) => SocketTarget::Unix(PathBuf::from("/run/sysknife/daemon.sock")),
-    }
+    let raw =
+        std::env::var("SYSKNIFE_SOCKET").unwrap_or_else(|_| sysknife_core::default_listen_uri());
+    SocketTarget::try_from_str(&raw).unwrap_or_else(|e| {
+        eprintln!("sysknife: invalid socket target {raw:?}: {e}");
+        std::process::exit(1);
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -173,11 +180,7 @@ fn rfc3339_to_unix(s: &str) -> Option<i64> {
 pub fn highest_risk(plan: &sysknife_brain::planner::Plan) -> Option<&PlanRiskLevel> {
     plan.steps()
         .iter()
-        .max_by_key(|s| match s.risk_level() {
-            PlanRiskLevel::Low => 0u8,
-            PlanRiskLevel::Medium => 1,
-            PlanRiskLevel::High => 2,
-        })
+        .max_by_key(|s| plan_risk_rank(s.risk_level()))
         .map(|s| s.risk_level())
 }
 
@@ -650,20 +653,14 @@ pub async fn run_audit_checkpoint(
 
     // Load the private signing key (same location rules as `verify`).
     let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(&db_path);
-    if !key_path.exists() {
-        eprintln!("audit key not found at {}", key_path.display());
-        return Err(CliError::Exit(2));
-    }
+    require_exists(&key_path, "audit key")?;
     let key = AuditKey::load_or_generate(&key_path).map_err(|e| {
         eprintln!("audit key load failed: {e}");
         CliError::Exit(2)
     })?;
 
     // Read the current chain tip from the local sqlite store.
-    if !db_path.exists() {
-        eprintln!("audit database not found at {}", db_path.display());
-        return Err(CliError::Exit(2));
-    }
+    require_exists(&db_path, "audit database")?;
     let store = TransactionStore::open_read_only(&db_path).map_err(|e| {
         eprintln!("opening audit database failed: {e}");
         CliError::Exit(2)
@@ -950,13 +947,8 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     }
 
     // Layer 1: spinner — auto-hidden by indicatif when stderr is not a TTY.
-    let spinner = if !opts.json {
-        Some(crate::render::make_spinner(format!(
-            "Planning \"{intent}\"…"
-        )))
-    } else {
-        None
-    };
+    let spinner =
+        (!opts.json).then(|| crate::render::make_spinner(format!("Planning \"{intent}\"…")));
 
     // Spawn event updater: receives PlanEvent and updates the spinner message.
     // The task exits naturally when the channel closes (i.e. when the planner
@@ -989,9 +981,7 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
         eprintln!("sysknife: event task panicked: {e}");
     }
 
-    if let Some(ref pb) = spinner {
-        pb.finish_and_clear();
-    }
+    finish_spinner(&spinner);
 
     let plan = plan_result.map_err(|e| CliError::PlanningFailed(e.to_string()))?;
 
@@ -1172,14 +1162,8 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
 
         // Spinner clears on the first output line so execution output
         // streams naturally without a spinner in the way.
-        let exec_spinner: Option<indicatif::ProgressBar> = if !opts.json {
-            Some(crate::render::make_spinner(format!(
-                "Executing {}…",
-                step.action_name()
-            )))
-        } else {
-            None
-        };
+        let exec_spinner: Option<indicatif::ProgressBar> = (!opts.json)
+            .then(|| crate::render::make_spinner(format!("Executing {}…", step.action_name())));
         let exec_spinner_ref = exec_spinner.clone();
         let mut first_line = true;
 
@@ -1192,9 +1176,7 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
                 &approval_receipt,
                 |line| {
                     if first_line {
-                        if let Some(ref pb) = exec_spinner_ref {
-                            pb.finish_and_clear();
-                        }
+                        finish_spinner(&exec_spinner_ref);
                         first_line = false;
                     }
                     if opts.json {
@@ -1207,12 +1189,10 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
             .await;
 
         // Always clear the exec spinner regardless of success or error.
-        // If the callback already fired, finish_and_clear() is idempotent.
-        // If execute() errored before the first output line, this prevents
-        // the spinner artifact from being left on the terminal.
-        if let Some(ref pb) = exec_spinner {
-            pb.finish_and_clear();
-        }
+        // finish_spinner() is idempotent, so this is safe even if the callback
+        // already fired. If execute() errored before the first output line,
+        // this prevents the spinner artifact from being left on the terminal.
+        finish_spinner(&exec_spinner);
 
         exec_result.map(|result| {
             if opts.json {
@@ -1312,6 +1292,26 @@ pub async fn run_repl(opts: &RunOpts, log: &Logger) -> Result<(), CliError> {
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
+
+/// Clear `spinner` if one is present. A no-op when `spinner` is `None` (e.g.
+/// `--json` mode, where no spinner was ever created) or already finished.
+fn finish_spinner(spinner: &Option<indicatif::ProgressBar>) {
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+}
+
+/// Check that `path` exists; if not, print `"{what} not found at <path>"` to
+/// stderr and fail with exit code 2 (used by `run_audit_checkpoint`, which
+/// checks both the audit key file and the audit database file this way).
+fn require_exists(path: &std::path::Path, what: &str) -> Result<(), CliError> {
+    if path.exists() {
+        Ok(())
+    } else {
+        eprintln!("{what} not found at {}", path.display());
+        Err(CliError::Exit(2))
+    }
+}
 
 /// Ask the user a yes/no question on stderr; return `true` iff they answer "y"
 /// or "yes" (case-insensitive).
@@ -1802,13 +1802,25 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn resolve_socket_target_defaults_to_unix_when_unset() {
+    fn resolve_socket_target_falls_back_to_core_default_listen_uri() {
+        // With no explicit SYSKNIFE_SOCKET override, the CLI must resolve to the
+        // same target the daemon binds — sysknife_core::default_listen_uri(),
+        // whose top precedence is SYSKNIFE_LISTEN_URI. Regression guard for the
+        // dev/non-systemd socket mismatch (the production path used to be
+        // hardcoded here, so `sysknife doctor` could not reach a dev daemon).
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::remove_var("SYSKNIFE_SOCKET") };
+        unsafe {
+            std::env::remove_var("SYSKNIFE_SOCKET");
+            std::env::set_var(
+                "SYSKNIFE_LISTEN_URI",
+                "unix:///run/user/4242/sysknife/daemon.sock",
+            );
+        }
         let t = resolve_socket_target();
+        unsafe { std::env::remove_var("SYSKNIFE_LISTEN_URI") };
         assert_eq!(
             t,
-            crate::client::SocketTarget::Unix(PathBuf::from("/run/sysknife/daemon.sock"))
+            crate::client::SocketTarget::Unix(PathBuf::from("/run/user/4242/sysknife/daemon.sock"))
         );
     }
 

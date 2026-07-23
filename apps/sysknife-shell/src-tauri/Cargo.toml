@@ -1,6 +1,6 @@
 [package]
 name = "sysknife-shell"
-version = "0.2.7"
+version = "0.2.8"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -14,8 +14,8 @@ default = ["demo"]
 demo = []
 
 [dependencies]
-sysknife-brain = { path = "../../../crates/sysknife-brain", version = "0.2.7" }
-sysknife-core = { path = "../../../crates/sysknife-core", version = "0.2.7" }
+sysknife-brain = { path = "../../../crates/sysknife-brain", version = "0.2.8" }
+sysknife-core = { path = "../../../crates/sysknife-core", version = "0.2.8" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tauri = { version = "2.5.6" }

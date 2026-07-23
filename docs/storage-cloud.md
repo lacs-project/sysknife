@@ -36,9 +36,7 @@ On startup, the daemon:
 3. Applies each pending migration once and records its version.
 4. Refuses to start if the database schema is newer than the binary.
 
-Migration 1 adopts databases created by pre-migration SysKnife builds without
-dropping or rewriting existing transaction rows. The CI contract verifies
-legacy-row preservation, migration idempotence, approval claims, history, and
+The CI contract verifies migration idempotence, approval claims, history, and
 hash-chain validation against a live PostgreSQL server.
 
 Transaction-mode PgBouncer deployments may require

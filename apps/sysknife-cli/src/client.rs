@@ -73,7 +73,7 @@ impl SocketTarget {
     /// Accepted forms:
     /// - `vsock://CID:PORT`  — virtio-vsock (Linux only)
     /// - `unix:///path`      — Unix domain socket
-    /// - `/absolute/path`    — bare path → Unix socket (backward compat)
+    /// - `/absolute/path`    — bare path → Unix socket
     pub fn try_from_str(s: &str) -> Result<Self, String> {
         #[cfg(target_os = "linux")]
         if let Some(rest) = s.strip_prefix("vsock://") {

@@ -76,7 +76,7 @@ pub struct NewTransaction {
 pub struct TransactionStore {
     path: PathBuf,
     /// Ed25519 signing key used to compute the forward audit chain on insert.
-    /// `None` only in legacy callers that never write rows (read-only access).
+    /// `None` only for read-only callers that never write rows.
     audit_key: Option<Arc<AuditKey>>,
 }
 

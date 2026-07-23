@@ -41,8 +41,8 @@ a new release commit.
 ## Data and operations
 
 - [ ] SQLite backup plus audit-key restore is tested on an isolated host.
-- [ ] PostgreSQL migration from a legacy schema and a backup/PITR restore drill
-      both pass against the production provider.
+- [ ] PostgreSQL migration and a backup/PITR restore drill both pass against
+      the production provider.
 - [ ] Audit retention, backup encryption, recovery objectives, restore owner,
       and deletion authorization are documented for operators.
 - [ ] Monitoring covers daemon startup, database failures/capacity, dropped

@@ -1,7 +1,7 @@
 {
   "name": "sysknife-shell",
   "private": true,
-  "version": "0.2.7",
+  "version": "0.2.8",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -25,5 +25,8 @@
     "typescript": "^7.0.2",
     "vite": "^8.0.10",
     "vitest": "^4.1.4"
+  },
+  "overrides": {
+    "postcss": "^8.5.12"
   }
 }
