@@ -182,8 +182,25 @@ pub fn highest_risk(plan: &sysknife_brain::planner::Plan) -> Option<&PlanRiskLev
 }
 
 // ---------------------------------------------------------------------------
-// authoritative_plan_risk
+// authoritative_plan_risk + risk-consistency helpers
 // ---------------------------------------------------------------------------
+
+/// Map the daemon's `RiskLevel` into the planner's risk enum.
+fn plan_risk_of(risk: RiskLevel) -> PlanRiskLevel {
+    match risk {
+        RiskLevel::Low => PlanRiskLevel::Low,
+        RiskLevel::Medium => PlanRiskLevel::Medium,
+        RiskLevel::High => PlanRiskLevel::High,
+    }
+}
+
+fn plan_risk_rank(risk: &PlanRiskLevel) -> u8 {
+    match risk {
+        PlanRiskLevel::Low => 0,
+        PlanRiskLevel::Medium => 1,
+        PlanRiskLevel::High => 2,
+    }
+}
 
 /// The authoritative risk for a plan step's action: the daemon's
 /// `ActionSpec`-derived gate risk ([`sysknife_daemon::preview::gate_risk`]),
@@ -194,12 +211,28 @@ pub fn highest_risk(plan: &sysknife_brain::planner::Plan) -> Option<&PlanRiskLev
 /// auto-approval decision derive from the single source of truth rather than a
 /// model guess. Unknown actions map to `High` — `gate_risk`'s conservative
 /// fallback — so a missing spec can never downgrade the CLI's approval friction.
+///
+/// Note: this reads the CLI binary's *own* linked `sysknife-daemon` catalogue,
+/// which equals the running daemon's only when both are the same build. The
+/// execution loop re-validates against the live daemon preview via
+/// [`daemon_risk_within_approved`] so a version skew can never execute a step at
+/// higher risk than was approved.
 fn authoritative_plan_risk(action_name: &str) -> PlanRiskLevel {
-    match sysknife_daemon::preview::gate_risk(action_name) {
-        RiskLevel::Low => PlanRiskLevel::Low,
-        RiskLevel::Medium => PlanRiskLevel::Medium,
-        RiskLevel::High => PlanRiskLevel::High,
-    }
+    plan_risk_of(sysknife_daemon::preview::gate_risk(action_name))
+}
+
+/// Fail-closed check run at execution time: is the live daemon's risk for a step
+/// no higher than the risk the CLI approved it at?
+///
+/// The plan-level/step-level approval decisions use the CLI's locally linked
+/// [`authoritative_plan_risk`]. If the connected daemon is a *different* build
+/// that reclassified an action upward (e.g. Medium → High, the same shape as a
+/// past security fix), the CLI could have auto-approved at the stale lower tier.
+/// Before minting a receipt we compare against the daemon's live preview risk and
+/// refuse to proceed when it is higher — the CLI must never execute a step at a
+/// higher risk than the operator approved.
+fn daemon_risk_within_approved(approved: &PlanRiskLevel, daemon: &PlanRiskLevel) -> bool {
+    plan_risk_rank(daemon) <= plan_risk_rank(approved)
 }
 
 pub async fn run_approve(
@@ -962,12 +995,31 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
 
     let plan = plan_result.map_err(|e| CliError::PlanningFailed(e.to_string()))?;
 
+    // Surface any step where the planner's proposed risk disagreed with the
+    // authoritative ActionSpec risk. A mismatch is a useful signal in its own
+    // right — the model may be confused about this action (and could have gotten
+    // its params wrong too), which the operator is well-placed to notice before
+    // approving. Emitted to stderr so it never pollutes `--json` stdout.
+    for step in plan.steps() {
+        let authoritative = authoritative_plan_risk(step.action_name());
+        if *step.risk_level() != authoritative {
+            log.print_stderr(&format!(
+                "sysknife: {} — planner rated {} risk; using {} (ActionSpec-derived)",
+                step.action_name(),
+                step.risk_level().as_str(),
+                authoritative.as_str(),
+            ));
+        }
+    }
+
     // Substitute the daemon's ActionSpec-derived risk (the single source of
-    // truth) for the LLM's proposed per-step risk, so the plan the operator sees
-    // below and the auto-approval gate both reflect authoritative risk. Without
-    // this, an LLM that under-rates an action could let `--yes --max-risk medium`
-    // auto-approve a step that is actually High risk. The per-step daemon preview
-    // fetched during execution derives from the same source, so they agree.
+    // truth) for the planner's proposed per-step risk, so the plan the operator
+    // sees below and the auto-approval gate both reflect authoritative risk.
+    // Without this, a planner that under-rates an action could let
+    // `--yes --max-risk medium` auto-approve a step that is actually High risk.
+    // This uses the CLI's *own* linked catalogue; the execution loop below
+    // re-validates each step against the live daemon preview so a CLI/daemon
+    // version skew can never execute above the approved risk.
     let plan = plan.with_authoritative_risks(authoritative_plan_risk);
 
     // ---- print plan --------------------------------------------------------
@@ -1095,6 +1147,22 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
             .preview(step.action_name(), step.params())
             .await?;
         let preview = &prepared.preview;
+
+        // Fail closed on CLI/daemon risk skew: the approval decision above used
+        // the CLI's own linked catalogue. If the live daemon rates this step
+        // higher than we approved it at, refuse to mint a receipt rather than
+        // execute above the approved risk (see `daemon_risk_within_approved`).
+        let daemon_risk = plan_risk_of(preview.risk_level);
+        if !daemon_risk_within_approved(step.risk_level(), &daemon_risk) {
+            return Err(CliError::ConfigOrDaemon(format!(
+                "{}: the running daemon rates this {} risk, above the {} the CLI approved — \
+                 the CLI and daemon builds may differ. Aborting without executing; upgrade the \
+                 CLI (or re-run with a matching --max-risk) so risk gating agrees.",
+                step.action_name(),
+                daemon_risk.as_str(),
+                step.risk_level().as_str(),
+            )));
+        }
 
         if opts.json {
             log.println(&serde_json::to_string(preview).expect("PreviewEnvelope is Serialize"));
@@ -1524,6 +1592,123 @@ mod tests {
             ApprovalDecision::ExceedsCeiling,
             "spec-derived High must not auto-approve under --max-risk medium"
         );
+    }
+
+    #[test]
+    fn authoritative_risks_close_the_under_rating_gate_for_bare_yes() {
+        // The most common invocation: `--yes` with no `--max-risk` (auto-ceiling
+        // defaults to Low). A planner under-rating a Medium action as Low would
+        // otherwise auto-execute it with zero confirmation.
+        let mk = |name: &str, risk| {
+            PlanStep::new(
+                ActionName::parse(name).unwrap(),
+                "s".into(),
+                risk,
+                serde_json::json!({}),
+            )
+            .unwrap()
+        };
+        let plan = Plan::new(
+            "i".into(),
+            "s".into(),
+            "e".into(),
+            vec![mk("RestartService", PlanRiskLevel::Low)],
+        )
+        .unwrap();
+        let policy = ApprovalPolicy::new(true, None, false, false);
+        assert_eq!(
+            policy.decide_plan(&plan),
+            ApprovalDecision::AutoApproved,
+            "sanity: bare --yes would auto-approve the Low the planner claimed"
+        );
+        let corrected = plan.with_authoritative_risks(authoritative_plan_risk);
+        assert_eq!(
+            policy.decide_plan(&corrected),
+            ApprovalDecision::RequiresPrompt,
+            "spec-derived Medium must prompt under bare --yes"
+        );
+    }
+
+    #[test]
+    fn authoritative_risks_force_interaction_for_under_rated_action_non_interactive() {
+        // Scripted/non-interactive runs have no human watching: an under-rated
+        // action must hard-fail (RequiresInteraction), never auto-run.
+        let mk = |name: &str, risk| {
+            PlanStep::new(
+                ActionName::parse(name).unwrap(),
+                "s".into(),
+                risk,
+                serde_json::json!({}),
+            )
+            .unwrap()
+        };
+        let plan = Plan::new(
+            "i".into(),
+            "s".into(),
+            "e".into(),
+            vec![mk("RestartService", PlanRiskLevel::Low)],
+        )
+        .unwrap();
+        let policy = ApprovalPolicy::new(true, None, true, false);
+        assert_eq!(
+            policy.decide_plan(&plan),
+            ApprovalDecision::AutoApproved,
+            "sanity: the planner's Low would have auto-run unattended"
+        );
+        let corrected = plan.with_authoritative_risks(authoritative_plan_risk);
+        assert_eq!(
+            policy.decide_plan(&corrected),
+            ApprovalDecision::RequiresInteraction,
+            "under-rated Medium must abort a non-interactive run"
+        );
+    }
+
+    #[test]
+    fn authoritative_risks_open_the_over_rating_gate() {
+        // Over-rating direction: a truly-Low action the planner flagged High must
+        // NOT be needlessly blocked after substitution — proves the substitution
+        // is a pure override, not max(planner, spec).
+        let mk = |name: &str, risk| {
+            PlanStep::new(
+                ActionName::parse(name).unwrap(),
+                "s".into(),
+                risk,
+                serde_json::json!({}),
+            )
+            .unwrap()
+        };
+        let plan = Plan::new(
+            "i".into(),
+            "s".into(),
+            "e".into(),
+            vec![mk("GetDiskUsage", PlanRiskLevel::High)],
+        )
+        .unwrap();
+        let policy = ApprovalPolicy::new(true, Some(MaxRisk::Low), false, false);
+        assert_eq!(
+            policy.decide_plan(&plan),
+            ApprovalDecision::ExceedsCeiling,
+            "sanity: the planner's inflated High would block a safe read-only action"
+        );
+        let corrected = plan.with_authoritative_risks(authoritative_plan_risk);
+        assert_eq!(
+            policy.decide_plan(&corrected),
+            ApprovalDecision::AutoApproved,
+            "spec-derived Low must auto-approve under --max-risk low"
+        );
+    }
+
+    #[test]
+    fn daemon_risk_within_approved_fails_closed_on_upward_skew() {
+        use PlanRiskLevel::{High, Low, Medium};
+        // Daemon risk == or < approved → allowed.
+        assert!(daemon_risk_within_approved(&Medium, &Medium));
+        assert!(daemon_risk_within_approved(&High, &Low));
+        assert!(daemon_risk_within_approved(&Medium, &Low));
+        // Daemon rates HIGHER than approved → must fail closed.
+        assert!(!daemon_risk_within_approved(&Medium, &High));
+        assert!(!daemon_risk_within_approved(&Low, &Medium));
+        assert!(!daemon_risk_within_approved(&Low, &High));
     }
 
     // -----------------------------------------------------------------------

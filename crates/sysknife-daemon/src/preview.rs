@@ -49,7 +49,23 @@ pub fn preview_action(
     let risk_level = gate_risk(&request.action_name);
     let (reboot_required, rollback_available) = crate::actions::spec_meta(&request.action_name)
         .map(|m| (m.reboot_required, m.rollback_available))
-        .unwrap_or((false, false));
+        .unwrap_or_else(|| {
+            // Unlike risk (which falls back to High), reboot/rollback default to
+            // the *reassuring* (false, false). That is accurate only for the one
+            // spec-less action that legitimately reaches preview, the read-only
+            // `ListJobHistory`. For anything else a missing spec is a bug (a
+            // catalogued action must have one) or an unvalidated name off the
+            // wire — log it, since silently claiming "no reboot, no rollback" for
+            // a real mutating action would mislead the operator.
+            if request.action_name != "ListJobHistory" {
+                eprintln!(
+                    "[sysknife-daemon] preview_action: no ActionSpec for {:?}; defaulting \
+                     reboot_required=false, rollback_available=false (risk falls back to High)",
+                    request.action_name
+                );
+            }
+            (false, false)
+        });
 
     PreviewEnvelope {
         summary: preview_summary(&request.action_name, &risk_level),
@@ -984,6 +1000,52 @@ mod tests {
                 .any(|e| e.contains("unclassified action")),
             "expected_side_effects should contain 'unclassified action'"
         );
+    }
+
+    // The completeness guard proves every action has *a* profile, but not that
+    // the right one is wired to the right name. These pin the two easiest-to-swap
+    // pairs so a transposition (which would tell the operator the opposite of the
+    // real effect) fails the build.
+    #[test]
+    fn apparmor_enforce_and_complain_profiles_are_not_swapped() {
+        let enforce = preview_action(
+            &req("AppArmorEnforce"),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        );
+        let complain = preview_action(
+            &req("AppArmorComplain"),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        );
+        // Check the distinguishing side-effect phrase only ("enforce mode" vs
+        // "complain mode"); the complain warning legitimately says "enforcement",
+        // which would trip a bare "enforce" substring match.
+        let se = |e: &sysknife_types::PreviewEnvelope| e.expected_side_effects.join(" ");
+        assert!(se(&enforce).contains("enforce mode") && !se(&enforce).contains("complain"));
+        assert!(se(&complain).contains("complain mode") && !se(&complain).contains("enforce mode"));
+    }
+
+    #[test]
+    fn fail2ban_ban_and_unban_profiles_are_not_swapped() {
+        let ban = preview_action(
+            &req("Fail2banBanIp"),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        );
+        let unban = preview_action(
+            &req("Fail2banUnbanIp"),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        );
+        assert!(ban
+            .expected_side_effects
+            .iter()
+            .any(|e| e.contains("will be banned")));
+        assert!(unban
+            .expected_side_effects
+            .iter()
+            .any(|e| e.contains("will be unbanned")));
     }
 
     #[test]
