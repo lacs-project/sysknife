@@ -77,11 +77,6 @@ npx sysknife-setup
 
 [![npm version](https://img.shields.io/npm/v/sysknife-setup?style=flat-square&logo=npm)](https://www.npmjs.com/package/sysknife-setup)
 
-> **Pre-launch:** the binary auto-download resolves against a published GitHub
-> Release, which isn't tagged yet — until the first release lands, run
-> `npx sysknife-setup --no-binary` and build the binaries with the **Manual
-> install** steps below.
-
 What this does:
 
 1. **Downloads the prebuilt `sysknife` + `sysknife-daemon` binaries** for your
