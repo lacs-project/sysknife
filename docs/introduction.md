@@ -27,8 +27,8 @@ $ sysknife "install neovim and make sure it starts on login"
 
 Plan  (2 steps)
 ──────────────────────────────────────────────────────────
- 1  AddLayeredPackage  neovim             risk: medium
- 2  EnableService      neovim-server      risk: medium
+ 1  AddLayeredPackage  neovim             risk: high
+ 2  SetServiceEnabled  neovim.service     risk: medium
 ──────────────────────────────────────────────────────────
 Approve? [y/N]
 ```
@@ -46,7 +46,7 @@ way to verify the AI proposed the minimal change rather than a sledgehammer.
 SysKnife gives you:
 
 - **Typed actions** — not shell strings. `AddLayeredPackage neovim` not `rpm-ostree install neovim && ...`
-- **Risk levels** — Low (read-only), Medium (reversible), High (irreversible / access-control)
+- **Risk levels** — Low (read-only), Medium (reversible), High (irreversible, access-control, or reboot-required)
 - **Preview before execution** — see the exact commands before they run
 - **Automatic rollback** — if a high-risk action fails, the daemon reverses what it can
 - **Immutable audit trail** — every execution is Ed25519-signed and hash-chained
