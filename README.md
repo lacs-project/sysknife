@@ -292,6 +292,7 @@ are scoped with clear acceptance criteria.
 ## Documentation
 
 - [Typed actions — why never a shell string](docs/typed-actions.md)
+- [Action reference — every action, generated from the code](docs/action-reference.md)
 - [The audit chain — Ed25519, public-key verifiable](docs/the-audit-chain.md)
 - [Automatic rollback](docs/automatic-rollback.md)
 - [SysKnife vs. alternatives](docs/comparison.md)

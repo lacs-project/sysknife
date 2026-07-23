@@ -16,6 +16,7 @@
 
 - [Architecture & Trust Boundaries](architecture.md)
 - [Typed Actions](typed-actions.md)
+- [Action Reference](action-reference.md)
 - [The Audit Chain](the-audit-chain.md)
 - [Automatic Rollback](automatic-rollback.md)
 
