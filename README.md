@@ -204,7 +204,7 @@ milestone.
 | Component | State |
 |---|---|
 | `sysknife-brain` — LLM planner, tool loop, safety fence | ✅ |
-| `sysknife-daemon` — 140+ typed actions, auth, preview, transactions | ✅ |
+| `sysknife-daemon` — 189 typed actions, auth, preview, transactions | ✅ |
 | Live IPC + streaming + atomic-host rollback (rpm-ostree) | ✅ |
 | Terminal approval gate — one-time, TTL-bounded receipts | ✅ |
 | MCP server (Claude Code / Cursor / any MCP client) | ✅ |
@@ -215,7 +215,7 @@ milestone.
 | **Ubuntu 22.04 / 26.04 VM tooling** — smoke tests pass on all three LTSes | ✅ |
 | Telegram approval interface | 📋 roadmap |
 
-**1,292 Rust tests and 72 frontend tests** form the current deterministic
+**1,348 Rust tests and 72 frontend tests** form the current deterministic
 release baseline.
 
 ## Configure your LLM
@@ -328,7 +328,7 @@ The [LACS specification](https://github.com/lacs-project/specification) is
 ---
 
 <p align="center">
-  Built by <a href="https://github.com/vladimirrotariu">Vladimir Rotariu</a>.
+  Built by <a href="https://github.com/vladimirrott">Vladimir Rotariu</a>.
   ·
   Issues, ideas, war stories — <a href="https://github.com/lacs-project/sysknife/discussions">come say hi</a>.
 </p>
