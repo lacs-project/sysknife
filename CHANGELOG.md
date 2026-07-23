@@ -8,7 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
-## [0.2.5] — Unreleased (first public release)
+## [0.2.6] — 2026-07-23
+
+### Security
+
+- **Per-action risk is now single-sourced on each action's `ActionSpec`.** The
+  preview/approval gate and the RBAC role table derive risk from it and are
+  consistency-tested for every action, so they can no longer silently diverge
+  from the documented risk. Consolidating the sources surfaced and fixed five
+  actions the gate had been treating as auto-approvable **Medium** despite being
+  **High**: `ConfigureFirewall`, `CreateUser`, `SetDnsServers`,
+  `AddPackageRepository`, and `MaskService` now correctly require High-risk,
+  exact-name approval.
+
+### Changed
+
+- Reclassified twelve actions against common sysadmin practice — raised
+  `AddAuthorizedKey`, `RemoveAuthorizedKey`, `AddPpa`, `VacuumJournal`, and
+  `ConfigureWifi`; lowered `RenewCertificates`, `CreateGroup`, `AddAuditRule`,
+  `CreateLvSnapshot`, `CreateLogicalVolume`, and `SetServiceResourceLimits`.
+- Documentation risk levels and action names are aligned with the code, and the
+  demo assets were corrected to match.
+- The Code of Conduct now lists the project contact address.
+
+### Added
+
+- Glama MCP registry listing support (Dockerfile and ownership marker).
+- Documented cargo-based MCP Registry publishing, with per-crate READMEs.
+
+### Fixed
+
+- Corrected the social-preview image URL.
+- Repaired a broken intra-doc link and de-flaked the CI markdown link check.
+
+## [0.2.5] — 2026-07-23 (first public release)
 
 ### Added
 
@@ -50,4 +83,5 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   (non-repudiable, third-party verifiable), with signed checkpoints guarding
   against truncation.
 
+[0.2.6]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.6
 [0.2.5]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.5
