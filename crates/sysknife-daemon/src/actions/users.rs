@@ -130,7 +130,7 @@ pub fn create_group(group: &str, system: bool) -> ActionSpec {
             program: "sudo",
             args,
         },
-        risk_level: RiskLevel::High,
+        risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
     }

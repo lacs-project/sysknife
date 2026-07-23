@@ -87,7 +87,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `ReloadDaemon` | `sudo systemctl daemon-reload` | Medium | All | – | – | run systemctl daemon-reload to pick up changed unit files — no params |
 | `CreateScheduledJob` | `sudo /usr/lib/sysknife/scheduled-job-edit --name sysknife-example --command /usr/bin/true --schedule *-*-* 02:00:00` | High | All | – | – | schedule a recurring command as a systemd timer — params: name\* (unit-safe id), command\* (executable line), schedule\* (systemd OnCalendar, e.g. "\*-\*-\* 02:00:00" or "daily") |
 | `GetServiceResourceLimits` | `systemctl show nginx.service --property=MemoryMax,MemoryHigh,CPUQuotaPerSecUSec,TasksMax` | Low | All | – | – | show a service's cgroup limits (MemoryMax/CPUQuota/TasksMax) via systemctl show — param: unit\*; read-only |
-| `SetServiceResourceLimits` | `sudo systemctl set-property nginx.service MemoryMax=500M CPUQuota=50%` | High | All | – | – | cap a service's resources via systemctl set-property (applies live + persists) — params: unit\*, plus at least one of memory_max (e.g. '500M' or 'infinity'), memory_high, cpu_quota (e.g. '50%'), tasks_max (integer or 'infinity'); High risk; undo with systemctl revert |
+| `SetServiceResourceLimits` | `sudo systemctl set-property nginx.service MemoryMax=500M CPUQuota=50%` | Medium | All | – | – | cap a service's resources via systemctl set-property (applies live + persists) — params: unit\*, plus at least one of memory_max (e.g. '500M' or 'infinity'), memory_high, cpu_quota (e.g. '50%'), tasks_max (integer or 'infinity'); High risk; undo with systemctl revert |
 
 ## Processes
 
@@ -101,7 +101,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GetJournalLog` | `journalctl --output=json --no-pager --lines=100 --unit=ssh.service --priority=err --boot` | Low | All | – | – | read filtered systemd journal entries as JSON (journalctl) — all params optional: unit (e.g. 'ssh.service'), priority (0-7 or name like 'err', or a range '0..3'), boot (bool, current boot only), kernel (bool, kernel messages only), since/until (e.g. '2026-07-22 10:00:00', 'yesterday', '-1h'), grep (regex on MESSAGE), lines (default 100, max 10000); read-only |
-| `VacuumJournal` | `journalctl --vacuum-size=500M` | Medium | All | – | – | reclaim journal disk space — supply exactly one of size_mb (cap total journal size) or retain_days (delete entries older than N days) |
+| `VacuumJournal` | `journalctl --vacuum-size=500M` | High | All | – | – | reclaim journal disk space — supply exactly one of size_mb (cap total journal size) or retain_days (delete entries older than N days) |
 
 ## Storage — LVM
 
@@ -109,8 +109,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 |---|---|---|---|---|---|---|
 | `GetLvmReport` | `lvs --reportformat json --units b -o lv_name,vg_name,lv_size,lv_attr,origin,data_percent` | Low | All | – | – | list logical volumes with VG, size, attributes, and usage as JSON (lvs) — no params; read-only |
 | `ExtendLogicalVolume` | `sudo lvextend -L +10G -r ubuntu-vg/ubuntu-lv` | High | All | – | – | grow a logical volume AND its filesystem in one step (lvextend -r) — params: vg\*, lv\*, size\* (e.g. '+10G' to add, or '50G' absolute); High risk |
-| `CreateLogicalVolume` | `sudo lvcreate -L 20G -n data ubuntu-vg` | High | All | – | – | create a new logical volume in a volume group (lvcreate) — params: vg\*, name\*, size\* (e.g. '20G'); High risk |
-| `CreateLvSnapshot` | `sudo lvcreate -s -L 5G -n ubuntu-lv-snap ubuntu-vg/ubuntu-lv` | High | All | – | – | snapshot a logical volume before risky changes (lvcreate -s) — params: vg\*, origin\* (LV to snapshot), snapshot\* (new name), size\* (copy-on-write reserve, e.g. '5G'); High risk |
+| `CreateLogicalVolume` | `sudo lvcreate -L 20G -n data ubuntu-vg` | Medium | All | – | – | create a new logical volume in a volume group (lvcreate) — params: vg\*, name\*, size\* (e.g. '20G'); High risk |
+| `CreateLvSnapshot` | `sudo lvcreate -s -L 5G -n ubuntu-lv-snap ubuntu-vg/ubuntu-lv` | Medium | All | – | – | snapshot a logical volume before risky changes (lvcreate -s) — params: vg\*, origin\* (LV to snapshot), snapshot\* (new name), size\* (copy-on-write reserve, e.g. '5G'); High risk |
 
 ## Kernel parameters — sysctl
 
@@ -153,7 +153,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GetAuditRules` | `auditctl -l` | Low | All | – | – | list loaded audit rules (auditctl -l) — no params; read-only; needs auditd installed |
-| `AddAuditRule` | `sudo /usr/lib/sysknife/audit-edit --op add --path /etc/passwd --perms wa --key passwd-watch` | High | All | – | – | add a persistent audit file-watch rule — params: path\* (absolute file/dir), perms\* (subset of r/w/x/a), key\* (label); High risk; needs auditd installed |
+| `AddAuditRule` | `sudo /usr/lib/sysknife/audit-edit --op add --path /etc/passwd --perms wa --key passwd-watch` | Medium | All | – | – | add a persistent audit file-watch rule — params: path\* (absolute file/dir), perms\* (subset of r/w/x/a), key\* (label); High risk; needs auditd installed |
 | `RemoveAuditRule` | `sudo /usr/lib/sysknife/audit-edit --op remove --key passwd-watch` | High | All | – | – | remove a SysKnife-managed audit rule by key — param: key\*; High risk |
 
 ## certbot / ACME
@@ -162,7 +162,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 |---|---|---|---|---|---|---|
 | `GetCertificates` | `certbot certificates` | Low | All | – | – | list certbot-managed certificates — no params; read-only; needs certbot installed |
 | `ObtainCertificate` | `sudo certbot certonly --non-interactive --agree-tos --standalone -m admin@example.com -d example.com` | High | All | – | – | obtain a TLS certificate non-interactively (certbot certonly) — params: domains\* (array) or domain\* (string), email\*, challenge (standalone\|nginx\|apache, default standalone); High risk; needs certbot + network |
-| `RenewCertificates` | `sudo certbot renew` | High | All | – | – | renew due certbot certificates (certbot renew) — no params; High risk; needs certbot + network |
+| `RenewCertificates` | `sudo certbot renew` | Medium | All | – | – | renew due certbot certificates (certbot renew) — no params; High risk; needs certbot + network |
 
 ## Scoped sudoers.d
 
@@ -176,7 +176,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `ConfigureWifi` | `sudo nmcli device wifi connect CafeHotspot` | Medium | All | – | – | connect to a Wi-Fi network — params: ssid\*, password (optional for open networks) |
+| `ConfigureWifi` | `sudo nmcli device wifi connect CafeHotspot` | High | All | – | – | connect to a Wi-Fi network — params: ssid\*, password (optional for open networks) |
 | `SetDnsServers` | `sudo resolvectl dns wlp1s0 1.1.1.1 8.8.8.8` | High | All | – | – | set DNS servers for an interface — params: interface\* (e.g. wlp1s0), servers\* (string\[\]) |
 | `ConfigureFirewall` | `sudo sh -c firewall-cmd --permanent --zone='public' --add-service='ssh' && firewall-cmd --reload` | High | All | – | – | add/remove a service in a firewalld zone — params: zone\*, service\*, enabled\* (bool) |
 | `GetFirewallState` | `firewall-cmd --list-all` | Low | All | – | – | show current firewalld zones, open services, and port rules — no params |
@@ -210,7 +210,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `DeleteUser` | `sudo userdel alice` | High | All | – | – | delete a local user account — param: username\* |
 | `AddUserToGroup` | `sudo sh -c grep -q '^wheel:' /etc/group \|\| getent group 'wheel' >> /etc/group; usermod --append --groups 'wheel' 'alice'` | High | All | – | – | add a user to a group — params: username\*, group\* |
 | `RemoveUserFromGroup` | `sudo sh -c grep -q '^wheel:' /etc/group \|\| getent group 'wheel' >> /etc/group; gpasswd --delete 'alice' 'wheel'` | High | All | – | – | remove a user from a group — params: username\*, group\* |
-| `CreateGroup` | `sudo groupadd developers` | High | All | – | – | create a local group — param: group\*; optional: system (bool → system GID range) |
+| `CreateGroup` | `sudo groupadd developers` | Medium | All | – | – | create a local group — param: group\*; optional: system (bool → system GID range) |
 | `DeleteGroup` | `sudo groupdel developers` | High | All | – | – | delete a local group — param: group\*; irreversible |
 | `LockUserAccount` | `sudo usermod --lock alice` | High | All | – | – | disable password login for a user without deleting it — param: username\* |
 | `UnlockUserAccount` | `sudo usermod --unlock alice` | High | All | – | – | re-enable password login for a locked user — param: username\* |
@@ -220,7 +220,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GetAuthorizedKeys` | `cat /home/alice/.ssh/authorized_keys` | Low | All | – | – | list SSH authorized_keys for a user — param: username\* |
-| `AddAuthorizedKey` | `sudo sh -c grep -Fxq 'ssh-ed25519 AAAA...' '/home/alice/.ssh/authorized_keys' 2>/dev/null \|\| echo 'ssh-ed25519 AAAA...' >> '/home/alice/.ssh/authorized_keys'` | Medium | All | – | – | append an SSH public key to a user's authorized_keys — params: username\*, public_key\* (full key string) |
+| `AddAuthorizedKey` | `sudo sh -c grep -Fxq 'ssh-ed25519 AAAA...' '/home/alice/.ssh/authorized_keys' 2>/dev/null \|\| echo 'ssh-ed25519 AAAA...' >> '/home/alice/.ssh/authorized_keys'` | High | All | – | – | append an SSH public key to a user's authorized_keys — params: username\*, public_key\* (full key string) |
 | `RemoveAuthorizedKey` | `sudo sh -c sed -i '\\\|^ssh-ed25519 AAAA...$\|d' '/home/alice/.ssh/authorized_keys'` | Medium | All | – | – | remove an SSH public key from a user's authorized_keys — params: username\*, public_key\* (full key string) |
 | `SetSshdOption` | `sudo /usr/lib/sysknife/sshd-option-edit --option PermitRootLogin --value prohibit-password` | High | All | – | – | harden sshd by setting an allowlisted option via a validated drop-in — params: option\* (one of PermitRootLogin, PasswordAuthentication, PubkeyAuthentication, X11Forwarding, PermitEmptyPasswords), value\* (per-option: yes/no, or prohibit-password/forced-commands-only for PermitRootLogin) |
 
@@ -289,7 +289,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `AptInstall` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y curl` | Medium | Ubuntu | – | – | install a package — param: package\* (string, e.g. nginx); Ubuntu only |
 | `AptRemove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get remove -y curl` | Medium | Ubuntu | – | – | remove a package, keep config files — param: package\*; Ubuntu only |
 | `AptPurge` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get purge -y curl` | Medium | Ubuntu | – | – | remove a package AND its config files — param: package\*; Ubuntu only |
-| `AptAutoremove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get autoremove -y` | Low | Ubuntu | – | – | remove automatically-installed packages no longer needed — no params; Ubuntu only |
+| `AptAutoremove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get autoremove -y` | Medium | Ubuntu | – | – | remove automatically-installed packages no longer needed — no params; Ubuntu only |
 | `AptHold` | `sudo apt-mark hold curl` | Medium | Ubuntu | – | – | pin a package at its current version (apt-mark hold) — param: package\*; Ubuntu only |
 | `AptUnhold` | `sudo apt-mark unhold curl` | Medium | Ubuntu | – | – | unpin a package to allow upgrades (apt-mark unhold) — param: package\*; Ubuntu only |
 | `AptSearch` | `apt-cache search curl` | Low | Ubuntu | – | – | search apt repos for packages — param: term\*; Ubuntu only; read-only |
@@ -311,7 +311,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `AddPpa` | `sudo add-apt-repository -y ppa:deadsnakes/ppa` | Medium | Ubuntu | – | ✓ | add a Launchpad PPA — param: name\* in &lt;user&gt;/&lt;ppa&gt; format (e.g. 'deadsnakes/ppa'); Ubuntu only; requires software-properties-common |
+| `AddPpa` | `sudo add-apt-repository -y ppa:deadsnakes/ppa` | High | Ubuntu | – | ✓ | add a Launchpad PPA — param: name\* in &lt;user&gt;/&lt;ppa&gt; format (e.g. 'deadsnakes/ppa'); Ubuntu only; requires software-properties-common |
 | `RemovePpa` | `sudo add-apt-repository -y --remove ppa:deadsnakes/ppa` | Medium | Ubuntu | – | ✓ | remove a Launchpad PPA — param: name\* in &lt;user&gt;/&lt;ppa&gt; format; Ubuntu only |
 
 ## snap

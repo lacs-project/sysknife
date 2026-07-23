@@ -45,7 +45,7 @@ pub fn add_audit_rule(path: &str, perms: &str, key: &str) -> ActionSpec {
                 HELPER, "--op", "add", "--path", path, "--perms", perms, "--key", key,
             ],
         ),
-        risk_level: RiskLevel::High,
+        risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
     }
@@ -100,7 +100,7 @@ mod tests {
                 "pw"
             ]
         );
-        assert_eq!(add_audit_rule("/x", "r", "k").risk_level, RiskLevel::High);
+        assert_eq!(add_audit_rule("/x", "r", "k").risk_level, RiskLevel::Medium);
     }
 
     #[test]

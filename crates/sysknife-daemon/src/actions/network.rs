@@ -32,7 +32,7 @@ pub fn configure_wifi(ssid: &str, password: Option<&str>) -> ActionSpec {
             program: "sudo",
             args,
         },
-        risk_level: RiskLevel::Medium,
+        risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
     }

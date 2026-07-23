@@ -229,7 +229,7 @@ pub fn apt_autoremove() -> ActionSpec {
                 "-y",
             ],
         ),
-        risk_level: RiskLevel::Low,
+        risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
     }
@@ -499,8 +499,8 @@ mod tests {
     }
 
     #[test]
-    fn apt_autoremove_risk_is_low() {
-        assert_eq!(apt_autoremove().risk_level, RiskLevel::Low);
+    fn apt_autoremove_risk_is_medium() {
+        assert_eq!(apt_autoremove().risk_level, RiskLevel::Medium);
     }
 
     // ── apt_hold ─────────────────────────────────────────────────────────────

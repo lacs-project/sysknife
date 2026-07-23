@@ -64,7 +64,7 @@ pub fn set_service_resource_limits(unit: &str, assignments: &[String]) -> Action
     ActionSpec {
         action_name: "SetServiceResourceLimits",
         mechanism: command_mechanism("sudo", args),
-        risk_level: RiskLevel::High,
+        risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
     }
@@ -294,6 +294,6 @@ mod tests {
                 "CPUQuota=50%"
             ]
         );
-        assert_eq!(spec.risk_level, RiskLevel::High);
+        assert_eq!(spec.risk_level, RiskLevel::Medium);
     }
 }

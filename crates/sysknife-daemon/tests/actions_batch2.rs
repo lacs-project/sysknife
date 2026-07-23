@@ -269,7 +269,7 @@ fn configure_wifi_open_network_uses_nmcli_without_password() {
     let spec = network::configure_wifi("CafeHotspot", None);
 
     assert_eq!(spec.action_name, "ConfigureWifi");
-    assert_eq!(spec.risk_level, RiskLevel::Medium);
+    assert_eq!(spec.risk_level, RiskLevel::High);
     assert_eq!(
         spec.mechanism,
         ActionMechanism::Command {
@@ -520,8 +520,8 @@ fn group_lifecycle_uses_sudo_groupadd_groupdel() {
     let create_system = users::create_group("svc", true);
     let delete = users::delete_group("developers");
 
-    // Both are Admin/High (group membership gates privilege).
-    assert_eq!(create.risk_level, RiskLevel::High);
+    // CreateGroup is Medium (empty group grants nothing); DeleteGroup is High.
+    assert_eq!(create.risk_level, RiskLevel::Medium);
     assert_eq!(delete.risk_level, RiskLevel::High);
 
     assert_eq!(
