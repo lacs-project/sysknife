@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Protocol buffer definitions for the SysKnife daemon IPC contract"
-keywords = ["linux", "system-administration", "protobuf", "ipc"]
+keywords = ["linux", "sysadmin", "protobuf", "ipc"]
 categories = ["os::linux-apis", "encoding"]
 
 [dependencies]

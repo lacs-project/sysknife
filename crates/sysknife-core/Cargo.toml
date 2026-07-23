@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Configuration and domain primitives for SysKnife"
-keywords = ["linux", "system-administration", "configuration"]
+keywords = ["linux", "sysadmin", "configuration"]
 categories = ["command-line-utilities", "config"]
 
 [dependencies]
