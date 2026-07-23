@@ -87,7 +87,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `ReloadDaemon` | `sudo systemctl daemon-reload` | Medium | All | – | – | run systemctl daemon-reload to pick up changed unit files — no params |
 | `CreateScheduledJob` | `sudo /usr/lib/sysknife/scheduled-job-edit --name sysknife-example --command /usr/bin/true --schedule *-*-* 02:00:00` | High | All | – | – | schedule a recurring command as a systemd timer — params: name\* (unit-safe id), command\* (executable line), schedule\* (systemd OnCalendar, e.g. "\*-\*-\* 02:00:00" or "daily") |
 | `GetServiceResourceLimits` | `systemctl show nginx.service --property=MemoryMax,MemoryHigh,CPUQuotaPerSecUSec,TasksMax` | Low | All | – | – | show a service's cgroup limits (MemoryMax/CPUQuota/TasksMax) via systemctl show — param: unit\*; read-only |
-| `SetServiceResourceLimits` | `sudo systemctl set-property nginx.service MemoryMax=500M CPUQuota=50%` | Medium | All | – | – | cap a service's resources via systemctl set-property (applies live + persists) — params: unit\*, plus at least one of memory_max (e.g. '500M' or 'infinity'), memory_high, cpu_quota (e.g. '50%'), tasks_max (integer or 'infinity'); High risk; undo with systemctl revert |
+| `SetServiceResourceLimits` | `sudo systemctl set-property nginx.service MemoryMax=500M CPUQuota=50%` | Medium | All | – | – | cap a service's resources via systemctl set-property (applies live + persists) — params: unit\*, plus at least one of memory_max (e.g. '500M' or 'infinity'), memory_high, cpu_quota (e.g. '50%'), tasks_max (integer or 'infinity'); Medium risk; undo with systemctl revert |
 
 ## Processes
 
@@ -109,8 +109,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 |---|---|---|---|---|---|---|
 | `GetLvmReport` | `lvs --reportformat json --units b -o lv_name,vg_name,lv_size,lv_attr,origin,data_percent` | Low | All | – | – | list logical volumes with VG, size, attributes, and usage as JSON (lvs) — no params; read-only |
 | `ExtendLogicalVolume` | `sudo lvextend -L +10G -r ubuntu-vg/ubuntu-lv` | High | All | – | – | grow a logical volume AND its filesystem in one step (lvextend -r) — params: vg\*, lv\*, size\* (e.g. '+10G' to add, or '50G' absolute); High risk |
-| `CreateLogicalVolume` | `sudo lvcreate -L 20G -n data ubuntu-vg` | Medium | All | – | – | create a new logical volume in a volume group (lvcreate) — params: vg\*, name\*, size\* (e.g. '20G'); High risk |
-| `CreateLvSnapshot` | `sudo lvcreate -s -L 5G -n ubuntu-lv-snap ubuntu-vg/ubuntu-lv` | Medium | All | – | – | snapshot a logical volume before risky changes (lvcreate -s) — params: vg\*, origin\* (LV to snapshot), snapshot\* (new name), size\* (copy-on-write reserve, e.g. '5G'); High risk |
+| `CreateLogicalVolume` | `sudo lvcreate -L 20G -n data ubuntu-vg` | Medium | All | – | – | create a new logical volume in a volume group (lvcreate) — params: vg\*, name\*, size\* (e.g. '20G'); Medium risk |
+| `CreateLvSnapshot` | `sudo lvcreate -s -L 5G -n ubuntu-lv-snap ubuntu-vg/ubuntu-lv` | Medium | All | – | – | snapshot a logical volume before risky changes (lvcreate -s) — params: vg\*, origin\* (LV to snapshot), snapshot\* (new name), size\* (copy-on-write reserve, e.g. '5G'); Medium risk |
 
 ## Kernel parameters — sysctl
 
@@ -153,7 +153,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GetAuditRules` | `auditctl -l` | Low | All | – | – | list loaded audit rules (auditctl -l) — no params; read-only; needs auditd installed |
-| `AddAuditRule` | `sudo /usr/lib/sysknife/audit-edit --op add --path /etc/passwd --perms wa --key passwd-watch` | Medium | All | – | – | add a persistent audit file-watch rule — params: path\* (absolute file/dir), perms\* (subset of r/w/x/a), key\* (label); High risk; needs auditd installed |
+| `AddAuditRule` | `sudo /usr/lib/sysknife/audit-edit --op add --path /etc/passwd --perms wa --key passwd-watch` | Medium | All | – | – | add a persistent audit file-watch rule — params: path\* (absolute file/dir), perms\* (subset of r/w/x/a), key\* (label); Medium risk; needs auditd installed |
 | `RemoveAuditRule` | `sudo /usr/lib/sysknife/audit-edit --op remove --key passwd-watch` | High | All | – | – | remove a SysKnife-managed audit rule by key — param: key\*; High risk |
 
 ## certbot / ACME
@@ -162,7 +162,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 |---|---|---|---|---|---|---|
 | `GetCertificates` | `certbot certificates` | Low | All | – | – | list certbot-managed certificates — no params; read-only; needs certbot installed |
 | `ObtainCertificate` | `sudo certbot certonly --non-interactive --agree-tos --standalone -m admin@example.com -d example.com` | High | All | – | – | obtain a TLS certificate non-interactively (certbot certonly) — params: domains\* (array) or domain\* (string), email\*, challenge (standalone\|nginx\|apache, default standalone); High risk; needs certbot + network |
-| `RenewCertificates` | `sudo certbot renew` | Medium | All | – | – | renew due certbot certificates (certbot renew) — no params; High risk; needs certbot + network |
+| `RenewCertificates` | `sudo certbot renew` | Medium | All | – | – | renew due certbot certificates (certbot renew) — no params; Medium risk; needs certbot + network |
 
 ## Scoped sudoers.d
 

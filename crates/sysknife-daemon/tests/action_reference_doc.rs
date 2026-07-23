@@ -16,59 +16,13 @@ use std::path::PathBuf;
 
 use sysknife_brain::planning_tools::propose_plan::KNOWN_ACTIONS;
 use sysknife_core::action_family::{DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS};
-use sysknife_daemon::actions::{
-    apparmor, apt, apt_preferences, auditd, certbot, cloudinit, containers, deployment, distrobox,
-    fail2ban, filesystem, flatpak, grub, identity, journald, layering, livepatch, logging, lvm,
-    mounts, multipass, netplan, network, package_repos, pam, ppa, processes, reboot,
-    release_upgrade, resolvectl, services, snap, ssh, sudoers, sysctl, system_info, toolbox,
-    ubuntu_pro, ufw, users, ActionMechanism, ActionSpec,
-};
+use sysknife_daemon::actions::{catalogue, ActionMechanism, ActionSpec};
 
 /// Ordered (section title, specs) pairs — one per action module. The order and
 /// titles are the ONLY hand-authored input; every cell below is derived.
 fn sections() -> Vec<(&'static str, Vec<ActionSpec>)> {
-    vec![
-        ("Deployment (atomic host)", deployment::specs()),
-        ("Package layering (rpm-ostree)", layering::specs()),
-        ("Filesystem", filesystem::specs()),
-        ("Flatpak", flatpak::specs()),
-        ("Toolbox", toolbox::specs()),
-        ("Services", services::specs()),
-        ("Processes", processes::specs()),
-        ("Journald", journald::specs()),
-        ("Storage — LVM", lvm::specs()),
-        ("Kernel parameters — sysctl", sysctl::specs()),
-        ("Mounts & swap", mounts::specs()),
-        ("Log management", logging::specs()),
-        ("PAM password policy", pam::specs()),
-        ("auditd", auditd::specs()),
-        ("certbot / ACME", certbot::specs()),
-        ("Scoped sudoers.d", sudoers::specs()),
-        ("Network", network::specs()),
-        ("resolvectl", resolvectl::specs()),
-        ("Identity / time / locale", identity::specs()),
-        ("Users & groups", users::specs()),
-        ("SSH keys", ssh::specs()),
-        ("Package repositories", package_repos::specs()),
-        ("System info", system_info::specs()),
-        ("Containers", containers::specs()),
-        ("Reboot", reboot::specs()),
-        ("AppArmor", apparmor::specs()),
-        ("cloud-init", cloudinit::specs()),
-        ("fail2ban", fail2ban::specs()),
-        ("apt", apt::specs()),
-        ("apt preferences / pinning", apt_preferences::specs()),
-        ("PPA", ppa::specs()),
-        ("snap", snap::specs()),
-        ("ufw", ufw::specs()),
-        ("netplan", netplan::specs()),
-        ("distrobox", distrobox::specs()),
-        ("GRUB", grub::specs()),
-        ("Ubuntu release upgrade", release_upgrade::specs()),
-        ("Ubuntu Pro", ubuntu_pro::specs()),
-        ("Livepatch", livepatch::specs()),
-        ("Multipass", multipass::specs()),
-    ]
+    // The catalogue is the single source of truth (crate::actions).
+    catalogue()
 }
 
 /// Escape free-text for a Markdown table cell so it renders literally: table
