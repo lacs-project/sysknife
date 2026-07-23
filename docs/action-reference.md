@@ -304,7 +304,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GetAptPins` | `apt-cache policy` | Low | Ubuntu | – | – | show apt pin priorities (apt-cache policy) — param: package (optional); Ubuntu only; read-only |
-| `SetAptPin` | `sudo /usr/lib/sysknife/apt-pin-edit --op set --name hold-nginx --package nginx --pin version 1.24.* --priority 1001` | Medium | Ubuntu | – | – | pin a package to a version/release via /etc/apt/preferences.d — params: name\*, package\* (glob), pin\* (e.g. 'version 1.24.\*' or 'release a=noble-security'), priority\* (int -1..1000); Ubuntu only; Medium risk |
+| `SetAptPin` | `sudo /usr/lib/sysknife/apt-pin-edit --op set --name hold-nginx --package nginx --pin version 1.24.* --priority 990` | Medium | Ubuntu | – | – | pin a package to a version/release via /etc/apt/preferences.d — params: name\*, package\* (glob), pin\* (e.g. 'version 1.24.\*' or 'release a=noble-security'), priority\* (int -1..1000); Ubuntu only; Medium risk |
 | `RemoveAptPin` | `sudo /usr/lib/sysknife/apt-pin-edit --op remove --name hold-nginx` | Medium | Ubuntu | – | – | remove a SysKnife-managed apt pin — param: name\*; Ubuntu only; Medium risk |
 
 ## PPA
