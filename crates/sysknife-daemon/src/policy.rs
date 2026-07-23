@@ -39,16 +39,13 @@ pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
     crate::actions::spec_meta(action_name).map(|meta| role_for_risk_level(meta.risk_level))
 }
 
-/// Actions whose minimum role is intentionally stricter than their risk tier
-/// implies, or that have no `ActionSpec`. Monotonic: each entry must be a role
-/// at least as high as `role_for_risk_level(risk)` (enforced by tests).
+/// Explicit role for actions that cannot derive one from a risk tier: actions
+/// with no `ActionSpec`, and any intentional *monotonic* raise (a role strictly
+/// higher than `role_for_risk_level(risk)` — never lower). Pinned by tests.
 fn role_exception(action_name: &str) -> Option<CallerRole> {
     match action_name {
         // Dispatcher-internal history query: no ActionSpec; read-only → Observer.
         "ListJobHistory" => Some(CallerRole::Observer),
-        // Removing an authorized SSH key is an access-control operation: restrict
-        // to Admin even though the action itself is reversible (Medium risk).
-        "RemoveAuthorizedKey" => Some(CallerRole::Admin),
         _ => None,
     }
 }

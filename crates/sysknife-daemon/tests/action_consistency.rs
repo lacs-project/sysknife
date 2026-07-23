@@ -142,9 +142,10 @@ fn role_rank(role: CallerRole) -> u8 {
 }
 
 /// The approval-gate risk (`preview.rs`) must equal the risk declared on each
-/// action's `ActionSpec`. `preview_action` derives it, so this can only fail if
-/// someone re-introduces a hardcoded per-action risk override — the exact drift
-/// this refactor eliminated.
+/// action's `ActionSpec`. `preview_action` derives it from `spec_meta`, so this
+/// holds by construction today; the test guards against a future change to
+/// `preview_action`/`fallback_risk` (or an action missing from the catalogue)
+/// that reintroduces a divergent risk source for the gate.
 #[test]
 fn preview_risk_matches_spec_risk_for_every_action() {
     let mut mismatches = Vec::new();
@@ -169,10 +170,11 @@ fn preview_risk_matches_spec_risk_for_every_action() {
 /// the role above the risk floor (never lower it, which would weaken security).
 #[test]
 fn role_mirrors_risk_except_documented_monotonic_exceptions() {
-    // Actions whose required role is intentionally raised above their risk floor
-    // (must match `policy::role_exception`; `ListJobHistory` has no spec so it is
-    // not iterated here).
-    const RAISED_EXCEPTIONS: &[&str] = &["RemoveAuthorizedKey"];
+    // Spec-backed actions whose required role is intentionally raised above their
+    // risk floor (must match `policy::role_exception`). Currently none —
+    // `ListJobHistory` is the only exception and has no spec, so it is not
+    // iterated here. Every catalogued action's role derives purely from its risk.
+    const RAISED_EXCEPTIONS: &[&str] = &[];
     let mut violations = Vec::new();
     for spec in all_specs() {
         let baseline = role_for_risk_level(spec.risk_level);
@@ -216,8 +218,13 @@ fn role_mirrors_risk_except_documented_monotonic_exceptions() {
 //    deriving (which would propagate the spec bugs into the display).
 //
 // 2. prompt.rs risk-tier text (the LLM's risk taxonomy) still lists ~15 actions
-//    at tiers that disagree with the spec. This is LLM guidance only: the
-//    daemon preview overrides each step's risk from the ActionSpec before the
-//    plan is shown or gated, so it has no safety/UX effect. The clean fix is to
-//    generate the prompt risk-tier section from actions::all_specs() instead of
-//    hand-maintaining it — a focused follow-up.
+//    at tiers that disagree with the spec. In the MCP path this is harmless:
+//    `mcp_server::enrich_with_commands` overwrites each step's risk from the
+//    ActionSpec-derived preview before the plan is shown or executed. In the CLI
+//    one-shot path, though, the plan display and the `--yes`/`--max-risk`
+//    auto-approval decision (`runner::decide_plan`) read the LLM's proposed risk
+//    directly (the preview is fetched per-step only afterward). Server-side RBAC
+//    (spec-derived) remains the real gate, but the CLI's auto-approval friction
+//    can be mis-sized if the model mis-rates an action. Clean fixes: (a) generate
+//    the prompt risk-tier section from actions::all_specs(); (b) have the CLI
+//    gate on the spec-derived preview risk. Both are focused follow-ups.

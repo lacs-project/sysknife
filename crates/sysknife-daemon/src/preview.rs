@@ -821,6 +821,7 @@ mod tests {
             "RemoveUserFromGroup",
             "DeleteUser",
             "AddAuthorizedKey",
+            "RemoveAuthorizedKey",
         ];
 
         for action in &actions {

@@ -16,7 +16,6 @@ pub mod grub;
 pub mod identity;
 pub mod journald;
 pub mod layering;
-pub mod layering_ubuntu;
 pub mod livepatch;
 pub mod logging;
 pub mod lvm;
