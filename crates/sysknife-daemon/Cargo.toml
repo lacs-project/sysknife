@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Policy-enforced, audit-logged Linux action daemon for SysKnife"
+readme = "README.md"
 keywords = ["linux", "sysadmin", "daemon", "security"]
 categories = ["command-line-utilities", "os::linux-apis"]
 
