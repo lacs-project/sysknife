@@ -3,16 +3,16 @@
 //! The dispatcher calls [`preview_action`] *before* execution to produce a
 //! [`PreviewEnvelope`] the shell shows the operator.
 //!
-//! ## Risk is a single source of truth
+//! ## Risk, reboot, and rollback are a single source of truth
 //!
-//! `risk_level` is **not** declared here — it is owned by each action's
-//! `ActionSpec` (`crate::actions`) and derived via [`crate::actions::spec_meta`],
-//! so the approval gate can never disagree with the documented risk in
-//! `docs/action-reference.md`. This module supplies the preview-specific fields:
-//! expected side effects, warnings, and the reboot/rollback display flags.
-//! (`reboot_required` / `rollback_available` are still declared here pending a
-//! separate consolidation onto the spec — see the follow-up note in
-//! `tests/action_consistency.rs`.)
+//! Risk, `reboot_required`, and `rollback_available` are **not** declared here —
+//! they are owned by each action's `ActionSpec` (`crate::actions`) and derived
+//! via [`crate::actions::spec_meta`] / [`gate_risk`], so the approval gate and
+//! the displayed reboot/rollback flags can never disagree with the catalogue in
+//! `docs/action-reference.md`. This module supplies only the preview-specific
+//! presentation: expected side effects and warnings. Every catalogued action
+//! must have a profile arm below; `tests/action_consistency.rs` fails the build
+//! if one falls through to the `_` "unclassified" default.
 //!
 //! ## Invariant: spec ↔ preview ↔ policy consistency
 //!
@@ -31,8 +31,6 @@ use sysknife_types::{PreviewEnvelope, RequestEnvelope, RiskLevel};
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PreviewProfile {
     expected_side_effects: Vec<String>,
-    reboot_required: bool,
-    rollback_available: bool,
     warnings: Vec<String>,
 }
 
@@ -42,13 +40,32 @@ pub fn preview_action(
     proposed_change: Value,
 ) -> PreviewEnvelope {
     let profile = preview_profile(&request.action_name);
-    // `risk_level` is OWNED by the action's `ActionSpec` (single source of truth,
-    // `crate::actions`); derive it here so the approval gate can never disagree
-    // with the documented risk. Only the dispatcher-internal `ListJobHistory`
-    // reaches preview without a spec (see `fallback_risk`).
-    let risk_level = crate::actions::spec_meta(&request.action_name)
-        .map(|m| m.risk_level)
-        .unwrap_or_else(|| fallback_risk(&request.action_name));
+    // Risk, reboot, and rollback are OWNED by the action's `ActionSpec` (the
+    // single source of truth, `crate::actions`) and derived here so the approval
+    // gate and the displayed reboot/rollback flags can never disagree with the
+    // catalogue. Only presentation text (side effects, warnings) comes from the
+    // per-action profile. Actions with no spec (only the dispatcher-internal
+    // `ListJobHistory`) fall back to a conservative risk and no reboot/rollback.
+    let risk_level = gate_risk(&request.action_name);
+    let (reboot_required, rollback_available) = crate::actions::spec_meta(&request.action_name)
+        .map(|m| (m.reboot_required, m.rollback_available))
+        .unwrap_or_else(|| {
+            // Unlike risk (which falls back to High), reboot/rollback default to
+            // the *reassuring* (false, false). That is accurate only for the one
+            // spec-less action that legitimately reaches preview, the read-only
+            // `ListJobHistory`. For anything else a missing spec is a bug (a
+            // catalogued action must have one) or an unvalidated name off the
+            // wire — log it, since silently claiming "no reboot, no rollback" for
+            // a real mutating action would mislead the operator.
+            if request.action_name != "ListJobHistory" {
+                eprintln!(
+                    "[sysknife-daemon] preview_action: no ActionSpec for {:?}; defaulting \
+                     reboot_required=false, rollback_available=false (risk falls back to High)",
+                    request.action_name
+                );
+            }
+            (false, false)
+        });
 
     PreviewEnvelope {
         summary: preview_summary(&request.action_name, &risk_level),
@@ -56,8 +73,8 @@ pub fn preview_action(
         current_state,
         proposed_change,
         expected_side_effects: profile.expected_side_effects,
-        reboot_required: profile.reboot_required,
-        rollback_available: profile.rollback_available,
+        reboot_required,
+        rollback_available,
         warnings: profile.warnings,
         request_hash: request.request_hash.clone(),
     }
@@ -72,6 +89,18 @@ fn fallback_risk(action_name: &str) -> RiskLevel {
         "ListJobHistory" => RiskLevel::Low,
         _ => RiskLevel::High,
     }
+}
+
+/// The approval-gate risk for `action_name`: the risk declared on its
+/// `ActionSpec` (the single source of truth), or a conservative fallback for the
+/// rare action with no spec. This is the one function every risk-gated decision
+/// derives from — the preview envelope above and the CLI's auto-approval gate
+/// (`sysknife-cli`) both call it, so neither can size its friction off a stale
+/// or model-guessed risk.
+pub fn gate_risk(action_name: &str) -> RiskLevel {
+    crate::actions::spec_meta(action_name)
+        .map(|m| m.risk_level)
+        .unwrap_or_else(|| fallback_risk(action_name))
 }
 
 fn preview_profile(action_name: &str) -> PreviewProfile {
@@ -133,10 +162,18 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         // Ubuntu Pro / Livepatch / Multipass read-only (Tier 3)
         | "ProStatus"
         | "LivepatchStatus"
-        | "MultipassList" => PreviewProfile {
+        | "MultipassList"
+        // Cross-distro + Ubuntu read-only queries
+        | "AptListUpgradable"
+        | "AptHistoryList"
+        | "GrubGetKargs"
+        | "CheckPendingReboot"
+        | "ResolvectlStatus"
+        | "AppArmorStatus"
+        | "CloudInitStatus"
+        | "UbuntuListFlatpaks"
+        | "Fail2banStatus" => PreviewProfile {
             expected_side_effects: Vec::new(),
-            reboot_required: false,
-            rollback_available: false,
             warnings: Vec::new(),
         },
         // ── Ubuntu apt: package-state changes ─────────────────────────────
@@ -149,8 +186,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "package state will change".to_string(),
                 "services may be restarted by needrestart".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec!["approval required".to_string()],
         },
 
@@ -158,8 +193,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         "SnapInstall" | "SnapRemove" | "SnapRefresh" | "SnapHold" | "SnapUnhold" => {
             PreviewProfile {
                 expected_side_effects: vec!["snap state will change".to_string()],
-                reboot_required: false,
-                rollback_available: false,
                 warnings: vec![
                     "approval required".to_string(),
                     "snap auto-refresh: install is paired with --hold by default".to_string(),
@@ -170,8 +203,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         // ── Ubuntu distrobox medium-risk ──────────────────────────────────
         "DistroboxCreate" | "DistroboxRemove" => PreviewProfile {
             expected_side_effects: vec!["container lifecycle will change".to_string()],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec!["approval required".to_string()],
         },
 
@@ -185,8 +216,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "packages may be removed to resolve dependency conflicts".to_string(),
                 "services may be restarted by needrestart".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "dist-upgrade may remove packages".to_string(),
                 "exact approval required".to_string(),
@@ -199,8 +228,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "firewall rules will change".to_string(),
                 "network access may be immediately affected".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "misconfigured rules can lock out SSH access".to_string(),
                 "exact approval required".to_string(),
@@ -213,8 +240,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "network interfaces will be reconfigured immediately".to_string(),
                 "SSH session may be disconnected".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "can disconnect the current SSH session if config is wrong".to_string(),
                 "exact approval required".to_string(),
@@ -226,8 +251,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec![
                 "backend network config files will be regenerated".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec!["approval required".to_string()],
         },
 
@@ -237,8 +260,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "netplan configuration will be modified".to_string(),
                 "network may be affected when NetplanApply is run".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: true,
             warnings: vec![
                 "run NetplanApply to activate the change".to_string(),
                 "exact approval required".to_string(),
@@ -251,8 +272,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "firewall rules will change".to_string(),
                 "network access may be immediately affected".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "misconfigured rules can lock out SSH access".to_string(),
                 "exact approval required".to_string(),
@@ -265,8 +284,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "Ubuntu Pro subscription will be attached".to_string(),
                 "Pro services (ESM, Livepatch, FIPS) may be enabled".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: true,
             warnings: vec![
                 "exact approval required".to_string(),
                 "token is redacted from the preview, audit log, and diagnostic output".to_string(),
@@ -279,8 +296,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "Ubuntu Pro subscription will be released".to_string(),
                 "ESM, Livepatch, and FIPS services will be disabled".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: true,
             warnings: vec![
                 "exact approval required".to_string(),
                 "after detach, this machine no longer receives Pro security patches".to_string(),
@@ -292,8 +307,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec![
                 "a persistent audit rule will be written/removed and reloaded".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "requires the auditd package installed to take effect".to_string(),
                 "exact approval required".to_string(),
@@ -306,8 +319,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "certbot will obtain a TLS certificate (ACME challenge)".to_string(),
                 "TLS material will be written under /etc/letsencrypt".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "contacts a public ACME CA over the network".to_string(),
                 "requires certbot installed + a reachable DNS/HTTP challenge".to_string(),
@@ -316,8 +327,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         },
         "RenewCertificates" => PreviewProfile {
             expected_side_effects: vec!["certbot will renew due certificates".to_string()],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "contacts a public ACME CA over the network".to_string(),
                 "exact approval required".to_string(),
@@ -329,8 +338,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec![
                 "a fail2ban jail override will be written and the daemon reloaded".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "changes who gets banned (too strict can lock out real users)".to_string(),
                 "requires the fail2ban package installed to take effect".to_string(),
@@ -343,8 +350,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec![
                 "a single Ubuntu Pro service will be enabled/disabled".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "exact approval required".to_string(),
                 "requires an attached Pro subscription + network to take effect".to_string(),
@@ -358,8 +363,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "takes 20–45 minutes; system will be rebooted to complete".to_string(),
                 "third-party PPAs may be disabled or break during upgrade".to_string(),
             ],
-            reboot_required: true,
-            rollback_available: false,
             warnings: vec![
                 "reboot required to complete the upgrade".to_string(),
                 "long-running operation — configure timeout >= 3600 seconds".to_string(),
@@ -369,8 +372,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         "ReloadService" => PreviewProfile {
             expected_side_effects: vec!["service config will be reloaded".to_string()],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "approval required".to_string(),
                 "requires ExecReload= to be defined in the unit file; \
@@ -401,8 +402,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "SetNtp"
         | "CreateUser" => PreviewProfile {
             expected_side_effects: vec!["service interruption".to_string()],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec!["approval required".to_string()],
         },
         // ── Observability / journald maintenance ─────────────────────────
@@ -411,8 +410,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "old journal entries will be permanently deleted".to_string(),
                 "disk space will be reclaimed".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec!["deleted log history cannot be recovered".to_string()],
         },
 
@@ -421,8 +418,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec![
                 "the logical volume and its filesystem will be grown".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "resizes a live filesystem; a wrong volume target risks data".to_string(),
                 "exact approval required".to_string(),
@@ -432,8 +427,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec![
                 "volume-group free space will be consumed".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "consumes VG capacity; snapshots fill as the origin changes".to_string(),
                 "exact approval required".to_string(),
@@ -446,8 +439,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "the service's memory/CPU/task limits will change immediately".to_string(),
                 "a persistent drop-in will be written (undo: systemctl revert)".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "too tight a MemoryMax can OOM-kill the service".to_string(),
                 "exact approval required".to_string(),
@@ -459,8 +450,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec![
                 "a logrotate drop-in will be written/removed".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec!["approval required".to_string()],
         },
         "ConfigureRemoteSyslog" | "RemoveRemoteSyslog" => PreviewProfile {
@@ -468,8 +457,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "rsyslog will start/stop forwarding all logs to a remote host".to_string(),
                 "rsyslog will be restarted".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "forwarding sends log data off-host (exfiltration surface)".to_string(),
                 "exact approval required".to_string(),
@@ -481,16 +468,12 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec![
                 "the target account's password-aging limits will change".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec!["exact approval required".to_string()],
         },
         "SetPasswordPolicy" | "SetAccountLockout" => PreviewProfile {
             expected_side_effects: vec![
                 "a system-wide PAM policy file will be written".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "affects password/lockout rules for all accounts".to_string(),
                 "takes effect only if the PAM module is enabled in the auth stack".to_string(),
@@ -504,8 +487,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "apt version/origin preferences will change".to_string(),
                 "a /etc/apt/preferences.d drop-in will be written/removed".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec!["approval required".to_string()],
         },
 
@@ -515,8 +496,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "a sudoers.d drop-in will be created/removed".to_string(),
                 "the target user's sudo privileges will change".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "this configures privilege escalation — review the rule carefully".to_string(),
                 "exact approval required".to_string(),
@@ -529,8 +508,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "a filesystem will be (un)mounted".to_string(),
                 "/etc/fstab will be updated (managed entries carry nofail)".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "a wrong device or mountpoint risks data or availability".to_string(),
                 "exact approval required".to_string(),
@@ -541,8 +518,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "swap will be enabled/disabled".to_string(),
                 "a swap file will be created/removed and /etc/fstab updated".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec!["exact approval required".to_string()],
         },
 
@@ -552,8 +527,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "a kernel parameter will change immediately".to_string(),
                 "the value will persist across reboots (/etc/sysctl.d)".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "a wrong net.*/vm.*/kernel.* value can degrade or lock the host".to_string(),
                 "exact approval required".to_string(),
@@ -562,8 +535,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         "SignalProcess" => PreviewProfile {
             expected_side_effects: vec!["the target process will be terminated".to_string()],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "the process and its in-flight work will stop".to_string(),
                 "exact approval required".to_string(),
@@ -573,16 +544,12 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             expected_side_effects: vec![
                 "the automatic security-update policy will change".to_string()
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec!["approval required".to_string()],
         },
         "CreateScheduledJob" => PreviewProfile {
             expected_side_effects: vec![
                 "a systemd timer will run the command on a recurring schedule".to_string(),
             ],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "persistent root-scheduled execution".to_string(),
                 "exact approval required".to_string(),
@@ -601,8 +568,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             // High risk: access-control changes — group membership, account
             // deletion, and SSH key modifications require Admin authorization.
             expected_side_effects: vec!["access control will change".to_string()],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec![
                 "privilege change".to_string(),
                 "exact approval required".to_string(),
@@ -613,15 +578,11 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "EnablePackageRepository"
         | "DisablePackageRepository" => PreviewProfile {
             expected_side_effects: vec!["package repository configuration will change".to_string()],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec!["approval required".to_string()],
         },
         "CreateContainer" | "StartContainer" | "StopContainer" | "RemoveContainer" => {
             PreviewProfile {
                 expected_side_effects: vec!["container lifecycle will change".to_string()],
-                reboot_required: false,
-                rollback_available: false,
                 warnings: vec!["approval required".to_string()],
             }
         }
@@ -639,8 +600,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
                 "system deployment will change".to_string(),
                 "reboot may be required".to_string(),
             ],
-            reboot_required: true,
-            rollback_available: true,
             warnings: vec![
                 "reboot required".to_string(),
                 "exact approval required".to_string(),
@@ -648,8 +607,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         },
         "SetKernelArguments" => PreviewProfile {
             expected_side_effects: vec!["boot arguments will change".to_string()],
-            reboot_required: true,
-            rollback_available: true,
             warnings: vec![
                 "reboot required".to_string(),
                 "exact approval required".to_string(),
@@ -657,8 +614,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         },
         "RebootSystem" => PreviewProfile {
             expected_side_effects: vec!["system reboot will interrupt running work".to_string()],
-            reboot_required: true,
-            rollback_available: false,
             warnings: vec![
                 "reboot required".to_string(),
                 "exact approval required".to_string(),
@@ -666,20 +621,122 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         },
         "CleanupDeployments" => PreviewProfile {
             expected_side_effects: vec!["old deployments may be removed".to_string()],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec!["exact approval required".to_string()],
         },
         "PinDeployment" | "UnpinDeployment" => PreviewProfile {
             expected_side_effects: vec!["deployment pin state will change".to_string()],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec!["exact approval required".to_string()],
         },
+        // ── Ubuntu apt: index refresh + autoremove ───────────────────────
+        "AptUpdate" => PreviewProfile {
+            expected_side_effects: vec!["the apt package index will be refreshed".to_string()],
+            warnings: Vec::new(),
+        },
+        "AptAutoremove" => PreviewProfile {
+            expected_side_effects: vec![
+                "automatically-installed packages no longer needed will be removed".to_string(),
+            ],
+            warnings: vec!["approval required".to_string()],
+        },
+
+        // ── Launchpad PPAs ────────────────────────────────────────────────
+        "AddPpa" => PreviewProfile {
+            expected_side_effects: vec![
+                "a Launchpad PPA and its signing key will be added".to_string(),
+                "the trusted software supply chain will expand".to_string(),
+            ],
+            warnings: vec![
+                "a PPA is a third-party package source outside the distro archive".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+        "RemovePpa" => PreviewProfile {
+            expected_side_effects: vec!["a Launchpad PPA will be removed".to_string()],
+            warnings: vec!["approval required".to_string()],
+        },
+
+        // ── snap revert / classic install ─────────────────────────────────
+        "SnapRevert" => PreviewProfile {
+            expected_side_effects: vec![
+                "the snap will be reverted to its previous revision".to_string(),
+            ],
+            warnings: vec!["approval required".to_string()],
+        },
+        "SnapClassicInstall" => PreviewProfile {
+            expected_side_effects: vec![
+                "a snap will be installed with classic confinement".to_string(),
+            ],
+            warnings: vec![
+                "classic confinement grants the snap full, unsandboxed system access".to_string(),
+                "approval required".to_string(),
+            ],
+        },
+
+        // ── GRUB kernel arguments ─────────────────────────────────────────
+        "GrubSetKargs" => PreviewProfile {
+            expected_side_effects: vec![
+                "GRUB kernel arguments will change".to_string(),
+                "update-grub will regenerate the boot configuration".to_string(),
+            ],
+            warnings: vec![
+                "takes effect on the next reboot".to_string(),
+                "a bad kernel argument can prevent the system from booting".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+
+        // ── resolvectl DNS ────────────────────────────────────────────────
+        "ResolvectlSetDns" => PreviewProfile {
+            expected_side_effects: vec!["DNS servers for the interface will change".to_string()],
+            warnings: vec![
+                "redirecting DNS can enable interception of name resolution".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+
+        // ── AppArmor profile modes ────────────────────────────────────────
+        "AppArmorEnforce" => PreviewProfile {
+            expected_side_effects: vec![
+                "an AppArmor profile will be switched to enforce mode".to_string(),
+            ],
+            warnings: vec![
+                "an over-tight profile can block a legitimate service".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+        "AppArmorComplain" => PreviewProfile {
+            expected_side_effects: vec![
+                "an AppArmor profile will be switched to complain mode".to_string(),
+            ],
+            warnings: vec![
+                "complain mode disables MAC enforcement for the profile".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+
+        // ── fail2ban ban / unban ──────────────────────────────────────────
+        "Fail2banBanIp" => PreviewProfile {
+            expected_side_effects: vec!["an IP address will be banned in a fail2ban jail".to_string()],
+            warnings: vec![
+                "banning can lock out legitimate access from that address".to_string(),
+                "exact approval required".to_string(),
+            ],
+        },
+        "Fail2banUnbanIp" => PreviewProfile {
+            expected_side_effects: vec![
+                "an IP address will be unbanned in a fail2ban jail".to_string(),
+            ],
+            warnings: vec!["approval required".to_string()],
+        },
+
+        // ── Ubuntu Flatpak (per-user) ─────────────────────────────────────
+        "UbuntuInstallFlatpak" | "UbuntuRemoveFlatpak" | "UbuntuUpdateFlatpak" => PreviewProfile {
+            expected_side_effects: vec!["a user's Flatpak apps will change".to_string()],
+            warnings: vec!["approval required".to_string()],
+        },
+
         _ => PreviewProfile {
             expected_side_effects: vec!["unclassified action".to_string()],
-            reboot_required: false,
-            rollback_available: false,
             warnings: vec!["action profile not recognized".to_string()],
         },
     }
@@ -847,6 +904,10 @@ mod tests {
 
     #[test]
     fn high_risk_system_reboot_actions() {
+        // All are High and reboot-required. Every deployment/layering mutation is
+        // rollback-capable EXCEPT RollbackDeployment itself — rolling back a
+        // rollback is not offered as an automatic undo (reboot/rollback are now
+        // derived from the ActionSpec, which the executor's rollback test pins).
         let actions = [
             "UpdateSystem",
             "InstallPackages",
@@ -870,9 +931,10 @@ mod tests {
                 "{action} should be High risk"
             );
             assert!(envelope.reboot_required, "{action} should require reboot");
-            assert!(
-                envelope.rollback_available,
-                "{action} should have rollback available"
+            let expect_rollback = *action != "RollbackDeployment";
+            assert_eq!(
+                envelope.rollback_available, expect_rollback,
+                "{action} rollback_available should be {expect_rollback}"
             );
         }
     }
@@ -938,6 +1000,52 @@ mod tests {
                 .any(|e| e.contains("unclassified action")),
             "expected_side_effects should contain 'unclassified action'"
         );
+    }
+
+    // The completeness guard proves every action has *a* profile, but not that
+    // the right one is wired to the right name. These pin the two easiest-to-swap
+    // pairs so a transposition (which would tell the operator the opposite of the
+    // real effect) fails the build.
+    #[test]
+    fn apparmor_enforce_and_complain_profiles_are_not_swapped() {
+        let enforce = preview_action(
+            &req("AppArmorEnforce"),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        );
+        let complain = preview_action(
+            &req("AppArmorComplain"),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        );
+        // Check the distinguishing side-effect phrase only ("enforce mode" vs
+        // "complain mode"); the complain warning legitimately says "enforcement",
+        // which would trip a bare "enforce" substring match.
+        let se = |e: &sysknife_types::PreviewEnvelope| e.expected_side_effects.join(" ");
+        assert!(se(&enforce).contains("enforce mode") && !se(&enforce).contains("complain"));
+        assert!(se(&complain).contains("complain mode") && !se(&complain).contains("enforce mode"));
+    }
+
+    #[test]
+    fn fail2ban_ban_and_unban_profiles_are_not_swapped() {
+        let ban = preview_action(
+            &req("Fail2banBanIp"),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        );
+        let unban = preview_action(
+            &req("Fail2banUnbanIp"),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        );
+        assert!(ban
+            .expected_side_effects
+            .iter()
+            .any(|e| e.contains("will be banned")));
+        assert!(unban
+            .expected_side_effects
+            .iter()
+            .any(|e| e.contains("will be unbanned")));
     }
 
     #[test]

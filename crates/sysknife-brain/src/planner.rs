@@ -324,6 +324,21 @@ impl Plan {
     pub fn steps(&self) -> &[PlanStep] {
         &self.steps
     }
+
+    /// Replace every step's risk level using `risk_for`, keyed by action name.
+    ///
+    /// The CLI uses this to substitute the daemon's `ActionSpec`-derived risk
+    /// (the single source of truth) for the LLM's *proposed* risk, so both the
+    /// plan the operator sees and the auto-approval gate reflect authoritative
+    /// risk rather than a model guess. Brain stays agnostic to the daemon's
+    /// action catalogue: the caller supplies the mapping.
+    #[must_use]
+    pub fn with_authoritative_risks(mut self, risk_for: impl Fn(&str) -> PlanRiskLevel) -> Self {
+        for step in &mut self.steps {
+            step.risk_level = risk_for(step.action_name.as_str());
+        }
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1071,6 +1086,38 @@ mod tests {
     // serialised to avoid cross-test interference on a multi-threaded
     // test runner.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn with_authoritative_risks_replaces_every_step_risk() {
+        let step = |name: &str, risk| {
+            PlanStep::new(
+                ActionName::parse(name).unwrap(),
+                "s".into(),
+                risk,
+                serde_json::json!({}),
+            )
+            .unwrap()
+        };
+        let plan = Plan::new(
+            "i".into(),
+            "s".into(),
+            "e".into(),
+            vec![
+                step("GetDiskUsage", PlanRiskLevel::High), // model over-rated
+                step("RebootSystem", PlanRiskLevel::Low),  // model under-rated
+            ],
+        )
+        .unwrap();
+
+        // The caller-supplied mapping is authoritative; the LLM value is ignored.
+        let plan = plan.with_authoritative_risks(|name| match name {
+            "GetDiskUsage" => PlanRiskLevel::Low,
+            _ => PlanRiskLevel::High,
+        });
+
+        assert_eq!(*plan.steps()[0].risk_level(), PlanRiskLevel::Low);
+        assert_eq!(*plan.steps()[1].risk_level(), PlanRiskLevel::High);
+    }
 
     #[test]
     fn resolve_think_auto_detects_qwen3() {
