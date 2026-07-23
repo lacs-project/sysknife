@@ -24,9 +24,10 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 ### Changed
 
 - Reclassified twelve actions against common sysadmin practice — raised
-  `AddAuthorizedKey`, `RemoveAuthorizedKey`, `AddPpa`, `VacuumJournal`, and
-  `ConfigureWifi`; lowered `RenewCertificates`, `CreateGroup`, `AddAuditRule`,
-  `CreateLvSnapshot`, `CreateLogicalVolume`, and `SetServiceResourceLimits`.
+  `AddAuthorizedKey`, `RemoveAuthorizedKey`, `AddPpa`, `VacuumJournal`,
+  `ConfigureWifi`, and `AptAutoremove`; lowered `RenewCertificates`,
+  `CreateGroup`, `AddAuditRule`, `CreateLvSnapshot`, `CreateLogicalVolume`, and
+  `SetServiceResourceLimits`.
 - Documentation risk levels and action names are aligned with the code, and the
   demo assets were corrected to match.
 - The Code of Conduct now lists the project contact address.
