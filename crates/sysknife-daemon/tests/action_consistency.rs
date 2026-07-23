@@ -121,7 +121,7 @@ fn brain_known_actions_has_no_stale_entries() {
 // Single-source-of-truth invariants (risk defined once on the ActionSpec)
 // ---------------------------------------------------------------------------
 
-fn preview_risk(action_name: &str) -> RiskLevel {
+fn preview_envelope(action_name: &str) -> sysknife_types::PreviewEnvelope {
     let request = RequestEnvelope {
         action_name: action_name.to_string(),
         request_id: "action-consistency".to_string(),
@@ -129,7 +129,11 @@ fn preview_risk(action_name: &str) -> RiskLevel {
         caller_role: CallerRole::Dev,
         request_hash: RequestHash::new("hash".to_string()),
     };
-    preview_action(&request, serde_json::Value::Null, serde_json::Value::Null).risk_level
+    preview_action(&request, serde_json::Value::Null, serde_json::Value::Null)
+}
+
+fn preview_risk(action_name: &str) -> RiskLevel {
+    preview_envelope(action_name).risk_level
 }
 
 fn role_rank(role: CallerRole) -> u8 {
@@ -204,27 +208,67 @@ fn role_mirrors_risk_except_documented_monotonic_exceptions() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Known follow-ups (out of scope for the risk-SSOT change)
-// ---------------------------------------------------------------------------
-//
-// 1. reboot_required / rollback_available are still declared on PreviewProfile
-//    (preview.rs) in addition to the ActionSpec. An audit found ~15 preview↔spec
-//    divergences on these flags (display-only — the gate uses risk, and the
-//    executor uses ActionSpec.rollback_available). Some look like spec bugs
-//    (e.g. RollbackDeployment reboot_required=false, though rpm-ostree rollback
-//    applies on reboot). Consolidating them onto the spec needs a per-action
-//    reboot/rollback correctness review, so it is deferred rather than blindly
-//    deriving (which would propagate the spec bugs into the display).
-//
-// 2. prompt.rs risk-tier text (the LLM's risk taxonomy) still lists ~15 actions
-//    at tiers that disagree with the spec. In the MCP path this is harmless:
-//    `mcp_server::enrich_with_commands` overwrites each step's risk from the
-//    ActionSpec-derived preview before the plan is shown or executed. In the CLI
-//    one-shot path, though, the plan display and the `--yes`/`--max-risk`
-//    auto-approval decision (`runner::decide_plan`) read the LLM's proposed risk
-//    directly (the preview is fetched per-step only afterward). Server-side RBAC
-//    (spec-derived) remains the real gate, but the CLI's auto-approval friction
-//    can be mis-sized if the model mis-rates an action. Clean fixes: (a) generate
-//    the prompt risk-tier section from actions::all_specs(); (b) have the CLI
-//    gate on the spec-derived preview risk. Both are focused follow-ups.
+/// The displayed `reboot_required` / `rollback_available` flags must equal the
+/// values declared on each action's `ActionSpec`. `preview_action` derives them
+/// from `spec_meta`, so this holds by construction; the test guards against a
+/// future change that reintroduces a divergent source for these display flags.
+#[test]
+fn preview_reboot_and_rollback_match_spec_for_every_action() {
+    let mut mismatches = Vec::new();
+    for spec in all_specs() {
+        let env = preview_envelope(spec.action_name);
+        if env.reboot_required != spec.reboot_required
+            || env.rollback_available != spec.rollback_available
+        {
+            mismatches.push(format!(
+                "{}: spec reboot={}/rollback={} but preview reboot={}/rollback={}",
+                spec.action_name,
+                spec.reboot_required,
+                spec.rollback_available,
+                env.reboot_required,
+                env.rollback_available,
+            ));
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "preview reboot/rollback diverged from ActionSpec (single source of truth):\n{}",
+        mismatches.join("\n")
+    );
+}
+
+/// Every catalogued action must have an explicit `preview_profile` arm. An
+/// action that falls through to the `_` default renders "unclassified action" /
+/// "action profile not recognized" to the operator — a sign the profile table
+/// drifted behind the catalogue (as the apt/PPA/GRUB/AppArmor/Fail2ban actions
+/// once did). This fails the build the moment a newly catalogued action lacks a
+/// profile.
+#[test]
+fn every_catalogued_action_has_a_preview_profile() {
+    let mut unclassified = Vec::new();
+    for spec in all_specs() {
+        let env = preview_envelope(spec.action_name);
+        let unrecognised = env
+            .expected_side_effects
+            .iter()
+            .any(|e| e.contains("unclassified action"))
+            || env
+                .warnings
+                .iter()
+                .any(|w| w.contains("action profile not recognized"));
+        if unrecognised {
+            unclassified.push(spec.action_name);
+        }
+    }
+    assert!(
+        unclassified.is_empty(),
+        "catalogued actions with no preview_profile arm (they render as \
+         'unclassified action'): {unclassified:?}"
+    );
+}
+
+// Former follow-ups now closed: (1) reboot_required/rollback_available are
+// derived from the ActionSpec in `preview_action` and pinned above; (2) the CLI
+// auto-approval gate derives risk from `preview::gate_risk` (the spec), so it can
+// no longer be mis-sized by the LLM's proposed risk. The prompt.rs risk labels
+// are advisory only — every risk-gated decision reads the spec.

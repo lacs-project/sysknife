@@ -181,6 +181,27 @@ pub fn highest_risk(plan: &sysknife_brain::planner::Plan) -> Option<&PlanRiskLev
         .map(|s| s.risk_level())
 }
 
+// ---------------------------------------------------------------------------
+// authoritative_plan_risk
+// ---------------------------------------------------------------------------
+
+/// The authoritative risk for a plan step's action: the daemon's
+/// `ActionSpec`-derived gate risk ([`sysknife_daemon::preview::gate_risk`]),
+/// mapped into the planner's risk enum.
+///
+/// The CLI substitutes this for the LLM's *proposed* per-step risk (see
+/// [`run_intent`]) so the plan the operator sees and the `--yes` / `--max-risk`
+/// auto-approval decision derive from the single source of truth rather than a
+/// model guess. Unknown actions map to `High` — `gate_risk`'s conservative
+/// fallback — so a missing spec can never downgrade the CLI's approval friction.
+fn authoritative_plan_risk(action_name: &str) -> PlanRiskLevel {
+    match sysknife_daemon::preview::gate_risk(action_name) {
+        RiskLevel::Low => PlanRiskLevel::Low,
+        RiskLevel::Medium => PlanRiskLevel::Medium,
+        RiskLevel::High => PlanRiskLevel::High,
+    }
+}
+
 pub async fn run_approve(
     transaction_id: &str,
     socket: SocketTarget,
@@ -941,6 +962,14 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
 
     let plan = plan_result.map_err(|e| CliError::PlanningFailed(e.to_string()))?;
 
+    // Substitute the daemon's ActionSpec-derived risk (the single source of
+    // truth) for the LLM's proposed per-step risk, so the plan the operator sees
+    // below and the auto-approval gate both reflect authoritative risk. Without
+    // this, an LLM that under-rates an action could let `--yes --max-risk medium`
+    // auto-approve a step that is actually High risk. The per-step daemon preview
+    // fetched during execution derives from the same source, so they agree.
+    let plan = plan.with_authoritative_risks(authoritative_plan_risk);
+
     // ---- print plan --------------------------------------------------------
 
     if opts.json {
@@ -1438,6 +1467,63 @@ mod tests {
     fn highest_risk_low_medium_picks_medium() {
         let plan = make_plan(&[PlanRiskLevel::Low, PlanRiskLevel::Medium]);
         assert_eq!(highest_risk(&plan), Some(&PlanRiskLevel::Medium));
+    }
+
+    // -----------------------------------------------------------------------
+    // authoritative_plan_risk — CLI approval gates on the daemon's spec risk
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn authoritative_plan_risk_maps_spec_gate_risk() {
+        // Values come from each action's ActionSpec via preview::gate_risk.
+        assert_eq!(authoritative_plan_risk("GetDiskUsage"), PlanRiskLevel::Low);
+        assert_eq!(
+            authoritative_plan_risk("RestartService"),
+            PlanRiskLevel::Medium
+        );
+        assert_eq!(authoritative_plan_risk("RebootSystem"), PlanRiskLevel::High);
+        // No spec → conservative High (a missing spec never downgrades friction).
+        assert_eq!(
+            authoritative_plan_risk("DefinitelyNotARealAction"),
+            PlanRiskLevel::High
+        );
+    }
+
+    #[test]
+    fn authoritative_risks_close_the_llm_under_rating_gate() {
+        let mk = |name: &str, risk| {
+            PlanStep::new(
+                ActionName::parse(name).unwrap(),
+                "s".into(),
+                risk,
+                serde_json::json!({}),
+            )
+            .unwrap()
+        };
+        // An LLM that under-rates a truly High-risk action (RebootSystem) as Low
+        // would let `--yes --max-risk medium` auto-approve it...
+        let under_rated = Plan::new(
+            "i".into(),
+            "s".into(),
+            "e".into(),
+            vec![mk("RebootSystem", PlanRiskLevel::Low)],
+        )
+        .unwrap();
+        let policy = ApprovalPolicy::new(true, Some(MaxRisk::Medium), false, false);
+        assert_eq!(
+            policy.decide_plan(&under_rated),
+            ApprovalDecision::AutoApproved,
+            "sanity: the LLM's Low rating alone would have auto-approved"
+        );
+
+        // ...but substituting the spec-derived risk restores the gate: RebootSystem
+        // is High, which exceeds the Medium auto-approval ceiling.
+        let corrected = under_rated.with_authoritative_risks(authoritative_plan_risk);
+        assert_eq!(
+            policy.decide_plan(&corrected),
+            ApprovalDecision::ExceedsCeiling,
+            "spec-derived High must not auto-approve under --max-risk medium"
+        );
     }
 
     // -----------------------------------------------------------------------
