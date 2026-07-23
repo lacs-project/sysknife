@@ -39,7 +39,7 @@ proposes a multi-step plan.
 | Step | Action | Risk |
 | --- | --- | --- |
 | 1 | `AddLayeredPackage htop` | High |
-| 2 | `firewall_add_service ssh` | High |
+| 2 | `ConfigureFirewall ssh` | High |
 
 Each step shows:
 

@@ -17,6 +17,7 @@ DIM=$'\033[2m'
 BOLD=$'\033[1m'
 GREEN=$'\033[38;2;105;240;174m'  # bright spring green (Material Green A200)
 YELLOW=$'\033[38;2;255;213;79m'  # vivid amber-yellow (Material Amber 300)
+RED=$'\033[38;2;255;107;107m'    # failure/high-risk red
 RESET=$'\033[0m'
 
 cprint() { printf '%s%s%s\n' "$1" "$2" "$RESET"; }
@@ -44,8 +45,8 @@ printf '\r\033[K'  # clear spinner line
 echo
 printf '  %sinstall vim, restart sshd, and show the firewall state%s\n' "$BOLD" "$RESET"
 printf '  %s──────────────────────────────────────────────────%s\n' "$DIM" "$RESET"
-printf '  %s1%s  %sAddLayeredPackage%s             %s● medium%s  %sapproval required%s\n' \
-    "$DIM" "$RESET" "$BOLD" "$RESET" "$YELLOW" "$RESET" "$YELLOW" "$RESET"
+printf '  %s1%s  %sAddLayeredPackage%s             %s● HIGH%s    %sapproval required%s\n' \
+    "$DIM" "$RESET" "$BOLD" "$RESET" "$RED$BOLD" "$RESET" "$YELLOW" "$RESET"
 printf '     %slayer vim into the next deployment via rpm-ostree%s\n' "$DIM" "$RESET"
 printf '  %s2%s  %sRestartService%s                %s● medium%s  %sapproval required%s\n' \
     "$DIM" "$RESET" "$BOLD" "$RESET" "$YELLOW" "$RESET" "$YELLOW" "$RESET"
@@ -66,7 +67,7 @@ sleep_ms 900
 printf '  › Checking out tree dabb04b... done\n';            sleep_ms 525
 printf '  › Importing rpm sig 0x12c944d0\n';                 sleep_ms 525
 printf '  › Resolving dependencies... done\n';               sleep_ms 525
-printf '  › Adding layer: vim-9.1.0-2.fc41.x86_64\n';        sleep_ms 525
+printf '  › Adding layer: vim-9.1.0-2.fc44.x86_64\n';        sleep_ms 525
 printf '  › Writing objects: 100%% (37/37) done\n';          sleep_ms 600
 printf '  %s✓%s  layered vim — succeeded\n' "$GREEN" "$RESET"
 printf '    %s⚠ reboot required for layered packages%s\n' "$YELLOW" "$RESET"
