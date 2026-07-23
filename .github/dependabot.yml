@@ -59,3 +59,16 @@ updates:
       github-actions:
         patterns:
           - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    # The Glama MCP image (`Dockerfile`) pins its base images by floating tag
+    # (rust:1-bookworm, debian:bookworm-slim). Track them so a bad base-image
+    # publish is caught; same cooldown rationale as the other ecosystems.
+    cooldown:
+      default-days: 5
