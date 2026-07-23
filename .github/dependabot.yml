@@ -7,6 +7,16 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
+    # Cooldown holds version-update PRs until a freshly published crate has had
+    # time to be vetted by the wider ecosystem, mitigating the "install a
+    # compromised release within hours of publication" supply-chain risk. This
+    # only delays routine version bumps; Dependabot *security* updates are not
+    # subject to cooldown, so a real advisory still opens a PR immediately.
+    cooldown:
+      default-days: 5
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
     # Bundle minor + patch bumps into a single PR; major bumps stay separate so
     # a breaking change (e.g. sqlx 0.8 -> 0.9) is isolated and reviewable alone.
     groups:
@@ -22,6 +32,11 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
+    cooldown:
+      default-days: 5
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
     groups:
       npm-minor-patch:
         update-types:
@@ -35,8 +50,25 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
+    # Actions are already SHA-pinned; a short cooldown still avoids racing to
+    # adopt a tag that was re-pointed at a bad commit moments earlier.
+    cooldown:
+      default-days: 5
     # Action bumps are low-risk; keep them in one grouped PR.
     groups:
       github-actions:
         patterns:
           - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    # The Glama MCP image (`Dockerfile`) pins its base images by floating tag
+    # (rust:1-bookworm, debian:bookworm-slim). Track them so a bad base-image
+    # publish is caught; same cooldown rationale as the other ecosystems.
+    cooldown:
+      default-days: 5
