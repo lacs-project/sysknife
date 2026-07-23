@@ -1,6 +1,6 @@
 [package]
 name = "sysknife-daemon"
-version = "0.2.6"
+version = "0.2.7"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -11,8 +11,8 @@ keywords = ["linux", "sysadmin", "daemon", "security"]
 categories = ["command-line-utilities", "os::linux-apis"]
 
 [dependencies]
-sysknife-core = { path = "../sysknife-core", version = "0.2.6" }
-sysknife-types = { path = "../sysknife-types", version = "0.2.6" }
+sysknife-core = { path = "../sysknife-core", version = "0.2.7" }
+sysknife-types = { path = "../sysknife-types", version = "0.2.7" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -53,7 +53,7 @@ sqlx-postgres = { version = "0.9", default-features = false, features = [
 chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
-sysknife-brain = { path = "../sysknife-brain", version = "0.2.6" }
+sysknife-brain = { path = "../sysknife-brain", version = "0.2.7" }
 serde_json = { workspace = true }
 syslog_loose = "0.23"
 tempfile = "3"
