@@ -1,10 +1,11 @@
 {
   "ignorePatterns": [
     { "pattern": "^https://github\\.com" },
-    { "pattern": "^https://www\\.npmjs\\.com" }
+    { "pattern": "^https://www\\.npmjs\\.com" },
+    { "pattern": "^https://img\\.shields\\.io" }
   ],
   "retryOn429": true,
   "retryCount": 3,
   "fallbackRetryDelay": "5s",
-  "_comment": "npmjs.com returns 403 to the link checker's user-agent (anti-bot); the package URL works for npm clients. Skip from link-check to keep CI green."
+  "_comment": "Hosts skipped from link-check to keep CI deterministic: github.com and img.shields.io rate-limit/anti-bot the checker (intermittent 403/408/429) and shields.io badges are decorative dynamic images, not content links; npmjs.com returns 403 to the checker's user-agent though the package URL works for npm clients."
 }

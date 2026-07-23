@@ -28,9 +28,10 @@ use crate::auth::role_rank;
 /// action's `ActionSpec` (single source of truth, `crate::actions`) and maps to
 /// a role via [`role_for_risk_level`] (`Low`→Observer, `Medium`→Dev,
 /// `High`→Admin), so RBAC can never drift from the documented risk. A short,
-/// *monotonic* exception list ([`role_exception`]) may raise an action's role
+/// *monotonic* exception list (`role_exception`) may raise an action's role
 /// above its risk floor when it is more sensitive than its risk implies; an
-/// exception may never lower it. Pinned by `role_matches_risk_or_exception` in
+/// exception may never lower it. Pinned by
+/// `role_mirrors_risk_except_documented_monotonic_exceptions` in
 /// `tests/action_consistency.rs`.
 pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
     if let Some(role) = role_exception(action_name) {
