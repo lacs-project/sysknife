@@ -13,7 +13,7 @@ const HELPER: &str = "/usr/lib/sysknife/apt-pin-edit";
 pub fn specs() -> Vec<ActionSpec> {
     vec![
         get_apt_pins(None),
-        set_apt_pin("hold-nginx", "nginx", "version 1.24.*", 1001),
+        set_apt_pin("hold-nginx", "nginx", "version 1.24.*", 990),
         remove_apt_pin("hold-nginx"),
     ]
 }
@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn set_and_remove_shapes() {
-        let (program, set) = args_of(&set_apt_pin("hold-nginx", "nginx", "version 1.24.*", 1001));
+        let (program, set) = args_of(&set_apt_pin("hold-nginx", "nginx", "version 1.24.*", 990));
         assert_eq!(program, "sudo");
         assert_eq!(
             set,
@@ -109,7 +109,7 @@ mod tests {
                 "--pin",
                 "version 1.24.*",
                 "--priority",
-                "1001"
+                "990"
             ]
         );
         assert_eq!(set_apt_pin("a", "b", "c", 1).risk_level, RiskLevel::Medium);
