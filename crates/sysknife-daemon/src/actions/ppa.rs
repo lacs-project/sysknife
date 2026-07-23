@@ -14,9 +14,16 @@
 //!
 //! ## Rollback availability
 //!
-//! Both `AddPpa` and `RemovePpa` are marked `rollback_available = true`
-//! because they have an exact inverse: adding a PPA can be undone by removing
-//! it and vice-versa.
+//! `rollback_available` means the daemon automatically reverts the action on
+//! failure (`executor::rollback_spec_for` returns `Some` and the dispatcher
+//! runs it as part of the same job — see `docs/automatic-rollback.md`). That
+//! mechanism exists only for rpm-ostree deployment actions today, so both
+//! `AddPpa` and `RemovePpa` are `rollback_available = false`: apt/PPA state is
+//! mutated directly on the live filesystem and the daemon does not stage or
+//! auto-revert it. `AddPpa` and `RemovePpa` remain each other's manual
+//! inverse — an operator (or agent) can undo one by explicitly running the
+//! other — but that is a distinct fact from automatic rollback and is not
+//! what this flag communicates.
 
 use super::{command_mechanism, ActionSpec};
 use sysknife_types::RiskLevel;
@@ -58,8 +65,13 @@ fn ppa_arg(name: &str) -> String {
 
 /// Add a PPA repository (`sudo add-apt-repository -y ppa:<user>/<ppa>`).
 ///
-/// Risk: Medium. Adds a third-party apt source; reversible with `RemovePpa`.
-/// Requires `software-properties-common` to be installed.
+/// Risk: High. Adds a third-party apt source, expanding the trusted software
+/// supply chain; manually reversible by running `RemovePpa`. Requires
+/// `software-properties-common` to be installed.
+///
+/// `rollback_available` is false: the daemon has no automatic rollback for
+/// apt/PPA state (see `docs/automatic-rollback.md`); manual reversibility via
+/// `RemovePpa` is a separate fact from that flag.
 ///
 /// `name` must be in `<user>/<ppa>` format (e.g. `"deadsnakes/ppa"`).
 /// Validation is enforced in the executor via `validated_ppa_name` before
@@ -70,14 +82,16 @@ pub fn add_ppa(name: &str) -> ActionSpec {
         mechanism: command_mechanism("sudo", [ADD_APT_REPOSITORY, YES_FLAG, &ppa_arg(name)]),
         risk_level: RiskLevel::High,
         reboot_required: false,
-        rollback_available: true,
+        rollback_available: false,
     }
 }
 
 /// Remove a PPA repository (`sudo add-apt-repository -y --remove ppa:<user>/<ppa>`).
 ///
-/// Risk: Medium. Removes the apt source entry; reversible with `AddPpa`.
-/// Requires `software-properties-common` to be installed.
+/// Risk: Medium. Removes the apt source entry; manually reversible by running
+/// `AddPpa`. Requires `software-properties-common` to be installed.
+///
+/// `rollback_available` is false — see [`add_ppa`]'s doc for why.
 ///
 /// `name` must be in `<user>/<ppa>` format (e.g. `"deadsnakes/ppa"`).
 pub fn remove_ppa(name: &str) -> ActionSpec {
@@ -89,7 +103,7 @@ pub fn remove_ppa(name: &str) -> ActionSpec {
         ),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
-        rollback_available: true,
+        rollback_available: false,
     }
 }
 
@@ -144,8 +158,10 @@ mod tests {
     }
 
     #[test]
-    fn add_ppa_rollback_available() {
-        assert!(add_ppa("deadsnakes/ppa").rollback_available);
+    fn add_ppa_no_automatic_rollback() {
+        // apt/PPA state has no automatic-rollback mechanism; only rpm-ostree
+        // deployment actions do (see docs/automatic-rollback.md).
+        assert!(!add_ppa("deadsnakes/ppa").rollback_available);
     }
 
     // ── remove_ppa ───────────────────────────────────────────────────────────
@@ -175,8 +191,8 @@ mod tests {
     }
 
     #[test]
-    fn remove_ppa_rollback_available() {
-        assert!(remove_ppa("deadsnakes/ppa").rollback_available);
+    fn remove_ppa_no_automatic_rollback() {
+        assert!(!remove_ppa("deadsnakes/ppa").rollback_available);
     }
 
     // ── ppa_arg ──────────────────────────────────────────────────────────────

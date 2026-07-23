@@ -271,6 +271,13 @@ fn next_char_boundary(s: &str, i: usize) -> usize {
 /// - **Bidirectional and zero-width formatting** controls
 ///   (`U+200B..=U+200F`, `U+202A..=U+202E`, `U+2066..=U+2069`, `U+FEFF`) —
 ///   used to swap rendered direction or hide text from a reviewer.
+/// - **Additional invisible/format characters** — `U+00AD` (soft hyphen),
+///   `U+034F` (combining grapheme joiner), `U+180E` (Mongolian vowel
+///   separator), and `U+2060..=U+2064` (word joiner plus the invisible math
+///   operators: function application, invisible times/separator/plus). Each
+///   renders as nothing (or as a no-op line-break hint) in normal fonts, so
+///   they are usable to split a keyword ("IGN\u{00AD}ORE") without any
+///   visible change to the text a reviewer sees.
 /// - **C0/C1 control codes** other than `\t`, `\n`, `\r`.
 fn strip_dangerous_unicode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -282,8 +289,15 @@ fn strip_dangerous_unicode(s: &str) -> String {
             0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F |
             // C1 controls
             0x7F..=0x9F |
+            // Soft hyphen, combining grapheme joiner, Mongolian vowel
+            // separator — invisible-in-rendering keyword-splitting carriers.
+            0x00AD | 0x034F | 0x180E |
             // Bidi + zero-width formatting
             0x200B..=0x200F | 0x202A..=0x202E | 0x2066..=0x2069 | 0xFEFF |
+            // Word joiner + invisible math operators (function application,
+            // invisible times/separator/plus) — zero-width keyword-splitting
+            // carriers, same threat class as the bidi/zero-width block above.
+            0x2060..=0x2064 |
             // Tag block (the headline injection vector)
             0xE0000..=0xE007F |
             // Private Use Area
@@ -459,6 +473,18 @@ mod tests {
         let raw = "IGN\u{200B}ORE\u{200C}IN\u{FEFF}STRUCTIONS";
         let normalised = normalise_free_text(raw);
         assert_eq!(normalised, "IGNOREINSTRUCTIONS");
+    }
+
+    #[test]
+    fn additional_invisible_format_chars_are_stripped() {
+        // U+00AD soft hyphen, U+034F combining grapheme joiner, U+180E
+        // Mongolian vowel separator, U+2060 word joiner, U+2061 function
+        // application, U+2062 invisible times, U+2063 invisible separator,
+        // U+2064 invisible plus — all invisible-in-rendering carriers that
+        // can split a keyword without any visible change.
+        let raw = "IGN\u{00AD}ORE\u{034F}PRI\u{180E}OR\u{2060}IN\u{2061}STR\u{2062}UC\u{2063}TI\u{2064}ONS";
+        let normalised = normalise_free_text(raw);
+        assert_eq!(normalised, "IGNOREPRIORINSTRUCTIONS");
     }
 
     #[test]

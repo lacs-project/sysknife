@@ -65,7 +65,7 @@ fn firewall_preview_is_classified_explicitly_as_high_risk() {
     assert!(preview
         .expected_side_effects
         .iter()
-        .any(|effect: &String| effect.contains("service interruption")));
+        .any(|effect: &String| effect.contains("firewalld rule")));
 }
 
 #[test]

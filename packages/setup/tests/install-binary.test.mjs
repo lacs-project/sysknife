@@ -59,6 +59,14 @@ test('verifySha256 is case-insensitive on hex', () => {
   assert.doesNotThrow(() => verifySha256(data, sums, 'mybin'));
 });
 
+test('verifySha256 tolerates a CRLF-terminated sums file', () => {
+  const data = Buffer.from('crlf sums test');
+  const hex  = crypto.createHash('sha256').update(data).digest('hex');
+  // Windows-style line endings: every line ends with \r\n, not just \n.
+  const sums = `${hex}  sysknife-v0.2.4-linux-x86_64\r\n`;
+  assert.doesNotThrow(() => verifySha256(data, sums, 'sysknife-v0.2.4-linux-x86_64'));
+});
+
 // ---------------------------------------------------------------------------
 // detectPlatform tests
 // ---------------------------------------------------------------------------

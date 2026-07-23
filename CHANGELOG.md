@@ -8,6 +8,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [0.2.9] — 2026-07-23
+
+### Security
+
+- Destructive user/group actions (`DeleteUser`, `LockUserAccount`,
+  `DeleteGroup`) now reject critical accounts and groups (`root`, `sudo`,
+  `wheel`, core system accounts, uid/gid 0) via a hard denylist, independent of
+  the approval gate.
+- The GRUB kernel-argument allowlist now blocks Ubuntu LSM / mitigation-disable
+  arguments (`apparmor=0`, `mitigations=off`, `lockdown=`, `pti=off`, `nosmap`,
+  `nosmep`) in addition to the SELinux ones.
+- The `snap install` and `fail2ban` action builders now validate their
+  arguments in the constructor (defense in depth), not only at the executor
+  boundary.
+- Five High-risk actions (`ConfigureFirewall`, `SetDnsServers`, `ConfigureWifi`,
+  `MaskService`, `CreateUser`) now render accurate lockout / interception /
+  privilege warnings and require exact-name approval, instead of a generic
+  "service interruption" preview.
+- A `config.toml` that is present but unparseable now fails loudly instead of
+  silently falling back to defaults (which would have dropped `[storage]` /
+  `[policy]` — a silent security downgrade).
+
+### Fixed
+
+- **`npx sysknife-setup`'s approval gate is no longer broken by default.** The
+  wizard-installed user daemon now binds the same socket the CLI resolves with
+  no environment set (`%t` → `$XDG_RUNTIME_DIR/sysknife/daemon.sock`), so
+  `sysknife approve` works in a fresh terminal without exporting anything.
+- The default LLM rate limiter no longer silently disables itself on a fresh
+  install (its state directory was never created, so writes failed open).
+- Preview `rollback_available` is now honest: six Debian-family actions
+  (`AddPpa`, `RemovePpa`, `NetplanSet`, `GrubSetKargs`, `ProAttach`,
+  `ProDetach`) no longer advertise an automatic rollback that never ran; a
+  workspace-wide invariant test enforces `rollback_available` ⇔ a real rollback
+  command exists.
+- Ubuntu derivatives (Linux Mint, Pop!\_OS, …) are now recognized via `ID_LIKE`,
+  so `apt` / `snap` / `ufw` actions route correctly instead of being rejected
+  as an unknown distribution.
+- SQLite transaction status updates are now atomic (compare-and-set), matching
+  the PostgreSQL backend.
+- UFW application profiles containing spaces (`Nginx Full`, `Apache Full`) are
+  now accepted.
+- The MCP server now applies the same distro-routing guard as the CLI, and LLM
+  provider errors are no longer misclassified (e.g. "generate" → "rate limit").
+
+### Added
+
+- `scripts/ci-local.sh` and a `.githooks/pre-push` hook that mirror the CI jobs
+  locally, so failures are caught before pushing (saving GitHub Actions
+  minutes). Documented in the developer guide, alongside `act` for full
+  Docker-based workflow replay.
+
+### Changed
+
+- Documentation drift corrections: socket / database defaults (`cli.md`,
+  `configuration.md`), the vsock token walkthrough, the Ubuntu action reference
+  (netplan mechanism and added actions), the Observer action count, ADR-0002's
+  provider count, and others. Hardened the invisible-Unicode sanitizer and the
+  provider error-message redactor.
+
 ## [0.2.8] — 2026-07-23
 
 ### Security
@@ -142,6 +202,7 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   (non-repudiable, third-party verifiable), with signed checkpoints guarding
   against truncation.
 
+[0.2.9]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.9
 [0.2.8]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.8
 [0.2.7]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.7
 [0.2.6]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.6

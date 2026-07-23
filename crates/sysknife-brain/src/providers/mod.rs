@@ -26,12 +26,27 @@ pub(super) fn classify_status(status: http::StatusCode) -> StatusClass {
     }
 }
 
-/// Redact common key-bearing query parameters from error messages to prevent
-/// API key leakage in logs. Handles both first-position (`?key=`, `?api_key=`)
-/// and subsequent-position (`&key=`, `&api_key=`) query params, and redacts
-/// all occurrences in the string (not just the first).
+/// Redact credential-bearing substrings from error messages before they are
+/// logged or propagated to a caller, to prevent API key leakage.
+///
+/// Handles, at every occurrence in the string (not just the first):
+/// - **URL query params**: `?key=`, `?api_key=`, and their `&`-joined
+///   continuations (`&key=`, `&api_key=`).
+/// - **HTTP-header-shaped credential carriers** that a provider SDK or an
+///   intermediate proxy sometimes echoes verbatim into error text:
+///   `Bearer <token>` (case-insensitive on the keyword) and
+///   `x-api-key<sep><token>` (case-insensitive on the header name; `<sep>`
+///   is `:`, `=`, or whitespace).
+///
+/// This is defense in depth, not a guarantee — it cannot catch every
+/// possible key-leaking shape an SDK might produce.
 pub(super) fn sanitize_error_msg(msg: &str) -> String {
     const KEY_PARAMS: &[&str] = &["?key=", "?api_key=", "&key=", "&api_key="];
+    // Header-shaped credential carriers. Unlike KEY_PARAMS (where the whole
+    // `key=<value>` segment is redacted), only the value after the keyword is
+    // redacted here, keeping the keyword itself visible as context for readers
+    // of the sanitized message.
+    const HEADER_KEYWORDS: &[&str] = &["bearer ", "x-api-key"];
 
     let lower = msg.to_lowercase();
     let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
@@ -47,6 +62,28 @@ pub(super) fn sanitize_error_msg(msg: &str) -> String {
                 .unwrap_or(msg.len());
             ranges.push(param_start..end);
             search_from = start + pattern.len();
+        }
+    }
+
+    for keyword in HEADER_KEYWORDS {
+        let mut search_from = 0;
+        while let Some(rel) = lower[search_from..].find(keyword) {
+            let start = search_from + rel;
+            let after_keyword = start + keyword.len();
+            // Skip separator characters between the keyword and the value,
+            // e.g. "Bearer  <token>", "x-api-key: <token>", "x-api-key=<token>".
+            let value_start = lower[after_keyword..]
+                .find(|c: char| !(c.is_whitespace() || c == ':' || c == '='))
+                .map(|s| after_keyword + s)
+                .unwrap_or(msg.len());
+            let value_end = lower[value_start..]
+                .find(|c: char| c.is_whitespace())
+                .map(|s| value_start + s)
+                .unwrap_or(msg.len());
+            if value_start < value_end {
+                ranges.push(value_start..value_end);
+            }
+            search_from = start + keyword.len();
         }
     }
 
@@ -121,5 +158,46 @@ mod tests {
             result,
             "first: https://api1.com?[REDACTED] second: https://api2.com?[REDACTED]"
         );
+    }
+
+    #[test]
+    fn sanitize_error_msg_strips_bearer_token() {
+        let input = "request failed: Authorization: Bearer sk-secret123 was rejected";
+        let result = sanitize_error_msg(input);
+        assert_eq!(
+            result,
+            "request failed: Authorization: Bearer [REDACTED] was rejected"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_msg_bearer_is_case_insensitive() {
+        let input = "BEARER sk-secret123 rejected";
+        let result = sanitize_error_msg(input);
+        assert_eq!(result, "BEARER [REDACTED] rejected");
+    }
+
+    #[test]
+    fn sanitize_error_msg_strips_x_api_key_header() {
+        let input = "error calling endpoint with header x-api-key: sk-secret123 abc";
+        let result = sanitize_error_msg(input);
+        assert_eq!(
+            result,
+            "error calling endpoint with header x-api-key: [REDACTED] abc"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_msg_strips_x_api_key_header_with_equals_separator() {
+        let input = "GET /v1?x-api-key=sk-secret123 failed";
+        let result = sanitize_error_msg(input);
+        assert_eq!(result, "GET /v1?x-api-key=[REDACTED] failed");
+    }
+
+    #[test]
+    fn sanitize_error_msg_no_bearer_or_api_key_unchanged() {
+        let input = "connection refused: https://api.example.com/v1";
+        let result = sanitize_error_msg(input);
+        assert_eq!(result, input);
     }
 }

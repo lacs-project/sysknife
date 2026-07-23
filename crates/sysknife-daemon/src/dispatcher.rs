@@ -1987,14 +1987,25 @@ async fn handle_execute(
             // The approval is NOT consumed by a conflict (the claim happens
             // after this gate), so it remains valid for retry — but only until
             // its TTL elapses. A high-risk reboot job can outrun that window, so
-            // we tell the user up front that a long wait means re-approving,
-            // instead of letting the retry fail later with a bare stale_approval.
+            // we tell the user up front what a long wait means, instead of
+            // letting the retry fail later with a bare stale_approval.
+            //
+            // Re-approving the SAME transaction can never produce a "fresh"
+            // receipt: the TTL check in `approve_transaction` is anchored to
+            // the transaction's immutable `created_at`, not to when `approve`
+            // is called, so running `sysknife approve <transaction-id>` again
+            // after the window has elapsed fails identically every time. The
+            // only way to get a new TTL window is a new transaction, which
+            // means re-running the preview.
             let ttl = crate::transactions::APPROVAL_RECEIPT_TTL_MINUTES;
             let msg = format!(
                 "a High-risk reboot-required action is already executing (request_hash \
                  {running_hash}); retry after the current job completes. This approval \
-                 expires {ttl} minutes after it was issued — if the running job is still \
-                 going by then, run `sysknife approve <transaction-id>` again for a fresh receipt"
+                 expires {ttl} minutes after it was issued, and that window is anchored to \
+                 when the preview was created — re-running `sysknife approve` on this same \
+                 transaction will not renew it. If the running job is still going once the \
+                 window has passed, re-run the preview (which mints a fresh transaction) and \
+                 approve that new transaction instead"
             );
             drop(slot); // release before I/O
             return send_response(

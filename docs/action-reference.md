@@ -311,8 +311,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `AddPpa` | `sudo add-apt-repository -y ppa:deadsnakes/ppa` | High | Ubuntu | – | ✓ | add a Launchpad PPA — param: name\* in &lt;user&gt;/&lt;ppa&gt; format (e.g. 'deadsnakes/ppa'); Ubuntu only; requires software-properties-common |
-| `RemovePpa` | `sudo add-apt-repository -y --remove ppa:deadsnakes/ppa` | Medium | Ubuntu | – | ✓ | remove a Launchpad PPA — param: name\* in &lt;user&gt;/&lt;ppa&gt; format; Ubuntu only |
+| `AddPpa` | `sudo add-apt-repository -y ppa:deadsnakes/ppa` | High | Ubuntu | – | – | add a Launchpad PPA — param: name\* in &lt;user&gt;/&lt;ppa&gt; format (e.g. 'deadsnakes/ppa'); Ubuntu only; requires software-properties-common |
+| `RemovePpa` | `sudo add-apt-repository -y --remove ppa:deadsnakes/ppa` | Medium | Ubuntu | – | – | remove a Launchpad PPA — param: name\* in &lt;user&gt;/&lt;ppa&gt; format; Ubuntu only |
 
 ## snap
 
@@ -347,7 +347,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 |---|---|---|---|---|---|---|
 | `NetplanGetConfig` | `find /etc/netplan -maxdepth 1 -name *.yaml -print -exec cat {} +` | Low | Ubuntu | – | – | read current netplan YAML config from /etc/netplan/ — no params; Ubuntu only; read-only |
 | `NetplanApply` | `sudo netplan apply` | High | Ubuntu | – | – | apply netplan network configuration immediately — no params; Ubuntu only; High risk; can disconnect SSH |
-| `NetplanSet` | `sudo netplan set ethernets.eth0.dhcp4=true` | High | Ubuntu | – | ✓ | set a single netplan key to a value — params: key\* (e.g. 'ethernets.eth0.dhcp4'), value\*; Ubuntu only; High risk; run NetplanApply to activate |
+| `NetplanSet` | `sudo netplan set ethernets.eth0.dhcp4=true` | High | Ubuntu | – | – | set a single netplan key to a value — params: key\* (e.g. 'ethernets.eth0.dhcp4'), value\*; Ubuntu only; High risk; run NetplanApply to activate |
 | `NetplanGenerate` | `sudo netplan generate` | Medium | Ubuntu | – | – | regenerate netplan backend config without applying — no params; Ubuntu only; Medium risk; dry-run before NetplanApply |
 
 ## distrobox
@@ -363,7 +363,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GrubGetKargs` | `grep -E ^GRUB_CMDLINE_LINUX /etc/default/grub` | Low | Ubuntu | – | – | read current GRUB_CMDLINE_LINUX from /etc/default/grub — no params; Ubuntu only; read-only |
-| `GrubSetKargs` | `sudo /usr/lib/sysknife/grub-kargs-edit --append quiet --delete splash` | High | Ubuntu | ✓ | ✓ | modify GRUB kernel arguments and run update-grub — params: append (list), delete (list); Ubuntu only; High risk; requires reboot |
+| `GrubSetKargs` | `sudo /usr/lib/sysknife/grub-kargs-edit --append quiet --delete splash` | High | Ubuntu | ✓ | – | modify GRUB kernel arguments and run update-grub — params: append (list), delete (list); Ubuntu only; High risk; requires reboot |
 
 ## Ubuntu release upgrade
 
@@ -376,8 +376,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `ProStatus` | `pro status --all` | Low | Ubuntu | – | – | show Ubuntu Pro subscription status — no params; Ubuntu only; read-only |
-| `ProAttach` | `sudo pro attach <REDACTED>` | High | Ubuntu | – | ✓ | attach machine to an Ubuntu Pro subscription — param: token\* (credential, never log); Ubuntu only; High risk |
-| `ProDetach` | `sudo pro detach --assume-yes` | High | Ubuntu | – | ✓ | detach from Ubuntu Pro subscription — no params; Ubuntu only; High risk |
+| `ProAttach` | `sudo pro attach <REDACTED>` | High | Ubuntu | – | – | attach machine to an Ubuntu Pro subscription — param: token\* (credential, never log); Ubuntu only; High risk |
+| `ProDetach` | `sudo pro detach --assume-yes` | High | Ubuntu | – | – | detach from Ubuntu Pro subscription — no params; Ubuntu only; High risk |
 | `EnableProService` | `sudo pro enable esm-apps --assume-yes` | High | Ubuntu | – | – | enable one Ubuntu Pro service (pro enable &lt;service&gt;) — param: service\* (one of esm-apps, esm-infra, livepatch, usg, fips, fips-updates, cis, ros, ros-updates, cc-eal, realtime-kernel, landscape, anbox-cloud); Ubuntu only; High risk; needs an attached subscription |
 | `DisableProService` | `sudo pro disable esm-apps --assume-yes` | High | Ubuntu | – | – | disable one Ubuntu Pro service (pro disable &lt;service&gt;) — param: service\* (same allowlist as EnableProService); Ubuntu only; High risk |
 

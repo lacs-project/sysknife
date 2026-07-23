@@ -114,6 +114,16 @@ pub enum TransactionStoreError {
 
     #[error("audit chain misconfiguration: {0}")]
     AuditChainMissing(&'static str),
+
+    /// `update_status`'s compare-and-swap `UPDATE ... WHERE status = <observed>`
+    /// matched zero rows: another writer changed `status` between our read and
+    /// our write. This is a lost race, not a validation failure — the caller
+    /// (see `dispatcher::update_terminal_status`) already retries on any error
+    /// and re-reads the current status, so surfacing this distinctly (rather
+    /// than silently overwriting a transition we never validated) is safe to
+    /// retry.
+    #[error("transaction {0} status changed concurrently; retry")]
+    ConcurrentStatusChange(String),
 }
 
 impl TransactionStore {
@@ -305,10 +315,30 @@ impl TransactionStore {
             });
         }
 
-        conn.execute(
-            "UPDATE transactions SET status = ?1 WHERE transaction_id = ?2",
-            params![serialize_field(&new_status)?, transaction_id],
+        // Compare-and-swap: only write if `status` still equals the value we
+        // just validated the transition against. Without the `AND status =
+        // ?3` guard this was a check-then-act race — a concurrent writer
+        // (e.g. two calls racing to move the same job to two different
+        // terminal states) could flip `status` between our SELECT and this
+        // UPDATE, and the loser would silently report success for a
+        // transition it never actually validated against the row's real
+        // prior value. `rows_affected == 0` means we lost that race (rows are
+        // never deleted, so it cannot mean the row vanished); the caller
+        // (`dispatcher::update_terminal_status`) already retries on any error
+        // and re-checks the final status, so failing closed here is safe.
+        let rows_affected = conn.execute(
+            "UPDATE transactions SET status = ?1 WHERE transaction_id = ?2 AND status = ?3",
+            params![
+                serialize_field(&new_status)?,
+                transaction_id,
+                current_status
+            ],
         )?;
+        if rows_affected == 0 {
+            return Err(TransactionStoreError::ConcurrentStatusChange(
+                transaction_id.to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -1283,6 +1313,71 @@ mod tests {
         assert_eq!(updated.action_name, "UpdateSystem");
         assert_eq!(updated.risk_level, RiskLevel::High);
         assert_eq!(updated.status, JobState::Failed);
+    }
+
+    /// `update_status` must be a compare-and-swap, not a check-then-act race.
+    /// Bring a transaction to `Running`, then fire two conflicting terminal
+    /// transitions (`Succeeded` and `Failed`) from concurrent threads. Both
+    /// read `Running` and both pass `allowed_transition`, but only one may
+    /// actually apply — the loser must see an explicit error, never a silent
+    /// double-write. Before the `AND status = ?<observed>` guard, both calls
+    /// would unconditionally UPDATE and both would return `Ok(())`, hiding the
+    /// fact that one of them clobbered a transition it never validated.
+    #[test]
+    fn update_status_is_atomic_under_concurrent_conflicting_transitions() {
+        let dir = tempdir().unwrap();
+        let store = std::sync::Arc::new(test_store(dir.path().join("tx.db")));
+        let tx = store.record(queued_transaction()).unwrap();
+        store
+            .update_status(&tx.transaction_id, JobState::Running)
+            .unwrap();
+
+        let store_a = std::sync::Arc::clone(&store);
+        let id_a = tx.transaction_id.clone();
+        let succeed = std::thread::spawn(move || store_a.update_status(&id_a, JobState::Succeeded));
+
+        let store_b = std::sync::Arc::clone(&store);
+        let id_b = tx.transaction_id.clone();
+        let fail = std::thread::spawn(move || store_b.update_status(&id_b, JobState::Failed));
+
+        let succeed_result = succeed.join().unwrap();
+        let fail_result = fail.join().unwrap();
+
+        // Exactly one of the two conflicting transitions may win.
+        let oks = [succeed_result.is_ok(), fail_result.is_ok()]
+            .into_iter()
+            .filter(|ok| *ok)
+            .count();
+        assert_eq!(
+            oks, 1,
+            "exactly one concurrent transition should succeed: succeed={succeed_result:?} \
+             fail={fail_result:?}"
+        );
+
+        // The loser must fail with the dedicated race error, not silently
+        // succeed and clobber the winner.
+        let loser = if succeed_result.is_ok() {
+            &fail_result
+        } else {
+            &succeed_result
+        };
+        match loser {
+            Err(TransactionStoreError::ConcurrentStatusChange(id)) => {
+                assert_eq!(id, &tx.transaction_id);
+            }
+            other => {
+                panic!("the losing transition must report ConcurrentStatusChange, got: {other:?}")
+            }
+        }
+
+        // The stored status must match whichever transition actually won —
+        // never a mix, and never left at `Running`.
+        let final_status = store.get(&tx.transaction_id).unwrap().unwrap().status;
+        if succeed_result.is_ok() {
+            assert_eq!(final_status, JobState::Succeeded);
+        } else {
+            assert_eq!(final_status, JobState::Failed);
+        }
     }
 
     #[test]

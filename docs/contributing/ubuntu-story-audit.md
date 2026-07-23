@@ -2,11 +2,11 @@
 
 ## Summary
 
-- Total stories audited: 115 (104 plan-structure + 11 exec)
+- Total stories audited: 116 (104 plan-structure + 12 exec)
 - Distro-agnostic: 35  (work on any Linux)
 - Fedora-only assertions needing Ubuntu equivalence: 19
 - Ubuntu-native (no Fedora equivalent, leave alone): 50
-- Destructive (gated by `SYSKNIFE_ALLOW_DESTRUCTIVE`): 11 plan-structure + 9 exec = 20
+- Destructive (gated by `SYSKNIFE_ALLOW_DESTRUCTIVE`): 11 plan-structure + 10 exec = 21
 - Exec stories safe on Ubuntu host: 3 (exec-1, exec-2, exec-6)
 - Exec stories Fedora-only (use firewalld/firewall-cmd): 2 (exec-7, exec-11)
 
@@ -127,13 +127,14 @@ story-93 (empty snap name)
 | exec-9 | timezone round-trip | destructive, distro-agnostic | yes |
 | exec-10 | user/group membership | destructive, distro-agnostic | yes |
 | exec-11 | ConfigureFirewall ftp cycle, asserts `firewall-cmd` | **Fedora-only** — uses `firewall-cmd --list-services` | no — needs Ubuntu replacement using `ufw status` |
+| exec-12 | UfwAllow + UfwDeny cycle → allow port 8080, assert open, deny port 8080, assert closed | destructive, **Ubuntu-only** — asserts `ufw status`; gated on `SYSKNIFE_DISTRO_FAMILY=ubuntu\|debian` | yes |
 
 **exec-7 Ubuntu fix:** change intent to a service present on Ubuntu (e.g. `restart ssh`)
 and replace `systemctl is-active firewalld` with `systemctl is-active ssh`.
 
-**exec-11 Ubuntu fix:** add a parallel `exec-12.sh` that exercises `UfwAllow`/`UfwDeny`
-cycle using `ufw status` for verification; gate exec-11 behind
-`SYSKNIFE_DISTRO_FAMILY=fedora`.
+**exec-11 Ubuntu fix:** `exec-12.sh` is the parallel Ubuntu story — it exercises
+`UfwAllow`/`UfwDeny` cycle using `ufw status` for verification; exec-11 stays
+gated behind `SYSKNIFE_DISTRO_FAMILY=fedora`.
 
 ---
 

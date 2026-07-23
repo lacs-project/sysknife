@@ -82,6 +82,12 @@ pub fn netplan_get_config() -> ActionSpec {
 /// Risk: High / Admin. Modifies the active netplan configuration in-memory.
 /// Run `NetplanApply` afterward to apply the change to the live network stack.
 ///
+/// `rollback_available` is false: the daemon has no automatic rollback for
+/// netplan YAML — it edits `/etc/netplan/` directly with no rpm-ostree-style
+/// deployment to auto-revert to on failure (see
+/// `docs/automatic-rollback.md`). An operator can manually undo the change
+/// with another `NetplanSet` call, but that is not what this flag means.
+///
 /// The argv passes `<key>=<value>` as a single argument with no shell
 /// involvement — `validated_safe_arg` (applied at the executor boundary)
 /// rejects spaces in `value`, so any further quoting would only inject
@@ -93,7 +99,7 @@ pub fn netplan_set(key: &str, value: &str) -> ActionSpec {
         mechanism: command_mechanism("sudo", ["netplan", "set", &kv]),
         risk_level: RiskLevel::High,
         reboot_required: false,
-        rollback_available: true,
+        rollback_available: false,
     }
 }
 
@@ -230,8 +236,8 @@ mod tests {
     }
 
     #[test]
-    fn netplan_set_rollback_available() {
-        assert!(netplan_set("ethernets.eth0.dhcp4", "true").rollback_available);
+    fn netplan_set_no_automatic_rollback() {
+        assert!(!netplan_set("ethernets.eth0.dhcp4", "true").rollback_available);
     }
 
     #[test]

@@ -305,7 +305,10 @@ function assetUrl(release, name) {
  * @param {string} filename    - asset filename to look up
  */
 function verifySha256(data, sumsText, filename) {
-  const lines = sumsText.split('\n').filter(l => l.trim());
+  const lines = sumsText
+    .split('\n')
+    .map(l => l.replace(/\r$/, '')) // tolerate CRLF-terminated sums files
+    .filter(l => l.trim());
   const entry = lines.find(l => l.endsWith(`  ${filename}`) || l.endsWith(`\t${filename}`));
   if (!entry) {
     throw new Error(
@@ -333,7 +336,7 @@ function verifySha256(data, sumsText, filename) {
  * Write `data` to `destPath` as an executable file (mode 0o755).
  * Creates the destination directory if needed.
  * If `destPath` is under /usr/local/bin or another root-owned directory,
- * falls back to writing via `sudo tee`.
+ * falls back to writing via `sudo install -o root -g root -m 755`.
  *
  * @param {Buffer} data
  * @param {string} destPath  absolute path

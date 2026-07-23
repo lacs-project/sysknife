@@ -16,6 +16,16 @@
 //! `std::net::IpAddr::from_str` before constructing the `ActionSpec`. An
 //! invalid address returns `Err(InvalidIpAddress)` immediately so a bad value
 //! cannot reach the daemon.
+//!
+//! ## Jail/name validation
+//!
+//! Every constructor that takes a jail name or drop-in name (`fail2ban_status`,
+//! `fail2ban_ban_ip`, `fail2ban_unban_ip`, `configure_fail2ban_jail`) validates
+//! it in-constructor via `jail_is_valid` before building the `ActionSpec`. This
+//! is defense in depth: the executor also validates (`validated_safe_arg` /
+//! `validated_sudoers_name`), but a future internal Rust caller that bypassed
+//! the executor could not otherwise be blocked from injecting through the
+//! interpolated `fail2ban-client`/helper argv.
 
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -75,10 +85,11 @@ const JAIL_HELPER: &str = "/usr/lib/sysknife/fail2ban-jail-edit";
 /// Return one representative `ActionSpec` per fail2ban action name.
 pub fn specs() -> Vec<ActionSpec> {
     vec![
-        fail2ban_status(None),
+        fail2ban_status(None).expect("no jail filter in specs()"),
         fail2ban_ban_ip("sshd", "192.0.2.1").expect("valid IP in specs()"),
         fail2ban_unban_ip("sshd", "192.0.2.1").expect("valid IP in specs()"),
-        configure_fail2ban_jail("sshd", &["--maxretry".to_string(), "3".to_string()]),
+        configure_fail2ban_jail("sshd", &["--maxretry".to_string(), "3".to_string()])
+            .expect("sshd is a valid jail name in specs()"),
     ]
 }
 
@@ -91,18 +102,26 @@ pub fn specs() -> Vec<ActionSpec> {
 /// Risk: Low. Read-only; shows active jails, banned IPs, and hit counts.
 /// When `jail` is `None` the global status (list of all jails) is returned.
 /// When `jail` is `Some(name)` the detailed status for that jail is returned.
-pub fn fail2ban_status(jail: Option<&str>) -> ActionSpec {
+///
+/// Returns `Err(InvalidJail)` when `jail` is `Some` and fails `jail_is_valid`
+/// (in-constructor defense in depth — see the module doc).
+pub fn fail2ban_status(jail: Option<&str>) -> Result<ActionSpec, Fail2banError> {
     let args: Vec<&str> = match jail {
-        Some(j) => vec!["fail2ban-client", "status", j],
+        Some(j) => {
+            if !jail_is_valid(j) {
+                return Err(Fail2banError::InvalidJail(j.to_string()));
+            }
+            vec!["fail2ban-client", "status", j]
+        }
         None => vec!["fail2ban-client", "status"],
     };
-    ActionSpec {
+    Ok(ActionSpec {
         action_name: "Fail2banStatus",
         mechanism: command_mechanism("sudo", args),
         risk_level: RiskLevel::Low,
         reboot_required: false,
         rollback_available: false,
-    }
+    })
 }
 
 /// Ban an IP address in a fail2ban jail
@@ -158,20 +177,26 @@ pub fn fail2ban_unban_ip(jail: &str, ip: &str) -> Result<ActionSpec, Fail2banErr
 ///
 /// Risk: High — tuning a jail changes who gets banned (too strict → locks out
 /// legitimate users; too loose → weakens brute-force protection).
-pub fn configure_fail2ban_jail(name: &str, extra: &[String]) -> ActionSpec {
+///
+/// Returns `Err(InvalidJail)` when `name` fails `jail_is_valid` (in-constructor
+/// defense in depth — see the module doc).
+pub fn configure_fail2ban_jail(name: &str, extra: &[String]) -> Result<ActionSpec, Fail2banError> {
+    if !jail_is_valid(name) {
+        return Err(Fail2banError::InvalidJail(name.to_string()));
+    }
     let mut args = vec![
         JAIL_HELPER.to_string(),
         "--name".to_string(),
         name.to_string(),
     ];
     args.extend(extra.iter().cloned());
-    ActionSpec {
+    Ok(ActionSpec {
         action_name: "ConfigureFail2banJail",
         mechanism: command_mechanism("sudo", args),
         risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -194,17 +219,17 @@ mod tests {
 
     #[test]
     fn fail2ban_status_action_name() {
-        assert_eq!(fail2ban_status(None).action_name, "Fail2banStatus");
+        assert_eq!(fail2ban_status(None).unwrap().action_name, "Fail2banStatus");
     }
 
     #[test]
     fn fail2ban_status_risk_is_low() {
-        assert_eq!(fail2ban_status(None).risk_level, RiskLevel::Low);
+        assert_eq!(fail2ban_status(None).unwrap().risk_level, RiskLevel::Low);
     }
 
     #[test]
     fn fail2ban_status_global_argv() {
-        let spec = fail2ban_status(None);
+        let spec = fail2ban_status(None).unwrap();
         let (prog, args) = extract_args(&spec);
         assert_eq!(prog, "sudo");
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -215,11 +240,18 @@ mod tests {
 
     #[test]
     fn fail2ban_status_jail_argv() {
-        let spec = fail2ban_status(Some("sshd"));
+        let spec = fail2ban_status(Some("sshd")).unwrap();
         let (prog, args) = extract_args(&spec);
         assert_eq!(prog, "sudo");
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
         assert_eq!(a, vec!["fail2ban-client", "status", "sshd"]);
+    }
+
+    #[test]
+    fn fail2ban_status_rejects_invalid_jail() {
+        // In-constructor defense in depth, mirroring fail2ban_ban_ip/unban_ip.
+        let err = fail2ban_status(Some("sshd; rm -rf /")).unwrap_err();
+        assert!(matches!(err, Fail2banError::InvalidJail(_)));
     }
 
     // ── fail2ban_ban_ip ──────────────────────────────────────────────────────
@@ -333,11 +365,20 @@ mod tests {
 
     #[test]
     fn configure_jail_routes_through_helper() {
-        let spec = configure_fail2ban_jail("sshd", &["--maxretry".to_string(), "3".to_string()]);
+        let spec =
+            configure_fail2ban_jail("sshd", &["--maxretry".to_string(), "3".to_string()]).unwrap();
         let (program, args) = extract_args(&spec);
         assert_eq!(program, "sudo");
         assert_eq!(args, vec![JAIL_HELPER, "--name", "sshd", "--maxretry", "3"]);
         assert_eq!(spec.risk_level, RiskLevel::High);
+    }
+
+    #[test]
+    fn configure_fail2ban_jail_rejects_invalid_name() {
+        // In-constructor defense in depth, mirroring fail2ban_ban_ip/unban_ip.
+        let err =
+            configure_fail2ban_jail("sshd; rm -rf /", &["--maxretry".to_string()]).unwrap_err();
+        assert!(matches!(err, Fail2banError::InvalidJail(_)));
     }
 
     // ── specs() completeness ─────────────────────────────────────────────────

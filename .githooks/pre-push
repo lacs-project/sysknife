@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Local CI gate for `git push` (keeps GitHub Actions idle on obvious breakage).
+# Runs the fast subset of scripts/ci-local.sh: rust fmt/clippy/nextest plus
+# frontend tsc/vitest. Bypass with: git push --no-verify
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+printf '[pre-push] scripts/ci-local.sh --fast\n'
+exec "${repo_root}/scripts/ci-local.sh" --fast

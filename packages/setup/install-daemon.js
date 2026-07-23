@@ -48,14 +48,38 @@ function warn(msg) { console.log(`  ${Y}⚠${X}  ${msg}`); }
 function step(msg) { console.log(`  ${D}→${X}  ${msg}`); }
 
 // ---------------------------------------------------------------------------
+// Runtime socket path resolution
+// ---------------------------------------------------------------------------
+//
+// sysknife_core::default_listen_uri() (crates/sysknife-core/src/lib.rs)
+// resolves, in order: 1) $SYSKNIFE_LISTEN_URI  2) $XDG_RUNTIME_DIR/sysknife/
+// daemon.sock  3) /tmp/sysknife-$UID.sock as a last resort. The user unit
+// below binds tier 2 directly via systemd's `%t` specifier (equal to
+// $XDG_RUNTIME_DIR under a `systemctl --user` manager) so the daemon needs no
+// explicit env var at all. These two helpers mirror that same tier-2 formula
+// in JS — used for console output here, and for the MCP config's explicit
+// SYSKNIFE_SOCKET in index.js — so a human running `sysknife approve <id>`
+// in a bare terminal resolves to the exact socket the daemon bound, with no
+// shell-profile edits required.
+
+/** `$XDG_RUNTIME_DIR`, falling back to `/run/user/<uid>` when unset. */
+function runtimeDir() {
+  return process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid()}`;
+}
+
+/** The per-user daemon socket path — matches `default_listen_uri()` tier 2. */
+function runtimeSocketPath() {
+  return path.join(runtimeDir(), 'sysknife', 'daemon.sock');
+}
+
+// ---------------------------------------------------------------------------
 // Unit file templates
 // ---------------------------------------------------------------------------
 
 /** User-level service (no root, casual / dev use). */
 function userUnitContent(daemonBin) {
-  const socketDir  = path.join(os.homedir(), '.local', 'share', 'sysknife');
-  const dbPath     = path.join(socketDir, 'daemon.sqlite');
-  const socketPath = path.join(socketDir, 'daemon.sock');
+  const stateDir = path.join(os.homedir(), '.local', 'share', 'sysknife');
+  const dbPath   = path.join(stateDir, 'daemon.sqlite');
 
   return `[Unit]
 Description=SysKnife privileged daemon (user session)
@@ -64,7 +88,11 @@ After=default.target
 
 [Service]
 Type=simple
-Environment="SYSKNIFE_LISTEN_URI=unix://${socketPath}"
+# %t expands to $XDG_RUNTIME_DIR under \`systemctl --user\` — the exact socket
+# sysknife_core::default_listen_uri() falls back to with no env vars set, so
+# a human running \`sysknife approve <id>\` in a fresh terminal reaches this
+# daemon with zero shell-profile edits.
+Environment="SYSKNIFE_LISTEN_URI=unix://%t/sysknife/daemon.sock"
 Environment="SYSKNIFE_DATABASE_PATH=${dbPath}"
 ExecStart=${daemonBin}
 Restart=on-failure
@@ -199,7 +227,7 @@ async function _installUserService(daemonBinPath) {
   const started = systemctl(['enable', '--now', 'sysknife-daemon'], true);
   if (started) {
     ok('sysknife-daemon user service enabled and started.');
-    step('Socket: ' + path.join(os.homedir(), '.local', 'share', 'sysknife', 'daemon.sock'));
+    step('Socket: ' + runtimeSocketPath());
   } else {
     warn('Could not enable/start user service automatically.');
     step('Run:  systemctl --user enable --now sysknife-daemon');
@@ -237,4 +265,4 @@ async function _installSystemService(daemonBinPath) {
   step(`Daemon binary path that will be used:  ${daemonBinPath}`);
 }
 
-module.exports = { installDaemonService };
+module.exports = { installDaemonService, userUnitContent, runtimeSocketPath, runtimeDir };

@@ -85,8 +85,8 @@ file's section.field path.
 
 | Variable | Default | What it sets |
 |---|---|---|
-| `SYSKNIFE_LISTEN_URI` | `unix:///run/sysknife/daemon.sock` | Daemon socket / vsock URI |
-| `SYSKNIFE_DATABASE_PATH` | `/var/lib/sysknife/daemon.sqlite` | SQLite audit log path |
+| `SYSKNIFE_LISTEN_URI` | `unix://$XDG_RUNTIME_DIR/sysknife/daemon.sock` (falls back to `unix:///tmp/sysknife-$UID.sock` if `XDG_RUNTIME_DIR` is unset; production systemd unit sets `unix:///run/sysknife/daemon.sock`) | Daemon socket / vsock URI |
+| `SYSKNIFE_DATABASE_PATH` | `$XDG_STATE_HOME/sysknife/daemon.sqlite` (falls back to `~/.local/state/sysknife/daemon.sqlite`; production systemd unit sets `/var/lib/sysknife/daemon.sqlite`) | SQLite audit log path |
 | `SYSKNIFE_LLM_PROVIDER` | auto-detect | LLM provider name (8 supported) |
 | `SYSKNIFE_LLM_MODEL` | provider default | Model identifier |
 | `SYSKNIFE_OLLAMA_URL` | `http://localhost:11434` | Ollama base URL |
@@ -96,7 +96,7 @@ file's section.field path.
 | `SYSKNIFE_MAX_RPM` | `20` | Rate limit (requests / 60s sliding window) |
 | `SYSKNIFE_AUDIT_KEY_PATH` | `<db_dir>/audit-key` | Ed25519 signing key path for the audit chain |
 | `SYSKNIFE_CHECKPOINT_DB` | — | Postgres URL for `audit checkpoint` external anchoring (keeps DB credentials off the command line) |
-| `SYSKNIFE_SOCKET` | `unix:///run/sysknife/daemon.sock` | CLI / MCP daemon address |
+| `SYSKNIFE_SOCKET` | falls back to the same default as `SYSKNIFE_LISTEN_URI` | CLI / MCP daemon address |
 | `SYSKNIFE_TOKEN` | — | Vsock auth token (when daemon runs in a VM) |
 | `XDG_CONFIG_HOME` | `~/.config` | Base path for `sysknife/config.toml` |
 
@@ -120,7 +120,6 @@ the CLI / shell:
 
 | Variable | Purpose |
 |---|---|
-| `SYSKNIFE_VSOCK_TOKEN_PATH` | Vsock auth token file (default: `/etc/sysknife/vsock-token`) |
 | `SYSKNIFE_AUDIT_KEY_PATH` | Ed25519 audit signing key path (default: alongside the database) |
 
 ## Validating your config

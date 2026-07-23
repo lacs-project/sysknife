@@ -73,12 +73,27 @@ pub fn grub_get_kargs() -> ActionSpec {
     }
 }
 
+/// Error returned by [`grub_set_kargs`] when both `append` and `delete` are
+/// empty.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum KargsError {
+    #[error("at least one of append or delete must be non-empty")]
+    BothEmpty,
+}
+
 /// Modify kernel arguments in `GRUB_CMDLINE_LINUX_DEFAULT`, back up the
 /// original file, then run `update-grub`.
 ///
 /// Risk: High. Kernel argument changes affect every boot. Incorrect arguments
 /// can prevent the system from booting. The helper script writes a backup to
 /// `/etc/default/grub.sysknife.bak` and restores it on `update-grub` failure.
+///
+/// `rollback_available` is false: that backup-and-restore is scoped to a
+/// single failed `update-grub` run inside the helper, not the daemon's
+/// automatic rollback mechanism (`executor::rollback_spec_for`), which today
+/// only covers rpm-ostree deployment actions (see
+/// `docs/automatic-rollback.md`). The daemon does not automatically revert a
+/// *successful* `GrubSetKargs` call that later turns out to be wrong.
 ///
 /// `append` — arguments to add (validated before call).
 /// `delete` — arguments to remove (validated before call).
@@ -91,12 +106,6 @@ pub fn grub_get_kargs() -> ActionSpec {
 /// The underlying mechanism is a single `sudo` invocation of the root-owned
 /// helper script `GRUB_KARGS_HELPER` (no shell involved), which closes the
 /// unconstrained `python3`, `cp`, and `update-grub` sudoers grants.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum KargsError {
-    #[error("at least one of append or delete must be non-empty")]
-    BothEmpty,
-}
-
 pub fn grub_set_kargs(append: &[&str], delete: &[&str]) -> Result<ActionSpec, KargsError> {
     if append.is_empty() && delete.is_empty() {
         return Err(KargsError::BothEmpty);
@@ -121,7 +130,7 @@ pub fn grub_set_kargs(append: &[&str], delete: &[&str]) -> Result<ActionSpec, Ka
         ),
         risk_level: RiskLevel::High,
         reboot_required: true,
-        rollback_available: true,
+        rollback_available: false,
     })
 }
 
@@ -250,8 +259,11 @@ mod tests {
     }
 
     #[test]
-    fn grub_set_kargs_rollback_available() {
-        assert!(grub_set_kargs(&["quiet"], &[]).unwrap().rollback_available);
+    fn grub_set_kargs_no_automatic_rollback() {
+        // The helper's backup/restore only covers a failed `update-grub` run
+        // within the same call; the daemon's automatic-rollback mechanism
+        // (rollback_available) only exists for rpm-ostree deployment actions.
+        assert!(!grub_set_kargs(&["quiet"], &[]).unwrap().rollback_available);
     }
 
     #[test]

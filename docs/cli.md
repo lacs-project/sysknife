@@ -323,7 +323,7 @@ above.
 
 | Variable | Description |
 |---|---|
-| `SYSKNIFE_SOCKET` | Path to the daemon Unix socket (default: `/run/sysknife/daemon.sock`) |
+| `SYSKNIFE_SOCKET` | Daemon socket the CLI dials (`unix://`, `vsock://`, or a bare path). Falls back to the same resolution as `SYSKNIFE_LISTEN_URI`: `$XDG_RUNTIME_DIR/sysknife/daemon.sock`, then `/tmp/sysknife-$UID.sock` as a last resort. Production deployments set this via the systemd unit to `/run/sysknife/daemon.sock`. |
 
 ---
 

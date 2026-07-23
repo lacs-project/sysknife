@@ -11,11 +11,55 @@
 //! Set `auto_update: true` in the plan params to skip the hold.
 //!
 //! The hold is applied by building a two-command spec using a shell fragment
-//! via `sh -c "snap install … && snap refresh --hold …"`. Both commands are
-//! validated through `validated_safe_arg` before interpolation.
+//! via `sh -c "snap install … && snap refresh --hold …"`. `name` and
+//! `channel` are validated by [`snap_install`] itself before interpolation
+//! (in addition to, not instead of, the executor's own `validated_safe_arg`
+//! check) — see the `SnapInstallError` doc below.
 
 use super::{command_mechanism, ActionSpec};
 use sysknife_types::RiskLevel;
+
+// ---------------------------------------------------------------------------
+// Error type
+// ---------------------------------------------------------------------------
+
+/// Returned when `snap_install`'s `name` or `channel` fails validation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SnapInstallError {
+    /// `name`/`channel` contains a shell metacharacter or otherwise fails the
+    /// safe-arg allowlist. Carries the offending parameter and value.
+    ///
+    /// Defense in depth: the executor already validates both via
+    /// `validated_safe_arg` before calling this constructor, but the
+    /// `auto_update: false` path interpolates `name`/`channel` into a
+    /// `sh -c "snap install … && snap refresh --hold …"` fragment — a future
+    /// internal Rust caller (fleet plan/execute path) that skipped the
+    /// executor could not otherwise be blocked from injecting through it.
+    InvalidArg { param: &'static str, value: String },
+}
+
+impl std::fmt::Display for SnapInstallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidArg { param, value } => write!(f, "invalid {param}: '{value}'"),
+        }
+    }
+}
+
+impl std::error::Error for SnapInstallError {}
+
+/// Allowlist for `name`/`channel`: alphanumeric plus `._:/+@-`, no leading
+/// dash, 1-254 bytes. Mirrors `validated_safe_arg`'s charset exactly, kept as
+/// a self-contained check here (rather than depending on `crate::executor`)
+/// so this action module has no dependency on the executor's error type —
+/// the same pattern `fail2ban::jail_is_valid` uses.
+fn safe_snap_arg_is_valid(s: &str) -> bool {
+    if s.is_empty() || s.len() > 254 || s.starts_with('-') {
+        return false;
+    }
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '+' | '@' | '-'))
+}
 
 // ---------------------------------------------------------------------------
 // specs() — for action_consistency tests
@@ -24,7 +68,7 @@ use sysknife_types::RiskLevel;
 /// Return one representative `ActionSpec` per snap action name.
 pub fn specs() -> Vec<ActionSpec> {
     vec![
-        snap_install("firefox", None, false),
+        snap_install("firefox", None, false).expect("firefox is a valid snap arg"),
         snap_remove("firefox"),
         snap_refresh(Some("firefox")),
         snap_hold("firefox"),
@@ -47,7 +91,29 @@ pub fn specs() -> Vec<ActionSpec> {
 /// system resources depending on interface connections.
 ///
 /// `channel` defaults to `stable` when `None`.
-pub fn snap_install(name: &str, channel: Option<&str>, auto_update: bool) -> ActionSpec {
+///
+/// Returns `Err(SnapInstallError::InvalidArg)` if `name` or `channel` fails
+/// the safe-arg allowlist — see [`SnapInstallError`].
+pub fn snap_install(
+    name: &str,
+    channel: Option<&str>,
+    auto_update: bool,
+) -> Result<ActionSpec, SnapInstallError> {
+    if !safe_snap_arg_is_valid(name) {
+        return Err(SnapInstallError::InvalidArg {
+            param: "name",
+            value: name.to_string(),
+        });
+    }
+    if let Some(ch) = channel {
+        if !safe_snap_arg_is_valid(ch) {
+            return Err(SnapInstallError::InvalidArg {
+                param: "channel",
+                value: ch.to_string(),
+            });
+        }
+    }
+
     if auto_update {
         // Plain install without hold.
         let mut args = vec!["install".to_string()];
@@ -55,7 +121,7 @@ pub fn snap_install(name: &str, channel: Option<&str>, auto_update: bool) -> Act
             args.push(format!("--channel={}", ch));
         }
         args.push(name.to_string());
-        ActionSpec {
+        Ok(ActionSpec {
             action_name: "SnapInstall",
             mechanism: command_mechanism(
                 "sudo",
@@ -64,7 +130,7 @@ pub fn snap_install(name: &str, channel: Option<&str>, auto_update: bool) -> Act
             risk_level: RiskLevel::Medium,
             reboot_required: false,
             rollback_available: false,
-        }
+        })
     } else {
         // Install + hold in one shell fragment to avoid a window where the snap
         // can be auto-refreshed between install and hold.
@@ -73,13 +139,13 @@ pub fn snap_install(name: &str, channel: Option<&str>, auto_update: bool) -> Act
             "snap install --channel={} {} && snap refresh --hold {}",
             channel_arg, name, name
         );
-        ActionSpec {
+        Ok(ActionSpec {
             action_name: "SnapInstall",
             mechanism: super::command_mechanism("sudo", ["sh", "-c", &cmd]),
             risk_level: RiskLevel::Medium,
             reboot_required: false,
             rollback_available: false,
-        }
+        })
     }
 }
 
@@ -223,14 +289,14 @@ mod tests {
     #[test]
     fn snap_install_action_name() {
         assert_eq!(
-            snap_install("firefox", None, false).action_name,
+            snap_install("firefox", None, false).unwrap().action_name,
             "SnapInstall"
         );
     }
 
     #[test]
     fn snap_install_default_includes_hold() {
-        let spec = snap_install("firefox", None, false);
+        let spec = snap_install("firefox", None, false).unwrap();
         let (prog, args) = extract_args(&spec);
         assert_eq!(prog, "sudo");
         // When auto_update=false the hold is embedded in a sh -c fragment.
@@ -247,7 +313,7 @@ mod tests {
 
     #[test]
     fn snap_install_auto_update_no_hold() {
-        let spec = snap_install("firefox", None, true);
+        let spec = snap_install("firefox", None, true).unwrap();
         let (prog, args) = extract_args(&spec);
         assert_eq!(prog, "sudo");
         let full = args.join(" ");
@@ -261,7 +327,7 @@ mod tests {
 
     #[test]
     fn snap_install_custom_channel() {
-        let spec = snap_install("firefox", Some("beta"), false);
+        let spec = snap_install("firefox", Some("beta"), false).unwrap();
         let (_, args) = extract_args(&spec);
         let full = args.join(" ");
         assert!(full.contains("beta"), "channel not present: {full}");
@@ -270,9 +336,40 @@ mod tests {
     #[test]
     fn snap_install_risk_medium() {
         assert_eq!(
-            snap_install("vim", None, false).risk_level,
+            snap_install("vim", None, false).unwrap().risk_level,
             RiskLevel::Medium
         );
+    }
+
+    #[test]
+    fn snap_install_rejects_shell_metacharacters_in_name() {
+        let err = snap_install("firefox; rm -rf /", None, false).unwrap_err();
+        assert!(matches!(
+            err,
+            SnapInstallError::InvalidArg { param: "name", .. }
+        ));
+    }
+
+    #[test]
+    fn snap_install_rejects_shell_metacharacters_in_channel() {
+        let err = snap_install("firefox", Some("beta && evil"), false).unwrap_err();
+        assert!(matches!(
+            err,
+            SnapInstallError::InvalidArg {
+                param: "channel",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn snap_install_rejects_leading_dash_name() {
+        // Option-injection guard: mirrors validated_safe_arg's leading-dash rule.
+        let err = snap_install("--classic", None, false).unwrap_err();
+        assert!(matches!(
+            err,
+            SnapInstallError::InvalidArg { param: "name", .. }
+        ));
     }
 
     // ── snap_remove ──────────────────────────────────────────────────────────

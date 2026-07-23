@@ -407,9 +407,19 @@ fn map_rig_error(err: rig::completion::CompletionError) -> ProviderError {
     // This fallback is inherently fragile — a Rig version bump could change
     // the wording and break our categorisation — but there is no structured
     // alternative in that case.
-    if msg.contains("401") || msg.to_lowercase().contains("auth") {
+    //
+    // Match whole phrases, not bare substrings: `"auth"` false-positives on
+    // "author"/"authorize", and `"rate"` false-positives on
+    // "generate"/"moderate" — e.g. "failed to generate response" would be
+    // misclassified as a rate-limit error. Mirrors `openai_adapter`'s
+    // substring-fallback phrasing.
+    let lower = msg.to_lowercase();
+    if msg.contains("401") || lower.contains("authentication") {
         ProviderError::Auth(AUTH_FAILURE_MSG.to_string())
-    } else if msg.contains("429") || msg.to_lowercase().contains("rate") {
+    } else if msg.contains("429")
+        || lower.contains("too many requests")
+        || lower.contains("rate limit")
+    {
         ProviderError::RateLimit(msg)
     } else {
         ProviderError::Request(msg)
@@ -621,7 +631,7 @@ mod tests {
     /// exercise the guard by verifying the error message on a response that
     /// contains only empty text (which is also filtered out).
     #[test]
-    fn from_rig_response_empty_text_only_returns_ok_empty() {
+    fn from_rig_response_empty_text_only_returns_parse_error() {
         // An empty text block is filtered, producing empty content.
         // The OneOrMany is non-empty, so the guard should fire.
         let choice = OneOrMany::one(AssistantContent::Text(Text {
@@ -727,6 +737,26 @@ mod tests {
         assert!(
             matches!(mapped, ProviderError::Auth(_)),
             "expected Auth via substring fallback, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_rig_error_does_not_misclassify_generate_as_rate_limit() {
+        // Regression: the old substring check `contains("rate")` also matches
+        // inside "generate", so an unrelated generation failure was wrongly
+        // reported as a rate limit. Same class of bug as `"auth"` matching
+        // inside "author".
+        let err =
+            rig::completion::CompletionError::ProviderError("failed to generate response".into());
+        assert_eq!(
+            err.provider_response_status(),
+            None,
+            "sanity check: this variant must carry no structured status"
+        );
+        let mapped = map_rig_error(err);
+        assert!(
+            matches!(mapped, ProviderError::Request(_)),
+            "expected Request (not RateLimit), got {mapped:?}"
         );
     }
 }

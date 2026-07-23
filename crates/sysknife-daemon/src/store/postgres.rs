@@ -364,7 +364,14 @@ impl AuditStore for PostgresStore {
         transaction_id: &str,
         new_status: JobState,
     ) -> Result<(), TransactionStoreError> {
-        // Read-validate-write with state-machine guard, mirroring SQLite path.
+        // Read-validate-write with a state-machine guard, same shape as the
+        // SQLite path but strictly stronger: `SELECT ... FOR UPDATE` takes a
+        // row lock for the lifetime of this transaction, so no concurrent
+        // writer can change `status` between our read and our `UPDATE` — the
+        // read-modify-write here is atomic by construction. SQLite has no
+        // equivalent row-level lock, so its `update_status` instead uses an
+        // explicit compare-and-swap (`UPDATE ... WHERE status = <observed>`,
+        // checking `rows_affected`) to get the same guarantee.
         let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
         let current_str: Option<String> = sqlx_core::query_scalar::query_scalar(
             "SELECT status FROM transactions WHERE transaction_id = $1 FOR UPDATE",

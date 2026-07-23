@@ -1,5 +1,15 @@
 # Ubuntu action gap analysis
 
+> **Historical snapshot (2026-04-25).** This document is a point-in-time gap
+> analysis, not a live tracker. Almost every proposed action below has since
+> shipped — Tier 1, Tier 2, and Tier 3 are implemented in full except
+> `AptRollback` (Tier 1), which remains unimplemented (`apt-rollback` is not
+> pre-installed on Ubuntu Server, so it still needs a runtime-availability
+> check before it can land). For the current, code-generated action
+> catalogue see [`action-reference.md`](action-reference.md); for the
+> source-verified Ubuntu-specific families see
+> [`ubuntu-action-reference.md`](ubuntu-action-reference.md).
+
 Ubuntu sysadmins now represent a materially larger audience than Fedora Atomic users, and
 the Ubuntu action layer — apt, snap, ufw, netplan, distrobox — covers only a fraction of what
 a real server or desktop operator needs day-to-day. This document inventories the current Fedora

@@ -184,6 +184,31 @@ function tomlQuote(s) {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+// ---------------------------------------------------------------------------
+// Runtime socket path resolution (mirrors install-daemon.js — no shared
+// module dep)
+// ---------------------------------------------------------------------------
+//
+// sysknife_core::default_listen_uri() (crates/sysknife-core/src/lib.rs)
+// resolves, in order: 1) $SYSKNIFE_LISTEN_URI  2) $XDG_RUNTIME_DIR/sysknife/
+// daemon.sock  3) /tmp/sysknife-$UID.sock as a last resort. The wizard's
+// systemd --user unit (install-daemon.js) binds tier 2 via the `%t`
+// specifier with no env var needed. Offering that SAME resolved path here —
+// as both the default "Daemon socket" answer and the explicit SYSKNIFE_SOCKET
+// written into the MCP config — means the daemon, the MCP server subprocess,
+// and a human typing `sysknife approve <id>` in a bare terminal all agree on
+// one socket, with no shell-profile edits required.
+
+/** `$XDG_RUNTIME_DIR`, falling back to `/run/user/<uid>` when unset. */
+function runtimeDir() {
+  return process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid()}`;
+}
+
+/** The per-user daemon socket path — matches `default_listen_uri()` tier 2. */
+function runtimeSocketPath() {
+  return path.join(runtimeDir(), 'sysknife', 'daemon.sock');
+}
+
 /**
  * Write TOML for one mcpServer entry.
  *
@@ -394,7 +419,7 @@ async function collectTarget(rl, lineQueue, idx) {
   console.log(`    ${D}/tmp/sysknife-vm.sock${X}        ${D}SSH tunnel to a VM${X}`);
   console.log(`    ${D}vsock://10:9734${X}              ${D}virtio-vsock (CID:port)${X}`);
 
-  const defaultSocket = path.join(os.homedir(), '.local', 'share', 'sysknife', 'daemon.sock');
+  const defaultSocket = runtimeSocketPath();
   const socket = await ask(rl, lineQueue, 'Daemon socket', defaultSocket);
 
   // Optionally probe the socket so the user knows immediately if the daemon
@@ -438,7 +463,7 @@ function targetNextStep(target) {
   // Sockets that live on this machine, so the daemon starts locally rather than
   // over an SSH tunnel. Includes the default user-service socket written by the
   // wizard (matches install-daemon.js) and the systemd system-unit path.
-  const userServiceSocket = path.join(os.homedir(), '.local', 'share', 'sysknife', 'daemon.sock');
+  const userServiceSocket = runtimeSocketPath();
   const localSockets = new Set([
     userServiceSocket,
     '/run/sysknife/daemon.sock',

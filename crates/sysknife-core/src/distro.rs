@@ -130,6 +130,10 @@ pub enum DistroId {
     Other {
         id: String,
         version_id: Option<String>,
+        /// `ID_LIKE` tokens, carried through so [`DistroId::family`] can
+        /// make a best-effort derivative-family guess (see that method's
+        /// doc comment). Empty when `ID_LIKE` was absent.
+        id_like: Vec<String>,
     },
 }
 
@@ -153,10 +157,12 @@ impl std::fmt::Display for DistroId {
             Self::Other {
                 id,
                 version_id: Some(v),
+                ..
             } => write!(f, "{id} {v}"),
             Self::Other {
                 id,
                 version_id: None,
+                ..
             } => write!(f, "{id}"),
         }
     }
@@ -164,16 +170,33 @@ impl std::fmt::Display for DistroId {
 
 impl DistroId {
     /// Returns the broad family this distro belongs to.
+    ///
+    /// # `ID_LIKE` fallback for unrecognised derivatives
+    ///
+    /// When `self` is `Other` (the running distro's `ID` did not match any
+    /// distro this crate detects directly — e.g. Linux Mint `ID=linuxmint`,
+    /// Pop!_OS `ID=pop`), this consults `ID_LIKE` before giving up: if it
+    /// contains `"debian"` or `"ubuntu"` the distro routes as
+    /// [`DistroFamily::Debian`]; if it contains `"fedora"` or `"rhel"` it
+    /// routes as [`DistroFamily::Fedora`]. This is **best-effort derivative
+    /// support, not full compatibility validation** — `ID_LIKE` is a hint
+    /// the distro maintainer supplies in `/etc/os-release` (see
+    /// os-release(5)), not a guarantee the derivative's package manager,
+    /// repositories, or service names are wire-compatible with the parent.
+    /// Actions may still fail at execution time on a derivative that
+    /// diverges from its stated parent.
     pub fn family(&self) -> DistroFamily {
         match self {
             Self::Fedora { .. } | Self::FedoraSilverblue { .. } => DistroFamily::Fedora,
             Self::Ubuntu { .. } | Self::UbuntuCore { .. } | Self::Debian { .. } => {
                 DistroFamily::Debian
             }
-            Self::Other { id, .. } => {
-                // Use id_like information is not available here, but we can
-                // make a best-effort guess from the id string.
+            Self::Other { id, id_like, .. } => {
                 if id.contains("fedora") {
+                    DistroFamily::Fedora
+                } else if id_like.iter().any(|p| p == "debian" || p == "ubuntu") {
+                    DistroFamily::Debian
+                } else if id_like.iter().any(|p| p == "fedora" || p == "rhel") {
                     DistroFamily::Fedora
                 } else {
                     DistroFamily::Other
@@ -347,6 +370,7 @@ pub fn detect_distro(release: &OsRelease) -> DistroId {
         _ => DistroId::Other {
             id: release.id.clone(),
             version_id: release.version_id.clone(),
+            id_like: release.id_like.clone(),
         },
     }
 }
@@ -368,6 +392,7 @@ fn detect_fedora(release: &OsRelease) -> DistroId {
         None => DistroId::Other {
             id: release.id.clone(),
             version_id: release.version_id.clone(),
+            id_like: release.id_like.clone(),
         },
     }
 }
@@ -384,6 +409,7 @@ fn detect_ubuntu(release: &OsRelease) -> DistroId {
         None => DistroId::Other {
             id: release.id.clone(),
             version_id: release.version_id.clone(),
+            id_like: release.id_like.clone(),
         },
     }
 }
@@ -909,9 +935,15 @@ SUPPORT_END="2028-03-15"
     fn detect_mint_falls_through_to_other() {
         let r = parse_os_release(LINUX_MINT_22).unwrap();
         assert!(matches!(detect_distro(&r), DistroId::Other { .. }));
-        if let DistroId::Other { id, version_id } = detect_distro(&r) {
+        if let DistroId::Other {
+            id,
+            version_id,
+            id_like,
+        } = detect_distro(&r)
+        {
             assert_eq!(id, "linuxmint");
             assert_eq!(version_id.as_deref(), Some("22"));
+            assert_eq!(id_like, vec!["ubuntu", "debian"]);
         }
     }
 
@@ -1018,6 +1050,7 @@ SUPPORT_END="2028-03-15"
         assert!(!DistroId::Other {
             id: "arch".to_string(),
             version_id: None,
+            id_like: Vec::new(),
         }
         .is_supported());
     }
@@ -1074,6 +1107,63 @@ SUPPORT_END="2028-03-15"
         assert_eq!(
             DistroId::Debian { version: Some(12) }.family(),
             DistroFamily::Debian
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ID_LIKE family fallback for unrecognised derivatives
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn linux_mint_family_falls_back_to_debian_via_id_like() {
+        let r = parse_os_release(LINUX_MINT_22).unwrap();
+        let distro = detect_distro(&r);
+        assert!(
+            matches!(distro, DistroId::Other { .. }),
+            "detect_distro must still classify Mint as Other -- only family() changes"
+        );
+        assert_eq!(
+            distro.family(),
+            DistroFamily::Debian,
+            "Linux Mint (ID_LIKE=\"ubuntu debian\") must route to the Debian family"
+        );
+    }
+
+    #[test]
+    fn pop_os_family_falls_back_to_debian_via_id_like() {
+        let r = parse_os_release(POP_OS_2204).unwrap();
+        let distro = detect_distro(&r);
+        assert!(matches!(distro, DistroId::Other { .. }));
+        assert_eq!(
+            distro.family(),
+            DistroFamily::Debian,
+            "Pop!_OS (ID_LIKE=\"ubuntu debian\") must route to the Debian family"
+        );
+    }
+
+    #[test]
+    fn amazon_linux_family_falls_back_to_fedora_via_id_like() {
+        let r = parse_os_release(AMAZON_LINUX_2023).unwrap();
+        let distro = detect_distro(&r);
+        assert!(matches!(distro, DistroId::Other { .. }));
+        assert_eq!(
+            distro.family(),
+            DistroFamily::Fedora,
+            "Amazon Linux (ID_LIKE=\"fedora\") must route to the Fedora family"
+        );
+    }
+
+    #[test]
+    fn unknown_id_with_empty_id_like_stays_other() {
+        let distro = DistroId::Other {
+            id: "slackware".to_string(),
+            version_id: None,
+            id_like: Vec::new(),
+        };
+        assert_eq!(
+            distro.family(),
+            DistroFamily::Other,
+            "an unrecognised distro with no ID_LIKE hint must stay Other"
         );
     }
 

@@ -128,7 +128,7 @@ Tracked in the v0.4.0 milestone.
 - ~~`sysknife_plan` / `sysknife_execute` MCP tools~~ — done; stdio
   transport via `rmcp`; returns typed plan JSON with resolved commands;
   execution gated on daemon-issued one-time approval receipts
-- extend MCP server with direct read-only tools — expose all ~25 Observer-level
+- extend MCP server with direct read-only tools — expose all ~59 Observer-level
   actions (`get_disk_usage`, `list_services`, `get_authorized_keys`, …) as
   individual MCP tools so Claude Desktop can read live system state in-context;
   mutating actions remain plan-only to preserve the approval gate
