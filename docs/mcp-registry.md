@@ -1,59 +1,118 @@
 # MCP Registry listing
 
 SysKnife's MCP server is the `sysknife mcp-server` subcommand (stdio). This note
-records how it maps onto the official MCP Registry and the one open step before
-we publish a listing.
+records how it maps onto the official [MCP Registry](https://registry.modelcontextprotocol.io)
+and the exact steps to publish a listing.
 
-## The launch model
+> The official registry is in **preview** — it may reset data before general
+> availability, so treat a published entry as non-permanent for now.
 
-The registry runs an npm package's default `npx <name>` bin and treats its
-stdio as the MCP stream. `sysknife-setup`'s default bin is the interactive setup
-wizard, not a server, so it cannot itself be the registry entry.
+## Distribution: the `cargo` package type
 
-`sysknife-setup` therefore ships a second bin, `sysknife-mcp`, that locates the
-installed `sysknife` binary and execs `sysknife mcp-server` with inherited
-stdio:
+The registry supports a `cargo` package type: `registryType` is an open string
+(the schema's enumerated examples are only npm/pypi/oci/nuget/mcpb, so `cargo`
+is permitted rather than listed), and the registry validator
+(`internal/validators/registries/cargo.go`) implements it. That lets us list the
+crate directly:
 
-```sh
-npx -p sysknife-setup sysknife-mcp
+- `registryType`: `cargo`, `identifier`: `sysknife-cli` (the crate that installs
+  the `sysknife` binary), `transport`: `stdio`.
+- Because `sysknife`'s MCP server is a subcommand, the package entry passes
+  `mcp-server` as a positional `packageArguments` value. A client resolves the
+  listing to `cargo install sysknife-cli` then runs `sysknife mcp-server`.
+
+This supersedes the earlier npm-launcher plan: the npm package `sysknife-setup`
+is an installer/wizard, not a stdio server, and `npx sysknife-setup` would launch
+the wizard rather than the server. The `cargo` type avoids that entirely — no
+dedicated launcher package is needed.
+
+Namespace: `io.github.lacs-project/sysknife` (verified by GitHub identity — the
+authenticating account must belong to the `lacs-project` org; no DNS needed).
+
+## Ownership marker (already in place)
+
+crates.io ownership is proven by a visible `mcp-name:` token in the crate's
+**rendered** README. crates.io strips HTML comments when rendering, so the
+marker must be plain text — `apps/sysknife-cli/README.md` carries:
+
+```
+mcp-name: io.github.lacs-project/sysknife
 ```
 
-If the binary is not installed it exits with guidance to run `npx sysknife-setup`
-first. The server also needs the privileged daemon running (a systemd service
-the wizard installs); this launcher starts the server front-end, not the daemon.
+The verifier fetches `https://crates.io/api/v1/crates/sysknife-cli/<version>/readme`
+and searches the rendered README for that token. **The marker only takes effect
+in a *published* crate version**, so the `server.json` `version` must match a
+crate version whose README carries it (see the release step below).
 
-## Remaining step (post-launch, deferred)
+## `server.json`
 
-The registry `server.json` runs `npx <identifier>` (the package's default bin)
-and has no field to select a non-default bin. Two clean options, decide before
-submitting:
-
-1. Publish a tiny dedicated `sysknife-mcp` npm package whose default bin is the
-   launcher, so `npx sysknife-mcp` just works. Costs a second npm
-   trusted-publisher setup.
-2. Keep the launcher inside `sysknife-setup` and validate whether the registry
-   runner can be told to invoke it via `runtime_arguments`
-   (`-p sysknife-setup sysknife-mcp`) with a live `mcp-publisher` dry-run.
-
-Namespace: `io.github.lacs-project/sysknife` (GitHub OIDC via the lacs-project
-org). `packages/setup/package.json` carries the matching `mcpName` for
-verification.
-
-Draft manifest:
+Not shipped as a root file: the `version` is coupled to a published crate
+version that carries the marker, so it is finalized at release time. Template:
 
 ```json
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.lacs-project/sysknife",
-  "description": "Let AI operate your Linux box without ever handing it a shell.",
-  "version": "0.2.5",
-  "repository": { "url": "https://github.com/lacs-project/sysknife", "source": "github" },
+  "description": "Let AI operate your Linux box through typed, approval-gated, Ed25519-audited actions instead of shell strings.",
+  "repository": {
+    "url": "https://github.com/lacs-project/sysknife",
+    "source": "github"
+  },
+  "version": "0.2.6",
   "packages": [
-    { "registry_type": "npm", "identifier": "sysknife-mcp", "version": "0.2.5", "transport": { "type": "stdio" } }
+    {
+      "registryType": "cargo",
+      "registryBaseUrl": "https://crates.io",
+      "identifier": "sysknife-cli",
+      "version": "0.2.6",
+      "transport": { "type": "stdio" },
+      "packageArguments": [
+        { "type": "positional", "valueHint": "subcommand", "value": "mcp-server" }
+      ]
+    }
   ]
 }
 ```
 
-This is intentionally not shipped as a root `server.json`: it needs the package
-published and a live publisher run first, and a root manifest pointing at
-`sysknife-setup` would make clients launch the wizard instead of a server.
+## Publish steps
+
+The crate README marker (`apps/sysknife-cli/README.md`) is already in the repo,
+so the next crate release is registry-ready. To publish the listing:
+
+1. **Release a crate version that carries the marker.** The marker landed after
+   0.2.5, so cut the next version (e.g. 0.2.6) via the normal tag-driven
+   release; that publishes `sysknife-cli` with the marker in its README. Confirm
+   the README ships in the packaged crate first
+   (`cargo package -p sysknife-cli --list | grep README.md`), then set the
+   `version` fields in `server.json` to that version.
+2. **Install the publisher CLI:**
+   ```sh
+   brew install mcp-publisher   # or download from the registry's GitHub Releases
+   ```
+3. **Authenticate as the `lacs-project` org** — pick one:
+   - Local, interactive (one-time device-flow login in a browser):
+     ```sh
+     mcp-publisher login github
+     ```
+   - CI, headless (no stored secret), inside a GitHub Actions job with
+     `permissions: id-token: write` (the `./` reflects the binary downloaded
+     into the job's working directory rather than a PATH install):
+     ```sh
+     ./mcp-publisher login github-oidc
+     ```
+4. **Validate and publish** (from the repo root, with `server.json` present):
+   ```sh
+   mcp-publisher validate
+   mcp-publisher publish
+   ```
+5. **Verify:**
+   ```sh
+   curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.lacs-project/sysknife"
+   ```
+
+## Downstream propagation
+
+One publish to the official registry auto-propagates to the **GitHub MCP
+Registry** and **PulseMCP** (they ingest from it). Glama, mcp.so, Smithery,
+LobeHub, and mcpservers.org still take **separate manual submissions** for
+maximum reach.
