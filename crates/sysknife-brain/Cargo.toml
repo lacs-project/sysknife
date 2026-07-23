@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "LLM planning core for SysKnife — typed action proposals with formal risk levels"
-keywords = ["llm", "ai-agent", "linux", "system-administration", "planning"]
+keywords = ["llm", "ai-agent", "linux", "sysadmin", "planning"]
 categories = ["command-line-utilities", "os::linux-apis"]
 
 [dependencies]
