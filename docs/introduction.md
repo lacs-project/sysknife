@@ -117,7 +117,7 @@ SysKnife auto-detects it. See [Quick Start](quickstart.md).
 
 ## Status
 
-140+ typed actions · 1,292 Rust tests + 72 frontend tests · MIT
+189 typed actions · 1,348 Rust tests + 72 frontend tests · MIT
 
 SysKnife is the reference implementation of the
 [LACS specification](https://github.com/lacs-project/specification) — a

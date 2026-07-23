@@ -1,8 +1,15 @@
 # Ubuntu action reference
 
-Canonical CLI invocations for the Ubuntu action families in SysKnife,
-verified against Ubuntu 24.04 LTS (Noble Numbat) authoritative sources
-on 2026-04-25.
+Canonical CLI invocations for the **core** Ubuntu action families in SysKnife
+(apt, snap, ufw, netplan, distrobox), verified against Ubuntu 24.04 LTS
+(Noble Numbat) authoritative sources on 2026-04-25.
+
+> This page covers the source-verified core families only. SysKnife's Ubuntu
+> support has since grown further families — e.g. apt preferences/pinning,
+> Ubuntu Pro service toggles, and fail2ban jail configuration. The complete,
+> authoritative catalogue is the in-code `KNOWN_ACTION_NAMES` list, summarised
+> in [Typed Actions](typed-actions.md); entries here are added as each family's
+> invocations are source-verified.
 
 Sources consulted:
 

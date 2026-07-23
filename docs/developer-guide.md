@@ -218,7 +218,7 @@ crates/
   sysknife-brain/     LLM planner, provider adapters, safety fence
   sysknife-types/     Shared domain types (CallerRole, RiskLevel, JobState, …)
   sysknife-core/      Config loading, shared constants
-  sysknife-daemon/    Privileged executor, 140+ actions, IPC, rollback, SQLite
+  sysknife-daemon/    Privileged executor, 189 actions, IPC, rollback, SQLite
   sysknife-proto/     Protobuf definitions (future use)
 apps/
   sysknife-shell/     Tauri + React GUI

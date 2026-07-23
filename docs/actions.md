@@ -4,7 +4,14 @@ The Fedora / rpm-ostree (atomic-host) action family — each action's underlying
 command, whether it is destructive, and what it does. Ubuntu-family actions
 (apt, snap, ufw, netplan, distrobox, …) are documented in the
 [Ubuntu action reference](ubuntu-action-reference.md). Across all families
-SysKnife defines 140+ typed actions.
+SysKnife defines **189 typed actions**.
+
+> This page tables the deployment/systemd/core families only. Cross-distro
+> families added later — storage (LVM), journald, sysctl, per-service resource
+> limits, mounts/swap, sudoers.d, log rotation + remote syslog, PAM password
+> policy, auditd, and certbot — are not tabled here yet. The complete,
+> authoritative catalogue is the in-code `KNOWN_ACTION_NAMES` list, summarised
+> in [Typed Actions](typed-actions.md).
 
 > **Destructive** — mutates persistent system state (package installs,
 > deployment changes, user/group writes, firewall rules, reboots).
