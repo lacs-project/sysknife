@@ -75,7 +75,7 @@ pub fn create_logical_volume(vg: &str, name: &str, size: &str) -> ActionSpec {
     ActionSpec {
         action_name: "CreateLogicalVolume",
         mechanism: command_mechanism("sudo", ["lvcreate", "-L", size, "-n", name, vg]),
-        risk_level: RiskLevel::High,
+        risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
     }
@@ -100,7 +100,7 @@ pub fn create_lv_snapshot(vg: &str, origin: &str, snapshot: &str, size: &str) ->
                 &format!("{vg}/{origin}"),
             ],
         ),
-        risk_level: RiskLevel::High,
+        risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
     }

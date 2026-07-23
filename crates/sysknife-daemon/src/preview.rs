@@ -1,29 +1,27 @@
-//! Static safety profile for every action the daemon recognises.
+//! Preview-time presentation profile for every action the daemon recognises.
 //!
 //! The dispatcher calls [`preview_action`] *before* execution to produce a
-//! [`PreviewEnvelope`] that the shell shows the operator. The envelope's
-//! risk level, side-effect list, reboot flag, and rollback flag come from
-//! the per-action `PreviewProfile` table in this module — **not** from
-//! the live system or from anything the planner suggested.
+//! [`PreviewEnvelope`] the shell shows the operator.
 //!
-//! ## Invariant: profile ↔ policy ↔ rollback consistency
+//! ## Risk is a single source of truth
 //!
-//! Three independent tables describe each action and they must stay in sync:
+//! `risk_level` is **not** declared here — it is owned by each action's
+//! `ActionSpec` (`crate::actions`) and derived via [`crate::actions::spec_meta`],
+//! so the approval gate can never disagree with the documented risk in
+//! `docs/action-reference.md`. This module supplies the preview-specific fields:
+//! expected side effects, warnings, and the reboot/rollback display flags.
+//! (`reboot_required` / `rollback_available` are still declared here pending a
+//! separate consolidation onto the spec — see the follow-up note in
+//! `tests/action_consistency.rs`.)
 //!
-//! 1. `PreviewProfile` (here) — risk + side effects shown to the operator.
-//! 2. `policy::min_role_for_action` — the minimum [`CallerRole`] that may
-//!    invoke the action.
-//! 3. The executor's per-action rollback spec.
+//! ## Invariant: spec ↔ preview ↔ policy consistency
 //!
-//! If `PreviewProfile` says `risk_level = Low` but `min_role_for_action`
-//! says `Admin`, an operator gets a misleadingly soft preview before being
-//! denied — or, worse, the dispatcher could allow a Dev caller through
-//! because the preview "looked safe". Likewise, `rollback_available = true`
-//! must imply that the executor records a rollback ref the daemon can
-//! later use; a true value with no executor support produces an undoable
-//! "undo" button in the GUI. The cross-module test
-//! `every_spec_action_has_a_policy_entry` (in `tests/action_consistency.rs`)
-//! pins these tables together.
+//! `policy::min_role_for_action` mirrors the spec risk via
+//! `policy::role_for_risk_level`, except a documented, *monotonic* exception
+//! list (an exception may only raise the role above the risk floor, never lower
+//! it). The cross-module tests in `tests/action_consistency.rs` pin
+//! `preview.risk == spec.risk` and `role == role_for_risk_level(risk)` (± the
+//! exception list) for every action, so these tables cannot silently drift.
 //!
 //! [`CallerRole`]: sysknife_types::CallerRole
 
@@ -32,7 +30,6 @@ use sysknife_types::{PreviewEnvelope, RequestEnvelope, RiskLevel};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PreviewProfile {
-    risk_level: RiskLevel,
     expected_side_effects: Vec<String>,
     reboot_required: bool,
     rollback_available: bool,
@@ -45,10 +42,17 @@ pub fn preview_action(
     proposed_change: Value,
 ) -> PreviewEnvelope {
     let profile = preview_profile(&request.action_name);
+    // `risk_level` is OWNED by the action's `ActionSpec` (single source of truth,
+    // `crate::actions`); derive it here so the approval gate can never disagree
+    // with the documented risk. Only the dispatcher-internal `ListJobHistory`
+    // reaches preview without a spec (see `fallback_risk`).
+    let risk_level = crate::actions::spec_meta(&request.action_name)
+        .map(|m| m.risk_level)
+        .unwrap_or_else(|| fallback_risk(&request.action_name));
 
     PreviewEnvelope {
-        summary: preview_summary(&request.action_name, &profile.risk_level),
-        risk_level: profile.risk_level,
+        summary: preview_summary(&request.action_name, &risk_level),
+        risk_level,
         current_state,
         proposed_change,
         expected_side_effects: profile.expected_side_effects,
@@ -56,6 +60,17 @@ pub fn preview_action(
         rollback_available: profile.rollback_available,
         warnings: profile.warnings,
         request_hash: request.request_hash.clone(),
+    }
+}
+
+/// Conservative risk for the rare action that reaches preview without an
+/// `ActionSpec`. Only `ListJobHistory` (dispatcher-internal, read-only) does so;
+/// anything else unknown is High, so a missing spec can never silently downgrade
+/// the approval gate.
+fn fallback_risk(action_name: &str) -> RiskLevel {
+    match action_name {
+        "ListJobHistory" => RiskLevel::Low,
+        _ => RiskLevel::High,
     }
 }
 
@@ -119,19 +134,17 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "ProStatus"
         | "LivepatchStatus"
         | "MultipassList" => PreviewProfile {
-            risk_level: RiskLevel::Low,
             expected_side_effects: Vec::new(),
             reboot_required: false,
             rollback_available: false,
             warnings: Vec::new(),
         },
-        // ── Ubuntu apt medium-risk ────────────────────────────────────────
+        // ── Ubuntu apt: package-state changes ─────────────────────────────
         //
-        // AptUpdate / AptAutoremove are low-risk (listed in the read-only arm).
-        // The following ops change installed packages — reversible but not
-        // atomic, and may trigger service restarts via needrestart.
+        // These ops change installed packages — reversible but not atomic, and
+        // may trigger service restarts via needrestart. (Risk is owned by each
+        // action's ActionSpec; this arm only supplies preview side effects.)
         "AptInstall" | "AptRemove" | "AptPurge" | "AptHold" | "AptUnhold" => PreviewProfile {
-            risk_level: RiskLevel::Medium,
             expected_side_effects: vec![
                 "package state will change".to_string(),
                 "services may be restarted by needrestart".to_string(),
@@ -144,7 +157,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         // ── Ubuntu snap medium-risk ───────────────────────────────────────
         "SnapInstall" | "SnapRemove" | "SnapRefresh" | "SnapHold" | "SnapUnhold" => {
             PreviewProfile {
-                risk_level: RiskLevel::Medium,
                 expected_side_effects: vec!["snap state will change".to_string()],
                 reboot_required: false,
                 rollback_available: false,
@@ -157,7 +169,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── Ubuntu distrobox medium-risk ──────────────────────────────────
         "DistroboxCreate" | "DistroboxRemove" => PreviewProfile {
-            risk_level: RiskLevel::Medium,
             expected_side_effects: vec!["container lifecycle will change".to_string()],
             reboot_required: false,
             rollback_available: false,
@@ -169,7 +180,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         // AptUpgrade uses dist-upgrade which can remove packages to resolve
         // dependency conflicts, and triggers needrestart service restarts.
         "AptUpgrade" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "all packages will be upgraded".to_string(),
                 "packages may be removed to resolve dependency conflicts".to_string(),
@@ -185,7 +195,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── Ubuntu ufw high-risk ──────────────────────────────────────────
         "UfwEnable" | "UfwDisable" | "UfwAllow" | "UfwDeny" | "UfwReset" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "firewall rules will change".to_string(),
                 "network access may be immediately affected".to_string(),
@@ -200,7 +209,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── Ubuntu netplan high-risk ──────────────────────────────────────
         "NetplanApply" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "network interfaces will be reconfigured immediately".to_string(),
                 "SSH session may be disconnected".to_string(),
@@ -215,7 +223,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── Ubuntu netplan medium-risk (Tier 3) ───────────────────────────
         "NetplanGenerate" => PreviewProfile {
-            risk_level: RiskLevel::Medium,
             expected_side_effects: vec![
                 "backend network config files will be regenerated".to_string(),
             ],
@@ -226,7 +233,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── Ubuntu netplan high-risk (Tier 3) ─────────────────────────────
         "NetplanSet" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "netplan configuration will be modified".to_string(),
                 "network may be affected when NetplanApply is run".to_string(),
@@ -241,7 +247,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── Ubuntu ufw Tier 3 high-risk ───────────────────────────────────
         "UfwDeleteRule" | "UfwLimit" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "firewall rules will change".to_string(),
                 "network access may be immediately affected".to_string(),
@@ -256,7 +261,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── Ubuntu Pro attach (Tier 3 high-risk; carries token) ──────────
         "ProAttach" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "Ubuntu Pro subscription will be attached".to_string(),
                 "Pro services (ESM, Livepatch, FIPS) may be enabled".to_string(),
@@ -271,7 +275,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── Ubuntu Pro detach (Tier 3 high-risk; no credential param) ───
         "ProDetach" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "Ubuntu Pro subscription will be released".to_string(),
                 "ESM, Livepatch, and FIPS services will be disabled".to_string(),
@@ -286,7 +289,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── auditd file-watch rules ─────────────────────────────────────
         "AddAuditRule" | "RemoveAuditRule" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "a persistent audit rule will be written/removed and reloaded".to_string(),
             ],
@@ -300,7 +302,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── certbot / ACME ──────────────────────────────────────────────
         "ObtainCertificate" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "certbot will obtain a TLS certificate (ACME challenge)".to_string(),
                 "TLS material will be written under /etc/letsencrypt".to_string(),
@@ -314,7 +315,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
         },
         "RenewCertificates" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec!["certbot will renew due certificates".to_string()],
             reboot_required: false,
             rollback_available: false,
@@ -326,7 +326,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── fail2ban jail config ────────────────────────────────────────
         "ConfigureFail2banJail" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "a fail2ban jail override will be written and the daemon reloaded".to_string(),
             ],
@@ -341,7 +340,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── Ubuntu Pro service toggles ──────────────────────────────────
         "EnableProService" | "DisableProService" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "a single Ubuntu Pro service will be enabled/disabled".to_string(),
             ],
@@ -355,7 +353,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── Ubuntu release upgrade Tier 3 ────────────────────────────────
         "UbuntuReleaseUpgrade" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "entire OS will be upgraded to the next Ubuntu release".to_string(),
                 "takes 20–45 minutes; system will be rebooted to complete".to_string(),
@@ -371,7 +368,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         },
 
         "ReloadService" => PreviewProfile {
-            risk_level: RiskLevel::Medium,
             expected_side_effects: vec!["service config will be reloaded".to_string()],
             reboot_required: false,
             rollback_available: false,
@@ -404,7 +400,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "SetLocale"
         | "SetNtp"
         | "CreateUser" => PreviewProfile {
-            risk_level: RiskLevel::Medium,
             expected_side_effects: vec!["service interruption".to_string()],
             reboot_required: false,
             rollback_available: false,
@@ -412,7 +407,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         },
         // ── Observability / journald maintenance ─────────────────────────
         "VacuumJournal" => PreviewProfile {
-            risk_level: RiskLevel::Medium,
             expected_side_effects: vec![
                 "old journal entries will be permanently deleted".to_string(),
                 "disk space will be reclaimed".to_string(),
@@ -424,7 +418,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── Storage / LVM mutations ───────────────────────────────────────
         "ExtendLogicalVolume" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "the logical volume and its filesystem will be grown".to_string(),
             ],
@@ -436,7 +429,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
         },
         "CreateLogicalVolume" | "CreateLvSnapshot" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "volume-group free space will be consumed".to_string(),
             ],
@@ -450,7 +442,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── systemd resource limits ───────────────────────────────────────
         "SetServiceResourceLimits" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "the service's memory/CPU/task limits will change immediately".to_string(),
                 "a persistent drop-in will be written (undo: systemctl revert)".to_string(),
@@ -465,7 +456,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── Log management ────────────────────────────────────────────────
         "ConfigureLogRotation" | "RemoveLogRotation" => PreviewProfile {
-            risk_level: RiskLevel::Medium,
             expected_side_effects: vec![
                 "a logrotate drop-in will be written/removed".to_string(),
             ],
@@ -474,7 +464,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             warnings: vec!["approval required".to_string()],
         },
         "ConfigureRemoteSyslog" | "RemoveRemoteSyslog" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "rsyslog will start/stop forwarding all logs to a remote host".to_string(),
                 "rsyslog will be restarted".to_string(),
@@ -489,7 +478,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── PAM password policy ───────────────────────────────────────────
         "SetPasswordAging" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "the target account's password-aging limits will change".to_string(),
             ],
@@ -498,7 +486,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             warnings: vec!["exact approval required".to_string()],
         },
         "SetPasswordPolicy" | "SetAccountLockout" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "a system-wide PAM policy file will be written".to_string(),
             ],
@@ -513,7 +500,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── Ubuntu apt pinning ────────────────────────────────────────────
         "SetAptPin" | "RemoveAptPin" => PreviewProfile {
-            risk_level: RiskLevel::Medium,
             expected_side_effects: vec![
                 "apt version/origin preferences will change".to_string(),
                 "a /etc/apt/preferences.d drop-in will be written/removed".to_string(),
@@ -525,7 +511,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── Scoped sudoers.d ──────────────────────────────────────────────
         "GrantSudoAccess" | "RevokeSudoAccess" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "a sudoers.d drop-in will be created/removed".to_string(),
                 "the target user's sudo privileges will change".to_string(),
@@ -540,7 +525,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── Filesystem mounts / swap ──────────────────────────────────────
         "AddMount" | "RemoveMount" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "a filesystem will be (un)mounted".to_string(),
                 "/etc/fstab will be updated (managed entries carry nofail)".to_string(),
@@ -553,7 +537,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
         },
         "AddSwap" | "RemoveSwap" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "swap will be enabled/disabled".to_string(),
                 "a swap file will be created/removed and /etc/fstab updated".to_string(),
@@ -565,7 +548,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
 
         // ── Kernel / sysctl mutation ──────────────────────────────────────
         "SetSysctl" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "a kernel parameter will change immediately".to_string(),
                 "the value will persist across reboots (/etc/sysctl.d)".to_string(),
@@ -579,7 +561,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         },
 
         "SignalProcess" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec!["the target process will be terminated".to_string()],
             reboot_required: false,
             rollback_available: false,
@@ -589,7 +570,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
         },
         "ConfigureUnattendedUpgrades" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "the automatic security-update policy will change".to_string()
             ],
@@ -598,7 +578,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             warnings: vec!["approval required".to_string()],
         },
         "CreateScheduledJob" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "a systemd timer will run the command on a recurring schedule".to_string(),
             ],
@@ -621,7 +600,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "RemoveAuthorizedKey" => PreviewProfile {
             // High risk: access-control changes — group membership, account
             // deletion, and SSH key modifications require Admin authorization.
-            risk_level: RiskLevel::High,
             expected_side_effects: vec!["access control will change".to_string()],
             reboot_required: false,
             rollback_available: false,
@@ -634,7 +612,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "RemovePackageRepository"
         | "EnablePackageRepository"
         | "DisablePackageRepository" => PreviewProfile {
-            risk_level: RiskLevel::Medium,
             expected_side_effects: vec!["package repository configuration will change".to_string()],
             reboot_required: false,
             rollback_available: false,
@@ -642,7 +619,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         },
         "CreateContainer" | "StartContainer" | "StopContainer" | "RemoveContainer" => {
             PreviewProfile {
-                risk_level: RiskLevel::Medium,
                 expected_side_effects: vec!["container lifecycle will change".to_string()],
                 reboot_required: false,
                 rollback_available: false,
@@ -659,7 +635,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "ReplaceLayeredPackage"
         | "ResetLayeredPackageOverride"
         | "RemoveBasePackage" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec![
                 "system deployment will change".to_string(),
                 "reboot may be required".to_string(),
@@ -672,7 +647,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
         },
         "SetKernelArguments" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec!["boot arguments will change".to_string()],
             reboot_required: true,
             rollback_available: true,
@@ -682,7 +656,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
         },
         "RebootSystem" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec!["system reboot will interrupt running work".to_string()],
             reboot_required: true,
             rollback_available: false,
@@ -692,21 +665,18 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
         },
         "CleanupDeployments" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec!["old deployments may be removed".to_string()],
             reboot_required: false,
             rollback_available: false,
             warnings: vec!["exact approval required".to_string()],
         },
         "PinDeployment" | "UnpinDeployment" => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec!["deployment pin state will change".to_string()],
             reboot_required: false,
             rollback_available: false,
             warnings: vec!["exact approval required".to_string()],
         },
         _ => PreviewProfile {
-            risk_level: RiskLevel::High,
             expected_side_effects: vec!["unclassified action".to_string()],
             reboot_required: false,
             rollback_available: false,
@@ -815,22 +785,18 @@ mod tests {
             "RestartService",
             "StopService",
             "StartService",
-            "MaskService",
             "SetHostname",
             "SetTimezone",
             "SetLocale",
             "SetNtp",
-            "ConfigureFirewall",
             "InstallFlatpak",
             "RemoveFlatpak",
             "CreateToolbox",
             "RemoveToolbox",
-            "CreateUser",
             "CreateContainer",
             "StartContainer",
             "StopContainer",
             "RemoveContainer",
-            "AddPackageRepository",
             "RemovePackageRepository",
         ];
 

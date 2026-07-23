@@ -49,14 +49,16 @@ fn medium_risk_preview_marks_service_restart_as_mutating() {
 }
 
 #[test]
-fn firewall_preview_is_classified_explicitly_as_medium_risk() {
+fn firewall_preview_is_classified_explicitly_as_high_risk() {
     let preview = preview_action(
         &request("ConfigureFirewall", "req-firewall", "hash-firewall"),
         json!({"zone": "public"}),
         json!({"zone": "public", "service": "ssh"}),
     );
 
-    assert_eq!(preview.risk_level, RiskLevel::Medium);
+    // Firewall changes can lock out the management path → High (derived from the
+    // ActionSpec, the single source of truth for risk).
+    assert_eq!(preview.risk_level, RiskLevel::High);
     assert_eq!(preview.request_hash.as_str(), "hash-firewall");
     assert!(!preview.reboot_required);
     assert!(!preview.rollback_available);
@@ -81,14 +83,16 @@ fn hostname_preview_is_classified_explicitly_as_medium_risk() {
 }
 
 #[test]
-fn user_creation_preview_is_classified_explicitly_as_medium_risk() {
+fn user_creation_preview_is_classified_explicitly_as_high_risk() {
     let preview = preview_action(
         &request("CreateUser", "req-user", "hash-user"),
         json!({"username": "alice"}),
         json!({"username": "alice", "shell": "/bin/bash"}),
     );
 
-    assert_eq!(preview.risk_level, RiskLevel::Medium);
+    // Creating a local account is an access-control event → High (derived from
+    // the ActionSpec).
+    assert_eq!(preview.risk_level, RiskLevel::High);
     assert_eq!(preview.request_hash.as_str(), "hash-user");
     assert!(!preview.reboot_required);
     assert!(!preview.rollback_available);
@@ -102,7 +106,9 @@ fn package_repository_preview_mentions_repository_trust_change() {
         json!({"repo": "example"}),
     );
 
-    assert_eq!(preview.risk_level, RiskLevel::Medium);
+    // Adding a package repository expands the trusted software supply chain →
+    // High (derived from the ActionSpec).
+    assert_eq!(preview.risk_level, RiskLevel::High);
     assert_eq!(preview.request_hash.as_str(), "hash-repo");
     assert!(!preview.reboot_required);
     assert!(!preview.rollback_available);

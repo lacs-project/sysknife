@@ -21,368 +21,33 @@ use crate::auth::role_rank;
 // Per-action minimum role
 // ---------------------------------------------------------------------------
 
-/// Return the minimum `CallerRole` required to call `action_name`, or `None`
-/// if the action is not recognised.
+/// Minimum [`CallerRole`] required to call `action_name`, or `None` if the
+/// action is unknown (no `ActionSpec`).
 ///
-/// The mapping is intentionally exhaustive over every action known to the
-/// executor. Unknown actions return `None` so the caller can emit a
-/// validation-failure error rather than silently denying or allowing.
+/// **The role is derived from the action's risk tier.** Risk lives once on the
+/// action's `ActionSpec` (single source of truth, `crate::actions`) and maps to
+/// a role via [`role_for_risk_level`] (`Low`→Observer, `Medium`→Dev,
+/// `High`→Admin), so RBAC can never drift from the documented risk. A short,
+/// *monotonic* exception list ([`role_exception`]) may raise an action's role
+/// above its risk floor when it is more sensitive than its risk implies; an
+/// exception may never lower it. Pinned by `role_matches_risk_or_exception` in
+/// `tests/action_consistency.rs`.
 pub fn min_role_for_action(action_name: &str) -> Option<CallerRole> {
-    let role = match action_name {
-        // ── Read-only / informational (Observer) ─────────────────────────
-        "GetSystemState"
-        | "CollectDiagnostics"
-        | "GetDeploymentHistory"
-        | "ListDeployments"
-        | "GetKernelArguments"
-        | "GetPendingUpdates"
-        | "ListFlatpakRemotes"
-        | "SearchFlatpakApps"
-        | "GetFlatpakAppInfo"
-        | "ListInstalledFlatpaks"
-        | "ListContainers"
-        | "GetContainerInfo"
-        | "GetLayeredPackages"
-        | "ListPackageRepositories"
-        | "ListServices"
-        | "GetServiceLogs"
-        | "GetServiceStatus"
-        | "GetServiceResourceLimits"
-        | "ListTimers"
-        | "ListToolboxes"
-        | "GetFirewallState"
-        | "GetNetworkStatus"
-        | "GetListeningPorts"
-        | "GetDiskUsage"
-        | "GetDateTime"
-        | "ListProcesses"
-        | "GetMemoryInfo"
-        // ── Observability / journald read-only ────────────────────────────
-        | "GetJournalLog"
-        // ── Storage / LVM read-only ───────────────────────────────────────
-        | "GetLvmReport"
-        // ── Kernel / sysctl read-only ─────────────────────────────────────
-        | "GetSysctl"
-        // ── Filesystem mounts read-only ───────────────────────────────────
-        | "GetMounts"
-        // ── Scoped sudoers.d read-only ────────────────────────────────────
-        | "GetSudoGrants"
-        // ── Log management read-only ──────────────────────────────────────
-        | "GetLogrotateStatus"
-        // ── PAM read-only ─────────────────────────────────────────────────
-        | "GetPasswordAging"
-        // ── auditd / certbot read-only ────────────────────────────────────
-        | "GetAuditRules"
-        | "GetCertificates"
-        | "GetAuthorizedKeys"
-        | "ListUsers"
-        | "ListGroups"
-        | "ListJobHistory"
-        // ── Ubuntu / apt read-only ────────────────────────────────────────
-        //
-        // AptUpdate refreshes the package index — no package is changed.
-        // Classified Observer to match its RiskLevel::Low preview profile.
-        | "AptUpdate"
-        | "AptSearch"
-        | "AptListInstalled"
-        | "AptShow"
-        | "AptListUpgradable"
-        | "AptHistoryList"
-        // ── Ubuntu / apt pinning read-only ────────────────────────────────
-        | "GetAptPins"
-        // ── Ubuntu / snap read-only ───────────────────────────────────────
-        | "SnapList"
-        | "SnapInfo"
-        // ── Ubuntu / ufw read-only ────────────────────────────────────────
-        | "UfwStatus"
-        // ── Ubuntu / distrobox read-only ──────────────────────────────────
-        | "DistroboxList"
-        // ── Ubuntu / netplan read-only ────────────────────────────────────
-        | "NetplanGetConfig"
-        // ── Ubuntu / grub read-only ───────────────────────────────────────
-        | "GrubGetKargs"
-        // ── Ubuntu / reboot status ────────────────────────────────────────
-        //
-        // CheckPendingReboot reads /var/run/reboot-required — no mutation.
-        | "CheckPendingReboot"
-        // ── Cross-distro / resolvectl read-only ───────────────────────────
-        | "ResolvectlStatus"
-        // ── Ubuntu / AppArmor read-only ───────────────────────────────────
-        | "AppArmorStatus"
-        // ── Ubuntu / cloud-init read-only ─────────────────────────────────
-        | "CloudInitStatus"
-        // ── Ubuntu / Flatpak read-only ────────────────────────────────────
-        | "UbuntuListFlatpaks"
-        // ── Ubuntu / fail2ban read-only ───────────────────────────────────
-        | "Fail2banStatus"
-        // ── Ubuntu Pro / Livepatch / Multipass read-only (Tier 3) ─────────
-        //
-        // ProStatus, LivepatchStatus, MultipassList are all read-only queries
-        // that require no subscription or elevated role.
-        | "ProStatus"
-        | "LivepatchStatus"
-        | "MultipassList" => CallerRole::Observer,
+    if let Some(role) = role_exception(action_name) {
+        return Some(role);
+    }
+    crate::actions::spec_meta(action_name).map(|meta| role_for_risk_level(meta.risk_level))
+}
 
-        // ── Medium-risk mutations (Dev) ──────────────────────────────────
-        //
-        // Flatpak install/remove/update, container lifecycle, service
-        // control, toolbox ops, identity changes, network config,
-        // package repo management, and Ubuntu-specific mutating ops.
-        "InstallFlatpak"
-        | "RemoveFlatpak"
-        | "UpdateFlatpak"
-        | "AddFlatpakRemote"
-        | "RemoveFlatpakRemote"
-        | "CreateContainer"
-        | "StartContainer"
-        | "StopContainer"
-        | "RemoveContainer"
-        | "StartService"
-        | "StopService"
-        | "RestartService"
-        | "ReloadService"
-        | "ReloadDaemon"
-        | "SetServiceEnabled"
-        | "UnmaskService"
-        | "CreateToolbox"
-        | "RemoveToolbox"
-        | "SetHostname"
-        | "SetTimezone"
-        | "SetLocale"
-        | "SetNtp"
-        | "ConfigureWifi"
-        | "RemovePackageRepository"
-        | "EnablePackageRepository"
-        | "DisablePackageRepository"
-        // ── Ubuntu / apt medium-risk ──────────────────────────────────────
-        //
-        // AptAutoremove removes auto-installed leaf packages; it is a
-        // mutating operation despite its low risk level, so it requires Dev.
-        | "AptAutoremove"
-        | "AptInstall"
-        | "AptRemove"
-        | "AptPurge"
-        | "AptHold"
-        | "AptUnhold"
-        // ── Ubuntu / snap medium-risk ─────────────────────────────────────
-        | "SnapInstall"
-        | "SnapRemove"
-        | "SnapRefresh"
-        | "SnapHold"
-        | "SnapUnhold"
-        | "SnapRevert"
-        | "SnapClassicInstall"
-        // ── Ubuntu / distrobox medium-risk ────────────────────────────────
-        | "DistroboxCreate"
-        | "DistroboxRemove"
-        // ── Ubuntu / ppa medium-risk ──────────────────────────────────────
-        //
-        // PPA operations add or remove third-party apt sources; they mutate
-        // package provenance (supply-chain vector) but are reversible.
-        | "AddPpa"
-        | "RemovePpa"
-        // ── Ubuntu / apt pinning (reversible; steers version resolution) ──
-        | "SetAptPin"
-        | "RemoveAptPin"
-        // ── Log management (logrotate; reversible config) ─────────────────
-        | "ConfigureLogRotation"
-        | "RemoveLogRotation"
-        // ── Ubuntu / Flatpak medium-risk ───────────────────────────────────
-        | "UbuntuInstallFlatpak"
-        | "UbuntuRemoveFlatpak"
-        | "UbuntuUpdateFlatpak"
-        // ── Ubuntu / fail2ban medium-risk ──────────────────────────────────
-        //
-        // UnbanIp removes a ban; the address can be re-banned if needed.
-        | "Fail2banUnbanIp"
-        // ── Ubuntu / netplan medium-risk (Tier 3) ─────────────────────────
-        //
-        // NetplanGenerate regenerates backend config files without reloading
-        // interfaces — a dry-run / validation step that does not apply changes.
-        | "NetplanGenerate"
-        // ── Observability / journald maintenance ──────────────────────────
-        //
-        // VacuumJournal deletes old journal files to reclaim disk. It cannot
-        // affect running services and only ages out historical logs, so it is
-        // Dev, not Admin.
-        | "VacuumJournal" => CallerRole::Dev,
-
-        // ── High-risk system mutations (Admin) ───────────────────────────
-        //
-        // Deployment lifecycle, layering, kernel arguments, privilege-
-        // escalation-sensitive user-group and SSH-key operations, account
-        // deletion (irreversible), and security-critical network/service ops:
-        //   CreateUser       — T1136.001 Persistence; NIST AC-2
-        //   ConfigureFirewall — T1562.004 Defense Evasion; NIST SC-7
-        //   MaskService      — T1562.001 Impair Defenses; irreversible
-        //   AddPackageRepository — supply-chain vector; NIST SI-7/CM-7
-        //   SetDnsServers    — DNS hijacking / MitM (T1557); NIST SC-7
-        "UpdateSystem"
-        | "PinDeployment"
-        | "UnpinDeployment"
-        | "RebaseSystem"
-        | "CleanupDeployments"
-        | "RebootSystem"
-        | "RollbackDeployment"
-        | "SetKernelArguments"
-        | "InstallPackages"
-        | "RemovePackages"
-        | "AddLayeredPackage"
-        | "RemoveLayeredPackage"
-        | "ReplaceLayeredPackage"
-        | "ResetLayeredPackageOverride"
-        | "RemoveBasePackage"
-        | "AddUserToGroup"
-        | "RemoveUserFromGroup"
-        | "CreateGroup"
-        | "DeleteGroup"
-        | "LockUserAccount"
-        | "UnlockUserAccount"
-        | "SignalProcess"
-        // SetSshdOption can lock out remote access; ConfigureUnattendedUpgrades
-        // changes the system's automatic-update posture. Both are Admin/High.
-        | "SetSshdOption"
-        | "ConfigureUnattendedUpgrades"
-        // CreateScheduledJob installs a persistent root-scheduled systemd timer.
-        | "CreateScheduledJob"
-        // ── Storage / LVM mutations ───────────────────────────────────────
-        //
-        // Growing, creating, or snapshotting a logical volume rewrites storage
-        // metadata; a bad size or target can consume a VG or (for extend)
-        // resize a mounted filesystem. All Admin/High.
-        | "ExtendLogicalVolume"
-        | "CreateLogicalVolume"
-        | "CreateLvSnapshot"
-        // ── Kernel / sysctl mutation ──────────────────────────────────────
-        //
-        // SetSysctl changes a live kernel parameter and persists it. A wrong
-        // net.* / vm.* / kernel.* value can degrade networking, memory
-        // behaviour, or security posture, so it is Admin/High.
-        | "SetSysctl"
-        // SetServiceResourceLimits caps a service's memory/CPU/tasks via
-        // set-property; too tight a MemoryMax can OOM-kill the service, so it
-        // is Admin/High.
-        | "SetServiceResourceLimits"
-        // ── Filesystem mounts / swap mutations ────────────────────────────
-        //
-        // Mount/unmount and swap ops rewrite /etc/fstab and change what is
-        // mounted; a wrong device or mountpoint risks data/availability. All
-        // Admin/High (the helper forces `nofail` so a bad entry can't wedge
-        // boot, but the operation itself is still privileged).
-        | "AddMount"
-        | "RemoveMount"
-        | "AddSwap"
-        | "RemoveSwap"
-        // ── Scoped sudoers.d mutations ────────────────────────────────────
-        //
-        // Grant/RevokeSudoAccess configure privilege escalation itself — the
-        // highest-consequence mutating family. Admin/High (the helper's
-        // visudo -cf gate prevents a syntactically broken drop-in, but the
-        // grant is still a real privilege change).
-        | "GrantSudoAccess"
-        | "RevokeSudoAccess"
-        // ── Remote syslog forwarding (log-exfil surface) ──────────────────
-        //
-        // ConfigureRemoteSyslog sends all logs to an external collector — a
-        // data-exfiltration vector — so it is Admin/High.
-        | "ConfigureRemoteSyslog"
-        | "RemoveRemoteSyslog"
-        // ── PAM password policy (auth-hardening; lockout can deny logins) ─
-        | "SetPasswordAging"
-        | "SetPasswordPolicy"
-        | "SetAccountLockout"
-        // ── auditd rules / certbot / fail2ban jail config ─────────────────
-        | "AddAuditRule"
-        | "RemoveAuditRule"
-        | "ObtainCertificate"
-        | "RenewCertificates"
-        | "ConfigureFail2banJail"
-        | "DeleteUser"
-        | "AddAuthorizedKey"
-        | "RemoveAuthorizedKey"
-        | "CreateUser"
-        | "ConfigureFirewall"
-        | "MaskService"
-        | "AddPackageRepository"
-        | "SetDnsServers"
-        // ResolvectlSetDns runs the same interface DNS change as SetDnsServers
-        // (DNS hijacking / MitM — T1557; NIST SC-7). Per-interface scope is not
-        // a mitigation, so it is Admin/High, not Dev.
-        | "ResolvectlSetDns"
-        // ── Ubuntu / apt high-risk ────────────────────────────────────────
-        //
-        // AptUpdate: low-risk (Observer tier, listed above).
-        // AptAutoremove: low-risk (Observer tier, listed above).
-        // AptUpgrade: High — may remove packages (dist-upgrade) + service restarts.
-        | "AptUpgrade"
-        // ── Ubuntu / ufw high-risk ────────────────────────────────────────
-        //
-        // All ufw mutating ops are Admin — misconfigured firewall rules can
-        // lock out SSH access (T1562.004 Defense Evasion; NIST SC-7).
-        | "UfwEnable"
-        | "UfwDisable"
-        | "UfwAllow"
-        | "UfwDeny"
-        | "UfwReset"
-        // ── Ubuntu / netplan high-risk ────────────────────────────────────
-        //
-        // NetplanApply reconfigures network interfaces immediately and can
-        // disconnect SSH sessions (NIST SC-7; operational continuity risk).
-        | "NetplanApply"
-        // ── Ubuntu / grub high-risk ───────────────────────────────────────
-        //
-        // GrubSetKargs modifies the kernel command line and regenerates GRUB
-        // config. Incorrect arguments can prevent the system from booting.
-        // Requires reboot to take effect.
-        | "GrubSetKargs"
-        // ── Ubuntu / AppArmor high-risk ───────────────────────────────────
-        //
-        // AppArmorEnforce activates enforcement. Blocking violations that the
-        // application relies on can immediately cause it to fail or lose data.
-        // AppArmorComplain is the inverse: it stops a profile from *blocking*
-        // violations (learning mode), disabling MAC enforcement for that
-        // profile — a defense-evasion lever. Both directions alter enforcement
-        // of a security control (T1562.001 Impair Defenses), so both are Admin.
-        | "AppArmorEnforce"
-        | "AppArmorComplain"
-        // ── Ubuntu / fail2ban high-risk ───────────────────────────────────
-        //
-        // Fail2banBanIp immediately blocks an IP for all traffic passing
-        // through the named jail. Banning the admin's own IP on sshd severs
-        // remote access. (T1562.004 Defense Evasion; NIST SC-7.)
-        | "Fail2banBanIp"
-        // ── Ubuntu / ufw Tier 3 high-risk ────────────────────────────────
-        //
-        // UfwDeleteRule removes a numbered rule — misconfigured deletion can
-        // expose services or drop needed traffic (T1562.004 Defense Evasion).
-        // UfwLimit adds rate-limiting; can inadvertently block legitimate
-        // traffic under high-connection workloads — same lock-out risk as
-        // other ufw mutations.
-        | "UfwDeleteRule"
-        | "UfwLimit"
-        // ── Ubuntu / netplan Tier 3 high-risk ────────────────────────────
-        //
-        // NetplanSet mutates the netplan config in-memory; misconfigurations
-        // applied via NetplanApply can disconnect SSH sessions (NIST SC-7).
-        | "NetplanSet"
-        // ── Ubuntu Pro Tier 3 high-risk ───────────────────────────────────
-        //
-        // ProAttach binds the machine to a subscription contract (T1078.003
-        // Valid Accounts — contract modification). ProDetach removes it.
-        | "ProAttach"
-        | "ProDetach"
-        | "EnableProService"
-        | "DisableProService"
-        // ── Ubuntu release upgrade Tier 3 high-risk ───────────────────────
-        //
-        // UbuntuReleaseUpgrade upgrades the entire OS to the next release.
-        // Takes 20–45 minutes, requires reboot, and is effectively irreversible
-        // without a full reinstall (High; Admin gating).
-        | "UbuntuReleaseUpgrade" => CallerRole::Admin,
-
-        _ => return None,
-    };
-    Some(role)
+/// Explicit role for actions that cannot derive one from a risk tier: actions
+/// with no `ActionSpec`, and any intentional *monotonic* raise (a role strictly
+/// higher than `role_for_risk_level(risk)` — never lower). Pinned by tests.
+fn role_exception(action_name: &str) -> Option<CallerRole> {
+    match action_name {
+        // Dispatcher-internal history query: no ActionSpec; read-only → Observer.
+        "ListJobHistory" => Some(CallerRole::Observer),
+        _ => None,
+    }
 }
 
 /// Check whether `caller` is authorized to invoke `action_name` against the
@@ -532,9 +197,10 @@ impl PolicyTable {
 
 /// Map a [`RiskLevel`] to the [`CallerRole`] it requires under the baseline.
 ///
-/// `Low` → `Observer`, `Medium` → `Dev`, `High` → `Admin`. This mirrors the
-/// tiers in [`min_role_for_action`].
-fn role_for_risk_level(level: RiskLevel) -> CallerRole {
+/// `Low` → `Observer`, `Medium` → `Dev`, `High` → `Admin`. This is the baseline
+/// [`min_role_for_action`] derives from; `tests/action_consistency.rs` uses it to
+/// pin the role↔risk invariant.
+pub fn role_for_risk_level(level: RiskLevel) -> CallerRole {
     match level {
         RiskLevel::Low => CallerRole::Observer,
         RiskLevel::Medium => CallerRole::Dev,
@@ -648,7 +314,6 @@ mod tests {
         assert!(action_allowed(&role, "SetTimezone"));
         assert!(action_allowed(&role, "SetLocale"));
         assert!(action_allowed(&role, "SetNtp"));
-        assert!(action_allowed(&role, "ConfigureWifi"));
         assert!(action_allowed(&role, "RemovePackageRepository"));
         assert!(action_allowed(&role, "EnablePackageRepository"));
         assert!(action_allowed(&role, "DisablePackageRepository"));
@@ -1032,12 +697,13 @@ mod tests {
     }
 
     #[test]
-    fn group_lifecycle_is_admin_and_listening_ports_is_observer() {
-        // CreateGroup/DeleteGroup are privilege-relevant → Admin, matching the
-        // rest of the user/group family.
-        assert_eq!(min_role_for_action("CreateGroup"), Some(CallerRole::Admin));
+    fn group_create_is_dev_delete_is_admin_and_listening_ports_is_observer() {
+        // CreateGroup (Medium risk — an empty group grants nothing) → Dev;
+        // DeleteGroup (High risk — can break references / lock out) → Admin.
+        assert_eq!(min_role_for_action("CreateGroup"), Some(CallerRole::Dev));
         assert_eq!(min_role_for_action("DeleteGroup"), Some(CallerRole::Admin));
-        assert!(!action_allowed(&CallerRole::Dev, "CreateGroup"));
+        assert!(action_allowed(&CallerRole::Dev, "CreateGroup"));
+        assert!(!action_allowed(&CallerRole::Dev, "DeleteGroup"));
         assert!(action_allowed(&CallerRole::Admin, "DeleteGroup"));
         // GetListeningPorts is a read-only diagnostic → Observer.
         assert_eq!(

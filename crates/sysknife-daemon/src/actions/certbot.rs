@@ -64,7 +64,7 @@ pub fn renew_certificates() -> ActionSpec {
     ActionSpec {
         action_name: "RenewCertificates",
         mechanism: command_mechanism("sudo", ["certbot", "renew"]),
-        risk_level: RiskLevel::High,
+        risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
     }

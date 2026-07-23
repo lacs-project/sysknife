@@ -104,7 +104,7 @@ fn vacuum_journal(vacuum_flag: String) -> ActionSpec {
     ActionSpec {
         action_name: "VacuumJournal",
         mechanism: command_mechanism("journalctl", [vacuum_flag]),
-        risk_level: RiskLevel::Medium,
+        risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
     }
@@ -166,6 +166,6 @@ mod tests {
         assert_eq!(size_args, vec!["--vacuum-size=200M"]);
         let (_, time_args) = args_of(&vacuum_journal_by_time(7));
         assert_eq!(time_args, vec!["--vacuum-time=7d"]);
-        assert_eq!(vacuum_journal_by_size(1).risk_level, RiskLevel::Medium);
+        assert_eq!(vacuum_journal_by_size(1).risk_level, RiskLevel::High);
     }
 }

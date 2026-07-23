@@ -62,7 +62,7 @@ SSH keys, containers, network, filesystem) are omitted — they already apply to
 | `AptInstall` | `sudo env … apt-get install -y <pkg>` | Medium |
 | `AptRemove` | `sudo env … apt-get remove -y <pkg>` | Medium |
 | `AptPurge` | `sudo env … apt-get purge -y <pkg>` | Medium |
-| `AptAutoremove` | `sudo env … apt-get autoremove -y` | Low |
+| `AptAutoremove` | `sudo env … apt-get autoremove -y` | Medium |
 | `AptHold` | `sudo apt-mark hold <pkg>` | Medium |
 | `AptUnhold` | `sudo apt-mark unhold <pkg>` | Medium |
 | `AptSearch` | `apt-cache search <term>` | Low |
@@ -128,7 +128,7 @@ Every one of these maps to a routine sysadmin workflow that users will ask for o
 | `CheckPendingReboot` | `test -f /var/run/reboot-required && cat /var/run/reboot-required-pkgs` | Low | Read-only | Small | ✅ | ✅ | ✅ | <https://manpages.ubuntu.com/manpages/focal/man1/needrestart.1.html> |
 | `AptHistoryList` | `grep -A 4 "^Start-Date" /var/log/apt/history.log \| tail -n 80` | Low | Read-only | Small | ✅ | ✅ | ✅ | <https://help.ubuntu.com/community/AptGet/Howto> |
 | `AptRollback` | `sudo apt-rollback [--last N]` | High | Re-run the rolled-back transaction | Medium | ✅ | ✅ | ✅ | <https://manpages.ubuntu.com/manpages/noble/man1/apt-rollback.1.html> |
-| `AddPpa` | `sudo add-apt-repository -y ppa:<user>/<ppa>` | Medium | `RemovePpa` | Small | ✅ | ✅ | ❌ | <https://manpages.ubuntu.com/manpages/jammy/man1/add-apt-repository.1.html> |
+| `AddPpa` | `sudo add-apt-repository -y ppa:<user>/<ppa>` | High | `RemovePpa` | Small | ✅ | ✅ | ❌ | <https://manpages.ubuntu.com/manpages/jammy/man1/add-apt-repository.1.html> |
 | `RemovePpa` | `sudo add-apt-repository -y --remove ppa:<user>/<ppa>` | Medium | `AddPpa` | Small | ✅ | ✅ | ❌ | <https://manpages.ubuntu.com/manpages/jammy/man1/add-apt-repository.1.html> |
 | `SnapRevert` | `sudo snap revert [--revision=<rev>] <name>` | Medium | `SnapRefresh` to a newer rev | Small | ✅ | ✅ | ✅ | <https://snapcraft.io/docs/how-to-guides/manage-snaps/manage-updates/> |
 | `SnapClassicInstall` | `sudo snap install --classic <name>` | Medium | `SnapRemove` | Small | ✅ | ✅ | ❌ | <https://snapcraft.io/docs/how-to-guides/manage-snaps/manage-updates/> |

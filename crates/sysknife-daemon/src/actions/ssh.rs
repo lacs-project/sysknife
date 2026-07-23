@@ -63,7 +63,7 @@ pub fn add_authorized_key(username: &str, public_key: &str) -> ActionSpec {
             program: "sudo",
             args: vec!["sh".to_string(), "-c".to_string(), script],
         },
-        risk_level: RiskLevel::Medium,
+        risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
     }
@@ -85,7 +85,10 @@ pub fn remove_authorized_key(username: &str, public_key: &str) -> ActionSpec {
             program: "sudo",
             args: vec!["sh".to_string(), "-c".to_string(), script],
         },
-        risk_level: RiskLevel::Medium,
+        // Revoking an authorized key is access-control + lockout-capable (remove
+        // the wrong/only key and you lose SSH access) and cannot be rolled back
+        // → High, symmetric with AddAuthorizedKey.
+        risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
     }

@@ -68,7 +68,7 @@ pub fn add_ppa(name: &str) -> ActionSpec {
     ActionSpec {
         action_name: "AddPpa",
         mechanism: command_mechanism("sudo", [ADD_APT_REPOSITORY, YES_FLAG, &ppa_arg(name)]),
-        risk_level: RiskLevel::Medium,
+        risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: true,
     }
@@ -139,8 +139,8 @@ mod tests {
     }
 
     #[test]
-    fn add_ppa_risk_is_medium() {
-        assert_eq!(add_ppa("deadsnakes/ppa").risk_level, RiskLevel::Medium);
+    fn add_ppa_risk_is_high() {
+        assert_eq!(add_ppa("deadsnakes/ppa").risk_level, RiskLevel::High);
     }
 
     #[test]

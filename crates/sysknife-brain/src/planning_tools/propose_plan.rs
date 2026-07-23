@@ -128,7 +128,7 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
     ("GetServiceResourceLimits",
      "show a service's cgroup limits (MemoryMax/CPUQuota/TasksMax) via systemctl show — param: unit*; read-only"),
     ("SetServiceResourceLimits",
-     "cap a service's resources via systemctl set-property (applies live + persists) — params: unit*, plus at least one of memory_max (e.g. '500M' or 'infinity'), memory_high, cpu_quota (e.g. '50%'), tasks_max (integer or 'infinity'); High risk; undo with systemctl revert"),
+     "cap a service's resources via systemctl set-property (applies live + persists) — params: unit*, plus at least one of memory_max (e.g. '500M' or 'infinity'), memory_high, cpu_quota (e.g. '50%'), tasks_max (integer or 'infinity'); Medium risk; undo with systemctl revert"),
     // Network
     ("GetFirewallState",
      "show current firewalld zones, open services, and port rules — no params"),
@@ -162,9 +162,9 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
     ("ExtendLogicalVolume",
      "grow a logical volume AND its filesystem in one step (lvextend -r) — params: vg*, lv*, size* (e.g. '+10G' to add, or '50G' absolute); High risk"),
     ("CreateLogicalVolume",
-     "create a new logical volume in a volume group (lvcreate) — params: vg*, name*, size* (e.g. '20G'); High risk"),
+     "create a new logical volume in a volume group (lvcreate) — params: vg*, name*, size* (e.g. '20G'); Medium risk"),
     ("CreateLvSnapshot",
-     "snapshot a logical volume before risky changes (lvcreate -s) — params: vg*, origin* (LV to snapshot), snapshot* (new name), size* (copy-on-write reserve, e.g. '5G'); High risk"),
+     "snapshot a logical volume before risky changes (lvcreate -s) — params: vg*, origin* (LV to snapshot), snapshot* (new name), size* (copy-on-write reserve, e.g. '5G'); Medium risk"),
     // Kernel / sysctl
     ("GetSysctl",
      "read a kernel parameter (sysctl) — param: key (optional, dotted e.g. 'net.ipv4.ip_forward'; omit to dump all); read-only"),
@@ -406,7 +406,7 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
     ("GetAuditRules",
      "list loaded audit rules (auditctl -l) — no params; read-only; needs auditd installed"),
     ("AddAuditRule",
-     "add a persistent audit file-watch rule — params: path* (absolute file/dir), perms* (subset of r/w/x/a), key* (label); High risk; needs auditd installed"),
+     "add a persistent audit file-watch rule — params: path* (absolute file/dir), perms* (subset of r/w/x/a), key* (label); Medium risk; needs auditd installed"),
     ("RemoveAuditRule",
      "remove a SysKnife-managed audit rule by key — param: key*; High risk"),
     // ── certbot / ACME (cross-distro) ────────────────────────────────────────
@@ -415,7 +415,7 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
     ("ObtainCertificate",
      "obtain a TLS certificate non-interactively (certbot certonly) — params: domains* (array) or domain* (string), email*, challenge (standalone|nginx|apache, default standalone); High risk; needs certbot + network"),
     ("RenewCertificates",
-     "renew due certbot certificates (certbot renew) — no params; High risk; needs certbot + network"),
+     "renew due certbot certificates (certbot renew) — no params; Medium risk; needs certbot + network"),
     // ── Ubuntu / Tier 3 — netplan extensions ─────────────────────────────────
     ("NetplanSet",
      "set a single netplan key to a value — params: key* (e.g. 'ethernets.eth0.dhcp4'), value*; Ubuntu only; High risk; run NetplanApply to activate"),
