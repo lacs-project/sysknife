@@ -216,7 +216,7 @@ shell session.
    {"steps": [
      {"action_name": "GetFirewallState", "risk_level": "low",
       "params": {}},
-     {"action_name": "ConfigureFirewall", "risk_level": "medium",
+     {"action_name": "ConfigureFirewall", "risk_level": "high",
       "params": {"action": "add_service", "service": "ssh"}}
    ]}
    ```
@@ -272,16 +272,15 @@ forget" model — the LLM never sees what the commands produced.
 1. LLM proposes:
    ```json
    {"steps": [
-     {"action_name": "CreateUser", "risk_level": "medium",
+     {"action_name": "CreateUser", "risk_level": "high",
       "params": {"username": "ci-runner"}},
      {"action_name": "AddUserToGroup", "risk_level": "high",
       "params": {"username": "ci-runner", "group": "docker"}}
    ]}
    ```
 
-2. CreateUser = medium (Dev role), AddUserToGroup = high (Admin
-   role). Mixed risk. Aggregate = high. User types
-   "AddUserToGroup" to confirm.
+2. CreateUser = high, AddUserToGroup = high. Aggregate = high.
+   User re-types each high-risk action name to confirm.
 
 3. Daemon input validation (`crates/sysknife-daemon/src/actions/validate.rs`)
    checks `validated_username("ci-runner")` and
