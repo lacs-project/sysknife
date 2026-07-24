@@ -37,6 +37,20 @@ and `RollbackDeployment` itself (to avoid recursion) are excluded by
 construction — `rollback_spec_for` returns `None` for them.
 ```
 
+**The flag is an equivalence, not a hint, and it's enforced by a test.**
+`ActionSpec.rollback_available` means exactly one thing: *the daemon will
+automatically revert this action if it fails*. It does not mean "there
+happens to be another action that manually undoes this one" — an action can
+be perfectly reversible by hand (e.g. `RemovePpa` undoes `AddPpa`) while still
+reporting `rollback_available: false`, because undoing it requires the
+operator or agent to explicitly issue that second call; the daemon does not
+do it for them on failure. `rollback_available_matches_rollback_spec_for_all_actions`
+in `crates/sysknife-daemon/src/executor.rs` asserts, for **every** action in
+`actions::all_specs()` — not a hand-picked subset — that
+`spec.rollback_available == rollback_spec_for(action_name).is_some()`. An
+action can't claim automatic rollback it doesn't have, or fail to claim
+rollback it does have, without breaking that test.
+
 ## The mechanism: `rpm-ostree rollback`
 
 On rpm-ostree-based systems (Fedora Atomic / Silverblue), every mutation to
@@ -80,7 +94,12 @@ or `AptUpgrade` is left as-is. Nothing in `rollback_spec_for` maps a
 Debian-family action name to a rollback command — the function returns
 `None` for all of them, and `DEBIAN_ONLY_ACTIONS` in
 `crates/sysknife-core/src/action_family.rs` contains no rollback actions at
-all.
+all. Every Debian-family/Ubuntu-only `ActionSpec` accordingly reports
+`rollback_available: false`, including ones with an obvious manual inverse —
+`AddPpa`/`RemovePpa`, `NetplanSet`, `GrubSetKargs`, and `ProAttach`/
+`ProDetach` can all be undone by hand (running the paired action, or another
+`NetplanSet`/`GrubSetKargs` call), but none of that is automatic, so none of
+them set the flag.
 ```
 
 This matches `docs/distro-support.md`, which states plainly: *"Atomic

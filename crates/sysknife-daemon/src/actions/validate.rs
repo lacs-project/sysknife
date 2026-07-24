@@ -30,6 +30,53 @@ pub fn validated_group(s: &str, param: &'static str) -> Result<String, ExecutorE
     validated_username(s, param)
 }
 
+/// Local accounts that must never be deleted or locked via SysKnife's account
+/// actions, even though they pass the generic username charset check: they
+/// gate package management, cron, syslog, sudo, or (for `root`) the ability
+/// to log in as anyone at all. This is enforced in addition to, not instead
+/// of, the RBAC gate — an Admin-role caller must still not be able to lock
+/// every account out of the box via a single `DeleteUser` or
+/// `LockUserAccount` call. `root` is also the canonical uid-0 account;
+/// SysKnife's account actions address accounts by name (there is no uid
+/// parameter), so a differently-named uid-0 alias is out of scope for this
+/// name-based denylist.
+const CRITICAL_ACCOUNTS: &[&str] = &["root", "daemon", "bin", "sys", "sudo", "adm"];
+
+/// Local groups that must never be deleted via `DeleteGroup`: `sudo`/`wheel`/
+/// `adm` gate privilege escalation; `sys`/`daemon`/`bin`/`staff`/`disk` are
+/// owned by core system tooling and file permissions; `shadow` gates access to
+/// the shadow password database. Removing any of them can strip access from
+/// every member or break core system tooling.
+const CRITICAL_GROUPS: &[&str] = &[
+    "root", "sudo", "wheel", "adm", "sys", "daemon", "bin", "staff", "shadow", "disk",
+];
+
+/// Validate a username for an irreversible or access-revoking account action
+/// (`DeleteUser`, `LockUserAccount`): the generic [`validated_username`]
+/// charset check, plus a hard denylist of critical system accounts. Mirrors
+/// the `CRITICAL_MOUNTPOINTS` pattern below — a fixed denylist checked before
+/// the command is ever built, independent of the RBAC gate.
+pub fn validated_username_not_critical(
+    s: &str,
+    param: &'static str,
+) -> Result<String, ExecutorError> {
+    let s = validated_username(s, param)?;
+    if CRITICAL_ACCOUNTS.contains(&s.as_str()) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s)
+}
+
+/// Validate a group name for `DeleteGroup`: the generic [`validated_group`]
+/// charset check, plus a hard denylist of critical system groups.
+pub fn validated_group_not_critical(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    let s = validated_group(s, param)?;
+    if CRITICAL_GROUPS.contains(&s.as_str()) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s)
+}
+
 /// Validate a systemd unit name: must match `[a-zA-Z0-9@._:-]+` (no slashes, no
 /// spaces), and must not start with `-`.
 ///
@@ -218,8 +265,13 @@ const UFW_APP_NAME_MAX: usize = 64;
 ///
 /// - **Bare port** — `^\d+$` — integer 1–65535.
 /// - **Port/protocol** — `^\d+/(tcp|udp)$` — same numeric range.
-/// - **App profile name** — starts with a letter, then `[A-Za-z0-9_-]*`,
-///   length 1–[`UFW_APP_NAME_MAX`].
+/// - **App profile name** — starts with a letter, then `[A-Za-z0-9_ -]*` (a
+///   single interior space is allowed — real UFW profiles like `"Nginx
+///   Full"`/`"Apache Full"` are two words), length 1–[`UFW_APP_NAME_MAX`],
+///   must not end in a space. The value is passed as a single argv element
+///   (never through a shell), so a space carries no injection risk; every
+///   shell metacharacter and control character remains rejected by the
+///   allowlist.
 pub fn validated_port_or_service(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     if s.is_empty() {
         return Err(ExecutorError::InvalidParam(param));
@@ -253,16 +305,19 @@ pub fn validated_port_or_service(s: &str, param: &'static str) -> Result<String,
         return Ok(s.to_string());
     }
 
-    // App profile name form: first char must be a letter.
+    // App profile name form: first char must be a letter. Internal spaces are
+    // allowed (real UFW profiles like "Nginx Full"/"Apache Full" contain
+    // them); a trailing space is rejected as almost certainly a copy-paste
+    // artifact rather than an intentional profile name.
     if !s.starts_with(|c: char| c.is_ascii_alphabetic()) {
         return Err(ExecutorError::InvalidParam(param));
     }
-    if s.len() > UFW_APP_NAME_MAX {
+    if s.len() > UFW_APP_NAME_MAX || s.ends_with(' ') {
         return Err(ExecutorError::InvalidParam(param));
     }
     let ok = s
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'));
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ' '));
     if !ok {
         return Err(ExecutorError::InvalidParam(param));
     }
@@ -970,6 +1025,51 @@ mod tests {
         assert!(validated_group("", "group").is_err());
     }
 
+    // ── validated_username_not_critical / validated_group_not_critical ────
+
+    #[test]
+    fn username_not_critical_rejects_denylisted_accounts() {
+        for name in CRITICAL_ACCOUNTS {
+            assert!(
+                validated_username_not_critical(name, "username").is_err(),
+                "{name} must be rejected as a critical account"
+            );
+        }
+    }
+
+    #[test]
+    fn username_not_critical_allows_normal_user() {
+        assert_eq!(
+            validated_username_not_critical("alice", "username").unwrap(),
+            "alice".to_string()
+        );
+    }
+
+    #[test]
+    fn username_not_critical_still_enforces_charset() {
+        // The denylist is layered on top of, not instead of, the charset check.
+        assert!(validated_username_not_critical("-alice", "username").is_err());
+        assert!(validated_username_not_critical("", "username").is_err());
+    }
+
+    #[test]
+    fn group_not_critical_rejects_denylisted_groups() {
+        for name in CRITICAL_GROUPS {
+            assert!(
+                validated_group_not_critical(name, "group").is_err(),
+                "{name} must be rejected as a critical group"
+            );
+        }
+    }
+
+    #[test]
+    fn group_not_critical_allows_normal_group() {
+        assert_eq!(
+            validated_group_not_critical("developers", "group").unwrap(),
+            "developers".to_string()
+        );
+    }
+
     // ── validated_unit_name ──────────────────────────────────────────────
 
     #[test]
@@ -1342,6 +1442,19 @@ mod tests {
     }
 
     #[test]
+    fn port_or_service_accepts_app_profile_names_with_internal_spaces() {
+        // Real UFW application profiles from /etc/ufw/applications.d/ commonly
+        // have two-word names; a leading-dash / bare-metachar guard is enough
+        // to keep these safe since the value is a single argv element, never
+        // interpolated through a shell.
+        assert_eq!(
+            validated_port_or_service("Nginx Full", "port_or_service").unwrap(),
+            "Nginx Full".to_string()
+        );
+        assert!(validated_port_or_service("Apache Full", "port_or_service").is_ok());
+    }
+
+    #[test]
     fn port_or_service_rejects_out_of_range_ports() {
         assert!(validated_port_or_service("0", "port_or_service").is_err());
         assert!(validated_port_or_service("65536", "port_or_service").is_err());
@@ -1377,8 +1490,16 @@ mod tests {
     }
 
     #[test]
-    fn port_or_service_rejects_space_in_app_name() {
-        assert!(validated_port_or_service("hello world", "port_or_service").is_err());
+    fn port_or_service_rejects_trailing_space_in_app_name() {
+        // Internal spaces are allowed ("Nginx Full"), but a trailing space is
+        // almost certainly a copy-paste artifact, not an intentional name.
+        assert!(validated_port_or_service("Nginx Full ", "port_or_service").is_err());
+    }
+
+    #[test]
+    fn port_or_service_rejects_metachar_with_space_in_app_name() {
+        // Spaces are allowed, but every shell metacharacter is still rejected.
+        assert!(validated_port_or_service("hello; rm -rf /", "port_or_service").is_err());
     }
 
     #[test]

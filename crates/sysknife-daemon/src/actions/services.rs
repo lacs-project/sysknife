@@ -47,7 +47,7 @@ pub fn get_service_resource_limits(unit: &str) -> ActionSpec {
 
 /// Set a service's cgroup resource limits (`sudo systemctl set-property …`).
 ///
-/// Risk: High. `set-property` both applies the limit live and writes a
+/// Risk: Medium. `set-property` both applies the limit live and writes a
 /// persistent drop-in under `/etc/systemd/system.control/<unit>.d/`; the change
 /// is undone with `systemctl revert <unit>`. Using systemd's own verb (rather
 /// than a hand-written drop-in helper) means systemd validates and manages the

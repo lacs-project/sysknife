@@ -189,7 +189,8 @@ Subject line under 72 characters. Add a body for non-obvious changes.
 ## How to Add a New Daemon Action
 
 1. Add the action name to `KNOWN_ACTIONS` in
-   `crates/sysknife-brain/src/action_name.rs`.
+   `crates/sysknife-brain/src/planning_tools/propose_plan.rs`
+   (`action_name.rs` only imports and re-exports it).
 2. Add the execution spec to
    `crates/sysknife-daemon/src/executor.rs` (`build_action_spec`).
 3. Add the preview logic to
@@ -248,7 +249,7 @@ extra reviewer scrutiny:
 |---|---|---|
 | Intent validation | `crates/sysknife-brain/src/planner.rs` (`INTENT_MAX_BYTES`, guards in `plan_intent`) | First line of defense before any LLM call |
 | Secret patterns | `crates/sysknife-brain/src/prefs.rs` (`SENSITIVE_PATTERNS`, `SENSITIVE_PREFIXES`) | Controls what the planner and prefs storage will reject |
-| Action allowlist | `crates/sysknife-brain/src/action_name.rs` (`KNOWN_ACTIONS`) | Adding a name here makes it proposable by the LLM |
+| Action allowlist | `crates/sysknife-brain/src/planning_tools/propose_plan.rs` (`KNOWN_ACTIONS`) | Adding a name here makes it proposable by the LLM |
 | Role policy | `crates/sysknife-daemon/src/policy.rs` (`min_role_for_action`) | Governs which groups can execute which actions |
 | Approval / replay | `crates/sysknife-daemon/src/transactions.rs` | Hash freshness and TOCTOU protection |
 | Caller auth | `crates/sysknife-daemon/src/dispatcher.rs` (`resolve_caller_role`) | SO_PEERCRED group-to-role mapping |

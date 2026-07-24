@@ -27,10 +27,7 @@
 //!
 //! Examples C, D, E, and F were added after this measurement. No re-measurement has been
 //! recorded for the current A+B+C+D+E+F configuration, but the requirement to keep
-//! all six examples is unchanged.
-//!
-//! Example A ("check disk usage") was removed — it is a strict subset of the
-//! general rule stated in prose and adds no coverage beyond Example B.
+//! all six examples — A through F, all present below — is unchanged.
 //!
 //! The examples encode the core planning rule:
 //!

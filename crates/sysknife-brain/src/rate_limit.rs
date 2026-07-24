@@ -72,6 +72,25 @@ impl RateLimiter {
     /// Panics if `max_per_minute` is zero.
     pub fn new(path: PathBuf, max_per_minute: usize) -> Self {
         assert!(max_per_minute >= 1, "max_per_minute must be at least 1");
+        // Create the parent directory up front, mirroring `prefs.rs::append_pref`
+        // and `audit.rs::append_entry`. Without this, the default path
+        // `$XDG_DATA_HOME/sysknife/rate-limit.log` never has its parent
+        // directory created on a fresh install: the first `check_and_consume`
+        // write fails, is logged as a warning, and fails OPEN (see module docs)
+        // -- meaning the rate limiter is silently disabled forever, not just for
+        // one call. Creating the directory here (best-effort; a failure here is
+        // still recoverable by the existing fail-open write-error path) closes
+        // that gap for the common case.
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!(
+                    "[sysknife-brain] rate-limit: failed to create parent directory {}: {e} \
+                     -- persistence will keep failing (and the limiter will fail open) \
+                     until the directory exists",
+                    parent.display()
+                );
+            }
+        }
         let effective = std::env::var("SYSKNIFE_MAX_RPM")
             .ok()
             .and_then(|v| v.trim().parse::<usize>().ok())
@@ -347,5 +366,39 @@ mod tests {
     fn zero_max_per_minute_panics() {
         let dir = tempfile::tempdir().unwrap();
         RateLimiter::new(dir.path().join("rl.txt"), 0);
+    }
+
+    #[test]
+    fn new_creates_missing_parent_directory_and_timestamps_persist() {
+        // Simulates a fresh $XDG_DATA_HOME/sysknife/ that has never been
+        // written to: the nested directory does not exist before `new()`.
+        let dir = tempfile::tempdir().unwrap();
+        let nested_parent = dir.path().join("xdg-data").join("sysknife");
+        assert!(
+            !nested_parent.exists(),
+            "sanity check: parent must not pre-exist"
+        );
+        let path = nested_parent.join("rate-limit.log");
+
+        let rl = RateLimiter::new(path.clone(), 2);
+        assert!(
+            nested_parent.exists(),
+            "RateLimiter::new must create the missing parent directory"
+        );
+
+        // Two calls succeed (limit=2); a third must be rejected -- this only
+        // happens if the timestamp file was actually persisted across calls,
+        // proving the directory-creation fix unblocked real persistence
+        // rather than just avoiding a panic.
+        assert!(rl.check_and_consume().is_ok(), "call 1 within limit-2");
+        assert!(rl.check_and_consume().is_ok(), "call 2 within limit-2");
+        assert!(
+            rl.check_and_consume().is_err(),
+            "call 3 must exceed limit-2, proving timestamps persisted across calls"
+        );
+        assert!(
+            path.exists(),
+            "rate-limit.log must exist on disk after successful persists"
+        );
     }
 }

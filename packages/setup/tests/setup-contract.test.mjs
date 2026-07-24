@@ -23,9 +23,22 @@ test('MCP configs are merged, not overwritten (preserves other servers)', () => 
   assert.doesNotMatch(source, /const cursorMcp = \{ mcpServers \}/);
 });
 
-test('default MCP target and user service use the same socket', () => {
-  assert.match(source, /\.local', 'share', 'sysknife', 'daemon\.sock/);
-  assert.match(daemonInstaller, /\.local', 'share', 'sysknife', 'daemon\.sock/);
+test('default MCP target, wizard user unit, and CLI default all resolve to the same socket', () => {
+  // Regression guard: the wizard's systemd --user unit used to bind
+  // ~/.local/share/sysknife/daemon.sock while a bare terminal's
+  // `sysknife approve <id>` resolves sysknife_core::default_listen_uri() ->
+  // $XDG_RUNTIME_DIR/sysknife/daemon.sock (crates/sysknife-core/src/lib.rs).
+  // The two never matched with zero per-terminal env, so the mandatory
+  // human-approval gate was unreachable by default. Both files must now
+  // resolve the identical path via a shared runtimeSocketPath() formula, and
+  // the stale ~/.local/share default must be gone from both.
+  assert.doesNotMatch(source, /'\.local',\s*'share',\s*'sysknife',\s*'daemon\.sock'/);
+  assert.doesNotMatch(daemonInstaller, /SYSKNIFE_LISTEN_URI=unix:\/\/\$\{socketPath\}/);
+  assert.match(daemonInstaller, /SYSKNIFE_LISTEN_URI=unix:\/\/%t\/sysknife\/daemon\.sock/);
+  assert.match(source, /function runtimeSocketPath\(\)/);
+  assert.match(daemonInstaller, /function runtimeSocketPath\(\)/);
+  assert.match(source, /XDG_RUNTIME_DIR/);
+  assert.match(source, /process\.getuid\(\)/);
 });
 
 test('--no-prompts fails fast without an explicit integration', () => {

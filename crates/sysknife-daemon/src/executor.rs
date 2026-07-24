@@ -7,14 +7,15 @@ use crate::actions::{
     validate::{
         validated_apparmor_profile, validated_apt_package, validated_apt_pin_expr,
         validated_apt_pin_name, validated_audit_path, validated_audit_perms, validated_cpu_quota,
-        validated_domain, validated_email, validated_fstype, validated_group, validated_hostname,
-        validated_journal_grep, validated_journal_priority, validated_journal_time,
-        validated_locale, validated_log_path, validated_lvm_name, validated_lvm_size,
-        validated_memory_limit, validated_mount_device, validated_mount_options,
-        validated_mount_point, validated_port_or_service, validated_ppa_name,
-        validated_pro_service, validated_safe_arg, validated_sudo_commands, validated_sudoers_name,
-        validated_swap_path, validated_sysctl_key, validated_sysctl_value, validated_syslog_host,
-        validated_tasks_max, validated_timezone, validated_unit_name, validated_username,
+        validated_domain, validated_email, validated_fstype, validated_group,
+        validated_group_not_critical, validated_hostname, validated_journal_grep,
+        validated_journal_priority, validated_journal_time, validated_locale, validated_log_path,
+        validated_lvm_name, validated_lvm_size, validated_memory_limit, validated_mount_device,
+        validated_mount_options, validated_mount_point, validated_port_or_service,
+        validated_ppa_name, validated_pro_service, validated_safe_arg, validated_sudo_commands,
+        validated_sudoers_name, validated_swap_path, validated_sysctl_key, validated_sysctl_value,
+        validated_syslog_host, validated_tasks_max, validated_timezone, validated_unit_name,
+        validated_username, validated_username_not_critical,
     },
     ActionMechanism, ActionSpec,
 };
@@ -914,7 +915,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             ))
         }
         "DeleteUser" => {
-            let username = validated_username(resolve_username(params)?, "username")?;
+            let username = validated_username_not_critical(resolve_username(params)?, "username")?;
             Ok(users::delete_user(&username))
         }
         "AddUserToGroup" => {
@@ -936,11 +937,11 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             Ok(users::create_group(&group, system))
         }
         "DeleteGroup" => {
-            let group = validated_group(require_str(params, "group")?, "group")?;
+            let group = validated_group_not_critical(require_str(params, "group")?, "group")?;
             Ok(users::delete_group(&group))
         }
         "LockUserAccount" => {
-            let username = validated_username(resolve_username(params)?, "username")?;
+            let username = validated_username_not_critical(resolve_username(params)?, "username")?;
             Ok(users::lock_user_account(&username))
         }
         "UnlockUserAccount" => {
@@ -1045,7 +1046,11 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
                 .get("auto_update")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            Ok(snap::snap_install(&name, channel.as_deref(), auto_update))
+            snap::snap_install(&name, channel.as_deref(), auto_update).map_err(|e| match e {
+                snap::SnapInstallError::InvalidArg { param, .. } => {
+                    ExecutorError::InvalidParam(param)
+                }
+            })
         }
         "SnapRemove" => {
             let name = validated_safe_arg(require_str(params, "name")?, "name")?;
@@ -1294,7 +1299,10 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
                 .filter(|s| !s.is_empty())
                 .map(|s| validated_safe_arg(s, "jail"))
                 .transpose()?;
-            Ok(fail2ban::fail2ban_status(jail.as_deref()))
+            fail2ban::fail2ban_status(jail.as_deref()).map_err(|e| match e {
+                fail2ban::Fail2banError::InvalidIpAddress(_) => ExecutorError::InvalidParam("jail"),
+                fail2ban::Fail2banError::InvalidJail(_) => ExecutorError::InvalidParam("jail"),
+            })
         }
         "Fail2banBanIp" => {
             let jail = validated_safe_arg(require_str(params, "jail")?, "jail")?;
@@ -1344,7 +1352,10 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             if extra.is_empty() {
                 return Err(ExecutorError::MissingParam("maxretry"));
             }
-            Ok(fail2ban::configure_fail2ban_jail(&name, &extra))
+            fail2ban::configure_fail2ban_jail(&name, &extra).map_err(|e| match e {
+                fail2ban::Fail2banError::InvalidIpAddress(_) => ExecutorError::InvalidParam("name"),
+                fail2ban::Fail2banError::InvalidJail(_) => ExecutorError::InvalidParam("name"),
+            })
         }
 
         // ── auditd file-watch rules ───────────────────────────────────────
@@ -1653,10 +1664,17 @@ fn str_array_or_empty(params: &Value, key: &'static str) -> Result<Vec<String>, 
 /// - `selinux=0`       — disables SELinux
 /// - `enforcing=0`     — sets SELinux to permissive
 /// - `security=`       — overrides LSM module selection
+/// - `apparmor=0`      — disables the AppArmor LSM (Ubuntu's default MAC)
 /// - `systemd.unit=emergency` / `systemd.unit=rescue` / `systemd.unit=single`
 ///   — unprotected root shell
 /// - `single` / `1` / `s` — single-user mode (root without password)
 /// - `module_blacklist=` — can disable security-critical kernel modules
+/// - `mitigations=off` — disables CPU speculative-execution vulnerability
+///   mitigations (Spectre/Meltdown/MDS/etc.)
+/// - `lockdown=`       — weakens or disables the kernel lockdown LSM
+/// - `pti=off`         — disables Page Table Isolation (Meltdown mitigation)
+/// - `nosmap` / `nosmep` — disable SMAP/SMEP, CPU features that block a large
+///   class of kernel-exploitation techniques
 fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), ExecutorError> {
     const BLOCKED_PREFIXES: &[&str] = &[
         "init=",
@@ -1664,8 +1682,12 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
         "enforcing=0",
         "security=",
         "module_blacklist=",
+        "apparmor=0",
+        "mitigations=off",
+        "lockdown=",
+        "pti=off",
     ];
-    const BLOCKED_EXACT: &[&str] = &["single", "s", "1"];
+    const BLOCKED_EXACT: &[&str] = &["single", "s", "1", "nosmap", "nosmep"];
     const BLOCKED_UNIT_PREFIXES: &[&str] = &["emergency", "rescue", "single"];
 
     let lower = arg.to_lowercase();
@@ -1939,7 +1961,7 @@ mod tests {
     fn build_spec_set_kernel_arguments_appends_and_deletes() {
         let spec = build_action_spec(
             "SetKernelArguments",
-            &json!({ "add": ["mitigations=off"], "remove": ["quiet"] }),
+            &json!({ "add": ["nomodeset"], "remove": ["quiet"] }),
         )
         .unwrap();
         assert_eq!(
@@ -1949,7 +1971,7 @@ mod tests {
                 args: vec![
                     "rpm-ostree".to_string(),
                     "kargs".to_string(),
-                    "--append=mitigations=off".to_string(),
+                    "--append=nomodeset".to_string(),
                     "--delete=quiet".to_string(),
                 ],
             }
@@ -1979,6 +2001,42 @@ mod tests {
                 args: vec!["rpm-ostree".to_string(), "kargs".to_string()],
             }
         );
+    }
+
+    // ── Critical-account denylist (DeleteUser/DeleteGroup/LockUserAccount) ──
+
+    #[test]
+    fn delete_user_rejects_critical_account() {
+        let err = build_action_spec("DeleteUser", &json!({ "username": "root" })).unwrap_err();
+        assert!(
+            matches!(err, ExecutorError::InvalidParam("username")),
+            "expected InvalidParam(username), got: {err}"
+        );
+    }
+
+    #[test]
+    fn delete_group_rejects_critical_group() {
+        let err = build_action_spec("DeleteGroup", &json!({ "group": "sudo" })).unwrap_err();
+        assert!(
+            matches!(err, ExecutorError::InvalidParam("group")),
+            "expected InvalidParam(group), got: {err}"
+        );
+    }
+
+    #[test]
+    fn lock_user_account_rejects_critical_account() {
+        let err = build_action_spec("LockUserAccount", &json!({ "username": "root" })).unwrap_err();
+        assert!(
+            matches!(err, ExecutorError::InvalidParam("username")),
+            "expected InvalidParam(username), got: {err}"
+        );
+    }
+
+    #[test]
+    fn delete_user_lock_user_account_and_delete_group_allow_normal_names() {
+        assert!(build_action_spec("DeleteUser", &json!({ "username": "alice" })).is_ok());
+        assert!(build_action_spec("LockUserAccount", &json!({ "username": "alice" })).is_ok());
+        assert!(build_action_spec("DeleteGroup", &json!({ "group": "developers" })).is_ok());
     }
 
     // ── execute_spec ──────────────────────────────────────────────────────
@@ -2410,7 +2468,7 @@ mod tests {
     #[test]
     fn kernel_arg_allows_safe_args() {
         assert!(validated_safe_kernel_arg("quiet", "add").is_ok());
-        assert!(validated_safe_kernel_arg("mitigations=off", "add").is_ok());
+        assert!(validated_safe_kernel_arg("splash", "add").is_ok());
         assert!(validated_safe_kernel_arg("rd.driver.blacklist=nouveau", "add").is_ok());
         assert!(validated_safe_kernel_arg("console=ttyS0,115200", "add").is_ok());
     }
@@ -2467,6 +2525,50 @@ mod tests {
         ));
         assert!(matches!(
             validated_safe_kernel_arg("systemd.unit=single.target", "add"),
+            Err(ExecutorError::InvalidParam("add"))
+        ));
+    }
+
+    #[test]
+    fn kernel_arg_blocks_apparmor_disable() {
+        assert!(matches!(
+            validated_safe_kernel_arg("apparmor=0", "add"),
+            Err(ExecutorError::InvalidParam("add"))
+        ));
+    }
+
+    #[test]
+    fn kernel_arg_blocks_mitigations_off() {
+        assert!(matches!(
+            validated_safe_kernel_arg("mitigations=off", "add"),
+            Err(ExecutorError::InvalidParam("add"))
+        ));
+    }
+
+    #[test]
+    fn kernel_arg_blocks_lockdown_override() {
+        assert!(matches!(
+            validated_safe_kernel_arg("lockdown=none", "add"),
+            Err(ExecutorError::InvalidParam("add"))
+        ));
+    }
+
+    #[test]
+    fn kernel_arg_blocks_pti_off() {
+        assert!(matches!(
+            validated_safe_kernel_arg("pti=off", "add"),
+            Err(ExecutorError::InvalidParam("add"))
+        ));
+    }
+
+    #[test]
+    fn kernel_arg_blocks_smap_smep_disable() {
+        assert!(matches!(
+            validated_safe_kernel_arg("nosmap", "add"),
+            Err(ExecutorError::InvalidParam("add"))
+        ));
+        assert!(matches!(
+            validated_safe_kernel_arg("nosmep", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
     }
@@ -2701,24 +2803,14 @@ mod tests {
     /// drifting apart.
     #[test]
     fn rollback_available_matches_rollback_spec_for_all_actions() {
-        let all_specs: Vec<ActionSpec> = containers::specs()
-            .into_iter()
-            .chain(deployment::specs())
-            .chain(filesystem::specs())
-            .chain(flatpak::specs())
-            .chain(identity::specs())
-            .chain(layering::specs())
-            .chain(network::specs())
-            .chain(package_repos::specs())
-            .chain(processes::specs())
-            .chain(services::specs())
-            .chain(ssh::specs())
-            .chain(system_info::specs())
-            .chain(toolbox::specs())
-            .chain(users::specs())
-            .collect();
-
-        for spec in &all_specs {
+        // Iterate the FULL catalogue (`crate::actions::all_specs`), not a
+        // hand-picked subset of families — a manually-chained list here once
+        // silently omitted `ppa`, `netplan`, `grub`, and `ubuntu_pro`, which is
+        // exactly how `AddPpa`/`RemovePpa`/`NetplanSet`/`GrubSetKargs`/
+        // `ProAttach`/`ProDetach` were able to claim `rollback_available: true`
+        // with no matching `rollback_spec_for` entry for years without this
+        // test catching it.
+        for spec in crate::actions::all_specs() {
             let has_rollback = rollback_spec_for(spec.action_name).is_some();
             assert_eq!(
                 spec.rollback_available,

@@ -257,6 +257,57 @@ cargo clippy --workspace --all-features --locked -- -D warnings
 cargo nextest run --workspace --locked
 ```
 
+## Running CI locally
+
+`scripts/ci-local.sh` mirrors the runnable jobs from
+`.github/workflows/ci.yml` (rust, frontend, hygiene, security, and the
+optional postgres-contract job) so you catch failures before pushing,
+without spending GitHub Actions minutes:
+
+```sh
+# Full run — everything CI runs, including the optional Postgres contract
+# test if docker/podman is available (or SYSKNIFE_TEST_POSTGRES_URL is set)
+scripts/ci-local.sh
+
+# Fast subset — rust fmt/clippy/nextest + frontend tsc/vitest only
+scripts/ci-local.sh --fast
+
+# Skip the postgres-contract job even if a container runtime is available
+scripts/ci-local.sh --no-postgres
+```
+
+It detects which tools are installed first: `cargo` and `node` are required
+(missing either is a hard failure with an install link); an optional linter
+that's missing (`cargo-nextest`, `cargo-audit`, `markdownlint-cli2`,
+`markdown-link-check`, `yamllint`, `shellcheck`) just prints a warning with
+an install hint and skips that one check. Every check still runs even after
+an earlier one fails — a PASS/FAIL/WARN/SKIP summary prints at the end, and
+the script exits non-zero only if something in the summary actually failed.
+
+### Pre-push hook
+
+`scripts/ci-local.sh --install-hooks` runs `git config core.hooksPath
+.githooks`, which wires up `.githooks/pre-push` to run `scripts/ci-local.sh
+--fast` automatically before every `git push` and block the push on
+failure. Bypass a single push with `git push --no-verify`; undo the hook
+entirely with `git config --unset core.hooksPath`.
+
+`.githooks/` already ships a `pre-commit` hook (`cargo fmt --all --check` +
+`cargo nextest run --workspace --locked`) alongside the new `pre-push` one.
+Both are opt-in via the same `core.hooksPath` setting. Note that
+`core.hooksPath` is a single switch: pointing it at `.githooks` means Git
+stops looking in `.git/hooks`, so it supersedes hooks installed by the
+`pre-commit` framework (see [Pre-commit Hooks](#pre-commit-hooks) above) —
+use one mechanism or the other, not both, per clone.
+
+### Full workflow replay
+
+`ci-local.sh` runs the same commands as CI, but not inside the same
+container/runner image, so it cannot catch environment-specific breakage.
+For an exact, Docker-based replay of the GitHub Actions workflow (all jobs,
+the real `ubuntu-latest` image), use
+[`act`](https://github.com/nektos/act) instead.
+
 ## Working Style
 
 - keep changes small and reviewable

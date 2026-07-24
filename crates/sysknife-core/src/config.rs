@@ -271,28 +271,47 @@ impl LacsConfig {
 
     /// Load `~/.config/sysknife/config.toml`.
     ///
-    /// Returns `LacsConfig::default()` (all `None`) if the file is absent.
-    /// Falls back to defaults on parse error (with a warning). I/O errors
-    /// other than `NotFound` (e.g. permission denied) are also warned so the
-    /// user knows their config file exists but could not be read.
+    /// Returns `LacsConfig::default()` (all `None`) if the file is absent —
+    /// this is the normal, unconfigured happy path and is unchanged.
+    ///
+    /// If the file IS present but cannot be parsed as TOML, or exists but
+    /// cannot be read (e.g. permission denied), this is treated as a fatal
+    /// misconfiguration rather than silently falling back to defaults: a clear
+    /// message is printed to stderr and the process exits with status 1.
+    /// Silently defaulting in that case would drop `[storage]` / `[policy]`
+    /// overrides (backend selection, risk-level overrides) without any
+    /// indication to the operator — a silent security downgrade. See
+    /// `try_load` for the non-exiting core used by tests.
     pub fn load() -> Self {
         let path = config_path();
-        match std::fs::read_to_string(&path) {
-            Ok(content) => toml::from_str(&content).unwrap_or_else(|e| {
-                eprintln!(
-                    "[sysknife] warning: could not parse {}: {e}; using defaults",
+        Self::try_load(&path).unwrap_or_else(|reason| {
+            eprintln!("[sysknife] FATAL: {reason}");
+            std::process::exit(1);
+        })
+    }
+
+    /// Core of [`Self::load`], factored out so the parse-error / read-error
+    /// paths can be exercised in tests without triggering `process::exit`.
+    ///
+    /// Returns `Ok(Self::default())` when `path` does not exist. Returns
+    /// `Err` for any other failure (present-but-unparseable, or a read
+    /// error) — see [`Self::load`] for why this must never silently
+    /// default instead.
+    fn try_load(path: &std::path::Path) -> Result<Self, String> {
+        match std::fs::read_to_string(path) {
+            Ok(content) => toml::from_str(&content).map_err(|e| {
+                format!(
+                    "config file {} is present but could not be parsed as TOML: {e}; \
+                     refusing to silently fall back to defaults",
                     path.display()
-                );
-                Self::default()
+                )
             }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
-            Err(e) => {
-                eprintln!(
-                    "[sysknife] warning: could not read {}: {e}; using defaults",
-                    path.display()
-                );
-                Self::default()
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(format!(
+                "config file {} exists but could not be read: {e}; refusing to \
+                 silently fall back to defaults",
+                path.display()
+            )),
         }
     }
 
@@ -506,6 +525,39 @@ mod tests {
         }
         assert!(cfg.daemon.is_none());
         assert!(cfg.llm.is_none());
+    }
+
+    #[test]
+    fn try_load_returns_default_when_file_absent() {
+        // No env-var mutation needed: try_load takes the path directly.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist").join("config.toml");
+        let cfg = LacsConfig::try_load(&path).expect("absent file must be Ok(default)");
+        assert!(cfg.daemon.is_none());
+        assert!(cfg.llm.is_none());
+        assert!(cfg.storage.is_none());
+        assert!(cfg.policy.is_none());
+    }
+
+    #[test]
+    fn try_load_fails_loud_on_present_but_unparseable_file() {
+        // A present-but-broken config file must error, not silently fall
+        // back to defaults (which would drop [storage]/[policy] overrides
+        // without any indication to the operator).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "this is [ not valid toml at all").unwrap();
+
+        let result = LacsConfig::try_load(&path);
+        assert!(
+            result.is_err(),
+            "a present-but-unparseable config file must error, not silently default"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("could not be parsed"),
+            "error should explain the parse failure; got: {err}"
+        );
     }
 
     #[test]

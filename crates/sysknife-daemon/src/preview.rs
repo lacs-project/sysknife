@@ -393,9 +393,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "SetServiceEnabled"
         | "StartService"
         | "StopService"
-        | "ConfigureWifi"
-        | "SetDnsServers"
-        | "ConfigureFirewall"
         | "CreateToolbox"
         | "RemoveToolbox"
         | "InstallFlatpak"
@@ -403,16 +400,76 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "UpdateFlatpak"
         | "AddFlatpakRemote"
         | "RemoveFlatpakRemote"
-        | "MaskService"
         | "UnmaskService"
         | "SetHostname"
         | "SetTimezone"
         | "SetLocale"
-        | "SetNtp"
-        | "CreateUser" => PreviewProfile {
+        | "SetNtp" => PreviewProfile {
             expected_side_effects: vec!["service interruption".to_string()],
             warnings: vec![APPROVAL_REQUIRED.to_string()],
         },
+
+        // ── Wi-Fi association (High) ───────────────────────────────────────
+        "ConfigureWifi" => PreviewProfile {
+            expected_side_effects: vec![
+                "the host's Wi-Fi connection will change".to_string(),
+                "current network connectivity may be interrupted while reconnecting".to_string(),
+            ],
+            warnings: vec![
+                "a wrong SSID or password can disconnect the host from network access"
+                    .to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
+            ],
+        },
+
+        // ── DNS redirection (High) — same primitive as ResolvectlSetDns ────
+        "SetDnsServers" | "ResolvectlSetDns" => PreviewProfile {
+            expected_side_effects: vec!["DNS servers for the interface will change".to_string()],
+            warnings: vec![
+                "redirecting DNS can enable interception of name resolution".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
+            ],
+        },
+
+        // ── firewalld rule + reload (High) ─────────────────────────────────
+        "ConfigureFirewall" => PreviewProfile {
+            expected_side_effects: vec![
+                "a firewalld rule will change and reload immediately".to_string(),
+                "network access may be immediately affected".to_string(),
+            ],
+            warnings: vec![
+                "misconfigured rules can lock out SSH or other remote access".to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
+            ],
+        },
+
+        // ── mask a unit so it cannot be started (High) ─────────────────────
+        "MaskService" => PreviewProfile {
+            expected_side_effects: vec![
+                "the unit will be masked (symlinked to /dev/null)".to_string(),
+                "the unit cannot be started, even manually, until UnmaskService is run"
+                    .to_string(),
+            ],
+            warnings: vec![
+                "masking a unit other services depend on can cascade into unrelated failures"
+                    .to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
+            ],
+        },
+
+        // ── create a new local account (High) ──────────────────────────────
+        "CreateUser" => PreviewProfile {
+            expected_side_effects: vec![
+                "a new local user account will be created".to_string(),
+                "a home directory may be created".to_string(),
+            ],
+            warnings: vec![
+                "grants a new account with login access — review shell/home/group defaults"
+                    .to_string(),
+                EXACT_APPROVAL_REQUIRED.to_string(),
+            ],
+        },
+
         // ── Observability / journald maintenance ─────────────────────────
         "VacuumJournal" => PreviewProfile {
             expected_side_effects: vec![
@@ -694,15 +751,6 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
             ],
         },
 
-        // ── resolvectl DNS ────────────────────────────────────────────────
-        "ResolvectlSetDns" => PreviewProfile {
-            expected_side_effects: vec!["DNS servers for the interface will change".to_string()],
-            warnings: vec![
-                "redirecting DNS can enable interception of name resolution".to_string(),
-                EXACT_APPROVAL_REQUIRED.to_string(),
-            ],
-        },
-
         // ── AppArmor profile modes ────────────────────────────────────────
         "AppArmorEnforce" => PreviewProfile {
             expected_side_effects: vec![
@@ -909,6 +957,63 @@ mod tests {
                 "{action} should have 'access control will change' in expected_side_effects"
             );
         }
+    }
+
+    /// `ConfigureWifi`, `SetDnsServers`, `ConfigureFirewall`, `MaskService`, and
+    /// `CreateUser` are all High risk. Before this test they rendered through
+    /// the generic Medium-styled "service interruption" arm, which only ever
+    /// carried the soft `APPROVAL_REQUIRED` warning — a High-risk action must
+    /// use `EXACT_APPROVAL_REQUIRED` like every other High-risk action.
+    #[test]
+    fn high_risk_actions_previously_misclassified_use_exact_approval() {
+        let actions = [
+            "ConfigureWifi",
+            "SetDnsServers",
+            "ConfigureFirewall",
+            "MaskService",
+            "CreateUser",
+        ];
+
+        for action in &actions {
+            let envelope = preview_action(
+                &req(action),
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+            );
+            assert_eq!(
+                envelope.risk_level,
+                RiskLevel::High,
+                "{action} should be High risk"
+            );
+            assert!(
+                envelope
+                    .warnings
+                    .iter()
+                    .any(|w| w == EXACT_APPROVAL_REQUIRED),
+                "{action} should carry EXACT_APPROVAL_REQUIRED, got: {:?}",
+                envelope.warnings
+            );
+            assert!(
+                !envelope
+                    .expected_side_effects
+                    .iter()
+                    .any(|e| e == "service interruption"),
+                "{action} should have an accurate side-effect description, not the generic \
+                 'service interruption' placeholder"
+            );
+        }
+
+        // CreateUser specifically must not claim "service interruption" — it's
+        // useradd, not a service restart.
+        let create_user = preview_action(&req("CreateUser"), Value::Null, Value::Null);
+        assert!(
+            !create_user
+                .expected_side_effects
+                .iter()
+                .any(|e| e.contains("service interruption")),
+            "CreateUser must not claim service interruption: {:?}",
+            create_user.expected_side_effects
+        );
     }
 
     #[test]

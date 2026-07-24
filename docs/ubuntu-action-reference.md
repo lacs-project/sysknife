@@ -120,6 +120,35 @@ Sources consulted:
 - **Status**: ✅ matches
 - **Notes**: Output is RFC 822 style (key: value). No sudo required.
 
+### AptListUpgradable — List packages with available upgrades
+
+- **Canonical**: `apt list --upgradable`
+- **SysKnife argv**: `["bash", "-c", "apt list --upgradable 2>/dev/null"]` (no sudo)
+- **Status**: ✅ matches
+- **Notes**: Read-only. `2>/dev/null` suppresses apt's "WARNING: apt does not
+  have a stable CLI interface" notice on stderr. No sudo required.
+
+### AptHistoryList — Show recent apt transaction history
+
+- **Canonical**: `grep -A 4 '^Start-Date' /var/log/apt/history.log | tail -n 80`
+- **SysKnife argv**: `["bash", "-c", "grep -A 4 '^Start-Date' /var/log/apt/history.log | tail -n 80"]` (no sudo)
+- **Status**: ✅ matches
+- **Notes**: Read-only file inspection of `/var/log/apt/history.log`. Returns
+  the 80 most recent log lines, covering the last several `Start-Date`
+  transaction blocks, for auditing what was installed/removed/upgraded.
+
+### ConfigureUnattendedUpgrades — Enable or disable automatic security updates
+
+- **Canonical**: no single canonical CLI — SysKnife ships a helper script
+- **SysKnife argv**: `["sudo", "/usr/lib/sysknife/unattended-upgrades-edit", "--enable"]`
+  or `--disable` — param: `enabled` (bool)
+- **Status**: ✅ implemented via bundled helper
+- **Notes**: the helper (`packaging/sysknife-unattended-upgrades-edit`) takes
+  no free-form input — it writes one of two fixed file contents to
+  `/etc/apt/apt.conf.d/20auto-upgrades` (no injection surface), and when
+  enabling, first ensures `unattended-upgrades` is installed. Risk: High —
+  toggles whether the host auto-applies security updates unattended.
+
 ---
 
 ## snap
@@ -135,10 +164,11 @@ Sources consulted:
   Default channel when none specified by SysKnife: `stable` (passed as `--channel=stable`).
   The hold-after-install pattern is correct: `snap refresh --hold <name>` pins the snap
   indefinitely. Exit code 0 = success.
-- **Missing flag consideration**: `--classic` is required for snaps with classic
-  confinement (e.g., VS Code: `snap install --classic code`). SysKnife does not
-  currently expose a `classic` flag. This is a gap for snaps requiring classic
-  confinement; they will fail with an error prompting the user to pass `--classic`.
+- **Classic confinement**: `--classic` is required for snaps with classic
+  confinement (e.g., VS Code: `snap install --classic code`). `SnapInstall`
+  itself does not expose a `classic` flag — that case is handled by a
+  separate action, `SnapClassicInstall` (see below), rather than a flag on
+  this one.
 
 ### SnapRemove — Remove snap
 
@@ -190,6 +220,26 @@ Sources consulted:
 - **Status**: ✅ matches
 - **Output**: Multi-section human-readable; includes name, summary, publisher,
   available channels, installed revision, and tracking channel.
+
+### SnapRevert — Revert to the previous revision
+
+- **Canonical**: `sudo snap revert [--revision=<rev>] <name>`
+- **SysKnife argv**: `["sudo", "snap", "revert", "<name>"]` — param: `name`
+- **Status**: ✅ matches (basic revert, no explicit `--revision`)
+- **Notes**: Rolls the snap back one revision; the reverted-from revision is
+  preserved on disk and the revert itself can be undone with `SnapRefresh`.
+  Risk: Medium.
+
+### SnapClassicInstall — Install with classic confinement
+
+- **Canonical**: `sudo snap install --classic <name>`
+- **SysKnife argv**: `["sudo", "snap", "install", "--classic", "<name>"]` —
+  param: `name`
+- **Status**: ✅ matches
+- **Notes**: Separate action from `SnapInstall` rather than a flag on it (see
+  the classic-confinement note above). Classic-confined snaps get full
+  system access with no sandbox, so this carries more risk than a sandboxed
+  install — Risk: Medium.
 
 ---
 
@@ -246,11 +296,33 @@ Sources consulted:
 - **Status**: ✅ matches
 - **Notes**: `verbose` adds default policies (incoming/outgoing/routed) to the
   output. Without `verbose`, `ufw status` shows only active rules and
-  the Enabled/Disabled state. `status numbered` adds rule numbers for deletion
-  targeting but is not needed here.
+  the Enabled/Disabled state. `status numbered` adds rule numbers, which is
+  how a user finds the `rule_number` argument for `UfwDeleteRule`.
 - **Output format**: Plain text, columns: `To  Action  From` with directional
   qualifiers (`ALLOW`, `ALLOW IN`, `ALLOW OUT`). No JSON output available.
 - **sudo required**: Yes — ufw reads privileged iptables state.
+
+### UfwDeleteRule — Delete a rule by number
+
+- **Canonical**: `sudo ufw --force delete <rule_number>`
+- **SysKnife argv**: `["sudo", "ufw", "--force", "delete", "<rule_number>"]` —
+  param: `rule_number` (positive integer from `ufw status numbered`)
+- **Status**: ✅ matches
+- **Notes**: `--force` suppresses the confirmation prompt, same as
+  `UfwEnable` / `UfwReset`. Risk: High — a mistaken deletion can expose
+  services or drop needed traffic. Rejects `rule_number == 0` (ufw rule
+  numbers are 1-based).
+
+### UfwLimit — Rate-limit connections
+
+- **Canonical**: `sudo ufw limit <port_or_service>`
+- **SysKnife argv**: `["sudo", "ufw", "limit", "<target>"]` — param: `target`
+  (port number, `port/proto`, or app profile name, e.g. `ssh`)
+- **Status**: ✅ matches
+- **Notes**: Blocks IPs making more than 6 connections within 30 seconds —
+  the standard ufw brute-force mitigation, commonly applied to SSH (port 22).
+  Risk: High — can inadvertently rate-limit legitimate traffic under
+  high-connection workloads.
 
 ---
 
@@ -258,20 +330,24 @@ Sources consulted:
 
 ### NetplanGetConfig — Read current configuration
 
-- **SysKnife approach**: `bash -c "cat /etc/netplan/*.yaml 2>/dev/null || echo 'no netplan files found'"`
+- **SysKnife argv**: `["find", "/etc/netplan", "-maxdepth", "1", "-name", "*.yaml", "-print", "-exec", "cat", "{}", "+"]`
 - **Canonical alternative**: `sudo netplan get` (merges all YAML from `/etc/netplan/`,
   `/lib/netplan/`, and `/run/netplan/` into a single output)
 - **Status**: ⚠ functional divergence — not wrong, but differs from canonical
-- **Notes**: SysKnife `bash -c "cat /etc/netplan/*.yaml"` returns raw YAML of each
-  file separately. `netplan get` returns a single merged representation. The cat
-  approach works but:
+- **Notes**: SysKnife shells out to `find` directly (no `bash -c`), printing each
+  matched file's path followed by its contents. `netplan get` returns a single
+  merged representation instead. The `find` approach:
   1. Does not merge configs across `/lib/netplan/` and `/run/netplan/` overlay paths.
   2. May include YAML comments; `netplan get` output is stripped and canonical.
-  3. If there are no files, the glob `*.yaml` fails with exit code 1 (handled by
-     the `|| echo` fallback — this part is correct).
-  - For read-only inspection, the cat approach is harmless and does not require sudo
-    for files readable by the daemon user. `netplan get` requires sudo on most Ubuntu
-    installs because `/etc/netplan/` is root-owned mode 600.
+  3. Surfaces three distinct states instead of collapsing them: a missing/
+     permission-denied `/etc/netplan` makes `find` exit non-zero with a stderr
+     diagnostic, while a directory with no `*.yaml` files exits 0 with empty
+     stdout. (An earlier version shelled out to `bash -c "cat /etc/netplan/*.yaml
+     2>/dev/null || echo 'no netplan files found'"`, which collapsed all three
+     states into one fake-success exit 0 — fixed by moving to `find` directly.)
+  - For read-only inspection, this is harmless and does not require sudo for
+    files readable by the daemon user. `netplan get` requires sudo on most
+    Ubuntu installs because `/etc/netplan/` is root-owned mode 600.
   - **Not a blocking bug.** Document as a known divergence.
 
 ### NetplanApply — Apply configuration
@@ -285,15 +361,33 @@ Sources consulted:
   implemented as a daemon action (documented in the source).
   Exit code 0 = success; non-zero on YAML parse or backend errors.
 
-### Missing actions — netplan generate, get, set
+### NetplanSet — Set a single netplan key
 
-- **netplan generate**: Generates backend config files but does not apply them.
-  Useful for previewing what netplan would write before `apply`. Not implemented.
-- **netplan get**: Returns merged netplan config as YAML. More canonical than
-  `cat /etc/netplan/*.yaml`. Could replace `NetplanGetConfig`.
-- **netplan set**: Writes a key=value into `/etc/netplan/`. Allows targeted edits
-  without reading/modifying YAML manually. Not implemented.
-- These are gaps in coverage, not bugs in existing code.
+- **Canonical**: `sudo netplan set <key>=<value>`
+- **SysKnife argv**: `["sudo", "netplan", "set", "<key>=<value>"]` — params: `key`
+  (e.g. `ethernets.eth0.dhcp4`), `value`
+- **Status**: ✅ matches
+- **Notes**: `key=value` is passed as a single argument with no shell involved;
+  `validated_safe_arg` (executor boundary) rejects spaces in `value`, so quoting
+  a multi-word value would only inject literal quote bytes. Risk: High —
+  modifies the active netplan configuration in-memory. Run `NetplanApply`
+  afterward to activate the change.
+
+### NetplanGenerate — Regenerate backend config without applying
+
+- **Canonical**: `sudo netplan generate`
+- **SysKnife argv**: `["sudo", "netplan", "generate"]`
+- **Status**: ✅ matches
+- **Notes**: Risk: Medium. Regenerates `systemd-networkd` / `NetworkManager`
+  backend config files from the current netplan YAML but does not reload
+  interfaces — safe to use as a dry-run check before `NetplanApply`.
+
+### Not implemented — netplan get
+
+- **netplan get**: Returns merged netplan config as YAML across `/etc/netplan/`,
+  `/lib/netplan/`, and `/run/netplan/`. More canonical than the `find`-based
+  `NetplanGetConfig`, which only reads `/etc/netplan/`. See the `NetplanGetConfig`
+  divergence above — this is a coverage gap, not a bug in existing code.
 
 ---
 
@@ -343,10 +437,9 @@ Sources consulted:
 
 | # | Family | Action | Description |
 |---|--------|--------|-------------|
-| D1 | netplan | NetplanGetConfig | Uses `cat /etc/netplan/*.yaml` instead of `netplan get`. Does not merge `/lib/netplan/` or `/run/netplan/` overlays. |
+| D1 | netplan | NetplanGetConfig | Uses `find /etc/netplan -maxdepth 1 -name '*.yaml' -print -exec cat {} +` instead of `netplan get`. Only reads `/etc/netplan/`; does not merge `/lib/netplan/` or `/run/netplan/` overlays. |
 | D2 | apt | AptListInstalled | Uses `dpkg -l` (human-oriented, wide output). `dpkg-query -W -f='${Package}\t${Version}\n'` is cleaner for machine parsing. |
-| D3 | snap | SnapInstall | No `--classic` flag exposed. Snaps requiring classic confinement (e.g., VS Code, Go toolchain) will fail without it. |
-| D4 | snap | SnapRemove | No `--purge` flag exposed. User data snapshots are retained (safe default). |
+| D3 | snap | SnapRemove | No `--purge` flag exposed. User data snapshots are retained (safe default). |
 
 ---
 
@@ -473,10 +566,17 @@ which netplan && netplan --version
 ls /etc/netplan/
 
 # NetplanGetConfig (SysKnife approach)
-bash -c "cat /etc/netplan/*.yaml 2>/dev/null || echo 'no netplan files found'"
+find /etc/netplan -maxdepth 1 -name '*.yaml' -print -exec cat {} +
 
 # Canonical alternative
 sudo netplan get
+
+# NetplanGenerate (dry run — regenerates backend config, does not apply)
+sudo netplan generate
+echo "exit=$?"
+
+# NetplanSet (in-memory change — run NetplanApply after to activate)
+sudo netplan set ethernets.eth0.dhcp4=true
 
 # NetplanApply (safe: only apply if no config change)
 # WARNING: can disconnect SSH — run only on a console or via OOB access if changing IP

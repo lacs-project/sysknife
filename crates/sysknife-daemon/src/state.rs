@@ -45,10 +45,17 @@ pub struct DaemonState {
     /// `UbuntuReleaseUpgrade`, `AddLayeredPackage`, `RebaseSystem`). `None`
     /// when no such action is in flight.
     ///
-    /// The dispatcher checks this slot before claiming any mutating action.
-    /// If the slot is occupied the new request is rejected with a
-    /// `ConflictResponse` rather than racing the in-flight upgrade and
-    /// causing dpkg/rpm-ostree lock contention.
+    /// The guard is one-directional, not mutual exclusion between all
+    /// mutating actions: every mutating action checks this slot before it is
+    /// allowed to start, but only a High-risk + reboot-required action ever
+    /// *claims* it (sets it to `Some`). So while a High-risk +
+    /// reboot-required action is in flight, every other mutating action —
+    /// including another High-risk + reboot-required one — is rejected with
+    /// a `ConflictResponse` rather than racing the in-flight upgrade and
+    /// causing dpkg/rpm-ostree lock contention. An ordinary mutating action
+    /// (e.g. `StartService`) never claims the slot itself, so it neither
+    /// blocks other ordinary mutating actions nor blocks a High-risk +
+    /// reboot-required action that starts while it is still running.
     ///
     /// The slot is `Arc<Mutex<…>>` so cloned `DaemonState` values — one per
     /// IPC connection — all share the same underlying guard. `Mutex::lock`

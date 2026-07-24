@@ -50,11 +50,17 @@ pub const DISTRO_FAMILY_OTHER: &str = "other";
 /// Canonical names of every action in the SysKnife catalogue.
 ///
 /// This is the single source of truth for "is this string a valid action
-/// name?" — kept in `sysknife-types` (not `sysknife-brain`) so the
-/// `RequestEnvelope` deserializer can validate at the IPC boundary, and
-/// every other crate that touches an action name (the daemon's
-/// `policy::min_role_for_action`, the CLI's approval flow, the proto
-/// bridge) sees the same list without depending on the brain.
+/// name?" — kept in `sysknife-types` (not `sysknife-brain`) so every crate
+/// that validates an action name (the daemon's `policy::min_role_for_action`,
+/// the CLI's approval flow, the proto bridge) sees the same list without
+/// depending on the brain.
+///
+/// Note: [`RequestEnvelope::action_name`] itself is a plain `String` — it is
+/// **not** validated against this list at deserialization time; that would
+/// require a custom `Deserialize` impl this type does not have. Validation
+/// happens downstream, via [`ActionName::parse`] against the value once it
+/// has been pulled out of the envelope (the daemon does this before acting
+/// on a request).
 ///
 /// **Cross-module invariant:** `sysknife_brain::propose_plan::KNOWN_ACTIONS`
 /// (which pairs each name with an LLM-facing description) MUST list every

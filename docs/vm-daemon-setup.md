@@ -172,26 +172,39 @@ cat /sys/class/vsock/local_cid   # e.g. prints "10"
 vsock connections require a pre-shared token to authenticate the host to the
 daemon. This prevents other processes on the host from connecting.
 
+The token file holds **only the trimmed token itself** — no `role:` prefix.
+The role granted to a token-authenticated connection comes from a separate
+env var, `SYSKNIFE_TOKEN_ROLE` (default `Dev` if unset), read by the daemon
+process — not from the file contents.
+
+The default token path is `~/.config/sysknife/token` (the daemon's XDG config
+directory, next to `prefs.md`; respects `$XDG_CONFIG_HOME` if set), not
+`/etc/sysknife/token`.
+
 ```sh
 # On the host — generate a token
 openssl rand -hex 32
 # e.g.: a3f8c2d1e4b7a0f9...
 
 # On the guest — write the token to the daemon's token file
-sudo mkdir -p /etc/sysknife
-echo "admin:a3f8c2d1e4b7a0f9..." | sudo tee /etc/sysknife/token
-sudo chmod 600 /etc/sysknife/token
-sudo chown root:root /etc/sysknife/token
+mkdir -p ~/.config/sysknife
+echo "a3f8c2d1e4b7a0f9..." > ~/.config/sysknife/token
+chmod 600 ~/.config/sysknife/token
 
-# Restart the daemon to pick up the token
+# Grant Admin to token-authenticated vsock connections (default is Dev)
+sudo systemctl edit sysknife-daemon
+# Add under [Service]:
+#   Environment=SYSKNIFE_TOKEN_ROLE=admin
+
+# Restart the daemon to pick up the token and role
 sudo systemctl restart sysknife-daemon
 ```
 
-The token file format is `<role>:<hex-token>` on each line:
+The token file contains just the raw token, with no role prefix:
 
 ```text
-# /etc/sysknife/token
-admin:<paste-token-here>
+# ~/.config/sysknife/token
+<paste-token-here>
 ```
 
 ### Configure and connect (vsock)
@@ -259,8 +272,9 @@ Set `SYSKNIFE_TOKEN` in the `env` block of `.mcp.json` (see above).
 
 ### "authentication failed" on vsock
 
-The token on the host (`SYSKNIFE_TOKEN` in `.mcp.json`) does not match any
-entry in `/etc/sysknife/token` on the guest. Verify both match exactly.
+The token on the host (`SYSKNIFE_TOKEN` in `.mcp.json`) does not match the
+contents of `~/.config/sysknife/token` on the guest. Verify both match
+exactly (the file should hold just the raw token, no `role:` prefix).
 
 ### SSH tunnel drops when the terminal closes
 

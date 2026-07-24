@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 required=(
   "LICENSE"
   "README.md"
@@ -25,7 +27,7 @@ required=(
 
 missing=()
 for path in "${required[@]}"; do
-  if [[ ! -e "$path" ]]; then
+  if [[ ! -e "${repo_root}/${path}" ]]; then
     missing+=("$path")
   fi
 done

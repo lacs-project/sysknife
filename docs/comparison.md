@@ -52,7 +52,12 @@ On atomic hosts (Fedora/Silverblue via `rpm-ostree`), a failed change is
 automatically reverted to the prior deployment. No other tool in this space
 does this. Be aware of the scope limit: **on Ubuntu/apt there is no automatic
 rollback yet** — SysKnife still gates and audits, but does not undo package
-changes. See [Automatic Rollback](automatic-rollback.md).
+changes. That scope limit is enforced, not just documented: every catalogued
+action's `rollback_available` flag is tested against the actual rollback
+mechanism, so a Debian-family action (PPAs, netplan, GRUB kargs, Ubuntu Pro
+attach/detach included) cannot claim automatic rollback it doesn't have, even
+when it happens to have an obvious manual inverse. See
+[Automatic Rollback](automatic-rollback.md).
 
 ## Open beats closed — especially here
 

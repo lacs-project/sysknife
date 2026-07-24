@@ -86,7 +86,12 @@ pub fn pro_attach(token: &str) -> ActionSpec {
         mechanism: command_mechanism("sudo", ["pro", "attach", token]),
         risk_level: RiskLevel::High,
         reboot_required: false,
-        rollback_available: true,
+        // No automatic rollback: `rollback_available` means the daemon
+        // reverts the action on failure (`executor::rollback_spec_for`),
+        // which today only covers rpm-ostree deployment actions (see
+        // `docs/automatic-rollback.md`). `ProDetach` is a manual inverse an
+        // operator can run, not something the daemon does automatically.
+        rollback_available: false,
     }
 }
 
@@ -101,7 +106,8 @@ pub fn pro_detach() -> ActionSpec {
         mechanism: command_mechanism("sudo", ["pro", "detach", "--assume-yes"]),
         risk_level: RiskLevel::High,
         reboot_required: false,
-        rollback_available: true,
+        // No automatic rollback — see `pro_attach`'s doc for why.
+        rollback_available: false,
     }
 }
 
@@ -191,8 +197,8 @@ mod tests {
     }
 
     #[test]
-    fn pro_attach_rollback_available() {
-        assert!(pro_attach("tok123").rollback_available);
+    fn pro_attach_no_automatic_rollback() {
+        assert!(!pro_attach("tok123").rollback_available);
     }
 
     #[test]
@@ -251,8 +257,8 @@ mod tests {
     }
 
     #[test]
-    fn pro_detach_rollback_available() {
-        assert!(pro_detach().rollback_available);
+    fn pro_detach_no_automatic_rollback() {
+        assert!(!pro_detach().rollback_available);
     }
 
     #[test]

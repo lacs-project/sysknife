@@ -26,7 +26,7 @@ release.
 | **Other Fedora Atomic 41+ variants** | rpm-ostree family | Detection and shared action tests | **Experimental** until variant-specific VM evidence exists |
 | **Fedora Workstation / Server** | `dnf` family incomplete | Detection tests only | **Experimental** |
 
-The deterministic workspace baseline is 1,348 Rust tests plus 72 frontend
+The deterministic workspace baseline is 1,403 Rust tests plus 72 frontend
 tests. Those tests verify action construction, policy, approval, storage, and
 UI behavior, but they do not replace a real distribution VM run.
 

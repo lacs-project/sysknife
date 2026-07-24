@@ -467,7 +467,31 @@ async fn plan_intent_inner(intent: &str) -> Result<serde_json::Value, String> {
         .await
         .map_err(|e| format!("planning error: {e}"))?;
 
+    // Mirror the CLI's distro-routing guard (`runner::run_intent`) so MCP
+    // clients get a clear distro-mismatch message (e.g. "AptInstall is only
+    // valid on Debian-family distros") instead of a raw daemon error
+    // surfacing later out of `enrich_with_commands`/`preview`. The daemon
+    // remains the enforcement backstop regardless of this check.
+    check_plan_steps_distro(
+        plan.steps().iter().map(|s| s.action_name()),
+        distro.as_ref(),
+    )?;
+
     serde_json::to_value(&plan).map_err(|e| format!("serialization error: {e}"))
+}
+
+/// Validate every plan step's action name against the detected distro,
+/// reusing [`crate::distro_routing::check_action_distro`]. Extracted as a
+/// small pure function (taking action-name strings rather than a full
+/// `Plan`) so it can be unit-tested without constructing planner internals.
+fn check_plan_steps_distro<'a>(
+    action_names: impl Iterator<Item = &'a str>,
+    distro: Option<&sysknife_core::distro::DistroId>,
+) -> Result<(), String> {
+    for action_name in action_names {
+        crate::distro_routing::check_action_distro(action_name, distro)?;
+    }
+    Ok(())
 }
 
 /// Resolve and persist every step against the daemon. Planning fails closed if
@@ -905,6 +929,50 @@ pub async fn run_mcp_server() -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // check_plan_steps_distro — MCP planning-path distro guard
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn check_plan_steps_distro_rejects_mismatched_action() {
+        let distro = sysknife_core::distro::DistroId::Fedora { version: 41 };
+        let result = check_plan_steps_distro(["AptInstall"].into_iter(), Some(&distro));
+        assert!(
+            result.is_err(),
+            "AptInstall on Fedora must be rejected by the MCP planning path too"
+        );
+        assert!(result.unwrap_err().contains("Debian-family"));
+    }
+
+    #[test]
+    fn check_plan_steps_distro_allows_generic_action() {
+        let distro = sysknife_core::distro::DistroId::Fedora { version: 41 };
+        let result = check_plan_steps_distro(["GetSystemState"].into_iter(), Some(&distro));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_plan_steps_distro_allows_all_when_distro_unknown() {
+        // Detection failure (None) must never block planning -- the daemon
+        // is the enforcement backstop in that case.
+        let result = check_plan_steps_distro(["AptInstall", "RebaseSystem"].into_iter(), None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_plan_steps_distro_stops_at_first_mismatched_step() {
+        let distro = sysknife_core::distro::DistroId::Ubuntu {
+            major: 24,
+            minor: 4,
+        };
+        let result = check_plan_steps_distro(
+            ["GetSystemState", "RebaseSystem", "AptInstall"].into_iter(),
+            Some(&distro),
+        );
+        assert!(result.is_err(), "RebaseSystem on Ubuntu must be rejected");
+        assert!(result.unwrap_err().contains("Fedora-family"));
+    }
 
     #[tokio::test]
     async fn enrich_with_commands_fails_closed_when_daemon_unreachable() {

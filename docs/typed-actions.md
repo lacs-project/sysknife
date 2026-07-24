@@ -132,8 +132,9 @@ but it has a real cost:
   any command it comes up with."
 - **Coverage gaps.** A user's request that doesn't map to any action in the
   catalogue gets a "I can't do that yet" rather than a best-effort shell
-  command. `docs/ubuntu-action-gap-analysis.md` tracks known gaps in the
-  Debian/Ubuntu action set as one example of this in practice.
+  command. `docs/ubuntu-action-gap-analysis.md` is a historical (2026-04-25)
+  snapshot of this tradeoff playing out in the Debian/Ubuntu action set —
+  almost all of the gaps it identified have since been closed.
 
 SysKnife accepts this tradeoff deliberately: a finite, auditable vocabulary
 that the daemon fully understands is worth more than an open-ended one the
