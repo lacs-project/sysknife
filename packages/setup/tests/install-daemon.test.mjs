@@ -89,7 +89,12 @@ test('userUnitContent does not reintroduce a resolved ~/.local/share socket', ()
 test('userUnitContent still persists the SQLite database under ~/.local/share (state, not the socket, stays there)', () => {
   const unit = userUnitContent('/home/x/.local/bin/sysknife-daemon');
   const expectedDb = path.join(os.homedir(), '.local', 'share', 'sysknife', 'daemon.sqlite');
-  assert.match(unit, new RegExp(`SYSKNIFE_DATABASE_PATH=${expectedDb.replace(/[/.]/g, '\\$&')}`));
+  // Plain substring assertion (no constructed RegExp) so a path containing
+  // regex metacharacters can't break the match or the escaping.
+  assert.ok(
+    unit.includes(`SYSKNIFE_DATABASE_PATH=${expectedDb}`),
+    `unit should contain SYSKNIFE_DATABASE_PATH=${expectedDb}`,
+  );
 });
 
 test('userUnitContent wires the given daemon binary path as ExecStart', () => {
