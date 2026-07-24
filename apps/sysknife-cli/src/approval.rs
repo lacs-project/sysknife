@@ -6,7 +6,7 @@
 //! Security invariant: `--yes` NEVER auto-approves HIGH risk steps regardless
 //! of any flag combination. This is hardcoded, not configurable.
 
-use sysknife_brain::planner::{Plan, PlanRiskLevel};
+use sysknife_brain::planner::{AuthorizedPlan, PlanRiskLevel};
 
 /// The maximum risk level that `--yes` can auto-approve.
 /// `--max-risk high` with `--yes` still only auto-approves up to MEDIUM.
@@ -138,7 +138,7 @@ impl ApprovalPolicy {
     /// Returns `RequiresInteraction` if any step needs a prompt and we're
     /// non-interactive (short-circuits).
     /// Returns `RequiresPrompt` if at least one step needs human confirmation.
-    pub fn decide_plan(&self, plan: &Plan) -> ApprovalDecision {
+    pub fn decide_plan(&self, plan: &AuthorizedPlan) -> ApprovalDecision {
         let mut worst = ApprovalDecision::AutoApproved;
         for step in plan.steps() {
             let d = self.decide_step(step.risk_level());
@@ -171,7 +171,10 @@ mod tests {
         .unwrap()
     }
 
-    fn plan(risks: &[PlanRiskLevel]) -> Plan {
+    // The policy gates on authoritative risk, so tests feed the desired risk
+    // levels through `assume_authorized` (the risks here *are* the values under
+    // test — no ActionSpec substitution needed).
+    fn plan(risks: &[PlanRiskLevel]) -> AuthorizedPlan {
         let steps: Vec<PlanStep> = risks.iter().map(|r| step(r.clone())).collect();
         Plan::new(
             "test".into(),
@@ -180,6 +183,7 @@ mod tests {
             steps,
         )
         .unwrap()
+        .assume_authorized()
     }
 
     fn policy(

@@ -10,7 +10,9 @@
 //! # Security model
 //!
 //! - Unix role is derived from the peer process's Linux group membership
-//!   via `SO_PEERCRED` + `/proc/{pid}/status` + `/etc/group`. The shell never
+//!   via `SO_PEERCRED` + `/proc/{pid}/status` + `/etc/group`, with the peer
+//!   pinned by a pidfd (`SO_PEERPIDFD`, Linux 6.5+) to guard the supplementary
+//!   group read against PID reuse (see `resolve_caller_role`). The shell never
 //!   supplies its own role.
 //! - Vsock role is derived from a pre-shared token validated against a file;
 //!   the token is generated at setup time and distributed out-of-band.
@@ -20,6 +22,9 @@
 //!   preview and again before execute.
 
 use std::sync::Arc;
+
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -384,6 +389,69 @@ struct JobResult {
 // Role resolution
 // ---------------------------------------------------------------------------
 
+/// `SO_PEERPIDFD` getsockopt option (Linux 6.5+). Value 77 is from the
+/// asm-generic UAPI `socket.h`, which x86_64 and aarch64 — SysKnife's only
+/// release targets — use. Defined locally so the code builds against libc
+/// versions that predate the constant.
+#[cfg(target_os = "linux")]
+const SO_PEERPIDFD: libc::c_int = 77;
+
+/// Obtain a pidfd pinned to the process that opened this connection, via
+/// `SO_PEERPIDFD`. Unlike `pidfd_open(pid)`, this has no PID-based lookup and so
+/// no reuse race — the kernel pins the actual peer captured at `connect()`.
+///
+/// Returns `None` when the kernel does not support the option (e.g. Ubuntu
+/// 22.04's 5.15 kernel), in which case the caller falls back to the best-effort
+/// `/proc/{pid}` path.
+#[cfg(target_os = "linux")]
+fn peer_pidfd(stream: &UnixStream) -> Option<OwnedFd> {
+    let mut fd: libc::c_int = -1;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: getsockopt writes at most `len` bytes into `fd` (a c_int) and
+    // updates `len`; we pass the true buffer size and check the return code.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            SO_PEERPIDFD,
+            (&mut fd as *mut libc::c_int).cast::<libc::c_void>(),
+            &mut len,
+        )
+    };
+    if rc != 0 || fd < 0 {
+        return None;
+    }
+    // SAFETY: getsockopt returned a fresh, owned fd; take sole ownership so it is
+    // closed on drop.
+    Some(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Returns `true` while the pinned peer process has not yet been reaped — i.e.
+/// its PID cannot have been recycled. Uses `pidfd_send_signal(pidfd, 0)`, whose
+/// signal `0` performs an existence/permission check with no delivery: success
+/// or any errno other than `ESRCH` means the process still exists; `ESRCH` means
+/// it has been reaped.
+#[cfg(target_os = "linux")]
+fn pidfd_peer_still_live(pidfd: &OwnedFd) -> bool {
+    // SAFETY: FFI call with a valid owned pidfd; signal 0 delivers nothing, and
+    // NULL siginfo + 0 flags are the documented "just check" form.
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            pidfd.as_raw_fd(),
+            0,
+            std::ptr::null::<libc::c_void>(),
+            0,
+        )
+    };
+    if rc == 0 {
+        return true;
+    }
+    // A reaped process reports ESRCH; anything else (e.g. EPERM) still means the
+    // process exists, so its PID cannot have been recycled.
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
 /// Resolve the caller's `CallerRole` from the peer process's group membership.
 ///
 /// Uses `SO_PEERCRED` (via `peer_cred()`) to obtain the peer PID and primary
@@ -393,6 +461,19 @@ struct JobResult {
 /// only supplementary groups — a process whose primary group is `wheel` would
 /// otherwise be misclassified as `Observer`. Falls back to `Observer` on any
 /// error.
+///
+/// # PID-reuse hardening
+///
+/// The uid/gid/pid from `SO_PEERCRED` are captured by the kernel at `connect()`
+/// and are race-free, but the *supplementary* group set is read from
+/// `/proc/{pid}/status` after the fact. If the peer exited and its PID were
+/// recycled before that read, we would read a different process's groups. On
+/// Linux 6.5+ (Ubuntu 24.04 / 26.04) we pin the peer with a pidfd via
+/// `peer_pidfd` and, after reading `/proc`, confirm the pinned process was not
+/// reaped during the read; if it was, the supplementary set is untrustworthy and
+/// is dropped, keeping only the race-free primary GID. On older kernels (e.g.
+/// Ubuntu 22.04) the pidfd is unavailable and the read is best-effort, as before
+/// — no worse than the previous behavior.
 pub fn resolve_caller_role(stream: &UnixStream) -> CallerRole {
     let (pid, primary_gid) = match stream.peer_cred() {
         Ok(cred) => {
@@ -407,10 +488,32 @@ pub fn resolve_caller_role(stream: &UnixStream) -> CallerRole {
             return CallerRole::Observer;
         }
     };
+
+    // Pin the connecting peer *before* the /proc read so PID reuse can be
+    // detected afterward. None on kernels without SO_PEERPIDFD (< 6.5).
+    #[cfg(target_os = "linux")]
+    let peer_fd = peer_pidfd(stream);
+
     // Read /etc/group once and build a lookup map — avoids N+1 file reads when
     // a process has many supplementary groups (one read per GID in the old code).
     let gid_map = read_gid_map();
     let mut groups = groups_for_pid(pid, &gid_map);
+
+    // If the pinned peer was reaped while we read /proc, its PID may have been
+    // recycled and the supplementary groups belong to a different process — drop
+    // them and fall back to the race-free primary GID only.
+    #[cfg(target_os = "linux")]
+    if let Some(ref fd) = peer_fd {
+        if !pidfd_peer_still_live(fd) {
+            eprintln!(
+                "[sysknife-daemon] WARNING: peer PID {pid} was reaped while resolving its \
+                 groups (possible PID reuse); ignoring supplementary groups and using the \
+                 SO_PEERCRED primary GID only"
+            );
+            groups.clear();
+        }
+    }
+
     // Include the primary GID from SO_PEERCRED. It is not listed in the
     // supplementary Groups: line so must be resolved and added explicitly.
     if let Some(name) = gid_map.get(&primary_gid) {
@@ -2392,6 +2495,35 @@ mod tests {
     };
     use std::io;
     use tempfile::tempdir;
+
+    // ------------------------------------------------------------------
+    // PID-reuse hardening (SO_PEERPIDFD)
+    // ------------------------------------------------------------------
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn peer_pidfd_reports_live_self() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        // On kernels with SO_PEERPIDFD the pinned peer is this very test process,
+        // which is obviously still alive, so the liveness check must return true.
+        // On older kernels peer_pidfd returns None and there is nothing to assert
+        // (the fallback path is exercised by resolve_caller_role below).
+        if let Some(fd) = peer_pidfd(&a) {
+            assert!(
+                pidfd_peer_still_live(&fd),
+                "the connecting (self) process must read as live"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_caller_role_on_pair_does_not_panic() {
+        // Peer is the test process; the resolved role depends on the test user's
+        // groups, so we only assert the SO_PEERCRED + optional-pidfd path resolves
+        // without panicking.
+        let (a, _b) = UnixStream::pair().unwrap();
+        let _role = resolve_caller_role(&a);
+    }
 
     // ------------------------------------------------------------------
     // Credential redaction

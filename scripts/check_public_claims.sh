@@ -30,7 +30,7 @@ reject_pattern() {
 }
 
 reject_pattern '1,(2[2-9][0-9]|3[0-3][0-9]|34[0-7])( Rust)? tests' \
-    'test count is stale; the release baseline is 1,403 Rust tests' \
+    'test count is stale; the release baseline is 1,405 Rust tests' \
     "${claim_files[@]}"
 reject_pattern 'until npm publish lands|publish[- ]pending' \
     'setup package is documented as unpublished' "${claim_files[@]}"
@@ -60,8 +60,8 @@ required_test_count_docs=(
     "$repo_root/docs/distro-support.md"
 )
 for path in "${required_test_count_docs[@]}"; do
-    if ! grep -Fq '1,403 Rust tests' "$path"; then
-        printf 'Verified test baseline missing from %s: expected 1,403 Rust tests\n' \
+    if ! grep -Fq '1,405 Rust tests' "$path"; then
+        printf 'Verified test baseline missing from %s: expected 1,405 Rust tests\n' \
             "$path" >&2
         exit 1
     fi

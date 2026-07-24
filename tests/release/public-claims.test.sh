@@ -47,7 +47,7 @@ assert_rejected() {
     fi
 }
 
-sed -i 's/1,403 Rust tests/1,256 Rust tests/' "$fixture/README.md"
+sed -i 's/1,405 Rust tests/1,256 Rust tests/' "$fixture/README.md"
 assert_rejected 'old test count'
 cp "$repo_root/README.md" "$fixture/README.md"
 

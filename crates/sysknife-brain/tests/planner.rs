@@ -275,7 +275,7 @@ async fn single_turn_propose_plan_returns_plan() {
     assert_eq!(plan.steps().len(), 1);
     assert_eq!(plan.steps()[0].action_name(), "GetSystemState");
     assert!(!plan.steps()[0].approval_required());
-    assert_eq!(plan.steps()[0].risk_level().as_str(), "low");
+    assert_eq!(plan.steps()[0].proposed_risk_level().as_str(), "low");
 }
 
 #[tokio::test]

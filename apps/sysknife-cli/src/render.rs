@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::{OwoColorize, Stream};
-use sysknife_brain::planner::{Plan, PlanRiskLevel};
+use sysknife_brain::planner::{AuthorizedPlan, PlanRiskLevel};
 use sysknife_types::{JobState, PreviewEnvelope, ResultEnvelope};
 
 use crate::runner::Logger;
@@ -80,7 +80,10 @@ pub fn risk_colored(risk: &PlanRiskLevel) -> String {
 // ---------------------------------------------------------------------------
 
 /// Print the plan summary and step list to stdout (via `log`).
-pub fn print_plan(plan: &Plan, log: &Logger) {
+///
+/// Takes an [`AuthorizedPlan`] so the risk badges shown to the operator are the
+/// authoritative `ActionSpec` risks, never the LLM's proposal.
+pub fn print_plan(plan: &AuthorizedPlan, log: &Logger) {
     log.println("");
     log.println(&format!(
         "  {}",
@@ -93,7 +96,7 @@ pub fn print_plan(plan: &Plan, log: &Logger) {
             .repeat(50)
             .if_supports_color(Stream::Stdout, |t| t.dimmed())
     ));
-    for (i, step) in plan.steps().iter().enumerate() {
+    for (i, step) in plan.steps().enumerate() {
         let risk_badge = risk_colored(step.risk_level());
         let approval_label = if step.approval_required() {
             "approval required"

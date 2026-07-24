@@ -1,6 +1,6 @@
 [package]
 name = "sysknife-daemon"
-version = "0.2.9"
+version = "0.2.10"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -11,8 +11,8 @@ keywords = ["linux", "sysadmin", "daemon", "security"]
 categories = ["command-line-utilities", "os::linux-apis"]
 
 [dependencies]
-sysknife-core = { path = "../sysknife-core", version = "0.2.9" }
-sysknife-types = { path = "../sysknife-types", version = "0.2.9" }
+sysknife-core = { path = "../sysknife-core", version = "0.2.10" }
+sysknife-types = { path = "../sysknife-types", version = "0.2.10" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -27,6 +27,9 @@ hex = "0.4"
 subtle = "2"
 zeroize = { version = "1", features = ["derive"] }
 tokio-vsock = "0.7.2"
+# SO_PEERPIDFD getsockopt + pidfd_send_signal for race-free peer-role resolution
+# on the Unix socket (see dispatcher::resolve_caller_role). Linux-only path.
+libc = "0.2"
 
 # Postgres backend (#147). Cloud-provider compatible via rustls + webpki-roots.
 # Audit-log writes use the same wire-format-compatible URL across AWS RDS,
@@ -53,7 +56,7 @@ sqlx-postgres = { version = "0.9", default-features = false, features = [
 chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
-sysknife-brain = { path = "../sysknife-brain", version = "0.2.9" }
+sysknife-brain = { path = "../sysknife-brain", version = "0.2.10" }
 serde_json = { workspace = true }
 syslog_loose = "0.23"
 tempfile = "3"

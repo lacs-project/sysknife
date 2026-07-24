@@ -1,6 +1,6 @@
 [package]
 name = "sysknife-types"
-version = "0.2.9"
+version = "0.2.10"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -10,7 +10,7 @@ keywords = ["llm", "ai-agent", "linux", "actions", "types"]
 categories = ["command-line-utilities", "os::linux-apis"]
 
 [dependencies]
-sysknife-proto = { path = "../sysknife-proto", version = "0.2.9" }
+sysknife-proto = { path = "../sysknife-proto", version = "0.2.10" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -1,6 +1,6 @@
 [package]
 name = "sysknife-daemon-test"
-version = "0.2.9"
+version = "0.2.10"
 publish = false
 edition.workspace = true
 license.workspace = true
@@ -13,6 +13,6 @@ name = "sysknife-daemon-test"
 path = "src/main.rs"
 
 [dependencies]
-sysknife-daemon = { path = "../sysknife-daemon", version = "0.2.9" }
+sysknife-daemon = { path = "../sysknife-daemon", version = "0.2.10" }
 serde_json = { workspace = true }
 tokio = { workspace = true }
