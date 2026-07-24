@@ -18,6 +18,10 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   closing a PID-reuse race on that read. The uid/gid/pid from `SO_PEERCRED` were
   already race-free; on older kernels (Ubuntu 22.04) the read stays best-effort,
   exactly as before.
+- Removed a stale, unused `apps/sysknife-shell/pnpm-lock.yaml` that still pinned
+  `postcss` 8.5.10 and kept a high-severity advisory open. The GUI is built with
+  npm (`package-lock.json`, already on `postcss` 8.5.20); nothing referenced the
+  pnpm lockfile.
 
 ### Changed
 
