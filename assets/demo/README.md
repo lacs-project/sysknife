@@ -30,13 +30,17 @@ mv assets/demo/mcp-flow.optimized.gif assets/demo/mcp-flow.gif
 
 ---
 
-## CLI demo (secondary / CLI-specific docs)
+## CLI demo (secondary — CLI section of the README + CLI-specific docs)
 
 `demo.tape` + `demo-mock.sh` → `demo.gif`
 
 Shows the standalone `sysknife` CLI: planning spinner, plan card, approval
 prompt, streamed step execution, audit hash. Mirrors the render styling of
 `apps/sysknife-cli/src/render.rs`.
+
+The tape runs `demo-mock.sh` inside a VHS `Hide`/`Show` block so the recording
+opens directly on the `$ sysknife "…"` prompt, not on the bootstrap command that
+launches the mock.
 
 ### Regenerate CLI GIF
 
