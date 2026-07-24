@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [0.2.10] — 2026-07-24
+
+### Security
+
+- Unix caller-role resolution now pins the connecting peer with a pidfd
+  (`SO_PEERPIDFD`, Linux 6.5+ / Ubuntu 24.04+) and confirms it was not reaped
+  before trusting the supplementary group set read from `/proc/{pid}/status`,
+  closing a PID-reuse race on that read. The uid/gid/pid from `SO_PEERCRED` were
+  already race-free; on older kernels (Ubuntu 22.04) the read stays best-effort,
+  exactly as before.
+- Removed a stale, unused `apps/sysknife-shell/pnpm-lock.yaml` that still pinned
+  `postcss` 8.5.10 and kept a high-severity advisory open. The GUI is built with
+  npm (`package-lock.json`, already on `postcss` 8.5.20); nothing referenced the
+  pnpm lockfile.
+
+### Changed
+
+- **Planner risk is now type-enforced as authoritative at the approval gate.** A
+  raw `Plan` (LLM output) exposes only `proposed_risk_level()`; the CLI converts
+  it to an `AuthorizedPlan` — substituting the daemon's `ActionSpec` risk, the
+  single source of truth — before any gate, and only an `AuthorizedPlan`'s steps
+  expose the `risk_level()` the gate reads. This makes it structurally impossible
+  to auto-approve against the model's proposed risk, reinforcing the v0.2.7
+  runtime fix at the type level. No behavior change.
+- Supply-chain hardening: the `Dockerfile` base images are pinned by
+  manifest-list digest (not just tag), and the GitHub Pages docs workflow now
+  verifies the sha256 of the mdBook and mdbook-admonish release tarballs before
+  extracting them. Dependabot continues to bump both.
+
 ## [0.2.9] — 2026-07-23
 
 ### Security
@@ -202,6 +231,7 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   (non-repudiable, third-party verifiable), with signed checkpoints guarding
   against truncation.
 
+[0.2.10]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.10
 [0.2.9]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.9
 [0.2.8]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.8
 [0.2.7]: https://github.com/lacs-project/sysknife/releases/tag/v0.2.7

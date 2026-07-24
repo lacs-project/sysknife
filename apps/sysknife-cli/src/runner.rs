@@ -170,22 +170,10 @@ fn rfc3339_to_unix(s: &str) -> Option<i64> {
 }
 
 // ---------------------------------------------------------------------------
-// highest_risk
-// ---------------------------------------------------------------------------
-
-/// Return the highest risk level present in `plan`.
-///
-/// Returns `None` only if the plan has no steps; in practice `Plan::new`
-/// enforces at least one step, so callers may safely `.expect` the result.
-pub fn highest_risk(plan: &sysknife_brain::planner::Plan) -> Option<&PlanRiskLevel> {
-    plan.steps()
-        .iter()
-        .max_by_key(|s| plan_risk_rank(s.risk_level()))
-        .map(|s| s.risk_level())
-}
-
-// ---------------------------------------------------------------------------
 // authoritative_plan_risk + risk-consistency helpers
+//
+// The highest-risk-across-a-plan query lives on `AuthorizedPlan::highest_risk`
+// so it can only be asked of a plan whose risks are authoritative.
 // ---------------------------------------------------------------------------
 
 /// Map the daemon's `RiskLevel` into the planner's risk enum.
@@ -194,14 +182,6 @@ fn plan_risk_of(risk: RiskLevel) -> PlanRiskLevel {
         RiskLevel::Low => PlanRiskLevel::Low,
         RiskLevel::Medium => PlanRiskLevel::Medium,
         RiskLevel::High => PlanRiskLevel::High,
-    }
-}
-
-fn plan_risk_rank(risk: &PlanRiskLevel) -> u8 {
-    match risk {
-        PlanRiskLevel::Low => 0,
-        PlanRiskLevel::Medium => 1,
-        PlanRiskLevel::High => 2,
     }
 }
 
@@ -235,7 +215,8 @@ fn authoritative_plan_risk(action_name: &str) -> PlanRiskLevel {
 /// refuse to proceed when it is higher — the CLI must never execute a step at a
 /// higher risk than the operator approved.
 fn daemon_risk_within_approved(approved: &PlanRiskLevel, daemon: &PlanRiskLevel) -> bool {
-    plan_risk_rank(daemon) <= plan_risk_rank(approved)
+    // PlanRiskLevel: Ord (Low < Medium < High).
+    daemon <= approved
 }
 
 pub async fn run_approve(
@@ -992,11 +973,11 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     // approving. Emitted to stderr so it never pollutes `--json` stdout.
     for step in plan.steps() {
         let authoritative = authoritative_plan_risk(step.action_name());
-        if *step.risk_level() != authoritative {
+        if *step.proposed_risk_level() != authoritative {
             log.print_stderr(&format!(
                 "sysknife: {} — planner rated {} risk; using {} (ActionSpec-derived)",
                 step.action_name(),
-                step.risk_level().as_str(),
+                step.proposed_risk_level().as_str(),
                 authoritative.as_str(),
             ));
         }
@@ -1010,14 +991,17 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     // This uses the CLI's *own* linked catalogue; the execution loop below
     // re-validates each step against the live daemon preview so a CLI/daemon
     // version skew can never execute above the approved risk.
-    let plan = plan.with_authoritative_risks(authoritative_plan_risk);
+    //
+    // From here on `plan` is an `AuthorizedPlan`: its steps expose the
+    // authoritative `risk_level()`, so every gate below is structurally
+    // prevented from reading the LLM's proposed risk.
+    let plan = plan.into_authorized(authoritative_plan_risk);
 
     // ---- print plan --------------------------------------------------------
 
     if opts.json {
         let steps: Vec<Value> = plan
             .steps()
-            .iter()
             .map(|s| {
                 json!({
                     "action": s.action_name(),
@@ -1053,7 +1037,7 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
             ApprovalDecision::AutoApproved => {}
             ApprovalDecision::RequiresPrompt => {
                 let n = plan.steps().len();
-                let highest = highest_risk(&plan).expect("plan has steps");
+                let highest = plan.highest_risk().expect("plan has steps");
                 let msg = if opts.json {
                     "Execute this plan?".to_owned()
                 } else {
@@ -1070,8 +1054,9 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
             }
             ApprovalDecision::RequiresInteraction => return Err(CliError::NonInteractive),
             ApprovalDecision::ExceedsCeiling => {
-                let highest =
-                    highest_risk(&plan).expect("ExceedsCeiling implies at least one step");
+                let highest = plan
+                    .highest_risk()
+                    .expect("ExceedsCeiling implies at least one step");
                 return Err(CliError::RiskCeilingExceeded {
                     highest: highest.clone(),
                     ceiling: opts
@@ -1363,7 +1348,7 @@ async fn prompt_exact(msg: &str, expected: &str) -> bool {
 mod tests {
     use super::*;
     use sysknife_brain::action_name::ActionName;
-    use sysknife_brain::planner::{Plan, PlanStep};
+    use sysknife_brain::planner::{AuthorizedPlan, Plan, PlanStep};
 
     /// Serialize env-var mutations so concurrent tests do not race on
     /// `SYSKNIFE_SOCKET`.  All tests that call `set_var` / `remove_var` must
@@ -1495,7 +1480,9 @@ mod tests {
         .unwrap()
     }
 
-    fn make_plan(risks: &[PlanRiskLevel]) -> Plan {
+    // The risks fed here are already the values under test, so wrap as
+    // authoritative directly — highest_risk lives on AuthorizedPlan.
+    fn make_plan(risks: &[PlanRiskLevel]) -> AuthorizedPlan {
         Plan::new(
             "test".into(),
             "test plan".into(),
@@ -1503,6 +1490,7 @@ mod tests {
             risks.iter().map(|r| make_step(r.clone())).collect(),
         )
         .unwrap()
+        .assume_authorized()
     }
 
     // Note: Plan::new rejects empty step lists (PlanValidationError), so
@@ -1512,13 +1500,13 @@ mod tests {
     #[test]
     fn highest_risk_single_low() {
         let plan = make_plan(&[PlanRiskLevel::Low]);
-        assert_eq!(highest_risk(&plan), Some(&PlanRiskLevel::Low));
+        assert_eq!(plan.highest_risk(), Some(&PlanRiskLevel::Low));
     }
 
     #[test]
     fn highest_risk_all_high() {
         let plan = make_plan(&[PlanRiskLevel::High, PlanRiskLevel::High]);
-        assert_eq!(highest_risk(&plan), Some(&PlanRiskLevel::High));
+        assert_eq!(plan.highest_risk(), Some(&PlanRiskLevel::High));
     }
 
     #[test]
@@ -1528,13 +1516,13 @@ mod tests {
             PlanRiskLevel::High,
             PlanRiskLevel::Medium,
         ]);
-        assert_eq!(highest_risk(&plan), Some(&PlanRiskLevel::High));
+        assert_eq!(plan.highest_risk(), Some(&PlanRiskLevel::High));
     }
 
     #[test]
     fn highest_risk_low_medium_picks_medium() {
         let plan = make_plan(&[PlanRiskLevel::Low, PlanRiskLevel::Medium]);
-        assert_eq!(highest_risk(&plan), Some(&PlanRiskLevel::Medium));
+        assert_eq!(plan.highest_risk(), Some(&PlanRiskLevel::Medium));
     }
 
     // -----------------------------------------------------------------------
@@ -1579,14 +1567,14 @@ mod tests {
         .unwrap();
         let policy = ApprovalPolicy::new(true, Some(MaxRisk::Medium), false, false);
         assert_eq!(
-            policy.decide_plan(&under_rated),
+            policy.decide_plan(&under_rated.clone().assume_authorized()),
             ApprovalDecision::AutoApproved,
             "sanity: the LLM's Low rating alone would have auto-approved"
         );
 
         // ...but substituting the spec-derived risk restores the gate: RebootSystem
         // is High, which exceeds the Medium auto-approval ceiling.
-        let corrected = under_rated.with_authoritative_risks(authoritative_plan_risk);
+        let corrected = under_rated.into_authorized(authoritative_plan_risk);
         assert_eq!(
             policy.decide_plan(&corrected),
             ApprovalDecision::ExceedsCeiling,
@@ -1617,11 +1605,11 @@ mod tests {
         .unwrap();
         let policy = ApprovalPolicy::new(true, None, false, false);
         assert_eq!(
-            policy.decide_plan(&plan),
+            policy.decide_plan(&plan.clone().assume_authorized()),
             ApprovalDecision::AutoApproved,
             "sanity: bare --yes would auto-approve the Low the planner claimed"
         );
-        let corrected = plan.with_authoritative_risks(authoritative_plan_risk);
+        let corrected = plan.into_authorized(authoritative_plan_risk);
         assert_eq!(
             policy.decide_plan(&corrected),
             ApprovalDecision::RequiresPrompt,
@@ -1651,11 +1639,11 @@ mod tests {
         .unwrap();
         let policy = ApprovalPolicy::new(true, None, true, false);
         assert_eq!(
-            policy.decide_plan(&plan),
+            policy.decide_plan(&plan.clone().assume_authorized()),
             ApprovalDecision::AutoApproved,
             "sanity: the planner's Low would have auto-run unattended"
         );
-        let corrected = plan.with_authoritative_risks(authoritative_plan_risk);
+        let corrected = plan.into_authorized(authoritative_plan_risk);
         assert_eq!(
             policy.decide_plan(&corrected),
             ApprovalDecision::RequiresInteraction,
@@ -1686,11 +1674,11 @@ mod tests {
         .unwrap();
         let policy = ApprovalPolicy::new(true, Some(MaxRisk::Low), false, false);
         assert_eq!(
-            policy.decide_plan(&plan),
+            policy.decide_plan(&plan.clone().assume_authorized()),
             ApprovalDecision::ExceedsCeiling,
             "sanity: the planner's inflated High would block a safe read-only action"
         );
-        let corrected = plan.with_authoritative_risks(authoritative_plan_risk);
+        let corrected = plan.into_authorized(authoritative_plan_risk);
         assert_eq!(
             policy.decide_plan(&corrected),
             ApprovalDecision::AutoApproved,

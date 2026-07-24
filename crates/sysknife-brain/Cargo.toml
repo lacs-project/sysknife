@@ -1,6 +1,6 @@
 [package]
 name = "sysknife-brain"
-version = "0.2.9"
+version = "0.2.10"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -12,8 +12,8 @@ categories = ["command-line-utilities", "os::linux-apis"]
 [dependencies]
 async-trait = { workspace = true }
 futures = "0.3"
-sysknife-core = { path = "../sysknife-core", version = "0.2.9" }
-sysknife-types = { path = "../sysknife-types", version = "0.2.9" }
+sysknife-core = { path = "../sysknife-core", version = "0.2.10" }
+sysknife-types = { path = "../sysknife-types", version = "0.2.10" }
 async-openai = { version = "0.41", features = ["chat-completion"] }
 # rig-core 0.40 renamed its lib crate `rig` -> `rig_core`; alias it back to `rig`
 # so existing `use rig::...` paths keep working.

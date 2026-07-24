@@ -457,7 +457,9 @@ pub(crate) fn plan_to_response(plan: Plan, curated: &CuratedState) -> PlanRespon
         .map(|step| PlanStepResponse {
             action_name: step.action_name().to_string(),
             summary: step.summary().to_string(),
-            risk_level: step.risk_level().as_str().to_string(),
+            // The GUI displays the planner's proposed risk (it does not run the
+            // CLI's ActionSpec substitution); the accessor name reflects that.
+            risk_level: step.proposed_risk_level().as_str().to_string(),
             approval_required: step.approval_required(),
             params: step.params().clone(),
         })

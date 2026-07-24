@@ -179,7 +179,9 @@ pub enum PlanEvent {
 /// Determines whether the step requires explicit user approval before execution.
 /// Serialises to lowercase strings (`"low"`, `"medium"`, `"high"`) matching the
 /// values expected by `parse_proposed_plan` and the system prompt.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// Ordering is declaration order (`Low < Medium < High`), so risk levels compare
+/// directly (`daemon <= approved`, `steps.max()`) without a separate rank table.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PlanRiskLevel {
     Low,
@@ -246,11 +248,18 @@ impl PlanStep {
         &self.summary
     }
 
-    pub fn risk_level(&self) -> &PlanRiskLevel {
+    /// The LLM's *proposed* risk for this step. NOT authoritative — it must never
+    /// drive an approval decision. Convert the plan with [`Plan::into_authorized`]
+    /// and gate on [`AuthorizedStep::risk_level`], which reflects the daemon's
+    /// `ActionSpec` (the single source of truth). This accessor exists only for
+    /// display of the raw proposal and for the proposed-vs-authoritative
+    /// mismatch warning.
+    pub fn proposed_risk_level(&self) -> &PlanRiskLevel {
         &self.risk_level
     }
 
-    /// Derived from risk level: `true` for Medium and High, `false` for Low.
+    /// Derived from the *proposed* risk level: `true` for Medium and High,
+    /// `false` for Low. For gating, prefer [`AuthorizedStep::approval_required`].
     pub fn approval_required(&self) -> bool {
         !matches!(self.risk_level, PlanRiskLevel::Low)
     }
@@ -325,19 +334,103 @@ impl Plan {
         &self.steps
     }
 
-    /// Replace every step's risk level using `risk_for`, keyed by action name.
+    /// Consume this plan and replace every step's risk with the authoritative
+    /// value from `risk_for` (keyed by action name), yielding an
+    /// [`AuthorizedPlan`].
     ///
-    /// The CLI uses this to substitute the daemon's `ActionSpec`-derived risk
-    /// (the single source of truth) for the LLM's *proposed* risk, so both the
-    /// plan the operator sees and the auto-approval gate reflect authoritative
-    /// risk rather than a model guess. Brain stays agnostic to the daemon's
-    /// action catalogue: the caller supplies the mapping.
+    /// The CLI supplies the daemon's `ActionSpec`-derived risk (the single source
+    /// of truth) so both the plan the operator sees and the auto-approval gate
+    /// reflect authoritative risk rather than a model guess. Brain stays agnostic
+    /// to the daemon's action catalogue: the caller supplies the mapping. This is
+    /// the only substituting constructor of `AuthorizedPlan`, so the gate can
+    /// never be handed un-substituted (LLM-proposed) risk.
     #[must_use]
-    pub fn with_authoritative_risks(mut self, risk_for: impl Fn(&str) -> PlanRiskLevel) -> Self {
+    pub fn into_authorized(mut self, risk_for: impl Fn(&str) -> PlanRiskLevel) -> AuthorizedPlan {
         for step in &mut self.steps {
             step.risk_level = risk_for(step.action_name.as_str());
         }
-        self
+        AuthorizedPlan { plan: self }
+    }
+
+    /// Wrap this plan as authoritative *without* substituting risk.
+    ///
+    /// The loud name is deliberate: use only when the step risks are already the
+    /// authoritative `ActionSpec` values — in tests, or where a plan is built
+    /// directly from daemon risk. Production code paths that start from an LLM
+    /// proposal must use [`Plan::into_authorized`] instead.
+    #[must_use]
+    pub fn assume_authorized(self) -> AuthorizedPlan {
+        AuthorizedPlan { plan: self }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AuthorizedPlan / AuthorizedStep
+// ---------------------------------------------------------------------------
+
+/// A plan whose per-step risk levels are the daemon's authoritative
+/// `ActionSpec`-derived risk, not the LLM's proposal.
+///
+/// This is the only type whose steps expose [`AuthorizedStep::risk_level`] for
+/// gating. A raw [`Plan`] exposes only [`PlanStep::proposed_risk_level`], so it
+/// is impossible to feed the approval gate an un-substituted (proposed) risk by
+/// accident. Construct via [`Plan::into_authorized`] (substitutes) or, where the
+/// risks are already authoritative, [`Plan::assume_authorized`].
+pub struct AuthorizedPlan {
+    plan: Plan,
+}
+
+impl AuthorizedPlan {
+    pub fn intent(&self) -> &str {
+        self.plan.intent()
+    }
+
+    pub fn summary(&self) -> &str {
+        self.plan.summary()
+    }
+
+    pub fn explanation(&self) -> &str {
+        self.plan.explanation()
+    }
+
+    /// The plan's steps, each exposing its authoritative risk.
+    pub fn steps(&self) -> impl ExactSizeIterator<Item = AuthorizedStep<'_>> {
+        self.plan.steps.iter().map(AuthorizedStep)
+    }
+
+    /// Highest authoritative risk across all steps (`None` only if empty, which
+    /// [`Plan::new`] forbids). Relies on `PlanRiskLevel: Ord`.
+    pub fn highest_risk(&self) -> Option<&PlanRiskLevel> {
+        self.plan.steps.iter().map(|s| &s.risk_level).max()
+    }
+}
+
+/// A view over a single [`PlanStep`] whose risk is known to be authoritative.
+/// Obtainable only from [`AuthorizedPlan::steps`].
+#[derive(Clone, Copy)]
+pub struct AuthorizedStep<'a>(&'a PlanStep);
+
+impl<'a> AuthorizedStep<'a> {
+    pub fn action_name(&self) -> &'a str {
+        self.0.action_name.as_str()
+    }
+
+    pub fn summary(&self) -> &'a str {
+        &self.0.summary
+    }
+
+    pub fn params(&self) -> &'a serde_json::Value {
+        &self.0.params
+    }
+
+    /// The authoritative (`ActionSpec`-derived) risk for this step.
+    pub fn risk_level(&self) -> &'a PlanRiskLevel {
+        &self.0.risk_level
+    }
+
+    /// Derived from the authoritative risk: `true` for Medium and High.
+    pub fn approval_required(&self) -> bool {
+        !matches!(self.0.risk_level, PlanRiskLevel::Low)
     }
 }
 
@@ -1088,7 +1181,7 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn with_authoritative_risks_replaces_every_step_risk() {
+    fn into_authorized_replaces_every_step_risk() {
         let step = |name: &str, risk| {
             PlanStep::new(
                 ActionName::parse(name).unwrap(),
@@ -1110,13 +1203,16 @@ mod tests {
         .unwrap();
 
         // The caller-supplied mapping is authoritative; the LLM value is ignored.
-        let plan = plan.with_authoritative_risks(|name| match name {
+        let authorized = plan.into_authorized(|name| match name {
             "GetDiskUsage" => PlanRiskLevel::Low,
             _ => PlanRiskLevel::High,
         });
 
-        assert_eq!(*plan.steps()[0].risk_level(), PlanRiskLevel::Low);
-        assert_eq!(*plan.steps()[1].risk_level(), PlanRiskLevel::High);
+        let risks: Vec<PlanRiskLevel> =
+            authorized.steps().map(|s| s.risk_level().clone()).collect();
+        assert_eq!(risks, vec![PlanRiskLevel::Low, PlanRiskLevel::High]);
+        // highest_risk uses PlanRiskLevel: Ord.
+        assert_eq!(authorized.highest_risk(), Some(&PlanRiskLevel::High));
     }
 
     #[test]
