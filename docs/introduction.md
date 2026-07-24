@@ -8,8 +8,8 @@
 </div>
 
 <img
-  src="https://raw.githubusercontent.com/lacs-project/sysknife/main/assets/demo/demo.gif"
-  alt="SysKnife demo — natural language to typed plan to live execution"
+  src="https://raw.githubusercontent.com/lacs-project/sysknife/main/assets/demo/mcp-flow.gif"
+  alt="SysKnife in Claude Code via MCP — plan in chat, approve in a terminal, execute with a one-time receipt"
   class="sysknife-demo"
 />
 
@@ -76,24 +76,31 @@ The brain proposes but **cannot touch the system**. The daemon executes but
 
 ## Fastest path: use via your AI coding tool (MCP)
 
-Claude Code, Cursor, and Codex CLI all support the MCP integration. One command
-sets everything up:
+MCP is how most people use SysKnife in 2026 — it's the dominant way AI tools
+talk to real systems, and Claude Code, Cursor, and Codex CLI all support it. One
+command wires it up:
 
 ```sh
 npx sysknife-setup
 ```
 
-<img
-  src="https://raw.githubusercontent.com/lacs-project/sysknife/main/assets/demo/mcp-flow.gif"
-  alt="SysKnife MCP flow — plan in Claude Code, approve in a terminal, execute with a one-time receipt"
-  class="sysknife-demo"
-/>
-
-See the [MCP Server guide](mcp.md) for full setup and the approval-gate hook.
+The demo above shows the whole loop: plan in chat, approve in a terminal,
+execute with a one-time receipt. See the [MCP Server guide](mcp.md) for full
+setup and the approval-gate hook.
 
 ---
 
-## Or use the CLI directly
+## Prefer the terminal? The CLI is a first-class path
+
+No IDE and no MCP client — the same planner, approval gate, and Ed25519 audit
+chain, driven straight from your shell. This is a fully supported way to run
+SysKnife, not an afterthought.
+
+<img
+  src="https://raw.githubusercontent.com/lacs-project/sysknife/main/assets/demo/demo.gif"
+  alt="sysknife CLI — plain language to a typed plan to live execution in the terminal"
+  class="sysknife-demo"
+/>
 
 > **ℹ️ Distro support**
 >
@@ -112,6 +119,16 @@ sysknife "show disk usage"
 
 No API key needed if you have [Ollama](https://ollama.com) running locally —
 SysKnife auto-detects it. See [Quick Start](quickstart.md).
+
+---
+
+## Also: a desktop GUI (a distant third option)
+
+There is an experimental desktop GUI (`sysknife-shell`, built with Tauri) that
+wraps the same plan → approve → execute loop in a window. It is the least
+frequently maintained surface — a distant third behind the MCP integration and
+the CLI — so reach for it only if you specifically want a graphical approval
+flow.
 
 ---
 

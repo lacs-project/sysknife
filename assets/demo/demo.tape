@@ -18,10 +18,16 @@ Set Padding       20
 Set BorderRadius  10
 Set TypingSpeed   55ms
 
-# Drive the recording through the mock script — it prints its own fake prompt.
-Sleep 400ms
+# Drive the recording through the mock script — it prints its own fake prompt
+# and then clears the screen. Run it *hidden* so the recording opens directly on
+# the `$ sysknife "…"` prompt instead of on the `bash …/demo-mock.sh` bootstrap
+# command (which is meaningless to a viewer). The 900 ms hidden sleep lets the
+# mock clear and print its prompt line before capture resumes.
+Hide
 Type "bash assets/demo/demo-mock.sh"
 Enter
+Sleep 900ms
+Show
 
 # Prompt render + spinner (~2s) + plan card render.
 Sleep 3500ms

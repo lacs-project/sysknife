@@ -147,6 +147,23 @@ sysknife --dry-run "show disk usage and list services that ate cpu in the last h
 ```
 </details>
 
+## Prefer the terminal? The CLI is a first-class path
+
+Same engine, no IDE and no MCP client — plain language to a typed plan to live
+execution, straight from your shell, with `--dry-run`, `--json`, `--yes` up to a
+risk ceiling, and `sysknife audit verify`. This is a fully supported way to run
+SysKnife, not an afterthought. See the [CLI guide](docs/cli.md).
+
+<p align="center">
+  <img src="assets/demo/demo.gif" alt="sysknife CLI — plan, approve, and execute in the terminal" width="900"/>
+</p>
+
+> **Also: a desktop GUI — a distant third option.** An experimental Tauri
+> desktop app (`sysknife-shell`) wraps the same plan → approve → execute loop in
+> a window. It is the least frequently maintained surface, well behind the MCP
+> integration and the CLI, so reach for it only if you specifically want a
+> graphical approval flow.
+
 ## How it works
 
 ```
@@ -261,7 +278,6 @@ See [ROADMAP.md](ROADMAP.md) for the full milestone breakdown.
 - 📋 Telegram inline-button approvals
 - 📋 `sysknife audit export` (CEF / NDJSON for SIEM ingest)
 - 📋 Fleet plan/execute (one plan, N targets, parallel approval)
-- 📋 GUI (Tauri shell) for Wayland desktop linux
 
 ## Protocol
 
