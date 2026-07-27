@@ -101,10 +101,28 @@ fn history_rejects_unparseable_since_timestamp() {
         .arg("--since")
         .arg("not-a-timestamp")
         .assert()
-        // Failure is the contract; either the parser or the daemon
-        // round-trip can fail (depending on order). What matters is we
-        // get a non-zero exit and don't panic.
-        .failure();
+        // The specific code is the contract, not merely "non-zero": a bad
+        // `--since` is a config/usage error (4), and automation distinguishes
+        // that from an execution failure (2) or a rejected plan (1).
+        .code(4);
+}
+
+#[test]
+fn audit_verify_exits_with_code_2_when_the_key_file_is_missing() {
+    // `run_audit_verify` documents 0 = intact, 1 = tampered, 2 = could not
+    // verify, and warns that "a CI pipeline expecting 0 or 1 must not
+    // silently pass on a missing key file". Nothing pinned that: the only
+    // exit-code coverage was `error.rs`'s pure mapping test, which cannot
+    // catch the binary collapsing 2 into 0 or 1.
+    let dir = tempfile::tempdir().unwrap();
+    cli()
+        .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+        .env("XDG_DATA_HOME", dir.path())
+        .env("HOME", dir.path())
+        .args(["audit", "verify", "--pubkey"])
+        .arg(dir.path().join("no-such-key.pub"))
+        .assert()
+        .code(2);
 }
 
 #[test]
@@ -117,4 +135,44 @@ fn completions_subcommand_emits_a_shell_script() {
         // Bash completion scripts always start with `#!/usr/bin/env`
         // or define a `_sysknife` function — either is fine.
         .stdout(predicate::str::contains("_sysknife").or(predicate::str::starts_with("#")));
+}
+
+/// `--timeout` is the only bound on a scripted invocation that would
+/// otherwise hang, and nothing exercised it.
+///
+/// The daemon has to *accept and then stay silent*: an unreachable socket
+/// fails fast for an unrelated reason and would prove nothing about the
+/// timeout. The listener thread is deliberately detached — joining it would
+/// block the test forever, since it has no reason to stop accepting.
+#[test]
+fn timeout_flag_bounds_a_daemon_that_accepts_but_never_replies() {
+    use std::os::unix::net::UnixListener;
+
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.path().join("silent.sock");
+    let listener = UnixListener::bind(&socket_path).expect("bind test socket");
+
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = listener.accept() {
+            // Hold the connection open and never write a reply.
+            held.push(stream);
+        }
+    });
+
+    let started = std::time::Instant::now();
+    cli()
+        .env("SYSKNIFE_SOCKET", &socket_path)
+        .args(["--timeout", "1", "doctor"])
+        .assert()
+        // ExecutionFailed → exit 2, with the timeout named so an operator can
+        // tell it apart from the daemon rejecting the request.
+        .code(2)
+        .stderr(predicate::str::contains("timed out"));
+
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(30),
+        "--timeout 1 must give up promptly against a silent daemon, took {elapsed:?}"
+    );
 }

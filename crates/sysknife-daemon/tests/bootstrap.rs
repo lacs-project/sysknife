@@ -1,5 +1,5 @@
 use sysknife_daemon::auth::highest_role_from_groups;
-use sysknife_daemon::jobs::JobStateMachine;
+use sysknife_daemon::jobs::allowed_transition;
 use sysknife_daemon::state::DaemonConfig;
 use sysknife_daemon::transactions::{NewTransaction, TransactionStore};
 use sysknife_daemon::transport::listen::{bind_unix_listener, ListenTarget};
@@ -116,14 +116,14 @@ fn transaction_records_are_persisted() {
 }
 
 #[test]
-fn job_state_machine_rejects_invalid_transitions() {
-    let mut job = JobStateMachine::new("job-1");
-
-    assert_eq!(job.state(), JobState::Queued);
-    job.transition_to(JobState::Running)
-        .expect("queued -> running");
-    job.transition_to(JobState::NeedsReboot)
-        .expect("running -> needs reboot");
-    assert_eq!(job.state(), JobState::NeedsReboot);
-    assert!(job.transition_to(JobState::Running).is_err());
+fn the_transition_table_rejects_restarting_a_finished_job() {
+    assert!(allowed_transition(&JobState::Queued, &JobState::Running));
+    assert!(allowed_transition(
+        &JobState::Running,
+        &JobState::NeedsReboot
+    ));
+    assert!(!allowed_transition(
+        &JobState::NeedsReboot,
+        &JobState::Running
+    ));
 }

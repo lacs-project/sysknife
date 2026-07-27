@@ -130,6 +130,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn truncated_body_errors_instead_of_hanging() {
+        // A header promising N bytes followed by fewer than N, then EOF. The
+        // reader must fail, not block forever waiting for bytes that will
+        // never arrive — a peer that dies mid-frame otherwise pins a
+        // connection slot for the life of the daemon.
+        let (a, b) = duplex(MAX_MESSAGE_BYTES + 8);
+        let mut recvr = FramedStream::new(b);
+        let mut raw_sender = a;
+
+        raw_sender.write_all(&8u32.to_le_bytes()).await.unwrap();
+        raw_sender.write_all(b"abc").await.unwrap(); // 3 of the promised 8
+        drop(raw_sender); // EOF mid-body
+
+        let err = recvr.recv().await.unwrap_err();
+        assert!(
+            matches!(err, FramingError::Io(_)),
+            "a truncated body must surface as an I/O error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn truncated_header_errors_instead_of_hanging() {
+        // Same failure mode one step earlier: the 4-byte length prefix itself
+        // arrives incomplete.
+        let (a, b) = duplex(MAX_MESSAGE_BYTES + 8);
+        let mut recvr = FramedStream::new(b);
+        let mut raw_sender = a;
+
+        raw_sender.write_all(&[0x01, 0x02]).await.unwrap(); // 2 of 4
+        drop(raw_sender);
+
+        let err = recvr.recv().await.unwrap_err();
+        assert!(
+            matches!(err, FramingError::Io(_)),
+            "a truncated header must surface as an I/O error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn multiple_messages_on_same_stream() {
         let (a, b) = duplex(MAX_MESSAGE_BYTES + 8);
         let mut sender = FramedStream::new(a);

@@ -1411,6 +1411,142 @@ mod tests {
     }
 
     #[test]
+    fn revoke_unconsumed_approval_removes_an_unused_receipt() {
+        // Revocation is the operator's "actually, no" between approving and
+        // executing. Nothing covered it at all.
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let tx = store.record(queued_transaction()).unwrap();
+        let receipt = store
+            .approve_transaction(&tx.transaction_id)
+            .unwrap()
+            .expect("approved");
+        let digest = audit_chain::approval_receipt_digest(&receipt);
+
+        assert!(
+            store
+                .revoke_unconsumed_approval(&tx.transaction_id)
+                .unwrap(),
+            "an unconsumed approval must be revocable"
+        );
+        assert!(
+            !store
+                .claim_approved_for_execution(&tx.transaction_id, &digest)
+                .unwrap(),
+            "a revoked receipt must no longer be claimable"
+        );
+    }
+
+    #[test]
+    fn revoke_cannot_retract_an_approval_that_was_already_used() {
+        // The documented guarantee: once a receipt has been consumed, the
+        // execution it authorised is a fact and revocation must not rewrite
+        // history to say otherwise.
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let tx = store.record(queued_transaction()).unwrap();
+        let receipt = store
+            .approve_transaction(&tx.transaction_id)
+            .unwrap()
+            .expect("approved");
+        let digest = audit_chain::approval_receipt_digest(&receipt);
+        assert!(store
+            .claim_approved_for_execution(&tx.transaction_id, &digest)
+            .unwrap());
+
+        assert!(
+            !store
+                .revoke_unconsumed_approval(&tx.transaction_id)
+                .unwrap(),
+            "a consumed approval must not be revocable"
+        );
+        assert_eq!(
+            store.get(&tx.transaction_id).unwrap().unwrap().status,
+            JobState::Running,
+            "a failed revocation must not disturb the running transaction"
+        );
+    }
+
+    #[test]
+    fn approve_refuses_a_transaction_that_is_no_longer_queued() {
+        // Every existing approve test starts from a freshly-recorded Queued
+        // row. Approving something already running (or finished) would mint a
+        // receipt for work that is past the point of approval.
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let tx = store.record(queued_transaction()).unwrap();
+        let receipt = store
+            .approve_transaction(&tx.transaction_id)
+            .unwrap()
+            .expect("approved");
+        let digest = audit_chain::approval_receipt_digest(&receipt);
+        assert!(store
+            .claim_approved_for_execution(&tx.transaction_id, &digest)
+            .unwrap());
+
+        // Running.
+        assert!(
+            store
+                .approve_transaction(&tx.transaction_id)
+                .unwrap()
+                .is_none(),
+            "a Running transaction must not be approvable"
+        );
+
+        // Terminal.
+        store
+            .update_status(&tx.transaction_id, JobState::Succeeded)
+            .unwrap();
+        assert!(
+            store
+                .approve_transaction(&tx.transaction_id)
+                .unwrap()
+                .is_none(),
+            "a completed transaction must not be approvable"
+        );
+    }
+
+    #[test]
+    fn only_one_of_two_concurrent_claims_can_execute() {
+        // `claim_approved_for_execution` is the interlock that stops one
+        // approval being spent twice. `update_status` has a concurrency test;
+        // this path had none, and a double claim means the same approved
+        // action runs twice.
+        let dir = tempdir().unwrap();
+        let store = std::sync::Arc::new(test_store(dir.path().join("tx.db")));
+        let tx = store.record(queued_transaction()).unwrap();
+        let receipt = store
+            .approve_transaction(&tx.transaction_id)
+            .unwrap()
+            .expect("approved");
+        let digest = audit_chain::approval_receipt_digest(&receipt);
+
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let store = std::sync::Arc::clone(&store);
+            let id = tx.transaction_id.clone();
+            let digest = digest.clone();
+            handles.push(std::thread::spawn(move || {
+                store.claim_approved_for_execution(&id, &digest)
+            }));
+        }
+        let claims: Vec<bool> = handles
+            .into_iter()
+            .map(|h| h.join().unwrap().unwrap_or(false))
+            .collect();
+
+        assert_eq!(
+            claims.iter().filter(|c| **c).count(),
+            1,
+            "exactly one claim may win: {claims:?}"
+        );
+        assert_eq!(
+            store.get(&tx.transaction_id).unwrap().unwrap().status,
+            JobState::Running
+        );
+    }
+
+    #[test]
     fn cancel_queued_cancels_a_queued_transaction_once() {
         let dir = tempdir().unwrap();
         let store = test_store(dir.path().join("tx.db"));
