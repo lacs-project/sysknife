@@ -94,7 +94,6 @@ fn make_transaction(action: &str) -> NewTransaction {
         request_hash: format!("hash-{action}"),
         action_name: action.to_string(),
         risk_level: RiskLevel::High,
-        approval_id: None,
         summary: format!("Test {action}"),
         warnings: vec![],
     }
@@ -117,7 +116,6 @@ fn list_transactions_limit_is_capped_at_100() {
                 request_hash: format!("hash-{i}"),
                 action_name: "UpdateSystem".into(),
                 risk_level: RiskLevel::High,
-                approval_id: None,
                 summary: format!("tx {i}"),
                 warnings: vec![],
             })
@@ -189,7 +187,6 @@ async fn list_job_history_returns_recorded_transactions() {
             request_hash: "hash-history".into(),
             action_name: "UpdateSystem".into(),
             risk_level: RiskLevel::High,
-            approval_id: None,
             summary: "Stage system update".into(),
             warnings: vec![],
         })

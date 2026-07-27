@@ -28,20 +28,7 @@ fn role_for_group(group: &str) -> CallerRole {
 }
 
 fn higher_role(current: CallerRole, candidate: CallerRole) -> CallerRole {
-    if role_rank(&candidate) > role_rank(&current) {
-        candidate
-    } else {
-        current
-    }
-}
-
-pub(crate) fn role_rank(role: &CallerRole) -> u8 {
-    match role {
-        CallerRole::Observer => 0,
-        CallerRole::Dev => 1,
-        CallerRole::Admin => 2,
-        CallerRole::Boot => 3,
-    }
+    current.max(candidate)
 }
 
 // ---------------------------------------------------------------------------

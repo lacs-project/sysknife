@@ -1032,15 +1032,13 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
                 }
             }
             ApprovalDecision::RequiresInteraction => return Err(CliError::NonInteractive),
-            ApprovalDecision::ExceedsCeiling => {
+            ApprovalDecision::ExceedsCeiling(ceiling) => {
                 let highest = plan
                     .highest_risk()
                     .expect("ExceedsCeiling implies at least one step");
                 return Err(CliError::RiskCeilingExceeded {
                     highest: highest.clone(),
-                    ceiling: opts
-                        .max_risk
-                        .expect("ExceedsCeiling implies --max-risk was set"),
+                    ceiling,
                 });
             }
         }
@@ -1085,12 +1083,10 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
                     }
                 }
                 ApprovalDecision::RequiresInteraction => return Err(CliError::NonInteractive),
-                ApprovalDecision::ExceedsCeiling => {
+                ApprovalDecision::ExceedsCeiling(ceiling) => {
                     return Err(CliError::RiskCeilingExceeded {
                         highest: step.risk_level().clone(),
-                        ceiling: opts
-                            .max_risk
-                            .expect("ExceedsCeiling implies --max-risk was set"),
+                        ceiling,
                     });
                 }
             }
@@ -1556,7 +1552,7 @@ mod tests {
         let corrected = under_rated.into_authorized(authoritative_plan_risk);
         assert_eq!(
             policy.decide_plan(&corrected),
-            ApprovalDecision::ExceedsCeiling,
+            ApprovalDecision::ExceedsCeiling(MaxRisk::Medium),
             "spec-derived High must not auto-approve under --max-risk medium"
         );
     }
@@ -1654,7 +1650,7 @@ mod tests {
         let policy = ApprovalPolicy::new(true, Some(MaxRisk::Low), false, false);
         assert_eq!(
             policy.decide_plan(&plan.clone().assume_authorized()),
-            ApprovalDecision::ExceedsCeiling,
+            ApprovalDecision::ExceedsCeiling(MaxRisk::Low),
             "sanity: the planner's inflated High would block a safe read-only action"
         );
         let corrected = plan.into_authorized(authoritative_plan_risk);

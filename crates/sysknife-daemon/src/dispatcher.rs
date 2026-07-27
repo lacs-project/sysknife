@@ -685,9 +685,7 @@ fn validate_action_platform(state: &DaemonState, action_name: &str) -> Result<()
     let is_mutating = state
         .policy
         .min_role_for_action(action_name)
-        .is_some_and(|role| {
-            crate::auth::role_rank(&role) > crate::auth::role_rank(&CallerRole::Observer)
-        });
+        .is_some_and(|role| role > CallerRole::Observer);
     if required_family.is_none() && !is_mutating {
         return Ok(());
     }
@@ -1797,7 +1795,6 @@ async fn handle_preview(
         request_hash,
         action_name: action_name.to_string(),
         risk_level: spec.risk_level,
-        approval_id: None,
         summary: preview.summary.clone(),
         warnings: preview.warnings.clone(),
     };
@@ -2094,7 +2091,7 @@ async fn handle_execute(
         spec.risk_level == sysknife_types::RiskLevel::High && spec.reboot_required;
 
     let policy_says_mutating = match state.policy.min_role_for_action(action_name) {
-        Some(r) => crate::auth::role_rank(&r) > crate::auth::role_rank(&CallerRole::Observer),
+        Some(r) => r > CallerRole::Observer,
         None => {
             // Unreachable today: `authorize_action` above rejects any action
             // the policy table does not know. Treat the miss as mutating

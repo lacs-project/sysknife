@@ -15,8 +15,6 @@ use std::collections::HashMap;
 
 use sysknife_types::{CallerRole, RiskLevel};
 
-use crate::auth::role_rank;
-
 // ---------------------------------------------------------------------------
 // Per-action minimum role
 // ---------------------------------------------------------------------------
@@ -65,7 +63,7 @@ fn role_exception(action_name: &str) -> Option<CallerRole> {
 /// override is a *raise*).
 pub fn action_allowed(caller: &CallerRole, action_name: &str) -> bool {
     match min_role_for_action(action_name) {
-        Some(required) => role_rank(caller) >= role_rank(&required),
+        Some(required) => *caller >= required,
         None => false,
     }
 }
@@ -148,7 +146,7 @@ impl PolicyTable {
 
             let attempted = role_for_risk_level(level);
 
-            if role_rank(&attempted) < role_rank(&baseline) {
+            if attempted < baseline {
                 return Err(PolicyValidationError::CannotLower {
                     action: action.clone(),
                     baseline,
@@ -173,7 +171,7 @@ impl PolicyTable {
     /// table. Returns `false` for unknown actions.
     pub fn action_allowed(&self, caller: &CallerRole, action_name: &str) -> bool {
         match self.min_role_for_action(action_name) {
-            Some(required) => role_rank(caller) >= role_rank(&required),
+            Some(required) => *caller >= required,
             None => false,
         }
     }

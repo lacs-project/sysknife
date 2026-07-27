@@ -82,7 +82,6 @@ fn transaction_records_are_persisted() {
         request_hash: "hash-1".into(),
         action_name: "UpdateSystem".into(),
         risk_level: RiskLevel::High,
-        approval_id: Some("approval-1".into()),
         summary: "Stage system update".into(),
         warnings: vec!["reboot required".into()],
     };
@@ -97,7 +96,22 @@ fn transaction_records_are_persisted() {
     assert_eq!(loaded.request_hash, "hash-1");
     assert_eq!(loaded.action_name, "UpdateSystem");
     assert_eq!(loaded.status, JobState::Queued);
-    assert_eq!(loaded.approval_id.as_deref(), Some("approval-1"));
+    // `approval_id` is the store's own SHA-256 commitment over
+    // (transaction_id, request_hash) — a caller can no longer supply it, so
+    // assert the shape the store guarantees rather than an injected string.
+    let approval_id = loaded
+        .approval_id
+        .as_deref()
+        .expect("the store always derives an approval commitment");
+    assert_eq!(
+        approval_id.len(),
+        64,
+        "expected a hex SHA-256 digest, got {approval_id:?}"
+    );
+    assert!(
+        approval_id.chars().all(|c| c.is_ascii_hexdigit()),
+        "expected a hex digest, got {approval_id:?}"
+    );
     assert_eq!(loaded.warnings, vec!["reboot required".to_string()]);
 }
 

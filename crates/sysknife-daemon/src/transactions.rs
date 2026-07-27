@@ -48,7 +48,6 @@ pub struct NewTransaction {
     pub request_hash: String,
     pub action_name: String,
     pub risk_level: RiskLevel,
-    pub approval_id: Option<String>,
     /// Human-readable description of the planned action.
     ///
     /// **Chain-hashed at INSERT; intentionally not in the mutable field set.**
@@ -836,9 +835,13 @@ impl TransactionStore {
         let risk_level = transaction.risk_level;
         // Initial status is always Queued — not caller-controllable.
         let status = JobState::Queued;
-        let approval_id = transaction
-            .approval_id
-            .or_else(|| Some(key.approval_commitment(transaction_id, &request_hash)));
+        // Always the store's own commitment over this transaction. It used to
+        // accept a caller-supplied `Some(..)` and use it verbatim; production
+        // always passed `None`, so the invariant held only because every call
+        // site remembered to. The value is chain-hashed and then treated as
+        // authoritative evidence that an approval happened, which is not
+        // something a caller may hand us.
+        let approval_id = Some(key.approval_commitment(transaction_id, &request_hash));
         let summary = transaction.summary;
         let warnings = transaction.warnings;
         let warnings_json = serde_json::to_string(&warnings)?;
@@ -1068,7 +1071,6 @@ mod tests {
                         request_hash: format!("hash-{w}-{r}"),
                         action_name: "GetSystemState".to_string(),
                         risk_level: RiskLevel::Low,
-                        approval_id: None,
                         summary: format!("worker {w} record {r}"),
                         warnings: vec![],
                     };
@@ -1249,7 +1251,6 @@ mod tests {
             request_hash: "hash-abc".to_string(),
             action_name: "UpdateSystem".to_string(),
             risk_level: RiskLevel::High,
-            approval_id: None,
             summary: "Upgrade the system".to_string(),
             warnings: vec![],
         }

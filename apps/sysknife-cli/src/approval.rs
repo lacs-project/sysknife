@@ -71,8 +71,13 @@ pub enum ApprovalDecision {
     RequiresInteraction,
     /// Plan exceeds the `--max-risk` ceiling — abort.
     ///
+    /// Carries the ceiling that was exceeded. `decide_step` has it in scope at
+    /// the point of decision; returning it removes the need for call sites to
+    /// re-derive it from `opts.max_risk` behind an `.expect()` that is correct
+    /// only while the decision and the options come from the same place.
+    ///
     /// Terminal in `decide_plan`: causes early return on first occurrence.
-    ExceedsCeiling,
+    ExceedsCeiling(MaxRisk),
 }
 
 impl ApprovalPolicy {
@@ -112,7 +117,7 @@ impl ApprovalPolicy {
         // Check --max-risk ceiling (hard abort, independent of --yes).
         if let Some(ceiling) = self.max_risk {
             if !ceiling.includes(risk) {
-                return ApprovalDecision::ExceedsCeiling;
+                return ApprovalDecision::ExceedsCeiling(ceiling);
             }
         }
 
@@ -144,7 +149,7 @@ impl ApprovalPolicy {
             let d = self.decide_step(step.risk_level());
             match d {
                 // These are terminal — return immediately.
-                ApprovalDecision::ExceedsCeiling => return d,
+                ApprovalDecision::ExceedsCeiling(_) => return d,
                 ApprovalDecision::RequiresInteraction => return d,
                 // Escalate: RequiresPrompt > AutoApproved.
                 ApprovalDecision::RequiresPrompt => worst = ApprovalDecision::RequiresPrompt,
@@ -263,7 +268,7 @@ mod tests {
         let p = policy(false, Some(MaxRisk::Medium), false, false);
         assert_eq!(
             p.decide_step(&PlanRiskLevel::High),
-            ApprovalDecision::ExceedsCeiling
+            ApprovalDecision::ExceedsCeiling(MaxRisk::Medium)
         );
     }
 
@@ -273,7 +278,9 @@ mod tests {
         let p = policy(false, Some(MaxRisk::Low), false, false);
         assert_eq!(
             p.decide_step(&PlanRiskLevel::Medium),
-            ApprovalDecision::ExceedsCeiling
+            // The payload must be the ceiling that was configured, not the
+            // risk that breached it.
+            ApprovalDecision::ExceedsCeiling(MaxRisk::Low)
         );
     }
 
@@ -421,7 +428,10 @@ mod tests {
     fn plan_high_first_exceeds_ceiling() {
         let p = policy(false, Some(MaxRisk::Medium), false, false);
         let pl = plan(&[PlanRiskLevel::High, PlanRiskLevel::Low]);
-        assert_eq!(p.decide_plan(&pl), ApprovalDecision::ExceedsCeiling);
+        assert_eq!(
+            p.decide_plan(&pl),
+            ApprovalDecision::ExceedsCeiling(MaxRisk::Medium)
+        );
     }
 
     // Plan with High step in the middle → ExceedsCeiling (early return on exceeding step)
@@ -429,7 +439,10 @@ mod tests {
     fn plan_high_middle_exceeds_ceiling() {
         let p = policy(false, Some(MaxRisk::Medium), false, false);
         let pl = plan(&[PlanRiskLevel::Low, PlanRiskLevel::High, PlanRiskLevel::Low]);
-        assert_eq!(p.decide_plan(&pl), ApprovalDecision::ExceedsCeiling);
+        assert_eq!(
+            p.decide_plan(&pl),
+            ApprovalDecision::ExceedsCeiling(MaxRisk::Medium)
+        );
     }
 
     // Plan with High step second, --max-risk medium → ExceedsCeiling
@@ -437,7 +450,10 @@ mod tests {
     fn plan_high_step_with_max_risk_medium_exceeds_ceiling() {
         let p = policy(true, Some(MaxRisk::Medium), false, false);
         let pl = plan(&[PlanRiskLevel::Low, PlanRiskLevel::High]);
-        assert_eq!(p.decide_plan(&pl), ApprovalDecision::ExceedsCeiling);
+        assert_eq!(
+            p.decide_plan(&pl),
+            ApprovalDecision::ExceedsCeiling(MaxRisk::Medium)
+        );
     }
 
     // Single High step with --yes --max-risk high → RequiresPrompt.

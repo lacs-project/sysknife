@@ -718,10 +718,9 @@ async fn insert_transaction(
     let status = JobState::Queued;
     let created_at = now_iso();
     let key_id = CURRENT_KEY_ID.to_string();
-    let approval_id = transaction
-        .approval_id
-        .clone()
-        .or_else(|| Some(key.approval_commitment(transaction_id, &transaction.request_hash)));
+    // Always the store's own commitment — see the matching note in
+    // `transactions.rs`; a caller may not supply this value.
+    let approval_id = Some(key.approval_commitment(transaction_id, &transaction.request_hash));
 
     // SELECT … FOR UPDATE on the most-recent row (if any) so concurrent
     // writers serialise on the chain tip. Without this, two parallel

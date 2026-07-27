@@ -9,6 +9,12 @@ description = "LLM planning core for SysKnife — typed action proposals with fo
 keywords = ["llm", "ai-agent", "linux", "sysadmin", "planning"]
 categories = ["command-line-utilities", "os::linux-apis"]
 
+[features]
+# Exposes `Plan::assume_authorized`, which bypasses the daemon-authoritative
+# risk substitution. Enabled only by dev-dependencies so no production build
+# can construct an `AuthorizedPlan` from unvalidated risk.
+test-support = []
+
 [dependencies]
 async-trait = { workspace = true }
 futures = "0.3"

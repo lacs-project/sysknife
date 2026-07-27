@@ -38,6 +38,8 @@ vsock = "0.5.4"
 tokio-vsock = "0.7.2"
 
 [dev-dependencies]
+# `test-support` unlocks `Plan::assume_authorized` for tests only.
+sysknife-brain = { path = "../../crates/sysknife-brain", version = "0.2.11", features = ["test-support"] }
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
