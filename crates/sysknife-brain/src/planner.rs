@@ -383,7 +383,9 @@ impl Plan {
 /// gating. A raw [`Plan`] exposes only [`PlanStep::proposed_risk_level`], so it
 /// is impossible to feed the approval gate an un-substituted (proposed) risk by
 /// accident. Construct via [`Plan::into_authorized`] (substitutes) or, where the
-/// risks are already authoritative, [`Plan::assume_authorized`].
+/// risks are already authoritative, `Plan::assume_authorized` — which is
+/// gated behind the `test-support` feature and so is not part of the public
+/// API this documentation describes (hence the plain reference, not a link).
 pub struct AuthorizedPlan {
     plan: Plan,
 }
