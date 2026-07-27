@@ -607,10 +607,9 @@ pub async fn run_audit_checkpoint(
     _log: &Logger,
 ) -> Result<(), CliError> {
     use sysknife_daemon::audit_chain::{
-        checkpoint_outcome_to_exit_code, outcome_to_exit_code, verify_chain, verify_checkpoints,
-        AuditKey, CheckpointOutcome, VerifyOutcome,
+        checkpoint_outcome_to_exit_code, outcome_to_exit_code, AuditKey,
     };
-    use sysknife_daemon::checkpoint_sink::{CheckpointSink, PostgresCheckpointSink};
+    use sysknife_daemon::checkpoint_sink::{anchor_once, AnchorOutcome, PostgresCheckpointSink};
     use sysknife_daemon::transactions::TransactionStore;
 
     // Resolve the checkpoint database URL. Prefer the env var so credentials
@@ -650,69 +649,49 @@ pub async fn run_audit_checkpoint(
         eprintln!("reading audit chain failed: {e}");
         CliError::Exit(2)
     })?;
-    let tip = match rows.last() {
-        Some(t) => t,
-        None => {
-            eprintln!("audit chain is empty; nothing to checkpoint");
-            return Err(CliError::Exit(2));
-        }
-    };
-
-    // Refuse to anchor a chain that does not verify: anchoring the tip of a
-    // tampered chain would launder it into a signed checkpoint.
-    match verify_chain(&key, &rows) {
-        VerifyOutcome::Intact { .. } => {}
-        broken => {
-            eprintln!("refusing to anchor: local audit chain does not verify: {broken:?}");
-            return Err(CliError::Exit(outcome_to_exit_code(&broken)));
-        }
-    }
-
-    let created_at = chrono::Utc::now().to_rfc3339();
-    let checkpoint = key.sign_checkpoint(tip.seq, &tip.chain_hash, &created_at);
-
-    // Anchor to the external append-only database.
+    // The anchoring rules — refuse a broken chain, read back after writing,
+    // re-verify every anchored checkpoint — live in the daemon crate so this
+    // command and the daemon's periodic anchor task cannot drift apart.
     let sink = PostgresCheckpointSink::connect(&db_url)
         .await
         .map_err(|e| {
             eprintln!("connecting to checkpoint database failed: {e}");
             CliError::Exit(2)
         })?;
-    sink.append(&checkpoint).await.map_err(|e| {
-        eprintln!("anchoring checkpoint failed: {e}");
-        CliError::Exit(2)
-    })?;
-    let tip_prefix = &checkpoint.chain_tip[..checkpoint.chain_tip.len().min(12)];
-    println!(
-        "anchored checkpoint: seq={} tip={tip_prefix}… -> external database",
-        checkpoint.seq
-    );
 
-    // Read the anchored checkpoints back and confirm our write is actually
-    // present, guarding against a lagging read replica or a wrong database
-    // silently returning an empty/stale set (which would otherwise render as a
-    // misleading "consistent (0 verified)").
-    let anchored = sink.load_all().await.map_err(|e| {
-        eprintln!("loading anchored checkpoints failed: {e}");
-        CliError::Exit(2)
-    })?;
-    if !anchored.contains(&checkpoint) {
-        eprintln!(
-            "anchored checkpoint not found on read-back; the checkpoint database \
-             may be a lagging replica or a different database than the write hit"
-        );
-        return Err(CliError::Exit(2));
-    }
+    let created_at = chrono::Utc::now().to_rfc3339();
+    let outcome = anchor_once(&key, &rows, &sink, &created_at)
+        .await
+        .map_err(|e| {
+            eprintln!("checkpoint sink error: {e}");
+            CliError::Exit(2)
+        })?;
 
-    // Verify every anchored checkpoint against the local chain.
-    match verify_checkpoints(&key.verifying_key_hex(), &rows, &anchored) {
-        CheckpointOutcome::Consistent {
+    match outcome {
+        AnchorOutcome::Anchored {
+            seq,
             checkpoints_checked,
         } => {
+            println!("anchored checkpoint: seq={seq} -> external database");
             println!("checkpoints consistent ({checkpoints_checked} verified)");
             Ok(())
         }
-        other => {
+        AnchorOutcome::ChainEmpty => {
+            eprintln!("audit chain is empty; nothing to checkpoint");
+            Err(CliError::Exit(2))
+        }
+        AnchorOutcome::ChainBroken(broken) => {
+            eprintln!("refusing to anchor: local audit chain does not verify: {broken:?}");
+            Err(CliError::Exit(outcome_to_exit_code(&broken)))
+        }
+        AnchorOutcome::ReadBackMissing => {
+            eprintln!(
+                "anchored checkpoint not found on read-back; the checkpoint database \
+                 may be a lagging replica or a different database than the write hit"
+            );
+            Err(CliError::Exit(2))
+        }
+        AnchorOutcome::Inconsistent(other) => {
             eprintln!("checkpoint verification FAILED: {other:?}");
             Err(CliError::Exit(checkpoint_outcome_to_exit_code(&other)))
         }
