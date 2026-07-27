@@ -1578,7 +1578,8 @@ fn validated_public_key(s: &str) -> Result<String, ExecutorError> {
     //
     // Blocked characters and why:
     //   '\''  — breaks single-quoted shell strings in add_authorized_key
-    //   '|'   — sed address delimiter in remove_authorized_key (\|^key$|d)
+    //   '|'   — shell pipe (the ssh key ops no longer build a sed address,
+    //           but '|' never appears in a valid key, so keep rejecting it)
     //   ';'   — shell command separator
     //   '`'   — shell command substitution
     //   '$'   — shell variable expansion
@@ -2379,14 +2380,30 @@ mod tests {
     }
 
     #[test]
-    fn public_key_rejects_pipe_sed_injection() {
-        // '|' is the sed address delimiter in remove_authorized_key.
-        // Allowing it enables sed injection: \|^key|d where key contains '|'.
+    fn public_key_rejects_pipe_metacharacter() {
+        // '|' is a shell pipe and never appears in a valid key. (It was also
+        // the sed address delimiter before the key ops were made regex-free;
+        // the rejection stands on its own merits either way.)
         let key = "ssh-ed25519 AAAA|; rm -rf /etc user@host";
         assert!(matches!(
             validated_public_key(key),
             Err(ExecutorError::InvalidParam("public_key"))
         ));
+    }
+
+    #[test]
+    fn public_key_accepts_regex_metacharacters_so_consumers_must_not_use_regex() {
+        // Deliberate and load-bearing: `.` is legal inside a key comment
+        // (`alice@example.com`), so the validator cannot blocklist regex
+        // metacharacters without rejecting valid keys. Any consumer that
+        // interprets a key as a pattern is therefore the defect — see
+        // `actions::ssh::REMOVE_KEY_SCRIPT`, which uses `grep -Fxv` for
+        // exactly this reason.
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample alice@example.com";
+        assert!(validated_public_key(key).is_ok());
+        // The wildcard-shaped payload passes validation too. It is safe only
+        // because no consumer treats it as a pattern.
+        assert!(validated_public_key("ssh-ed25519 .*").is_ok());
     }
 
     #[test]

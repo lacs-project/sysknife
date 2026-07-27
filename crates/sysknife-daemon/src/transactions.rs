@@ -647,11 +647,13 @@ impl TransactionStore {
         // Schema additions for the append-tamper-evident hash chain (see
         // `audit_chain.rs` for the full threat model — note that truncation of
         // the tail is NOT detected by this chain alone; that requires the
-        // separate watermark mechanism documented there):
+        // signed checkpoints anchored to an append-only sink (`checkpoint_sink`),
+        // with the journald watermark as a lighter best-effort complement):
         //   seq             — monotonic ordering, 1-indexed
         //   key_id          — identifies the key generation (forward-compatible
         //                     with epoch rotation in a follow-up issue)
-        //   chain_hash      — ed25519_sign(canonical(immutable_fields) || prev_chain_hash, key)
+        //   chain_hash      — ed25519_sign(ROW_DOMAIN || canonical(immutable_fields)
+        //                     || prev_chain_hash, key)
         //   prev_chain_hash — chain_hash of the previous row, "" for the first row
         //
         // status is intentionally absent from the chain content — it is mutable.

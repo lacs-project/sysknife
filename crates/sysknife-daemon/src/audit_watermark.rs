@@ -12,7 +12,9 @@
 //! journalctl -t sysknife-audit-tip -o json | jq -r '.MESSAGE'
 //! ```
 //!
-//! Each message has the form `seq=<N> chain_hash=<hex64>`. If the journal
+//! Each message has the form `seq=<N> chain_hash=<hex128>` — `chain_hash` is a
+//! hex-encoded Ed25519 signature (64 raw bytes → 128 hex chars), not a
+//! SHA-256 digest. If the journal
 //! stream contains entries beyond the SQLite tail, tail truncation has occurred.
 //!
 //! ## Implementation
@@ -79,7 +81,8 @@ fn emit_watermark_impl(seq: u64, hash_hex: &str) {
 
 /// Shell out to `systemd-cat` to write the watermark into the journal.
 ///
-/// Message body: `seq=<N> chain_hash=<hex64>`
+/// Message body: `seq=<N> chain_hash=<hex128>` (a hex-encoded Ed25519
+/// signature — 64 raw bytes, so 128 hex chars, not a 64-char SHA-256 digest).
 ///
 /// The fields are embedded in the human-readable message body so they survive
 /// forwarding setups that strip structured journal metadata. SIEMs filter on

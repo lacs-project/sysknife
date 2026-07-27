@@ -556,10 +556,16 @@ async fn execute_steps_inner(steps: Vec<StepToExecute>) -> Result<ExecuteOutput,
             plan_needs_reboot = true;
         }
 
+        // `JobState` is a plain snake_case string enum, so this cannot fail
+        // today. Fail loudly rather than degrading to "unknown": silently
+        // replacing a real status with a placeholder would leave the calling
+        // agent unable to distinguish "the daemon said unknown" from "we lost
+        // the status", which is exactly the kind of quiet drift a future
+        // non-string `JobState` representation would introduce.
         let status = serde_json::to_value(result.status)
             .ok()
             .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_else(|| "unknown".into());
+            .expect("JobState always serializes to a JSON string");
 
         let succeeded = matches!(result.status, sysknife_types::JobState::Succeeded);
 
@@ -1053,11 +1059,20 @@ mod tests {
 
     #[test]
     fn rmcp_sysknife_plan_description_warns_to_stop_after_planning() {
-        // The plan tool's description carries a load-bearing instruction
-        // — "after presenting this plan, STOP" — that gates every
-        // hookify rule and the MCP-side approval flow.  A regression
-        // that drops this clause would let agents bypass the
-        // human-in-the-loop interlock.
+        // The plan tool's description carries an advisory instruction telling
+        // the calling agent to STOP after planning. This is prompt
+        // engineering, not enforcement, and this test guards the wording of
+        // an operator-facing hint — NOT the security boundary.
+        //
+        // The actual interlock is structural and lives elsewhere:
+        // `PlanOutput`/`PlanStepOutput` carry no `approval_receipt` field, so
+        // no code path lets `sysknife_plan` hand back something
+        // `sysknife_execute` can consume; receipts come only from a separate
+        // `sysknife approve <transaction-id>` run, and the daemon
+        // independently rejects forged or stale ones (see
+        // `mcp_tools_integrate_with_a_daemon_over_the_socket`). Deleting this
+        // clause would degrade the hint, not open a bypass — do not treat it
+        // as the thing keeping a human in the loop.
         let router = SysknifeMcpServer::tool_router();
         let tools = router.list_all();
         let plan = tools

@@ -48,7 +48,14 @@ pub(super) fn sanitize_error_msg(msg: &str) -> String {
     // of the sanitized message.
     const HEADER_KEYWORDS: &[&str] = &["bearer ", "x-api-key"];
 
-    let lower = msg.to_lowercase();
+    // ASCII-only lowercasing is deliberate: the byte ranges found in `lower`
+    // are applied to `msg` via `replace_range`, so the two strings must stay
+    // byte-for-byte aligned. `str::to_lowercase` performs full Unicode case
+    // mapping and is NOT length-preserving (e.g. `İ` U+0130 lowercases to two
+    // code points), which would skew every subsequent range and could redact
+    // the wrong span or panic on a non-char-boundary. Every pattern below is
+    // ASCII, so ASCII folding loses no matches.
+    let lower = msg.to_ascii_lowercase();
     let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
 
     for pattern in KEY_PARAMS {

@@ -46,22 +46,32 @@ pub fn get_authorized_keys(username: &str) -> ActionSpec {
     }
 }
 
+/// Shell body for `AddAuthorizedKey`.
+///
+/// The key and path arrive as positional arguments (`$1`, `$2`) rather than
+/// being interpolated into the script text, so no value the caller supplies is
+/// ever parsed as shell syntax. `printf '%s\n'` is used instead of `echo`
+/// because `echo` mangles values beginning with `-` and interprets backslash
+/// escapes on some shells.
+const ADD_KEY_SCRIPT: &str =
+    "key=$1; path=$2; grep -Fxq -- \"$key\" \"$path\" 2>/dev/null || printf '%s\\n' \"$key\" >> \"$path\"";
+
 pub fn add_authorized_key(username: &str, public_key: &str) -> ActionSpec {
     let keys_path = format!("/home/{username}/.ssh/authorized_keys");
-    // Use sudo sh -c with grep to check idempotency: only append if not already present.
     // sudo is required because the daemon runs as the sysknife system user, which has
     // no write permission to user home directories (files are 600 owned by the target user).
-    let script = format!(
-        "grep -Fxq '{key}' '{path}' 2>/dev/null || echo '{key}' >> '{path}'",
-        key = public_key,
-        path = keys_path,
-    );
-
     ActionSpec {
         action_name: "AddAuthorizedKey",
         mechanism: ActionMechanism::Command {
             program: "sudo",
-            args: vec!["sh".to_string(), "-c".to_string(), script],
+            args: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                ADD_KEY_SCRIPT.to_string(),
+                "sh".to_string(),
+                public_key.to_string(),
+                keys_path,
+            ],
         },
         risk_level: RiskLevel::High,
         reboot_required: false,
@@ -69,21 +79,49 @@ pub fn add_authorized_key(username: &str, public_key: &str) -> ActionSpec {
     }
 }
 
+/// Shell body for `RemoveAuthorizedKey`.
+///
+/// **The key must never reach a regex.** This action previously deleted the
+/// line with `sed -i '\|^KEY$|d'`, which made the caller-supplied key a *basic
+/// regular expression*: a value like `ssh-ed25519 .*` passes every check in
+/// `validated_public_key` (allowed prefix, printable ASCII, no shell
+/// metacharacters) and then matched — and deleted — every ed25519 key in the
+/// file. `sed` exits 0, so the job was recorded `Succeeded` and the signed
+/// audit summary read as a routine single-key removal: the executed effect
+/// silently diverged from the approved preview on a lockout-capable action.
+///
+/// Blocklisting regex metacharacters is NOT a viable fix: `.` is legal inside
+/// a key comment (`alice@example.com`), so rejecting it would refuse valid
+/// keys. The fix is structural — `grep -Fxv` compares fixed whole lines, so no
+/// metacharacter can widen the match, and the key travels as `$1` rather than
+/// being interpolated into the script.
+///
+/// The result is streamed to a temp file and copied back with `cat >` rather
+/// than moved: that preserves the original inode, owner, and mode, which
+/// matters because `authorized_keys` must stay owned by the target user.
+/// `grep` exits 1 when it selects no lines (the file is now empty) — that is a
+/// success here, so only an exit status above 1 is treated as an error.
+const REMOVE_KEY_SCRIPT: &str = "key=$1; path=$2; \
+tmp=$(mktemp) || exit 1; \
+grep -Fxv -- \"$key\" \"$path\" > \"$tmp\"; rc=$?; \
+if [ $rc -gt 1 ]; then rm -f \"$tmp\"; exit $rc; fi; \
+cat \"$tmp\" > \"$path\"; rm -f \"$tmp\"";
+
 pub fn remove_authorized_key(username: &str, public_key: &str) -> ActionSpec {
     let keys_path = format!("/home/{username}/.ssh/authorized_keys");
-    // Use sudo sed to delete the exact matching line.
     // sudo is required for the same reason as add_authorized_key.
-    let script = format!(
-        "sed -i '\\|^{key}$|d' '{path}'",
-        key = public_key,
-        path = keys_path,
-    );
-
     ActionSpec {
         action_name: "RemoveAuthorizedKey",
         mechanism: ActionMechanism::Command {
             program: "sudo",
-            args: vec!["sh".to_string(), "-c".to_string(), script],
+            args: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                REMOVE_KEY_SCRIPT.to_string(),
+                "sh".to_string(),
+                public_key.to_string(),
+                keys_path,
+            ],
         },
         // Revoking an authorized key is access-control + lockout-capable (remove
         // the wrong/only key and you lose SSH access) and cannot be rolled back

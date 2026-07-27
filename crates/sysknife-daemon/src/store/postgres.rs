@@ -271,9 +271,16 @@ fn deserialize<T: serde::de::DeserializeOwned>(s: &str) -> Result<T, Transaction
     serde_json::from_str(s).map_err(TransactionStoreError::Json)
 }
 
+/// UTC timestamp in the same RFC 3339 millisecond shape the SQLite backend
+/// produces via `strftime('%Y-%m-%dT%H:%M:%fZ','now')`.
+///
+/// `%S` is load-bearing: chrono's `%.3f` renders only the fractional part, so
+/// omitting `%S` yields `2026-07-27T12:34:.567Z`. That value is signed into
+/// `ChainContent.created_at` on every audit row and cast to `timestamptz` by
+/// approve, claim-for-execution, the stale sweep, and the history filter.
 fn now_iso() -> String {
     chrono::Utc::now()
-        .format("%Y-%m-%dT%H:%M:%.3fZ")
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
         .to_string()
 }
 
@@ -874,6 +881,50 @@ mod tests {
         .expect("standard URL parses");
         // Ensure binding via PgPoolOptions wouldn't reject it (just smoke-check).
         let _ = opts.statement_cache_capacity(0);
+    }
+
+    #[test]
+    fn now_iso_produces_a_parseable_rfc3339_timestamp() {
+        // `now_iso()` is signed into `ChainContent.created_at` on every
+        // audit row and is cast to `timestamptz` by approve, claim-for-
+        // execution, the stale sweep, and the history filter. The format
+        // string previously omitted `%S`, yielding `2026-07-27T12:34:.567Z`:
+        // seconds silently vanished, the chain attested to a broken value
+        // forever, and same-minute ordering became unrecoverable.
+        let ts = now_iso();
+        let parsed = chrono::DateTime::parse_from_rfc3339(&ts);
+        assert!(
+            parsed.is_ok(),
+            "now_iso() must emit a parseable RFC 3339 timestamp, got {ts:?} ({parsed:?})"
+        );
+        assert_eq!(
+            ts.len(),
+            "2026-07-27T12:34:56.789Z".len(),
+            "timestamp shape changed unexpectedly: {ts}"
+        );
+    }
+
+    #[test]
+    fn now_iso_matches_the_sqlite_backends_timestamp_shape() {
+        // Both backends feed the same signed chain, so a row written by
+        // Postgres must be byte-comparable with one written by SQLite
+        // (`strftime('%Y-%m-%dT%H:%M:%fZ','now')`, which yields
+        // milliseconds). Divergent shapes make cross-backend verification
+        // and time-ordered queries subtly wrong.
+        let ts = now_iso();
+        let (date, rest) = ts.split_once('T').expect("timestamp has a T separator");
+        assert_eq!(date.len(), "2026-07-27".len(), "date part: {ts}");
+        assert!(rest.ends_with('Z'), "must be UTC with a Z suffix: {ts}");
+        let time = rest.trim_end_matches('Z');
+        let fields: Vec<&str> = time.split(':').collect();
+        assert_eq!(fields.len(), 3, "expected HH:MM:SS.mmm, got {time:?}");
+        assert!(
+            fields[2].contains('.'),
+            "seconds field must carry fractional milliseconds: {time:?}"
+        );
+        let (secs, millis) = fields[2].split_once('.').expect("checked above");
+        assert_eq!(secs.len(), 2, "seconds must be two digits: {time:?}");
+        assert_eq!(millis.len(), 3, "expected millisecond precision: {time:?}");
     }
 
     #[test]

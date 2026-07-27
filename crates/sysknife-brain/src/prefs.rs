@@ -176,6 +176,12 @@ pub fn remove_pref(path: &Path, fact: &str) -> Result<bool, io::Error> {
     Ok(true)
 }
 
+/// Heuristic check for well-known secret shapes (passwords, API keys, tokens).
+///
+/// This is a **denylist of known formats**, not an exhaustive scanner: any
+/// secret that does not match `SENSITIVE_PATTERNS`/`SENSITIVE_PREFIXES` passes
+/// through undetected. Treat a `false` result as "no known secret shape
+/// found", never as "definitely no secret".
 pub fn contains_sensitive(fact: &str) -> bool {
     let lower = fact.to_lowercase();
     if SENSITIVE_PATTERNS.iter().any(|p| lower.contains(p)) {

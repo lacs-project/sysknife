@@ -109,10 +109,19 @@ impl SafetyAuditLog {
     /// the blocking pool. Call from `async fn` paths so the planner's reactor
     /// is not parked on a slow filesystem (NFS, encrypted home).
     pub async fn log_rejection_async(self, intent: String, reason: String, raw_plan: String) {
-        let _ = tokio::task::spawn_blocking(move || {
+        // `log_rejection` swallows its own I/O errors by design, so the only
+        // way this join fails is a panic in the blocking closure. That would
+        // silently drop a safety-fence record, so surface it — a missing
+        // rejection entry is an audit blind spot, not a cosmetic problem.
+        if let Err(e) = tokio::task::spawn_blocking(move || {
             self.log_rejection(&intent, &reason, &raw_plan);
         })
-        .await;
+        .await
+        {
+            eprintln!(
+                "[sysknife-brain] audit: log_rejection task failed: {e} — rejection NOT recorded"
+            );
+        }
     }
 
     /// Append a rejection entry to the log file and forward to journald.
