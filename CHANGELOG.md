@@ -8,6 +8,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [0.2.11] — 2026-07-27
+
+Findings from a full review of the daemon, the CLI/MCP surface, and the
+Ubuntu action set, with the Ubuntu commands validated against a real
+Ubuntu 24.04 VM.
+
+### Security
+
+- **`RemoveAuthorizedKey` no longer builds a regular expression from the
+  caller's key.** It deleted the approved line with `sed -i '\|^KEY$|d'`,
+  which made the public key a basic regular expression: `ssh-ed25519 .*`
+  passes every check in `validated_public_key` and then matched and deleted
+  *every* ed25519 key in the file. `sed` exits 0, so the job recorded
+  `Succeeded` and the signed audit summary read as a routine single-key
+  removal. Both key operations now use `grep -Fxv` with the key passed as a
+  positional argument. Blocklisting regex metacharacters was not an option:
+  `.` is legal in a key comment.
+- **`GrantSudoAccess` can no longer mint `user ALL=(ALL) NOPASSWD: ALL`**, a
+  standing passwordless root credential. The unrestricted-plus-passwordless
+  combination is refused by both the daemon and the helper; scope the
+  commands or keep the password prompt.
+- **The vsock token file's permissions are now checked**, mirroring the
+  Ed25519 signing key. A token written under a default umask lands at `0644`,
+  and any local user who could read it could authenticate over vsock.
+- `validated_apt_package` was the only validator without a leading-dash
+  guard, so a package name could reach a command in flag position.
+
+### Fixed
+
+- **Every mutating apt action failed on a real Ubuntu host.** The code sent a
+  bare `apt-get` while the packaged sudoers grant spells `/usr/bin/apt-get`;
+  sudo PATH-resolves only its primary command and matches later tokens
+  literally, so the rule never applied and apt fell through to "a password is
+  required". `ConfigureWifi` had no `nmcli` grant at all. Both are covered by
+  a test that re-implements sudo's matching rule against the packaged file.
+- **The PostgreSQL backend signed a malformed timestamp into every audit
+  row.** `now_iso()` omitted `%S`, producing `2026-07-27T12:34:.567Z`.
+- **Two concurrent apt actions could collide on the dpkg lock.** The
+  concurrency gate only engaged for High-risk *reboot-required* actions, so
+  `AptUpgrade` claimed nothing. The gate is now keyed by the system lock an
+  action actually holds, derived from its argv. Actions holding no shared
+  lock are no longer serialised behind a long apt run.
+- **Privileged child processes had no deadline.** A hung command wedged its
+  connection forever and never released its lock. Now bounded, killed and
+  reaped; override with `SYSKNIFE_ACTION_TIMEOUT_SECS`.
+- **`dispatch_loop` had no idle timeout**, so an Observer-tier caller could
+  hold every connection slot with silent sockets and lock out approvers.
+- **The async daemon client had no socket bounds** (only the sync path did),
+  so a live-but-silent daemon froze the CLI and any MCP session with it.
+- `emit_via_systemd_cat` leaked a zombie per audit record when the pipe write
+  failed — one PID per preview and execute until the process table filled.
+- `mergeMcpServers` treated an unreadable config the same as malformed JSON
+  and then overwrote it, discarding the user's other MCP servers.
+- The `unattended-upgrades` helper was missing `NEEDRESTART_MODE=a`.
+
+### Changed
+
+- The concurrency invariant that a reboot-required action must be gated was a
+  `debug_assert!`, compiled out of released binaries; it is now a fail-closed
+  runtime check.
+- `tests/e2e/ubuntu-command-validity.sh` checks that the commands SysKnife
+  would run on Ubuntu exist and parse. Against Ubuntu 24.04.4: 33 pass, 0
+  fail, 2 skipped (auditd and fail2ban are not installed on a server image).
+
+### Documentation
+
+- Corrected comment rot the review surfaced: the audit-chain formula omitted
+  its `ROW_DOMAIN` prefix (an independent verifier copying it would never
+  reproduce a valid signature); the journald watermark documented a 64-char
+  SHA-256 hash where the field is a 128-char Ed25519 signature; the journal
+  module stated FSS tamper protection as automatic when it is opt-in; an MCP
+  test comment credited the approval interlock to advisory prompt text rather
+  than the receipt check that enforces it; and `apt.rs` described a
+  `fuser /var/lib/dpkg/lock` pre-flight that never existed.
+
 ## [0.2.10] — 2026-07-24
 
 ### Security
