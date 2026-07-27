@@ -379,7 +379,17 @@ impl From<String> for RequestHash {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Caller privilege tier, ordered least to most privileged.
+///
+/// **Variant order is the privilege order** and `Ord` is derived from it, so
+/// `caller >= required` is the authorization comparison. This mirrors what
+/// v0.2.10 did for `PlanRiskLevel`; `CallerRole` kept a hand-written
+/// `role_rank` match until now, which is a second encoding of the same
+/// ordering that could drift from this declaration.
+///
+/// Adding a variant means placing it at the correct privilege position, not
+/// appending it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CallerRole {
     Observer,
@@ -513,24 +523,18 @@ fn job_state_code(value: JobState) -> i32 {
     }
 }
 
-fn failure_category_code(value: FailureCategory) -> i32 {
-    match value {
-        FailureCategory::ValidationFailure => 1,
-        FailureCategory::AuthorizationFailure => 2,
-        FailureCategory::PolicyDenied => 3,
-        FailureCategory::StaleApproval => 4,
-        FailureCategory::ExecutionFailure => 5,
-        FailureCategory::TransientInfrastructureFailure => 6,
-        FailureCategory::Cancellation => 7,
-        FailureCategory::StuckExecution => 8,
-        FailureCategory::RebootRequired => 9,
-        FailureCategory::RollbackFailure => 10,
-    }
-}
-
 impl From<CallerRole> for proto::CallerRole {
+    // Matched directly rather than round-tripping through the i32 code table
+    // and unwrapping. The conversion is total, so it should not be able to
+    // panic: this bridge is not on the live request path today, but once the
+    // daemon speaks proto it would be a panic-on-drift inside a root process.
     fn from(value: CallerRole) -> Self {
-        proto::CallerRole::try_from(caller_role_code(value)).expect("valid caller role")
+        match value {
+            CallerRole::Observer => proto::CallerRole::Observer,
+            CallerRole::Dev => proto::CallerRole::Dev,
+            CallerRole::Admin => proto::CallerRole::Admin,
+            CallerRole::Boot => proto::CallerRole::Boot,
+        }
     }
 }
 
@@ -553,7 +557,11 @@ impl TryFrom<proto::CallerRole> for CallerRole {
 
 impl From<RiskLevel> for proto::RiskLevel {
     fn from(value: RiskLevel) -> Self {
-        proto::RiskLevel::try_from(risk_level_code(value)).expect("valid risk level")
+        match value {
+            RiskLevel::Low => proto::RiskLevel::Low,
+            RiskLevel::Medium => proto::RiskLevel::Medium,
+            RiskLevel::High => proto::RiskLevel::High,
+        }
     }
 }
 
@@ -575,7 +583,15 @@ impl TryFrom<proto::RiskLevel> for RiskLevel {
 
 impl From<JobState> for proto::JobState {
     fn from(value: JobState) -> Self {
-        proto::JobState::try_from(job_state_code(value)).expect("valid job state")
+        match value {
+            JobState::Queued => proto::JobState::Queued,
+            JobState::Running => proto::JobState::Running,
+            JobState::Succeeded => proto::JobState::Succeeded,
+            JobState::Failed => proto::JobState::Failed,
+            JobState::Canceled => proto::JobState::Canceled,
+            JobState::RolledBack => proto::JobState::RolledBack,
+            JobState::NeedsReboot => proto::JobState::NeedsReboot,
+        }
     }
 }
 
@@ -601,8 +617,20 @@ impl TryFrom<proto::JobState> for JobState {
 
 impl From<FailureCategory> for proto::FailureCategory {
     fn from(value: FailureCategory) -> Self {
-        proto::FailureCategory::try_from(failure_category_code(value))
-            .expect("valid failure category")
+        match value {
+            FailureCategory::ValidationFailure => proto::FailureCategory::ValidationFailure,
+            FailureCategory::AuthorizationFailure => proto::FailureCategory::AuthorizationFailure,
+            FailureCategory::PolicyDenied => proto::FailureCategory::PolicyDenied,
+            FailureCategory::StaleApproval => proto::FailureCategory::StaleApproval,
+            FailureCategory::ExecutionFailure => proto::FailureCategory::ExecutionFailure,
+            FailureCategory::TransientInfrastructureFailure => {
+                proto::FailureCategory::TransientInfrastructureFailure
+            }
+            FailureCategory::Cancellation => proto::FailureCategory::Cancellation,
+            FailureCategory::StuckExecution => proto::FailureCategory::StuckExecution,
+            FailureCategory::RebootRequired => proto::FailureCategory::RebootRequired,
+            FailureCategory::RollbackFailure => proto::FailureCategory::RollbackFailure,
+        }
     }
 }
 
@@ -819,5 +847,34 @@ mod request_hash_tests {
         assert_eq!(json, "\"abc123\"");
         let back: RequestHash = serde_json::from_str("\"abc123\"").unwrap();
         assert_eq!(back, r);
+    }
+}
+
+#[cfg(test)]
+mod caller_role_ordering_tests {
+    use super::CallerRole;
+
+    #[test]
+    fn caller_role_orders_least_to_most_privileged() {
+        // The derived `Ord` IS the authorization comparison, so a variant
+        // reordered during an edit would silently change who can do what.
+        assert!(CallerRole::Observer < CallerRole::Dev);
+        assert!(CallerRole::Dev < CallerRole::Admin);
+        assert!(CallerRole::Admin < CallerRole::Boot);
+
+        // The comparison call sites rely on this shape directly.
+        assert!(CallerRole::Admin >= CallerRole::Dev);
+        assert!(!(CallerRole::Observer >= CallerRole::Dev));
+    }
+
+    #[test]
+    fn max_selects_the_higher_privilege() {
+        // `highest_role_from_groups` folds with `max`; a user in both the
+        // observer and admin groups must end up Admin.
+        assert_eq!(
+            CallerRole::Observer.max(CallerRole::Admin),
+            CallerRole::Admin
+        );
+        assert_eq!(CallerRole::Boot.max(CallerRole::Dev), CallerRole::Boot);
     }
 }

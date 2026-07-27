@@ -685,9 +685,7 @@ fn validate_action_platform(state: &DaemonState, action_name: &str) -> Result<()
     let is_mutating = state
         .policy
         .min_role_for_action(action_name)
-        .is_some_and(|role| {
-            crate::auth::role_rank(&role) > crate::auth::role_rank(&CallerRole::Observer)
-        });
+        .is_some_and(|role| role > CallerRole::Observer);
     if required_family.is_none() && !is_mutating {
         return Ok(());
     }
@@ -1797,7 +1795,6 @@ async fn handle_preview(
         request_hash,
         action_name: action_name.to_string(),
         risk_level: spec.risk_level,
-        approval_id: None,
         summary: preview.summary.clone(),
         warnings: preview.warnings.clone(),
     };
@@ -2094,7 +2091,7 @@ async fn handle_execute(
         spec.risk_level == sysknife_types::RiskLevel::High && spec.reboot_required;
 
     let policy_says_mutating = match state.policy.min_role_for_action(action_name) {
-        Some(r) => crate::auth::role_rank(&r) > crate::auth::role_rank(&CallerRole::Observer),
+        Some(r) => r > CallerRole::Observer,
         None => {
             // Unreachable today: `authorize_action` above rejects any action
             // the policy table does not know. Treat the miss as mutating
@@ -2583,12 +2580,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_caller_role_on_pair_does_not_panic() {
-        // Peer is the test process; the resolved role depends on the test user's
-        // groups, so we only assert the SO_PEERCRED + optional-pidfd path resolves
-        // without panicking.
+    async fn resolve_caller_role_matches_the_peers_actual_groups() {
+        // This used to call `resolve_caller_role` and discard the result,
+        // asserting only "no panic" — it would have passed just as happily if
+        // the function returned Boot for everyone.
+        //
+        // The role is environment-dependent, so rather than hardcoding one we
+        // derive the expectation from the same inputs the daemon uses and
+        // compare. That pins the whole wiring — SO_PEERCRED → pid →
+        // /proc/<pid>/status → /etc/group → role — instead of only its absence
+        // of panics.
         let (a, _b) = UnixStream::pair().unwrap();
-        let _role = resolve_caller_role(&a);
+        let role = resolve_caller_role(&a);
+
+        let gid_map = read_gid_map();
+        let expected =
+            crate::auth::highest_role_from_groups(groups_for_pid(std::process::id(), &gid_map));
+
+        assert_eq!(
+            role, expected,
+            "the resolved role must be exactly what this process's groups justify"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_caller_role_never_exceeds_observer_without_a_privileged_group() {
+        // The direction that actually matters for safety: privilege must come
+        // from group membership, never from the mere act of connecting.
+        let (a, _b) = UnixStream::pair().unwrap();
+        let role = resolve_caller_role(&a);
+
+        let gid_map = read_gid_map();
+        let groups = groups_for_pid(std::process::id(), &gid_map);
+        let privileged = groups.iter().any(|g| {
+            matches!(
+                g.as_str(),
+                crate::auth::DEV_GROUP
+                    | crate::auth::ADMIN_GROUP
+                    | crate::auth::BOOT_GROUP
+                    | crate::auth::WHEEL_GROUP
+            )
+        });
+
+        if !privileged {
+            assert_eq!(
+                role,
+                CallerRole::Observer,
+                "a process in no privileged group must resolve to Observer"
+            );
+        }
     }
 
     // ------------------------------------------------------------------

@@ -419,3 +419,31 @@ async fn execute_spec_kills_a_child_that_outruns_the_action_timeout() {
         "error must say the action timed out, got: {msg}"
     );
 }
+
+/// A child killed by a signal has no exit code; the executor maps that to -1.
+///
+/// `execute_spec` and `execute_command_with_progress` both do
+/// `.code().unwrap_or(-1)`, and nothing exercised the `None` branch — the
+/// existing tests only cover a plain nonzero exit. The distinction matters:
+/// a process killed by the OOM killer or by the action timeout reports -1,
+/// not a normal failure code.
+#[tokio::test]
+async fn signal_killed_child_reports_exit_code_minus_one() {
+    let spec = ActionSpec {
+        action_name: "SignalProbe",
+        mechanism: ActionMechanism::Command {
+            program: "sh",
+            // The shell SIGKILLs itself, so wait() yields a signal status.
+            args: vec!["-c".to_string(), "kill -9 $$".to_string()],
+        },
+        risk_level: sysknife_types::RiskLevel::Low,
+        reboot_required: false,
+        rollback_available: false,
+    };
+
+    let out = execute_spec(&spec).await.expect("spawning must succeed");
+    assert_eq!(
+        out.exit_code, -1,
+        "a signal-terminated child must map to -1, not a normal exit code"
+    );
+}

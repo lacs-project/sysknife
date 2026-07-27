@@ -2485,6 +2485,63 @@ mod tests {
     }
 
     #[test]
+    fn authorized_keys_actions_reject_a_traversal_username() {
+        // `actions/ssh.rs` builds `/home/{username}/.ssh/authorized_keys` by
+        // interpolation, so the only thing keeping the path inside the user's
+        // home is `validated_username` being called in these three match arms.
+        // `validate.rs` tests the validator in isolation, and `ssh_key_ops.rs`
+        // calls the action functions directly — neither proves the guard is
+        // actually wired to the reachable actions.
+        for action in [
+            "GetAuthorizedKeys",
+            "AddAuthorizedKey",
+            "RemoveAuthorizedKey",
+        ] {
+            for bad in ["../../etc", "..", "root/../../etc"] {
+                let err = build_action_spec(
+                    action,
+                    &json!({
+                        "username": bad,
+                        "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample u@h",
+                    }),
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(err, ExecutorError::InvalidParam("username")),
+                    "{action} must reject username {bad:?}, got {err:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ip_taking_actions_reject_a_malformed_address() {
+        // `ExecutorError::InvalidIpAddress` was constructed by three actions
+        // and reached by no test.
+        let cases: [(&str, serde_json::Value); 3] = [
+            (
+                "ResolvectlSetDns",
+                json!({ "interface": "eth0", "servers": ["not-an-ip"] }),
+            ),
+            (
+                "Fail2banBanIp",
+                json!({ "jail": "sshd", "ip": "999.1.1.1" }),
+            ),
+            (
+                "Fail2banUnbanIp",
+                json!({ "jail": "sshd", "ip": "1.2.3.4.5" }),
+            ),
+        ];
+        for (action, params) in cases {
+            let err = build_action_spec(action, &params).unwrap_err();
+            assert!(
+                matches!(err, ExecutorError::InvalidIpAddress { .. }),
+                "{action} must reject a malformed IP, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
     fn public_key_rejects_pipe_metacharacter() {
         // '|' is a shell pipe and never appears in a valid key. (It was also
         // the sed address delimiter before the key ops were made regex-free;

@@ -1,5 +1,5 @@
 use serde_json::json;
-use sysknife_daemon::jobs::JobStateMachine;
+use sysknife_daemon::jobs::{allowed_transition, is_terminal};
 use sysknife_daemon::preview::preview_action;
 use sysknife_daemon::transactions::{NewTransaction, TransactionStore};
 use sysknife_types::{JobState, PreviewEnvelope, RequestEnvelope, RiskLevel};
@@ -172,23 +172,21 @@ fn reboot_preview_is_high_risk_without_rollback() {
 }
 
 #[test]
-fn job_state_machine_handles_cancellation_and_reboot_states() {
-    let mut job = JobStateMachine::new("job-1");
+fn a_running_job_can_be_cancelled_or_end_needing_a_reboot() {
+    // Both are terminal, and neither may be restarted — a job that already
+    // ran must not be able to run a second time.
+    assert!(allowed_transition(&JobState::Running, &JobState::Canceled));
+    assert!(is_terminal(&JobState::Canceled));
 
-    assert!(!job.is_terminal());
-    job.transition_to(JobState::Running).expect("start job");
-    job.cancel().expect("cancel running job");
-    assert_eq!(job.state(), JobState::Canceled);
-    assert!(job.is_terminal());
-
-    let mut rebooting_job = JobStateMachine::new("job-2");
-    rebooting_job
-        .transition_to(JobState::Running)
-        .expect("start job");
-    rebooting_job.needs_reboot().expect("mark reboot required");
-    assert_eq!(rebooting_job.state(), JobState::NeedsReboot);
-    assert!(rebooting_job.is_terminal());
-    assert!(rebooting_job.transition_to(JobState::Running).is_err());
+    assert!(allowed_transition(
+        &JobState::Running,
+        &JobState::NeedsReboot
+    ));
+    assert!(is_terminal(&JobState::NeedsReboot));
+    assert!(!allowed_transition(
+        &JobState::NeedsReboot,
+        &JobState::Running
+    ));
 }
 
 #[test]
@@ -213,7 +211,6 @@ fn previewed_transactions_persist_preview_state() {
         request_hash: "hash-preview".to_string(),
         action_name: "UpdateSystem".to_string(),
         risk_level: RiskLevel::High,
-        approval_id: Some("approval-preview".to_string()),
         summary: "Stage system update".to_string(),
         warnings: vec!["system reboot required".to_string()],
     };

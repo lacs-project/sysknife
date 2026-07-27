@@ -1026,13 +1026,16 @@ mod tests {
         rows.push(forged);
         rows.extend(rest);
 
+        // The fixture is deterministic: the forged row sits at seq=2 with a
+        // signature that cannot verify, so the walk must stop exactly there.
+        // Accepting "2 or 3" let an off-by-one in `verify_rows` pass.
         let outcome = verify_chain(&key, &rows);
         match outcome {
             VerifyOutcome::Broken {
                 first_broken_seq, ..
-            } => assert!(
-                first_broken_seq == 2 || first_broken_seq == 3,
-                "verifier must flag the inserted row or the row that follows it (got {first_broken_seq})"
+            } => assert_eq!(
+                first_broken_seq, 2,
+                "the verifier must flag the forged row itself, not a later one"
             ),
             other => panic!("expected Broken, got {other:?}"),
         }

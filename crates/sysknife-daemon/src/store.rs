@@ -377,7 +377,6 @@ mod tests {
             request_hash: format!("hash-{request_id}"),
             action_name: "UpdateSystem".to_string(),
             risk_level: RiskLevel::High,
-            approval_id: None,
             summary: "Upgrade the system".to_string(),
             warnings: vec![],
         }

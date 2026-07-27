@@ -137,6 +137,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // Anchor signed checkpoints to an external append-only sink.
+    //
+    // The chain walk alone cannot detect tail truncation, and an attacker who
+    // holds the signing key can re-sign a rewritten history so it verifies
+    // perfectly. A previously anchored `(seq, tip)` is what exposes both. That
+    // machinery existed and was tested but nothing ever called it, so the
+    // defence was dormant unless an operator ran `sysknife audit checkpoint`
+    // on a timer of their own.
+    start_checkpoint_anchoring(&state, &database_path);
+
     match listen_target {
         ListenTarget::Unix(path) => {
             let std_listener = bind_unix_listener(&ListenTarget::Unix(path))?;
@@ -307,6 +317,64 @@ async fn vsock_accept_loop(
             }
         }
     }
+}
+
+/// Start periodic checkpoint anchoring, or say clearly that it is off.
+///
+/// Anchoring needs an *independent* append-only store — anchoring into the
+/// same database an attacker already controls proves nothing — so it is opt-in
+/// via `SYSKNIFE_CHECKPOINT_DB`. When unset the daemon still runs, but the
+/// operator is told the truth at startup instead of being left to assume a
+/// documented guarantee is active.
+fn start_checkpoint_anchoring(state: &DaemonState, database_path: &std::path::Path) {
+    use sysknife_daemon::checkpoint_sink::{
+        spawn_periodic_anchor, PostgresCheckpointSink, DEFAULT_ANCHOR_INTERVAL,
+    };
+
+    let Ok(db_url) = std::env::var("SYSKNIFE_CHECKPOINT_DB") else {
+        eprintln!(
+            "[sysknife-daemon] checkpoint anchoring is OFF (SYSKNIFE_CHECKPOINT_DB unset). \
+             The audit chain is still signed, but tail truncation and a rewrite by someone \
+             holding the signing key are NOT detectable without an external anchor."
+        );
+        return;
+    };
+
+    let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(database_path);
+    let key = match sysknife_daemon::audit_chain::AuditKey::load_or_generate(&key_path) {
+        Ok(key) => Arc::new(key),
+        Err(e) => {
+            eprintln!(
+                "[sysknife-daemon] checkpoint anchoring DISABLED: loading the audit key \
+                 from {} failed: {e}",
+                key_path.display()
+            );
+            return;
+        }
+    };
+
+    let audit = Arc::clone(&state.audit);
+    tokio::spawn(async move {
+        // Connecting is done inside the task so a checkpoint database that is
+        // slow or briefly down cannot delay the daemon accepting connections.
+        match PostgresCheckpointSink::connect(&db_url).await {
+            Ok(sink) => {
+                eprintln!(
+                    "[sysknife-daemon] checkpoint anchoring ON (every {}s)",
+                    DEFAULT_ANCHOR_INTERVAL.as_secs()
+                );
+                spawn_periodic_anchor(audit, key, Arc::new(sink), DEFAULT_ANCHOR_INTERVAL);
+            }
+            Err(e) => {
+                // Deliberately not fatal: losing the anchor must not take the
+                // control plane down, but it must be loud.
+                eprintln!(
+                    "[sysknife-daemon] checkpoint anchoring DISABLED: connecting to the \
+                     checkpoint database failed: {e}"
+                );
+            }
+        }
+    });
 }
 
 /// Build the audit forwarder from `[audit.forward]` config. Returns `None` if

@@ -19,7 +19,6 @@ fn new_transaction() -> NewTransaction {
         request_hash: "postgres-contract-hash".to_string(),
         action_name: "RestartService".to_string(),
         risk_level: RiskLevel::Medium,
-        approval_id: None,
         summary: "Restart sshd".to_string(),
         warnings: vec!["brief connection interruption".to_string()],
     }

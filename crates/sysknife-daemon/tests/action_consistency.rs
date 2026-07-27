@@ -272,3 +272,25 @@ fn every_catalogued_action_has_a_preview_profile() {
 // auto-approval gate derives risk from `preview::gate_risk` (the spec), so it can
 // no longer be mis-sized by the LLM's proposed risk. The prompt.rs risk labels
 // are advisory only — every risk-gated decision reads the spec.
+
+// ---------------------------------------------------------------------------
+// Catalogue drift — already covered, deliberately not re-asserted here
+// ---------------------------------------------------------------------------
+//
+// A review flagged that nothing pins `sysknife_types::KNOWN_ACTION_NAMES`
+// against the daemon's `build_action_spec` arms, leaving three independently
+// maintained action lists free to drift.
+//
+// The link is already closed, just not in one test:
+//
+//   KNOWN_ACTION_NAMES  ==  brain KNOWN_ACTIONS
+//        `action_name.rs::every_known_action_is_in_types_list` (subset AND
+//        equal length, so the two sets are identical)
+//   brain KNOWN_ACTIONS ==  catalogue()
+//        `every_spec_action_exists_in_brain_known_actions` +
+//        `brain_known_actions_has_no_stale_entries`
+//   catalogue()         ->  build_action_spec
+//        `every_spec_action_is_recognised_by_executor`
+//
+// Adding a direct assertion would restate a property these already guarantee,
+// so it is left out on purpose rather than forgotten.

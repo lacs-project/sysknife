@@ -1,5 +1,5 @@
 use sysknife_daemon::auth::highest_role_from_groups;
-use sysknife_daemon::jobs::JobStateMachine;
+use sysknife_daemon::jobs::allowed_transition;
 use sysknife_daemon::state::DaemonConfig;
 use sysknife_daemon::transactions::{NewTransaction, TransactionStore};
 use sysknife_daemon::transport::listen::{bind_unix_listener, ListenTarget};
@@ -82,7 +82,6 @@ fn transaction_records_are_persisted() {
         request_hash: "hash-1".into(),
         action_name: "UpdateSystem".into(),
         risk_level: RiskLevel::High,
-        approval_id: Some("approval-1".into()),
         summary: "Stage system update".into(),
         warnings: vec!["reboot required".into()],
     };
@@ -97,19 +96,34 @@ fn transaction_records_are_persisted() {
     assert_eq!(loaded.request_hash, "hash-1");
     assert_eq!(loaded.action_name, "UpdateSystem");
     assert_eq!(loaded.status, JobState::Queued);
-    assert_eq!(loaded.approval_id.as_deref(), Some("approval-1"));
+    // `approval_id` is the store's own SHA-256 commitment over
+    // (transaction_id, request_hash) — a caller can no longer supply it, so
+    // assert the shape the store guarantees rather than an injected string.
+    let approval_id = loaded
+        .approval_id
+        .as_deref()
+        .expect("the store always derives an approval commitment");
+    assert_eq!(
+        approval_id.len(),
+        64,
+        "expected a hex SHA-256 digest, got {approval_id:?}"
+    );
+    assert!(
+        approval_id.chars().all(|c| c.is_ascii_hexdigit()),
+        "expected a hex digest, got {approval_id:?}"
+    );
     assert_eq!(loaded.warnings, vec!["reboot required".to_string()]);
 }
 
 #[test]
-fn job_state_machine_rejects_invalid_transitions() {
-    let mut job = JobStateMachine::new("job-1");
-
-    assert_eq!(job.state(), JobState::Queued);
-    job.transition_to(JobState::Running)
-        .expect("queued -> running");
-    job.transition_to(JobState::NeedsReboot)
-        .expect("running -> needs reboot");
-    assert_eq!(job.state(), JobState::NeedsReboot);
-    assert!(job.transition_to(JobState::Running).is_err());
+fn the_transition_table_rejects_restarting_a_finished_job() {
+    assert!(allowed_transition(&JobState::Queued, &JobState::Running));
+    assert!(allowed_transition(
+        &JobState::Running,
+        &JobState::NeedsReboot
+    ));
+    assert!(!allowed_transition(
+        &JobState::NeedsReboot,
+        &JobState::Running
+    ));
 }

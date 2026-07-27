@@ -1776,3 +1776,43 @@ async fn story_coverage_third_ubuntu_case_apt_search() {
         "Ubuntu prompt must not mention AddLayeredPackage"
     );
 }
+
+/// Malformed provider JSON must surface as a planning failure, not be
+/// swallowed into an empty plan. `ProviderError` has five variants; only
+/// `Http` and `Auth` were exercised through `plan_intent`, leaving the
+/// parse/rate-limit/request paths unproven.
+#[tokio::test]
+async fn provider_parse_error_propagates() {
+    let planner = make_planner(MockProvider::new([Err(ProviderError::Parse(
+        "model returned unparseable JSON".into(),
+    ))]));
+
+    assert!(matches!(
+        planner.plan_intent("do something").await.unwrap_err(),
+        PlanningError::Provider(_)
+    ));
+}
+
+#[tokio::test]
+async fn rate_limit_error_propagates() {
+    let planner = make_planner(MockProvider::new([Err(ProviderError::RateLimit(
+        "429 slow down".into(),
+    ))]));
+
+    assert!(matches!(
+        planner.plan_intent("do something").await.unwrap_err(),
+        PlanningError::Provider(_)
+    ));
+}
+
+#[tokio::test]
+async fn transport_request_error_propagates() {
+    let planner = make_planner(MockProvider::new([Err(ProviderError::Request(
+        "connection reset".into(),
+    ))]));
+
+    assert!(matches!(
+        planner.plan_intent("do something").await.unwrap_err(),
+        PlanningError::Provider(_)
+    ));
+}

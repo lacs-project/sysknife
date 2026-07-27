@@ -354,10 +354,18 @@ impl Plan {
 
     /// Wrap this plan as authoritative *without* substituting risk.
     ///
-    /// The loud name is deliberate: use only when the step risks are already the
-    /// authoritative `ActionSpec` values — in tests, or where a plan is built
-    /// directly from daemon risk. Production code paths that start from an LLM
-    /// proposal must use [`Plan::into_authorized`] instead.
+    /// **Test-only.** `AuthorizedPlan` exists to make it structurally
+    /// impossible to feed the approval gate the LLM's self-reported risk, and
+    /// this function is the one hole in that guarantee. It was a plain `pub fn`
+    /// whose contract lived only in a doc comment, so any crate — including a
+    /// future refactor of the MCP planning path reaching for something simpler
+    /// than the per-step daemon preview — could construct an `AuthorizedPlan`
+    /// from unvalidated risk and still compile.
+    ///
+    /// Gating it behind `test-support` makes that a compile error outside
+    /// tests. Production paths must use [`Plan::into_authorized`], which forces
+    /// the caller to supply the substitution function.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn assume_authorized(self) -> AuthorizedPlan {
         AuthorizedPlan { plan: self }
@@ -375,7 +383,9 @@ impl Plan {
 /// gating. A raw [`Plan`] exposes only [`PlanStep::proposed_risk_level`], so it
 /// is impossible to feed the approval gate an un-substituted (proposed) risk by
 /// accident. Construct via [`Plan::into_authorized`] (substitutes) or, where the
-/// risks are already authoritative, [`Plan::assume_authorized`].
+/// risks are already authoritative, `Plan::assume_authorized` — which is
+/// gated behind the `test-support` feature and so is not part of the public
+/// API this documentation describes (hence the plain reference, not a link).
 pub struct AuthorizedPlan {
     plan: Plan,
 }
