@@ -8,6 +8,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [0.2.12] — 2026-07-27
+
+Follow-up to the v0.2.11 review sweep: the findings that release deferred.
+
+### Added
+
+- **The daemon now anchors signed audit checkpoints.** The machinery was
+  complete and tested but inert — nothing ever called `sign_checkpoint` or a
+  `CheckpointSink`, so tail-truncation detection and rewrite-by-a-key-holder
+  detection were only active if an operator ran `sysknife audit checkpoint` on
+  a timer of their own. Set `SYSKNIFE_CHECKPOINT_DB` to enable it; when unset
+  the daemon now says so at startup rather than letting a documented guarantee
+  look active while it is off. The anchoring rules (refuse a chain that does
+  not verify, read back after writing, re-verify every anchored checkpoint)
+  live in one `anchor_once` shared by the CLI and the daemon.
+
+### Security
+
+- `Plan::assume_authorized` — the one hole in the type-level guarantee that the
+  approval gate can never see the LLM's self-reported risk — is now behind a
+  `test-support` feature, so constructing an `AuthorizedPlan` from unvalidated
+  risk is a compile error outside tests.
+- `NewTransaction.approval_id` was a public field used verbatim at insert. That
+  value is chain-hashed and then treated as evidence that an approval happened.
+  It is no longer settable; the commitment is always derived by the store.
+
+### Changed
+
+- `CallerRole` derives `Ord` from its declaration order and the hand-written
+  `role_rank` is deleted — one encoding of privilege order instead of two.
+- `ApprovalDecision::ExceedsCeiling` carries the ceiling it matched, removing
+  two `.expect()`s that re-derived it at the call sites.
+- The four proto-bridge `From` impls are exhaustive matches rather than an i32
+  round-trip with `.expect()`, so a drift from the `.proto` is a compile error
+  instead of a panic inside a root process.
+- `JobStateMachine` is removed. Production calls the free `allowed_transition`;
+  the struct was dead code whose ten tests read as coverage of the live
+  transition logic. The table is now tested directly and exhaustively.
+
+### Fixed (test coverage)
+
+- The `transient_infrastructure_failure` deny paths had no test at all, so a
+  refactor turning an `Err` arm into an implicit allow would have been an
+  invisible approval-boundary bypass. Approve-on-a-failing-store is now
+  covered, including that the transaction stays Queued.
+- Preview is pinned as never reaching the executor.
+- New coverage for `revoke_unconsumed_approval` (including that a consumed
+  receipt cannot be retracted), approving a non-Queued transaction, two
+  concurrent claims on one approval, truncated frame header/body,
+  authorized-keys traversal *through `build_action_spec`*, malformed IPs,
+  signal-killed exit codes, `--timeout`, `audit verify` exit code 2,
+  and the remaining `ProviderError` variants.
+- `resolve_caller_role_on_pair_does_not_panic` discarded its result and would
+  have passed if the function returned `Boot` for everyone; it now derives the
+  expectation from the same inputs the daemon uses.
+- `inserted_forged_row_breaks_chain` accepted `seq == 2 || seq == 3` against a
+  deterministic fixture. Pinned to 2.
+
 ## [0.2.11] — 2026-07-27
 
 Findings from a full review of the daemon, the CLI/MCP surface, and the
