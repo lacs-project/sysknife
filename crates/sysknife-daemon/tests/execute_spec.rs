@@ -376,3 +376,46 @@ async fn command_unknown_program_returns_io_error() {
         "spawning a nonexistent program must return ExecutorError::Io, not a zero exit_code"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Action timeout
+// ---------------------------------------------------------------------------
+
+/// A child that never exits must be killed, not awaited forever.
+///
+/// Without a deadline a hung process (`apt-get` on a dead mirror, a helper
+/// blocked on a prompt) wedges its connection permanently AND never releases
+/// the exclusion lock it holds, so every later action contending for that
+/// resource is refused from then on. Nextest runs each test in its own
+/// process, so setting the override env var here cannot leak into another test.
+#[tokio::test]
+async fn execute_spec_kills_a_child_that_outruns_the_action_timeout() {
+    std::env::set_var("SYSKNIFE_ACTION_TIMEOUT_SECS", "1");
+
+    let spec = ActionSpec {
+        action_name: "TimeoutProbe",
+        mechanism: ActionMechanism::Command {
+            program: "sh",
+            args: vec!["-c".to_string(), "sleep 300".to_string()],
+        },
+        risk_level: sysknife_types::RiskLevel::Low,
+        reboot_required: false,
+        rollback_available: false,
+    };
+
+    let started = std::time::Instant::now();
+    let err = execute_spec(&spec)
+        .await
+        .expect_err("a child that outruns the timeout must fail, not hang");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_secs(60),
+        "must give up near the 1s deadline, took {elapsed:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("timeout"),
+        "error must say the action timed out, got: {msg}"
+    );
+}

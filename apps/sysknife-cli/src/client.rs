@@ -48,6 +48,15 @@ pub struct ApprovalDetails {
 use crate::error::CliError;
 
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Longest gap tolerated between frames while an action streams.
+///
+/// The short `SOCKET_TIMEOUT` is wrong here: a legitimate action can run
+/// for tens of minutes and say nothing while it works. This only has to be
+/// longer than the daemon's own action ceiling, so that a daemon that is
+/// alive but permanently silent eventually surfaces as an error instead of
+/// freezing the CLI — and, through it, an entire MCP session.
+const EXECUTE_FRAME_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60 + 300);
 const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
@@ -335,9 +344,21 @@ impl DaemonClient {
     async fn connect_async(&self) -> Result<AsyncStream, CliError> {
         match &self.target {
             SocketTarget::Unix(path) => {
-                let stream = tokio::net::UnixStream::connect(path).await.map_err(|e| {
-                    CliError::ConfigOrDaemon(format!("cannot connect to {}: {e}", path.display()))
-                })?;
+                let stream =
+                    tokio::time::timeout(SOCKET_TIMEOUT, tokio::net::UnixStream::connect(path))
+                        .await
+                        .map_err(|_| {
+                            CliError::ConfigOrDaemon(format!(
+                                "timed out connecting to {}",
+                                path.display()
+                            ))
+                        })?
+                        .map_err(|e| {
+                            CliError::ConfigOrDaemon(format!(
+                                "cannot connect to {}: {e}",
+                                path.display()
+                            ))
+                        })?;
                 Ok(AsyncStream::Unix(stream))
             }
             #[cfg(target_os = "linux")]
@@ -533,14 +554,22 @@ impl DaemonClient {
         }))
         .map_err(|e| CliError::ConfigOrDaemon(format!("serialize: {e}")))?;
 
-        stream
-            .write_frame(&req)
+        tokio::time::timeout(SOCKET_TIMEOUT, stream.write_frame(&req))
             .await
+            .map_err(|_| {
+                CliError::ConfigOrDaemon(format!(
+                    "timed out after {}s sending the request to the daemon",
+                    SOCKET_TIMEOUT.as_secs()
+                ))
+            })?
             .map_err(|e| CliError::ConfigOrDaemon(format!("send: {e}")))?;
 
-        let raw = stream
-            .read_frame()
+        let raw = tokio::time::timeout(SOCKET_TIMEOUT, stream.read_frame())
             .await
+            .map_err(|_| CliError::ConfigOrDaemon(format!(
+                "timed out after {}s waiting for the next frame from the daemon; the job may still be running server-side",
+                SOCKET_TIMEOUT.as_secs()
+            )))?
             .map_err(|e| CliError::ConfigOrDaemon(format!("recv: {e}")))?;
 
         let resp: Value = serde_json::from_slice(&raw)
@@ -589,13 +618,21 @@ impl DaemonClient {
             "transaction_id": transaction_id,
         }))
         .map_err(|e| CliError::ConfigOrDaemon(format!("serialize: {e}")))?;
-        stream
-            .write_frame(&req)
+        tokio::time::timeout(SOCKET_TIMEOUT, stream.write_frame(&req))
             .await
+            .map_err(|_| {
+                CliError::ConfigOrDaemon(format!(
+                    "timed out after {}s sending the request to the daemon",
+                    SOCKET_TIMEOUT.as_secs()
+                ))
+            })?
             .map_err(|e| CliError::ConfigOrDaemon(format!("send: {e}")))?;
-        let raw = stream
-            .read_frame()
+        let raw = tokio::time::timeout(SOCKET_TIMEOUT, stream.read_frame())
             .await
+            .map_err(|_| CliError::ConfigOrDaemon(format!(
+                "timed out after {}s waiting for the next frame from the daemon; the job may still be running server-side",
+                SOCKET_TIMEOUT.as_secs()
+            )))?
             .map_err(|e| CliError::ConfigOrDaemon(format!("recv: {e}")))?;
         let resp: Value = serde_json::from_slice(&raw)
             .map_err(|e| CliError::ConfigOrDaemon(format!("parse response: {e}")))?;
@@ -641,13 +678,21 @@ impl DaemonClient {
             "transaction_id": transaction_id,
         }))
         .map_err(|e| CliError::ConfigOrDaemon(format!("serialize: {e}")))?;
-        stream
-            .write_frame(&req)
+        tokio::time::timeout(SOCKET_TIMEOUT, stream.write_frame(&req))
             .await
+            .map_err(|_| {
+                CliError::ConfigOrDaemon(format!(
+                    "timed out after {}s sending the request to the daemon",
+                    SOCKET_TIMEOUT.as_secs()
+                ))
+            })?
             .map_err(|e| CliError::ConfigOrDaemon(format!("send: {e}")))?;
-        let raw = stream
-            .read_frame()
+        let raw = tokio::time::timeout(SOCKET_TIMEOUT, stream.read_frame())
             .await
+            .map_err(|_| CliError::ConfigOrDaemon(format!(
+                "timed out after {}s waiting for the next frame from the daemon; the job may still be running server-side",
+                SOCKET_TIMEOUT.as_secs()
+            )))?
             .map_err(|e| CliError::ConfigOrDaemon(format!("recv: {e}")))?;
         let resp: Value = serde_json::from_slice(&raw)
             .map_err(|e| CliError::ConfigOrDaemon(format!("parse response: {e}")))?;
@@ -689,14 +734,22 @@ impl DaemonClient {
         }))
         .map_err(|e| CliError::ConfigOrDaemon(format!("serialize: {e}")))?;
 
-        stream
-            .write_frame(&req)
+        tokio::time::timeout(SOCKET_TIMEOUT, stream.write_frame(&req))
             .await
+            .map_err(|_| {
+                CliError::ConfigOrDaemon(format!(
+                    "timed out after {}s sending the request to the daemon",
+                    SOCKET_TIMEOUT.as_secs()
+                ))
+            })?
             .map_err(|e| CliError::ConfigOrDaemon(format!("send: {e}")))?;
 
-        let raw = stream
-            .read_frame()
+        let raw = tokio::time::timeout(SOCKET_TIMEOUT, stream.read_frame())
             .await
+            .map_err(|_| CliError::ConfigOrDaemon(format!(
+                "timed out after {}s waiting for the next frame from the daemon; the job may still be running server-side",
+                SOCKET_TIMEOUT.as_secs()
+            )))?
             .map_err(|e| CliError::ConfigOrDaemon(format!("recv: {e}")))?;
 
         let resp: Value = serde_json::from_slice(&raw)
@@ -740,15 +793,23 @@ impl DaemonClient {
         }))
         .map_err(|e| CliError::ConfigOrDaemon(format!("serialize: {e}")))?;
 
-        stream
-            .write_frame(&req)
+        tokio::time::timeout(SOCKET_TIMEOUT, stream.write_frame(&req))
             .await
+            .map_err(|_| {
+                CliError::ConfigOrDaemon(format!(
+                    "timed out after {}s sending the request to the daemon",
+                    SOCKET_TIMEOUT.as_secs()
+                ))
+            })?
             .map_err(|e| CliError::ConfigOrDaemon(format!("send: {e}")))?;
 
         loop {
-            let raw = stream
-                .read_frame()
+            let raw = tokio::time::timeout(EXECUTE_FRAME_TIMEOUT, stream.read_frame())
                 .await
+                .map_err(|_| CliError::ExecutionFailed(format!(
+                    "timed out after {}s waiting for the next frame from the daemon; the job may still be running server-side",
+                    EXECUTE_FRAME_TIMEOUT.as_secs()
+                )))?
                 .map_err(|e| CliError::ExecutionFailed(format!("recv: {e}")))?;
 
             let resp: Value = serde_json::from_slice(&raw)

@@ -4,8 +4,13 @@
 //! On insert, the daemon computes
 //!
 //! ```text
-//! chain_hash = ed25519_sign(canonical(immutable_fields) || prev_chain_hash, signing_key)
+//! chain_hash = ed25519_sign(ROW_DOMAIN || canonical(immutable_fields) || prev_chain_hash, signing_key)
 //! ```
+//!
+//! The `ROW_DOMAIN` prefix is **part of the signed message**, not decoration:
+//! it is what stops a row signature from ever verifying as a checkpoint or
+//! approval-receipt signature. An independent verifier that omits it will
+//! never reproduce a valid `chain_hash`.
 //!
 //! and stores both (the signature is hex-encoded; the first row in a chain has
 //! `prev_chain_hash = ""`). Ed25519 signatures are deterministic (RFC 8032), so

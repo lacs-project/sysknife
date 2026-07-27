@@ -18,16 +18,31 @@ const fs = require('fs');
  */
 function mergeMcpServers(filePath, servers) {
   let existing = {};
-  try {
-    if (fs.existsSync(filePath)) {
-      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  if (fs.existsSync(filePath)) {
+    let raw;
+    try {
+      raw = fs.readFileSync(filePath, 'utf8');
+    } catch (e) {
+      // A read failure is NOT the same as malformed JSON. Treating EACCES,
+      // EIO, or a symlink loop as "start empty" makes the caller write a
+      // fresh file over the top, silently deleting every other MCP server the
+      // user had configured — the exact clobbering this function exists to
+      // prevent. Refuse instead.
+      throw new Error(
+        `could not read existing MCP config at ${filePath}: ${e.message} — ` +
+          'refusing to overwrite it, since that would discard your other MCP servers'
+      );
+    }
+    try {
+      const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         existing = parsed;
       }
+    } catch {
+      // Malformed JSON — start from an empty config rather than crashing the
+      // wizard. There is nothing to preserve in a file we cannot parse.
+      existing = {};
     }
-  } catch {
-    // Malformed JSON — start from an empty config rather than crashing the wizard.
-    existing = {};
   }
   const existingServers =
     existing.mcpServers && typeof existing.mcpServers === 'object' ? existing.mcpServers : {};

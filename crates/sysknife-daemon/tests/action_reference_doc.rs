@@ -55,8 +55,18 @@ fn code_cell(s: &str) -> String {
 fn command(m: &ActionMechanism) -> String {
     match m {
         ActionMechanism::Command { program, args } => {
+            // Quote any argument that is not a single bare word. Without this,
+            // a multi-word argument — an `sh -c` script body, say — flattens
+            // into the surrounding argv and the reader cannot tell where one
+            // argument ends and the next begins.
             let mut parts = vec![(*program).to_string()];
-            parts.extend(args.iter().cloned());
+            parts.extend(args.iter().map(|a| {
+                if a.is_empty() || a.contains(|c: char| c.is_whitespace() || c == '\'') {
+                    format!("\"{}\"", a.replace('"', "\\\""))
+                } else {
+                    a.clone()
+                }
+            }));
             code_cell(&parts.join(" "))
         }
         ActionMechanism::FileScan { path } => format!("scan {}", code_cell(path)),

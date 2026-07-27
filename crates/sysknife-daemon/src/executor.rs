@@ -25,6 +25,7 @@ use std::io;
 use std::net::IpAddr;
 use std::process::Stdio;
 use std::str::FromStr;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -130,6 +131,50 @@ impl ActionExecutor for RealActionExecutor {
     }
 }
 
+/// Wall-clock ceiling on a single privileged action.
+///
+/// Nothing else bounds these processes: without a deadline a child that never
+/// exits — `apt-get` waiting on a dead mirror, a helper blocked on a prompt
+/// that will never arrive — wedges its connection forever, and the exclusion
+/// lock it holds is never released, so every other action contending for that
+/// resource is refused from then on.
+///
+/// The ceiling is deliberately generous rather than tight. A release upgrade
+/// or an OSTree rebase legitimately runs for tens of minutes, and killing a
+/// half-finished package transaction is worse than waiting. This is a
+/// backstop against a hang, not a performance budget. Override with
+/// `SYSKNIFE_ACTION_TIMEOUT_SECS` when an action on a slow link needs longer.
+const DEFAULT_ACTION_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+
+fn action_timeout() -> Duration {
+    match std::env::var("SYSKNIFE_ACTION_TIMEOUT_SECS") {
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(secs) if secs > 0 => Duration::from_secs(secs),
+            _ => {
+                eprintln!(
+                    "[sysknife-daemon] WARNING: ignoring invalid \
+                     SYSKNIFE_ACTION_TIMEOUT_SECS={raw:?}; using the default"
+                );
+                DEFAULT_ACTION_TIMEOUT
+            }
+        },
+        Err(_) => DEFAULT_ACTION_TIMEOUT,
+    }
+}
+
+/// Kill a child that outran the deadline and reap it, so the timeout does not
+/// trade a hung task for a zombie.
+async fn kill_and_reap(child: &mut tokio::process::Child, program: &str) -> ExecutorError {
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    let secs = action_timeout().as_secs();
+    eprintln!("[sysknife-daemon] {program} exceeded the {secs}s action timeout; killed");
+    ExecutorError::Io(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("{program} exceeded the {secs}s action timeout and was killed"),
+    ))
+}
+
 async fn execute_command_with_progress(
     program: &'static str,
     args: &[String],
@@ -152,9 +197,18 @@ async fn execute_command_with_progress(
             .map(|_| buf)
     });
 
+    let deadline = tokio::time::Instant::now() + action_timeout();
+
     let mut lines = BufReader::new(stdout).lines();
     let mut stdout_buf = String::new();
-    while let Some(line) = lines.next_line().await.map_err(ExecutorError::Io)? {
+    loop {
+        // The deadline covers the whole action, not each read: a process that
+        // emits one progress line an hour must still be cut off.
+        let next = match tokio::time::timeout_at(deadline, lines.next_line()).await {
+            Ok(result) => result.map_err(ExecutorError::Io)?,
+            Err(_) => return Err(kill_and_reap(&mut child, program).await),
+        };
+        let Some(line) = next else { break };
         if !line.is_empty() {
             let _ = progress.send(line.clone());
         }
@@ -162,7 +216,10 @@ async fn execute_command_with_progress(
         stdout_buf.push('\n');
     }
 
-    let exit_status = child.wait().await.map_err(ExecutorError::Io)?;
+    let exit_status = match tokio::time::timeout_at(deadline, child.wait()).await {
+        Ok(status) => status.map_err(ExecutorError::Io)?,
+        Err(_) => return Err(kill_and_reap(&mut child, program).await),
+    };
     let stderr_bytes = stderr_task
         .await
         .map_err(|_| ExecutorError::Io(io::Error::other("stderr reader task panicked")))?
@@ -690,6 +747,18 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
                 .get("nopasswd")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            // `commands = "ALL"` together with `nopasswd` mints a standing,
+            // passwordless, unrestricted root credential (`user ALL=(ALL)
+            // NOPASSWD: ALL`). Unlike every other action here, the effect
+            // outlives the job: it is a permanent privilege grant, not a
+            // one-time change, and it is indistinguishable from the daemon's
+            // own authority thereafter. Require the caller to give up one of
+            // the two dimensions — scope the commands, or keep the password
+            // prompt. `visudo` would happily accept the combination, so this
+            // is the only place it can be refused.
+            if commands == "ALL" && nopasswd {
+                return Err(ExecutorError::InvalidParam("commands"));
+            }
             Ok(sudoers::grant_sudo_access(
                 &name,
                 &user,
@@ -1411,14 +1480,50 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
 pub async fn execute_spec(spec: &ActionSpec) -> Result<ExecutionOutput, ExecutorError> {
     match &spec.mechanism {
         ActionMechanism::Command { program, args } => {
-            let output = tokio::process::Command::new(program)
+            // Spawned rather than `.output()`ed so the child can be killed on
+            // timeout; `.output()` gives no handle to kill, so a hung process
+            // would hold the task forever.
+            let mut child = tokio::process::Command::new(program)
                 .args(args)
-                .output()
-                .await?;
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?;
+
+            // `wait_with_output` consumes the child, which would leave nothing
+            // to kill when the deadline fires. Drain the pipes in their own
+            // tasks instead — draining also stops a chatty process from
+            // blocking on a full pipe buffer while we wait.
+            let stdout_h = child.stdout.take().expect("stdout was piped");
+            let stderr_h = child.stderr.take().expect("stderr was piped");
+            let stdout_task = tokio::spawn(async move {
+                let mut buf = Vec::new();
+                BufReader::new(stdout_h)
+                    .read_to_end(&mut buf)
+                    .await
+                    .map(|_| buf)
+            });
+            let stderr_task = tokio::spawn(async move {
+                let mut buf = Vec::new();
+                BufReader::new(stderr_h)
+                    .read_to_end(&mut buf)
+                    .await
+                    .map(|_| buf)
+            });
+
+            let status = match tokio::time::timeout(action_timeout(), child.wait()).await {
+                Ok(status) => status?,
+                Err(_) => return Err(kill_and_reap(&mut child, program).await),
+            };
+            let join =
+                |e| ExecutorError::Io(io::Error::other(format!("reader task panicked: {e}")));
+            let stdout = stdout_task.await.map_err(join)??;
+            let stderr = stderr_task.await.map_err(join)??;
+
             Ok(ExecutionOutput {
-                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                exit_code: output.status.code().unwrap_or(-1),
+                stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                exit_code: status.code().unwrap_or(-1),
             })
         }
         ActionMechanism::FileScan { path } => {
@@ -1578,7 +1683,8 @@ fn validated_public_key(s: &str) -> Result<String, ExecutorError> {
     //
     // Blocked characters and why:
     //   '\''  — breaks single-quoted shell strings in add_authorized_key
-    //   '|'   — sed address delimiter in remove_authorized_key (\|^key$|d)
+    //   '|'   — shell pipe (the ssh key ops no longer build a sed address,
+    //           but '|' never appears in a valid key, so keep rejecting it)
     //   ';'   — shell command separator
     //   '`'   — shell command substitution
     //   '$'   — shell variable expansion
@@ -2379,14 +2485,30 @@ mod tests {
     }
 
     #[test]
-    fn public_key_rejects_pipe_sed_injection() {
-        // '|' is the sed address delimiter in remove_authorized_key.
-        // Allowing it enables sed injection: \|^key|d where key contains '|'.
+    fn public_key_rejects_pipe_metacharacter() {
+        // '|' is a shell pipe and never appears in a valid key. (It was also
+        // the sed address delimiter before the key ops were made regex-free;
+        // the rejection stands on its own merits either way.)
         let key = "ssh-ed25519 AAAA|; rm -rf /etc user@host";
         assert!(matches!(
             validated_public_key(key),
             Err(ExecutorError::InvalidParam("public_key"))
         ));
+    }
+
+    #[test]
+    fn public_key_accepts_regex_metacharacters_so_consumers_must_not_use_regex() {
+        // Deliberate and load-bearing: `.` is legal inside a key comment
+        // (`alice@example.com`), so the validator cannot blocklist regex
+        // metacharacters without rejecting valid keys. Any consumer that
+        // interprets a key as a pattern is therefore the defect — see
+        // `actions::ssh::REMOVE_KEY_SCRIPT`, which uses `grep -Fxv` for
+        // exactly this reason.
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample alice@example.com";
+        assert!(validated_public_key(key).is_ok());
+        // The wildcard-shaped payload passes validation too. It is safe only
+        // because no consumer treats it as a pattern.
+        assert!(validated_public_key("ssh-ed25519 .*").is_ok());
     }
 
     #[test]
@@ -2764,7 +2886,10 @@ mod tests {
         // which accepts the bare `single`/`s`/`1` runlevel shortcuts. The
         // kernel-arg denylist must apply to `append` too — booting into a
         // single-user root shell is exactly the SetKernelArguments threat.
-        for dangerous in ["single", "s", "1"] {
+        // Every BLOCKED_EXACT entry is valueless, so it passes the charset
+        // check and this denylist call is the only thing stopping it — the
+        // call is load-bearing here, not redundant with `validated_safe_arg`.
+        for dangerous in ["single", "s", "1", "nosmap", "nosmep"] {
             let err = build_action_spec(
                 "GrubSetKargs",
                 &json!({ "append": [dangerous], "delete": [] }),
@@ -2786,6 +2911,10 @@ mod tests {
     #[test]
     fn kernel_arg_build_spec_rejects_dangerous_arg() {
         // End-to-end: build_action_spec must propagate the blocklist error.
+        // This action does NOT apply the `validated_safe_arg` charset check,
+        // so `init=/bin/bash` reaches `validated_safe_kernel_arg` and is
+        // caught by BLOCKED_PREFIXES — the `=`-bearing half of that denylist
+        // is live here even though GrubSetKargs never reaches it.
         let err = build_action_spec(
             "SetKernelArguments",
             &json!({ "add": ["init=/bin/bash"], "remove": [] }),
@@ -2795,6 +2924,30 @@ mod tests {
             matches!(err, ExecutorError::InvalidParam("add")),
             "expected InvalidParam(add), got {err:?}"
         );
+    }
+
+    #[test]
+    fn grub_set_kargs_cannot_delete_a_protective_karg() {
+        // A review flagged `delete: ["apparmor=1"]` as a way to strip AppArmor
+        // because the kernel-arg denylist is not applied to `delete`. It is
+        // not reachable: `delete` goes through `validated_safe_arg`, whose
+        // charset excludes `=`, so any `key=value` token is refused before the
+        // denylist would matter. Pinned here so a future widening of that
+        // charset cannot silently open the hole.
+        for karg in [
+            "apparmor=1",
+            "lockdown=confidentiality",
+            "mitigations=auto",
+            "pti=on",
+            "selinux=1",
+        ] {
+            let err = build_action_spec("GrubSetKargs", &json!({ "append": [], "delete": [karg] }))
+                .unwrap_err();
+            assert!(
+                matches!(err, ExecutorError::InvalidParam("delete")),
+                "deleting {karg:?} must be refused, got {err:?}"
+            );
+        }
     }
 
     /// Every action that claims `rollback_available: true` MUST have a

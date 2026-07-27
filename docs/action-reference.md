@@ -65,9 +65,9 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `ListToolboxes` | `sudo runuser -l testuser -c XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox list` | Low | All | – | – | list toolbox containers for a user — param: username\* |
-| `CreateToolbox` | `sudo runuser -l testuser -c XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox create --container 'sysknife-dev' --release '41'` | Medium | All | – | – | create a toolbox container — params: username\*, name\*; optional: image, release |
-| `RemoveToolbox` | `sudo runuser -l testuser -c XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox rm 'sysknife-dev'` | Medium | All | – | – | remove a toolbox container — params: username\*, name\* |
+| `ListToolboxes` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox list"` | Low | All | – | – | list toolbox containers for a user — param: username\* |
+| `CreateToolbox` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox create --container 'sysknife-dev' --release '41'"` | Medium | All | – | – | create a toolbox container — params: username\*, name\*; optional: image, release |
+| `RemoveToolbox` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox rm 'sysknife-dev'"` | Medium | All | – | – | remove a toolbox container — params: username\*, name\* |
 
 ## Services
 
@@ -85,7 +85,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `ReloadService` | `sudo systemctl reload nginx.service` | Medium | All | – | – | reload a service config without restart (SIGHUP) — param: unit\* |
 | `ListTimers` | `systemctl list-timers --all --no-legend --no-pager` | Low | All | – | – | list all systemd timer units with next trigger time — no params |
 | `ReloadDaemon` | `sudo systemctl daemon-reload` | Medium | All | – | – | run systemctl daemon-reload to pick up changed unit files — no params |
-| `CreateScheduledJob` | `sudo /usr/lib/sysknife/scheduled-job-edit --name sysknife-example --command /usr/bin/true --schedule *-*-* 02:00:00` | High | All | – | – | schedule a recurring command as a systemd timer — params: name\* (unit-safe id), command\* (executable line), schedule\* (systemd OnCalendar, e.g. "\*-\*-\* 02:00:00" or "daily") |
+| `CreateScheduledJob` | `sudo /usr/lib/sysknife/scheduled-job-edit --name sysknife-example --command /usr/bin/true --schedule "*-*-* 02:00:00"` | High | All | – | – | schedule a recurring command as a systemd timer — params: name\* (unit-safe id), command\* (executable line), schedule\* (systemd OnCalendar, e.g. "\*-\*-\* 02:00:00" or "daily") |
 | `GetServiceResourceLimits` | `systemctl show nginx.service --property=MemoryMax,MemoryHigh,CPUQuotaPerSecUSec,TasksMax` | Low | All | – | – | show a service's cgroup limits (MemoryMax/CPUQuota/TasksMax) via systemctl show — param: unit\*; read-only |
 | `SetServiceResourceLimits` | `sudo systemctl set-property nginx.service MemoryMax=500M CPUQuota=50%` | Medium | All | – | – | cap a service's resources via systemctl set-property (applies live + persists) — params: unit\*, plus at least one of memory_max (e.g. '500M' or 'infinity'), memory_high, cpu_quota (e.g. '50%'), tasks_max (integer or 'infinity'); Medium risk; undo with systemctl revert |
 
@@ -178,7 +178,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 |---|---|---|---|---|---|---|
 | `ConfigureWifi` | `sudo nmcli device wifi connect CafeHotspot` | High | All | – | – | connect to a Wi-Fi network — params: ssid\*, password (optional for open networks) |
 | `SetDnsServers` | `sudo resolvectl dns wlp1s0 1.1.1.1 8.8.8.8` | High | All | – | – | set DNS servers for an interface — params: interface\* (e.g. wlp1s0), servers\* (string\[\]) |
-| `ConfigureFirewall` | `sudo sh -c firewall-cmd --permanent --zone='public' --add-service='ssh' && firewall-cmd --reload` | High | All | – | – | add/remove a service in a firewalld zone — params: zone\*, service\*, enabled\* (bool) |
+| `ConfigureFirewall` | `sudo sh -c "firewall-cmd --permanent --zone='public' --add-service='ssh' && firewall-cmd --reload"` | High | All | – | – | add/remove a service in a firewalld zone — params: zone\*, service\*, enabled\* (bool) |
 | `GetFirewallState` | `firewall-cmd --list-all` | Low | All | – | – | show current firewalld zones, open services, and port rules — no params |
 | `GetNetworkStatus` | `ip -brief addr` | Low | All | – | – | show network interfaces, IP addresses, and connection state — no params |
 | `GetListeningPorts` | `ss -tulpnH` | Low | All | – | – | show listening TCP/UDP sockets and the process bound to each (ss -tulpn) — no params; read-only; use for "what is listening on port X?" |
@@ -208,8 +208,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `ListGroups` | `getent group` | Low | All | – | – | list all local groups — no params |
 | `CreateUser` | `sudo useradd --create-home --home-dir /home/alice --shell /bin/bash alice` | High | All | – | – | create a local user account — param: username\*; optional: shell, home |
 | `DeleteUser` | `sudo userdel alice` | High | All | – | – | delete a local user account — param: username\* |
-| `AddUserToGroup` | `sudo sh -c grep -q '^wheel:' /etc/group \|\| getent group 'wheel' >> /etc/group; usermod --append --groups 'wheel' 'alice'` | High | All | – | – | add a user to a group — params: username\*, group\* |
-| `RemoveUserFromGroup` | `sudo sh -c grep -q '^wheel:' /etc/group \|\| getent group 'wheel' >> /etc/group; gpasswd --delete 'alice' 'wheel'` | High | All | – | – | remove a user from a group — params: username\*, group\* |
+| `AddUserToGroup` | `sudo sh -c "grep -q '^wheel:' /etc/group \|\| getent group 'wheel' >> /etc/group; usermod --append --groups 'wheel' 'alice'"` | High | All | – | – | add a user to a group — params: username\*, group\* |
+| `RemoveUserFromGroup` | `sudo sh -c "grep -q '^wheel:' /etc/group \|\| getent group 'wheel' >> /etc/group; gpasswd --delete 'alice' 'wheel'"` | High | All | – | – | remove a user from a group — params: username\*, group\* |
 | `CreateGroup` | `sudo groupadd developers` | Medium | All | – | – | create a local group — param: group\*; optional: system (bool → system GID range) |
 | `DeleteGroup` | `sudo groupdel developers` | High | All | – | – | delete a local group — param: group\*; irreversible |
 | `LockUserAccount` | `sudo usermod --lock alice` | High | All | – | – | disable password login for a user without deleting it — param: username\* |
@@ -220,8 +220,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GetAuthorizedKeys` | `cat /home/alice/.ssh/authorized_keys` | Low | All | – | – | list SSH authorized_keys for a user — param: username\* |
-| `AddAuthorizedKey` | `sudo sh -c grep -Fxq 'ssh-ed25519 AAAA...' '/home/alice/.ssh/authorized_keys' 2>/dev/null \|\| echo 'ssh-ed25519 AAAA...' >> '/home/alice/.ssh/authorized_keys'` | High | All | – | – | append an SSH public key to a user's authorized_keys — params: username\*, public_key\* (full key string) |
-| `RemoveAuthorizedKey` | `sudo sh -c sed -i '\\\|^ssh-ed25519 AAAA...$\|d' '/home/alice/.ssh/authorized_keys'` | High | All | – | – | remove an SSH public key from a user's authorized_keys — params: username\*, public_key\* (full key string) |
+| `AddAuthorizedKey` | `sudo sh -c "key=$1; path=$2; grep -Fxq -- \\"$key\\" \\"$path\\" 2>/dev/null \|\| printf '%s\\n' \\"$key\\" >> \\"$path\\"" sh "ssh-ed25519 AAAA..." /home/alice/.ssh/authorized_keys` | High | All | – | – | append an SSH public key to a user's authorized_keys — params: username\*, public_key\* (full key string) |
+| `RemoveAuthorizedKey` | `sudo sh -c "key=$1; path=$2; tmp=$(mktemp) \|\| exit 1; grep -Fxv -- \\"$key\\" \\"$path\\" > \\"$tmp\\"; rc=$?; if [ $rc -gt 1 ]; then rm -f \\"$tmp\\"; exit $rc; fi; cat \\"$tmp\\" > \\"$path\\"; rm -f \\"$tmp\\"" sh "ssh-ed25519 AAAA..." /home/alice/.ssh/authorized_keys` | High | All | – | – | remove an SSH public key from a user's authorized_keys — params: username\*, public_key\* (full key string) |
 | `SetSshdOption` | `sudo /usr/lib/sysknife/sshd-option-edit --option PermitRootLogin --value prohibit-password` | High | All | – | – | harden sshd by setting an allowlisted option via a validated drop-in — params: option\* (one of PermitRootLogin, PasswordAuthentication, PubkeyAuthentication, X11Forwarding, PermitEmptyPasswords), value\* (per-option: yes/no, or prohibit-password/forced-commands-only for PermitRootLogin) |
 
 ## Package repositories
@@ -244,18 +244,18 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `ListContainers` | `sudo runuser -l testuser -c podman ps --all --format json` | Low | All | – | – | list Podman containers for a user — param: username\* |
-| `CreateContainer` | `sudo runuser -l testuser -c podman create --name 'sysknife-dev' 'registry.fedoraproject.org/fedora-toolbox:41'` | Medium | All | – | – | create a Podman container — params: username\*, name\*, image\* (e.g. ubuntu:22.04) |
-| `StartContainer` | `sudo runuser -l testuser -c podman start 'sysknife-dev'` | Medium | All | – | – | start a Podman container — params: username\*, name\* |
-| `StopContainer` | `sudo runuser -l testuser -c podman stop 'sysknife-dev'` | Medium | All | – | – | stop a Podman container — params: username\*, name\* |
-| `RemoveContainer` | `sudo runuser -l testuser -c podman rm 'sysknife-dev'` | Medium | All | – | – | remove a stopped Podman container — params: username\*, name\* |
-| `GetContainerInfo` | `sudo runuser -l testuser -c podman inspect 'sysknife-dev'` | Low | All | – | – | inspect a Podman container — params: username\*, name\* |
+| `ListContainers` | `sudo runuser -l testuser -c "podman ps --all --format json"` | Low | All | – | – | list Podman containers for a user — param: username\* |
+| `CreateContainer` | `sudo runuser -l testuser -c "podman create --name 'sysknife-dev' 'registry.fedoraproject.org/fedora-toolbox:41'"` | Medium | All | – | – | create a Podman container — params: username\*, name\*, image\* (e.g. ubuntu:22.04) |
+| `StartContainer` | `sudo runuser -l testuser -c "podman start 'sysknife-dev'"` | Medium | All | – | – | start a Podman container — params: username\*, name\* |
+| `StopContainer` | `sudo runuser -l testuser -c "podman stop 'sysknife-dev'"` | Medium | All | – | – | stop a Podman container — params: username\*, name\* |
+| `RemoveContainer` | `sudo runuser -l testuser -c "podman rm 'sysknife-dev'"` | Medium | All | – | – | remove a stopped Podman container — params: username\*, name\* |
+| `GetContainerInfo` | `sudo runuser -l testuser -c "podman inspect 'sysknife-dev'"` | Low | All | – | – | inspect a Podman container — params: username\*, name\* |
 
 ## Reboot
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `CheckPendingReboot` | `bash -c if test -f /var/run/reboot-required; then cat /var/run/reboot-required; cat /var/run/reboot-required-pkgs 2>/dev/null; else echo 'No reboot required.'; fi` | Low | Ubuntu | – | – | check whether a reboot is pending (/var/run/reboot-required) — no params; Ubuntu/Debian only; read-only |
+| `CheckPendingReboot` | `bash -c "if test -f /var/run/reboot-required; then cat /var/run/reboot-required; cat /var/run/reboot-required-pkgs 2>/dev/null; else echo 'No reboot required.'; fi"` | Low | Ubuntu | – | – | check whether a reboot is pending (/var/run/reboot-required) — no params; Ubuntu/Debian only; read-only |
 
 ## AppArmor
 
@@ -284,19 +284,19 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `AptUpdate` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update` | Low | Ubuntu | – | – | refresh apt package index (apt-get update) — no params; Ubuntu only |
-| `AptUpgrade` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get dist-upgrade -y` | High | Ubuntu | – | – | upgrade all installed packages via dist-upgrade — no params; Ubuntu only; High risk |
-| `AptInstall` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y curl` | Medium | Ubuntu | – | – | install a package — param: package\* (string, e.g. nginx); Ubuntu only |
-| `AptRemove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get remove -y curl` | Medium | Ubuntu | – | – | remove a package, keep config files — param: package\*; Ubuntu only |
-| `AptPurge` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get purge -y curl` | Medium | Ubuntu | – | – | remove a package AND its config files — param: package\*; Ubuntu only |
-| `AptAutoremove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get autoremove -y` | Medium | Ubuntu | – | – | remove automatically-installed packages no longer needed — no params; Ubuntu only |
+| `AptUpdate` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get update` | Low | Ubuntu | – | – | refresh apt package index (apt-get update) — no params; Ubuntu only |
+| `AptUpgrade` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get dist-upgrade -y` | High | Ubuntu | – | – | upgrade all installed packages via dist-upgrade — no params; Ubuntu only; High risk |
+| `AptInstall` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get install -y curl` | Medium | Ubuntu | – | – | install a package — param: package\* (string, e.g. nginx); Ubuntu only |
+| `AptRemove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get remove -y curl` | Medium | Ubuntu | – | – | remove a package, keep config files — param: package\*; Ubuntu only |
+| `AptPurge` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get purge -y curl` | Medium | Ubuntu | – | – | remove a package AND its config files — param: package\*; Ubuntu only |
+| `AptAutoremove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get autoremove -y` | Medium | Ubuntu | – | – | remove automatically-installed packages no longer needed — no params; Ubuntu only |
 | `AptHold` | `sudo apt-mark hold curl` | Medium | Ubuntu | – | – | pin a package at its current version (apt-mark hold) — param: package\*; Ubuntu only |
 | `AptUnhold` | `sudo apt-mark unhold curl` | Medium | Ubuntu | – | – | unpin a package to allow upgrades (apt-mark unhold) — param: package\*; Ubuntu only |
 | `AptSearch` | `apt-cache search curl` | Low | Ubuntu | – | – | search apt repos for packages — param: term\*; Ubuntu only; read-only |
 | `AptListInstalled` | `dpkg -l` | Low | Ubuntu | – | – | list all installed packages (dpkg -l) — no params; Ubuntu only; read-only |
 | `AptShow` | `apt-cache show curl` | Low | Ubuntu | – | – | show package details (version, deps, description) — param: package\*; Ubuntu only; read-only |
-| `AptListUpgradable` | `bash -c apt list --upgradable 2>/dev/null` | Low | Ubuntu | – | – | list packages with available upgrades — no params; Ubuntu only; read-only. Use for 'are there pending updates?' or 'what updates are available?' |
-| `AptHistoryList` | `bash -c grep -A 4 '^Start-Date' /var/log/apt/history.log \| tail -n 80` | Low | Ubuntu | – | – | show recent apt transaction history — no params; Ubuntu only; read-only |
+| `AptListUpgradable` | `bash -c "apt list --upgradable 2>/dev/null"` | Low | Ubuntu | – | – | list packages with available upgrades — no params; Ubuntu only; read-only. Use for 'are there pending updates?' or 'what updates are available?' |
+| `AptHistoryList` | `bash -c "grep -A 4 '^Start-Date' /var/log/apt/history.log \| tail -n 80"` | Low | Ubuntu | – | – | show recent apt transaction history — no params; Ubuntu only; read-only |
 | `ConfigureUnattendedUpgrades` | `sudo /usr/lib/sysknife/unattended-upgrades-edit --enable` | High | Ubuntu | – | – | enable or disable automatic security updates (unattended-upgrades) — param: enabled\* (bool); Ubuntu only; High risk |
 
 ## apt preferences / pinning
@@ -304,7 +304,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GetAptPins` | `apt-cache policy` | Low | Ubuntu | – | – | show apt pin priorities (apt-cache policy) — param: package (optional); Ubuntu only; read-only |
-| `SetAptPin` | `sudo /usr/lib/sysknife/apt-pin-edit --op set --name hold-nginx --package nginx --pin version 1.24.* --priority 990` | Medium | Ubuntu | – | – | pin a package to a version/release via /etc/apt/preferences.d — params: name\*, package\* (glob), pin\* (e.g. 'version 1.24.\*' or 'release a=noble-security'), priority\* (int -1..1000); Ubuntu only; Medium risk |
+| `SetAptPin` | `sudo /usr/lib/sysknife/apt-pin-edit --op set --name hold-nginx --package nginx --pin "version 1.24.*" --priority 990` | Medium | Ubuntu | – | – | pin a package to a version/release via /etc/apt/preferences.d — params: name\*, package\* (glob), pin\* (e.g. 'version 1.24.\*' or 'release a=noble-security'), priority\* (int -1..1000); Ubuntu only; Medium risk |
 | `RemoveAptPin` | `sudo /usr/lib/sysknife/apt-pin-edit --op remove --name hold-nginx` | Medium | Ubuntu | – | – | remove a SysKnife-managed apt pin — param: name\*; Ubuntu only; Medium risk |
 
 ## PPA
@@ -318,7 +318,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `SnapInstall` | `sudo sh -c snap install --channel=stable firefox && snap refresh --hold firefox` | Medium | Ubuntu | – | – | install a snap (auto-holds to prevent auto-refresh) — params: name\*; optional: channel (default stable), auto_update (bool, default false); Ubuntu only |
+| `SnapInstall` | `sudo sh -c "snap install --channel=stable firefox && snap refresh --hold firefox"` | Medium | Ubuntu | – | – | install a snap (auto-holds to prevent auto-refresh) — params: name\*; optional: channel (default stable), auto_update (bool, default false); Ubuntu only |
 | `SnapRemove` | `sudo snap remove firefox` | Medium | Ubuntu | – | – | remove a snap — param: name\*; Ubuntu only |
 | `SnapRefresh` | `sudo snap refresh firefox` | Medium | Ubuntu | – | – | update a snap or all snaps — param: name (optional, omit for all); Ubuntu only |
 | `SnapHold` | `sudo snap refresh --hold firefox` | Medium | Ubuntu | – | – | pin a snap at its current version (snap refresh --hold) — param: name\*; Ubuntu only |

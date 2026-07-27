@@ -12,7 +12,9 @@
 //! journalctl -t sysknife-audit-tip -o json | jq -r '.MESSAGE'
 //! ```
 //!
-//! Each message has the form `seq=<N> chain_hash=<hex64>`. If the journal
+//! Each message has the form `seq=<N> chain_hash=<hex128>` — `chain_hash` is a
+//! hex-encoded Ed25519 signature (64 raw bytes → 128 hex chars), not a
+//! SHA-256 digest. If the journal
 //! stream contains entries beyond the SQLite tail, tail truncation has occurred.
 //!
 //! ## Implementation
@@ -79,7 +81,8 @@ fn emit_watermark_impl(seq: u64, hash_hex: &str) {
 
 /// Shell out to `systemd-cat` to write the watermark into the journal.
 ///
-/// Message body: `seq=<N> chain_hash=<hex64>`
+/// Message body: `seq=<N> chain_hash=<hex128>` (a hex-encoded Ed25519
+/// signature — 64 raw bytes, so 128 hex chars, not a 64-char SHA-256 digest).
 ///
 /// The fields are embedded in the human-readable message body so they survive
 /// forwarding setups that strip structured journal metadata. SIEMs filter on
@@ -106,11 +109,19 @@ fn emit_via_systemd_cat(seq: u64, hash_hex: &str) {
         .stderr(std::process::Stdio::null())
         .spawn()
         .and_then(|mut child| {
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(message.as_bytes())?;
-                // Drop stdin to signal EOF before waiting.
-            }
-            child.wait()
+            // The write result is captured rather than propagated with `?`,
+            // because `Child::drop` does not reap: an early return here would
+            // leak a zombie on every audit record. This runs on every preview
+            // and every execute, so a journald outage used to burn one PID per
+            // chain insert until the table filled and the daemon could no
+            // longer fork — i.e. could no longer execute privileged actions.
+            let write_result = match child.stdin.take() {
+                Some(mut stdin) => stdin.write_all(message.as_bytes()),
+                // Dropping the handle signals EOF before we wait.
+                None => Ok(()),
+            };
+            let status = child.wait()?;
+            write_result.map(|()| status)
         });
 
     match result {

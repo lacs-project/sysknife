@@ -647,11 +647,13 @@ impl TransactionStore {
         // Schema additions for the append-tamper-evident hash chain (see
         // `audit_chain.rs` for the full threat model — note that truncation of
         // the tail is NOT detected by this chain alone; that requires the
-        // separate watermark mechanism documented there):
+        // signed checkpoints anchored to an append-only sink (`checkpoint_sink`),
+        // with the journald watermark as a lighter best-effort complement):
         //   seq             — monotonic ordering, 1-indexed
         //   key_id          — identifies the key generation (forward-compatible
         //                     with epoch rotation in a follow-up issue)
-        //   chain_hash      — ed25519_sign(canonical(immutable_fields) || prev_chain_hash, key)
+        //   chain_hash      — ed25519_sign(ROW_DOMAIN || canonical(immutable_fields)
+        //                     || prev_chain_hash, key)
         //   prev_chain_hash — chain_hash of the previous row, "" for the first row
         //
         // status is intentionally absent from the chain content — it is mutable.
@@ -1354,8 +1356,21 @@ mod tests {
              fail={fail_result:?}"
         );
 
-        // The loser must fail with the dedicated race error, not silently
-        // succeed and clobber the winner.
+        // The loser must be refused outright, not silently succeed and clobber
+        // the winner. *How* it is refused depends on whether the two threads
+        // actually overlapped, and both outcomes are correct:
+        //
+        //   ConcurrentStatusChange — they overlapped, so the loser read
+        //       `Running` and its compare-and-swap found the row already moved.
+        //   InvalidTransition      — they serialised, so the loser read the
+        //       winner's committed terminal status and rejected the transition
+        //       before reaching the CAS at all.
+        //
+        // Asserting only the first made this test depend on thread
+        // interleaving; it passes on a many-core dev machine and fails on a
+        // 2-core CI runner, where the first thread routinely finishes before
+        // the second starts. The invariant under test is "exactly one wins and
+        // the loser does not clobber it", which both errors satisfy.
         let loser = if succeed_result.is_ok() {
             &fail_result
         } else {
@@ -1365,9 +1380,23 @@ mod tests {
             Err(TransactionStoreError::ConcurrentStatusChange(id)) => {
                 assert_eq!(id, &tx.transaction_id);
             }
-            other => {
-                panic!("the losing transition must report ConcurrentStatusChange, got: {other:?}")
+            Err(TransactionStoreError::InvalidTransition { from, to }) => {
+                // The winner's terminal state must be what the loser saw.
+                let winner = if succeed_result.is_ok() {
+                    JobState::Succeeded
+                } else {
+                    JobState::Failed
+                };
+                assert_eq!(
+                    *from, winner,
+                    "the loser must have observed the winner's committed status"
+                );
+                assert_ne!(*to, winner, "the loser must be the other transition");
             }
+            other => panic!(
+                "the losing transition must be refused with either \
+                 ConcurrentStatusChange or InvalidTransition, got: {other:?}"
+            ),
         }
 
         // The stored status must match whichever transition actually won —

@@ -10,8 +10,9 @@
 //!   1. `--help` returns 0 and prints something that mentions every
 //!      top-level subcommand.
 //!   2. `doctor` against an unreachable daemon returns non-zero and
-//!      writes the failure to stderr (not stdout — automation parses
-//!      stdout for the JSON `--json` form).
+//!      writes the failure to stderr while leaving stdout empty; with
+//!      `--json` the failure envelope goes to stdout instead, because
+//!      that is what automation parses.
 //!   3. `history --since "not-a-timestamp"` returns non-zero with a
 //!      clear error rather than panicking.
 //!   4. Unknown subcommands surface as clap usage errors.
@@ -69,7 +70,26 @@ fn doctor_fails_loudly_when_daemon_socket_is_unreachable() {
         .env("SYSKNIFE_SOCKET", fake_socket(&dir))
         .arg("doctor")
         .assert()
-        .failure();
+        .failure()
+        // The stream matters: automation parses stdout for the `--json` form,
+        // so a diagnostic that leaks onto stdout corrupts it. Assert the
+        // failure text lands on stderr and that stdout stays clean.
+        .stderr(predicate::str::contains("daemon"))
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn doctor_json_failure_goes_to_stdout_not_stderr() {
+    // The counterpart contract: with `--json`, the machine-readable failure
+    // envelope belongs on stdout so automation can parse it. Without this,
+    // nothing pins which stream carries which form.
+    let dir = tempfile::tempdir().unwrap();
+    cli()
+        .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+        .args(["doctor", "--json"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("\"ok\":false"));
 }
 
 #[test]

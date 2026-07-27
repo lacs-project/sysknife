@@ -15,8 +15,10 @@
 //!
 //! # Tamper detection
 //!
-//! Once journald receives an entry it is protected by systemd's Forward Secure
-//! Sealing (FSS). Enable FSS at deployment time with:
+//! Journald entries are tamper-evident **only if** systemd's Forward Secure
+//! Sealing (FSS) has been enabled on the host. FSS is opt-in and off by
+//! default, so assume it is absent unless an operator enabled it explicitly.
+//! Enable FSS at deployment time with:
 //!
 //! ```text
 //! journalctl --setup-keys
