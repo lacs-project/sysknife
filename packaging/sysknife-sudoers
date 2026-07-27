@@ -67,6 +67,14 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/localectl
 # writes to /etc/firewalld/ which requires root.
 sysknife ALL=(root) NOPASSWD: /usr/bin/resolvectl
 
+# nmcli — ConfigureWifi (`nmcli device wifi connect <ssid> [password <pw>]`) on
+# Ubuntu Desktop, where NetworkManager owns the interfaces rather than netplan.
+# Narrowed to the wifi-connect subcommand: a bare nmcli grant would also permit
+# `nmcli connection modify` to rewrite any saved connection profile.
+# Missing entirely until now, so ConfigureWifi failed at runtime with
+# "a password is required" — caught by tests/sudoers_grants_match_argv.rs.
+sysknife ALL=(root) NOPASSWD: /usr/bin/nmcli device wifi connect *
+
 # OS deployment management — rpm-ostree upgrade/install/rollback/cleanup/rebase/kargs
 # communicate with rpm-ostreed via D-Bus and require root authorization.
 # rpm-ostree status/kargs (read-only) still work without root but sudo does not hurt.

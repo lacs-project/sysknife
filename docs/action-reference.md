@@ -284,12 +284,12 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `AptUpdate` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update` | Low | Ubuntu | – | – | refresh apt package index (apt-get update) — no params; Ubuntu only |
-| `AptUpgrade` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get dist-upgrade -y` | High | Ubuntu | – | – | upgrade all installed packages via dist-upgrade — no params; Ubuntu only; High risk |
-| `AptInstall` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y curl` | Medium | Ubuntu | – | – | install a package — param: package\* (string, e.g. nginx); Ubuntu only |
-| `AptRemove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get remove -y curl` | Medium | Ubuntu | – | – | remove a package, keep config files — param: package\*; Ubuntu only |
-| `AptPurge` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get purge -y curl` | Medium | Ubuntu | – | – | remove a package AND its config files — param: package\*; Ubuntu only |
-| `AptAutoremove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get autoremove -y` | Medium | Ubuntu | – | – | remove automatically-installed packages no longer needed — no params; Ubuntu only |
+| `AptUpdate` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get update` | Low | Ubuntu | – | – | refresh apt package index (apt-get update) — no params; Ubuntu only |
+| `AptUpgrade` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get dist-upgrade -y` | High | Ubuntu | – | – | upgrade all installed packages via dist-upgrade — no params; Ubuntu only; High risk |
+| `AptInstall` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get install -y curl` | Medium | Ubuntu | – | – | install a package — param: package\* (string, e.g. nginx); Ubuntu only |
+| `AptRemove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get remove -y curl` | Medium | Ubuntu | – | – | remove a package, keep config files — param: package\*; Ubuntu only |
+| `AptPurge` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get purge -y curl` | Medium | Ubuntu | – | – | remove a package AND its config files — param: package\*; Ubuntu only |
+| `AptAutoremove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get autoremove -y` | Medium | Ubuntu | – | – | remove automatically-installed packages no longer needed — no params; Ubuntu only |
 | `AptHold` | `sudo apt-mark hold curl` | Medium | Ubuntu | – | – | pin a package at its current version (apt-mark hold) — param: package\*; Ubuntu only |
 | `AptUnhold` | `sudo apt-mark unhold curl` | Medium | Ubuntu | – | – | unpin a package to allow upgrades (apt-mark unhold) — param: package\*; Ubuntu only |
 | `AptSearch` | `apt-cache search curl` | Low | Ubuntu | – | – | search apt repos for packages — param: term\*; Ubuntu only; read-only |

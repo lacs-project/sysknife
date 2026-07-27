@@ -109,11 +109,19 @@ fn emit_via_systemd_cat(seq: u64, hash_hex: &str) {
         .stderr(std::process::Stdio::null())
         .spawn()
         .and_then(|mut child| {
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(message.as_bytes())?;
-                // Drop stdin to signal EOF before waiting.
-            }
-            child.wait()
+            // The write result is captured rather than propagated with `?`,
+            // because `Child::drop` does not reap: an early return here would
+            // leak a zombie on every audit record. This runs on every preview
+            // and every execute, so a journald outage used to burn one PID per
+            // chain insert until the table filled and the daemon could no
+            // longer fork — i.e. could no longer execute privileged actions.
+            let write_result = match child.stdin.take() {
+                Some(mut stdin) => stdin.write_all(message.as_bytes()),
+                // Dropping the handle signals EOF before we wait.
+                None => Ok(()),
+            };
+            let status = child.wait()?;
+            write_result.map(|()| status)
         });
 
     match result {

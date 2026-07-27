@@ -74,6 +74,92 @@ pub struct ActionSpec {
     pub rollback_available: bool,
 }
 
+/// A system-wide lock that only one mutating action may hold at a time.
+///
+/// These are the real kernel/daemon locks that make two concurrent actions
+/// fail rather than merely interleave: `apt`/`dpkg` serialise on
+/// `/var/lib/dpkg/lock-frontend`, `snapd` on its change queue, `rpm-ostree`
+/// on its transaction lock. Two actions contending for the same resource do
+/// not produce a partial result — one of them errors out mid-way, which for a
+/// package operation can leave dpkg needing `--configure -a`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ExclusiveResource {
+    /// The whole machine. Claimed by any High-risk reboot-required action
+    /// (release upgrade, rebase, layered-package install), which conflicts
+    /// with every other mutating action regardless of resource.
+    System,
+    /// The dpkg/apt database lock. Ubuntu/Debian package operations.
+    Dpkg,
+    /// The snapd change queue.
+    Snap,
+    /// The rpm-ostree transaction lock.
+    RpmOstree,
+    /// The flatpak installation lock.
+    Flatpak,
+}
+
+impl ExclusiveResource {
+    /// Human-readable name used in the conflict message shown to the operator.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "the system (a reboot-required action)",
+            Self::Dpkg => "the dpkg/apt lock",
+            Self::Snap => "the snapd change queue",
+            Self::RpmOstree => "the rpm-ostree transaction lock",
+            Self::Flatpak => "the flatpak installation lock",
+        }
+    }
+}
+
+/// Which system lock, if any, this action contends for.
+///
+/// Derived from the action's own argv rather than a hand-maintained action
+/// list, so a newly added `apt-get` action participates in the gate without
+/// anyone remembering to register it. The first recognised tool in
+/// `program`-then-`args` order wins, which is why a wrapper prefix
+/// (`sudo`, `env`, `VAR=VALUE`) is skipped naturally and why
+/// `apt-get install snap` resolves to `Dpkg`, not `Snap`.
+///
+/// Returning `None` means "no shared lock" — those actions are still blocked
+/// by a held [`ExclusiveResource::System`] but never block each other.
+pub fn exclusive_resource(spec: &ActionSpec) -> Option<ExclusiveResource> {
+    let ActionMechanism::Command { program, args } = &spec.mechanism else {
+        return None;
+    };
+    std::iter::once(*program)
+        .chain(args.iter().map(String::as_str))
+        // A token can itself be a whole shell script (`sh -c "snap install …
+        // && snap refresh --hold …"`), so look inside it too. Splitting on
+        // whitespace and shell operators finds the tool wherever it sits.
+        // Over-matching here costs a little extra serialisation; under-matching
+        // costs a corrupted package database, so this errs toward matching.
+        .flat_map(|token| {
+            token.split(|c: char| c.is_whitespace() || matches!(c, '&' | '|' | ';' | '(' | ')'))
+        })
+        .filter(|word| !word.is_empty())
+        .find_map(|token| {
+            // Match on the binary name so an absolute path still resolves.
+            let name = token.rsplit('/').next().unwrap_or(token);
+            match name {
+                "apt-get"
+                | "apt"
+                | "apt-mark"
+                | "aptitude"
+                | "dpkg"
+                | "dpkg-reconfigure"
+                | "add-apt-repository"
+                | "do-release-upgrade"
+                | "unattended-upgrade"
+                | "sysknife-apt-pin-edit"
+                | "apt-pin-edit" => Some(ExclusiveResource::Dpkg),
+                "snap" => Some(ExclusiveResource::Snap),
+                "rpm-ostree" | "ostree" => Some(ExclusiveResource::RpmOstree),
+                "flatpak" => Some(ExclusiveResource::Flatpak),
+                _ => None,
+            }
+        })
+}
+
 /// The canonical catalogue of every action the daemon recognises, grouped by
 /// domain. This is the **single source of truth** for per-action static
 /// metadata (`risk_level`, `reboot_required`, `rollback_available`): the

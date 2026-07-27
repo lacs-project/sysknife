@@ -54,9 +54,19 @@ pub(crate) fn role_rank(role: &CallerRole) -> u8 {
 /// `SYSKNIFE_TOKEN_ROLE` env var, defaulting to `Dev`) on success, or `None`
 /// if the token file is absent, unreadable, or the token does not match.
 ///
-/// Whitespace (including trailing newlines written by `echo`) is stripped from
-/// the stored token before comparison, so `echo TOKEN > ~/.config/sysknife/token`
-/// works without modification.
+/// Whitespace (including trailing newlines) is stripped from the stored token
+/// before comparison. Provision the file with `install -m 600` — a token file
+/// readable by group or other is rejected outright (see below).
+///
+/// # Permissions
+///
+/// The file must not be group- or world-accessible (`mode & 0o077 == 0`),
+/// mirroring the check `AuditKey::load_or_generate` applies to the Ed25519
+/// signing key. Without it, a token written under a default `umask 022` lands
+/// at `0644`, and any local user who can read it can authenticate over vsock
+/// and receive `token_role()` — bypassing the `SO_PEERCRED` → group →
+/// `CallerRole` mechanism that is the documented authorization model for the
+/// Unix path.
 pub fn validate_token_against_file(
     presented_token: &str,
     token_path: &std::path::Path,
@@ -64,8 +74,9 @@ pub fn validate_token_against_file(
     if presented_token.is_empty() {
         return None;
     }
-    let stored = match std::fs::read_to_string(token_path) {
-        Ok(s) => s,
+    match token_file_permissions_ok(token_path) {
+        Ok(true) => {}
+        Ok(false) => return None,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             eprintln!(
                 "[sysknife-daemon] WARNING: vsock token file {} does not exist; rejecting vsock auth (provision the token file to allow vsock connections)",
@@ -73,6 +84,18 @@ pub fn validate_token_against_file(
             );
             return None;
         }
+        Err(e) => {
+            eprintln!(
+                "[sysknife-daemon] WARNING: cannot stat token file {}: {e}; rejecting vsock auth",
+                token_path.display()
+            );
+            return None;
+        }
+    }
+    // Absence is already reported by the permission check above; anything
+    // reaching here is a genuine read failure (or a file removed in between).
+    let stored = match std::fs::read_to_string(token_path) {
+        Ok(s) => s,
         Err(e) => {
             eprintln!(
                 "[sysknife-daemon] WARNING: cannot read token file {}: {e}; rejecting vsock auth",
@@ -104,6 +127,29 @@ pub fn validate_token_against_file(
         return None;
     }
     Some(token_role())
+}
+
+/// Is the token file protected from other local users?
+///
+/// Returns `Ok(false)` (after warning) when the file is group- or
+/// world-accessible. The token is a bearer credential: anything that can read
+/// it can present it.
+fn token_file_permissions_ok(token_path: &std::path::Path) -> std::io::Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = std::fs::metadata(token_path)?.permissions().mode();
+    if mode & 0o077 != 0 {
+        eprintln!(
+            "[sysknife-daemon] WARNING: vsock token file {} has mode {:04o}; it must not be \
+             readable by group or other (any local user could authenticate with it). \
+             Rejecting vsock auth — fix with: chmod 600 {}",
+            token_path.display(),
+            mode & 0o7777,
+            token_path.display()
+        );
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 /// Return the `CallerRole` granted to token-authenticated vsock connections.
@@ -151,6 +197,14 @@ pub fn default_token_path() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Provision a token file the way the daemon requires (`install -m 600`).
+    /// A default-umask write lands at 0644, which is refused: a token any
+    /// local user can read is not a credential.
+    fn secure(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
 
     fn role(groups: &[&str]) -> CallerRole {
         highest_role_from_groups(groups.iter().copied())
@@ -217,6 +271,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("token");
         std::fs::write(&path, "secret123").unwrap();
+        secure(&path);
         assert_eq!(
             validate_token_against_file("secret123", &path),
             Some(CallerRole::Dev)
@@ -229,6 +284,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("token");
         std::fs::write(&path, "secret123\n").unwrap();
+        secure(&path);
         assert_eq!(
             validate_token_against_file("secret123", &path),
             Some(CallerRole::Dev)
@@ -240,6 +296,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("token");
         std::fs::write(&path, "correct\n").unwrap();
+        secure(&path);
         assert_eq!(validate_token_against_file("wrong", &path), None);
     }
 
@@ -255,6 +312,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("token");
         std::fs::write(&path, "").unwrap();
+        secure(&path);
         assert_eq!(validate_token_against_file("", &path), None);
     }
 
@@ -263,6 +321,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("token");
         std::fs::write(&path, "\n").unwrap();
+        secure(&path);
         assert_eq!(validate_token_against_file("", &path), None);
     }
 
@@ -282,6 +341,7 @@ mod tests {
         // exactly 9 bytes, so the length-mismatch shortcut does not apply
         // and we genuinely traverse the constant-time `ct_eq` path.
         std::fs::write(&path, "abcdefghi").unwrap();
+        secure(&path);
 
         // Exact match → accepted.
         assert_eq!(

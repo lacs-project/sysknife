@@ -55,6 +55,14 @@ def validated_ident(value: str, what: str) -> str:
 
 
 def build_rule(user: str, runas: str, nopasswd: bool, commands: str) -> str:
+    if commands == "ALL" and nopasswd:
+        # A standing passwordless unrestricted root credential. visudo accepts
+        # it, so this is the only layer that can refuse it. Mirrors the same
+        # refusal in executor.rs so the helper is safe when called directly.
+        die(
+            "refusing to grant unrestricted commands with NOPASSWD: scope "
+            "--commands to specific absolute paths, or drop --nopasswd"
+        )
     if commands == "ALL":
         cmd_spec = "ALL"
     else:

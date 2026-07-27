@@ -5,11 +5,18 @@
 //!
 //! ## Lock contention
 //!
-//! Before any mutating apt command the executor should detect dpkg lock
-//! contention via `fuser /var/lib/dpkg/lock`. That check lives in the
-//! executor; this module only builds the `ActionSpec` for the apt
-//! command itself. The executor layer is responsible for the retry-after
-//! hint when the lock is held.
+//! Concurrent apt runs are prevented by the dispatcher's exclusion gate, not
+//! by a pre-flight probe: every action whose argv names an apt/dpkg tool maps
+//! to [`ExclusiveResource::Dpkg`](super::ExclusiveResource::Dpkg), and a second
+//! one submitted while the first holds that lock gets a `ConflictResponse`.
+//!
+//! An earlier version of this doc claimed the executor ran
+//! `fuser /var/lib/dpkg/lock` before each mutating command. It never did —
+//! there is no such probe anywhere in the daemon. The gate above covers
+//! contention *between SysKnife actions*, which is what SysKnife can actually
+//! control; it does not detect a dpkg lock held by something outside SysKnife
+//! (an operator's own `apt` session, or unattended-upgrades). In that case apt
+//! itself reports the lock and the action fails with apt's own message.
 //!
 //! ## Environment variables
 //!
@@ -27,7 +34,20 @@ use sysknife_types::RiskLevel;
 // ---------------------------------------------------------------------------
 
 /// apt binary path.
-const APT_GET: &str = "apt-get";
+///
+/// **Must stay absolute.** These actions run as
+/// `sudo env DEBIAN_FRONTEND=… NEEDRESTART_MODE=a <APT_GET> …`, and sudo
+/// PATH-resolves only its *primary* command (`env`) — every later token is
+/// matched against the sudoers rule as a literal string. The grant in
+/// `packaging/sysknife-sudoers` spells `/usr/bin/apt-get`, so a bare
+/// `apt-get` here does not match the rule and sudo falls through to
+/// "a password is required", which a non-interactive daemon can never
+/// supply. Verified on Ubuntu 24.04 with sudo 1.9.15p5: the bare form is
+/// denied, the absolute form is permitted.
+///
+/// `tests/sudoers_grants_match_argv.rs` pins this against the packaged
+/// sudoers file so the two cannot drift apart again.
+const APT_GET: &str = "/usr/bin/apt-get";
 
 /// `DEBIAN_FRONTEND` value that suppresses all debconf interactive prompts.
 /// Required for non-interactive daemon invocations.
@@ -213,8 +233,12 @@ pub fn apt_purge(package: &str) -> ActionSpec {
 
 /// Remove automatically-installed packages no longer needed (`apt-get autoremove -y`).
 ///
-/// Risk: Low. Only removes packages that were installed as dependencies and
-/// are no longer required by any explicitly-installed package.
+/// Risk: Medium. The set of packages actually removed is chosen by the
+/// dependency resolver at execution time, not named by the caller, so the
+/// approved preview (`apt-get autoremove -y`) cannot show what will go. In
+/// practice that set has been known to include old kernels and driver or
+/// bootloader metapackages that were marked auto-installed. It stays below
+/// `AptUpgrade`'s High only because it never *installs* or upgrades anything.
 pub fn apt_autoremove() -> ActionSpec {
     ActionSpec {
         action_name: "AptAutoremove",
@@ -369,7 +393,10 @@ mod tests {
         let spec = apt_update();
         let (prog, args) = extract_args(&spec);
         assert_eq!(prog, "sudo");
-        assert!(args.contains(&"apt-get"));
+        assert!(
+            args.contains(&APT_GET),
+            "argv must carry the absolute apt-get path: {args:?}"
+        );
         assert!(args.contains(&"update"));
         assert!(args.contains(&DEBIAN_FRONTEND_VALUE));
         assert!(args.contains(&NEEDRESTART_MODE_VALUE));
@@ -399,7 +426,10 @@ mod tests {
         let spec = apt_upgrade();
         let (prog, args) = extract_args(&spec);
         assert_eq!(prog, "sudo");
-        assert!(args.contains(&"apt-get"));
+        assert!(
+            args.contains(&APT_GET),
+            "argv must carry the absolute apt-get path: {args:?}"
+        );
         assert!(args.contains(&"dist-upgrade"));
         assert!(args.contains(&"-y"));
         assert!(args.contains(&DEBIAN_FRONTEND_VALUE));

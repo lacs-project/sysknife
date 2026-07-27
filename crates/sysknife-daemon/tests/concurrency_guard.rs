@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use sysknife_daemon::actions::{catalogue, ExclusiveResource};
 use sysknife_daemon::dispatcher::connection_handler_with_executor;
 use sysknife_daemon::executor::{ActionExecutor, ExecutionOutput, ExecutorError};
 use sysknife_daemon::state::{DaemonConfig, DaemonState};
@@ -169,47 +170,38 @@ async fn do_execute(
 // Tests
 // ---------------------------------------------------------------------------
 //
-// Strategy: the dispatcher's concurrency gate is split into two halves —
-// a CHECK side (read the slot, return ConflictResponse if occupied) and a
-// SET side (claim the slot for the duration of the in-flight action). Both
-// live in `dispatcher.rs::handle_execute`.
+// Strategy: the dispatcher's concurrency gate is split into two halves — a
+// CHECK side (read the resource map, return ConflictResponse if a needed lock
+// is held) and a SET side (claim the locks for the duration of the action).
+// Both live in `dispatcher.rs::handle_execute`.
 //
-// The CHECK side is fully testable here: pre-fill `state.running_high_risk_reboot`
-// with `Some(<dummy-hash>)` and send a request — the gate must respond
-// ConflictResponse for mutating actions and pass-through for read-only ones.
-//
-// The SET side requires real execution of a Command-mechanism action (because
-// `dispatcher.rs` routes Command actions through `stream_command_with_progress`,
-// not through the test's `ActionExecutor` mock). Real execution would need a
-// running daemon with sudoers + the GRUB helper installed, which is out of
-// scope for an in-process integration test. The SET side has unit-test
-// coverage in `dispatcher.rs::tests` against the `is_high_risk_reboot`
-// predicate; the live VM E2E suite covers the SET-CLEAR round-trip end-to-end.
+// The CHECK side is fully testable here: pre-fill `state.running_exclusive`
+// and send a request. The SET side requires real execution of a
+// Command-mechanism action (the dispatcher routes those through
+// `stream_command_with_progress`, not the test's `ActionExecutor` mock), which
+// needs a running daemon with sudoers installed — that is the live VM E2E
+// suite's job, not an in-process test's.
 
 const DUMMY_HASH: &str = "abc123-dummy-hash-for-testing-the-gate-check";
 
-/// Pre-fill the slot to simulate "a High-risk reboot-required action is
-/// already executing on a different connection."
-async fn pre_set_slot(state: &DaemonState) {
-    let mut slot = state.running_high_risk_reboot.lock().await;
-    *slot = Some(DUMMY_HASH.to_string());
+/// Pre-fill a lock to simulate "another action already holds it on a
+/// different connection".
+async fn hold(state: &DaemonState, resource: ExclusiveResource) {
+    state
+        .running_exclusive
+        .lock()
+        .await
+        .insert(resource, DUMMY_HASH.to_string());
 }
 
-/// While a High-risk reboot-required action is in flight (slot held), a second
-/// mutating action from the same or different connection must receive
-/// `conflict_response`.
+/// While a reboot-required action holds `System`, any mutating action must be
+/// refused — `System` excludes everything.
 #[tokio::test]
-async fn mutating_action_blocked_while_high_risk_in_flight() {
+async fn mutating_action_blocked_while_system_lock_held() {
     let dir = tempdir().unwrap();
     let state = test_state(&dir);
 
-    pre_set_slot(&state).await;
-
-    // Confirm the slot is held before we send anything.
-    {
-        let slot = state.running_high_risk_reboot.lock().await;
-        assert_eq!(slot.as_deref(), Some(DUMMY_HASH), "slot must be pre-set");
-    }
+    hold(&state, ExclusiveResource::System).await;
 
     let executor: Arc<dyn ActionExecutor> = Arc::new(InstantSuccessExecutor);
     let mut framed = spawn_handler(state.clone(), executor, CallerRole::Admin).await;
@@ -221,11 +213,14 @@ async fn mutating_action_blocked_while_high_risk_in_flight() {
     let last = msgs.last().unwrap();
     assert_eq!(
         last["type"], "conflict_response",
-        "AptInstall while high-risk in flight must receive conflict_response, got: {last}"
+        "AptInstall while the system lock is held must receive conflict_response, got: {last}"
     );
     assert!(
-        last["message"].as_str().unwrap_or("").contains("High-risk"),
-        "conflict message must mention High-risk, got: {last}"
+        last["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("reboot-required"),
+        "conflict message must name the lock that is held, got: {last}"
     );
     assert_eq!(
         last["request_id"].as_str().unwrap_or(""),
@@ -233,7 +228,7 @@ async fn mutating_action_blocked_while_high_risk_in_flight() {
         "conflict response must echo the request_id"
     );
 
-    *state.running_high_risk_reboot.lock().await = None;
+    state.running_exclusive.lock().await.clear();
     let retry = do_execute(
         &mut framed,
         "AptInstall",
@@ -249,14 +244,77 @@ async fn mutating_action_blocked_while_high_risk_in_flight() {
     );
 }
 
-/// Read-only actions must pass through normally even while the High-risk slot
-/// is held — they do not touch the concurrency gate.
+/// The regression this map exists for: a second apt action while the dpkg lock
+/// is held must be refused. Under the previous single-slot design only
+/// High-risk **reboot-required** actions ever claimed the slot, so `AptUpgrade`
+/// (High risk, `reboot_required: false`) claimed nothing and two concurrent
+/// `apt-get` runs both passed the gate and collided on
+/// `/var/lib/dpkg/lock-frontend`.
 #[tokio::test]
-async fn read_only_action_passes_while_high_risk_in_flight() {
+async fn second_apt_action_blocked_while_dpkg_lock_held() {
     let dir = tempdir().unwrap();
     let state = test_state(&dir);
 
-    pre_set_slot(&state).await;
+    hold(&state, ExclusiveResource::Dpkg).await;
+
+    let executor: Arc<dyn ActionExecutor> = Arc::new(InstantSuccessExecutor);
+    let mut framed = spawn_handler(state.clone(), executor, CallerRole::Admin).await;
+
+    let params = json!({"package": "vim"});
+    let (transaction_id, receipt) = do_preview(&mut framed, "AptInstall", params.clone()).await;
+    let msgs = do_execute(&mut framed, "AptInstall", params, &transaction_id, &receipt).await;
+
+    let last = msgs.last().unwrap();
+    assert_eq!(
+        last["type"], "conflict_response",
+        "a second dpkg-locking action must receive conflict_response, got: {last}"
+    );
+    assert!(
+        last["message"].as_str().unwrap_or("").contains("dpkg"),
+        "conflict message must name the dpkg lock, got: {last}"
+    );
+}
+
+/// A mutating action that holds no shared lock must NOT be serialised behind an
+/// unrelated one. Holding the dpkg lock must not block a systemd unit change —
+/// over-serialising every mutating action behind a long `apt` run would be a
+/// usability regression, not extra safety.
+#[tokio::test]
+async fn unrelated_mutating_action_passes_while_dpkg_lock_held() {
+    let dir = tempdir().unwrap();
+    let state = test_state(&dir);
+
+    hold(&state, ExclusiveResource::Dpkg).await;
+
+    let executor: Arc<dyn ActionExecutor> = Arc::new(InstantSuccessExecutor);
+    let mut framed = spawn_handler(state, executor, CallerRole::Admin).await;
+
+    let params = json!({"unit": "ssh.service"});
+    let (transaction_id, receipt) = do_preview(&mut framed, "RestartService", params.clone()).await;
+    let msgs = do_execute(
+        &mut framed,
+        "RestartService",
+        params,
+        &transaction_id,
+        &receipt,
+    )
+    .await;
+
+    let last = msgs.last().unwrap();
+    assert_ne!(
+        last["type"], "conflict_response",
+        "an action holding no shared lock must not be blocked by the dpkg lock: {last}"
+    );
+}
+
+/// Read-only actions must pass through normally even while a lock is held —
+/// they never reach the concurrency gate.
+#[tokio::test]
+async fn read_only_action_passes_while_system_lock_held() {
+    let dir = tempdir().unwrap();
+    let state = test_state(&dir);
+
+    hold(&state, ExclusiveResource::System).await;
 
     let executor: Arc<dyn ActionExecutor> = Arc::new(InstantSuccessExecutor);
     let mut framed = spawn_handler(state, executor, CallerRole::Admin).await;
@@ -279,21 +337,17 @@ async fn read_only_action_passes_while_high_risk_in_flight() {
         resp["type"], "conflict_response",
         "read-only action must NOT receive conflict_response: {resp}"
     );
-    // It may fail (no real disk command in CI) but must not be blocked by
-    // the concurrency gate — any non-conflict response is a pass.
 }
 
-/// After the slot is cleared, subsequent mutating actions must NOT receive
-/// `conflict_response` from the gate.
+/// With no lock held, a mutating action must NOT receive `conflict_response`.
 #[tokio::test]
-async fn mutating_action_passes_when_slot_is_clear() {
+async fn mutating_action_passes_when_no_lock_is_held() {
     let dir = tempdir().unwrap();
     let state = test_state(&dir);
 
-    // Slot must start empty.
     assert!(
-        state.running_high_risk_reboot.lock().await.is_none(),
-        "slot must start empty"
+        state.running_exclusive.lock().await.is_empty(),
+        "the lock map must start empty"
     );
 
     let executor: Arc<dyn ActionExecutor> = Arc::new(InstantSuccessExecutor);
@@ -303,68 +357,46 @@ async fn mutating_action_passes_when_slot_is_clear() {
     let (transaction_id, receipt) = do_preview(&mut framed, "AptInstall", params.clone()).await;
     let msgs = do_execute(&mut framed, "AptInstall", params, &transaction_id, &receipt).await;
 
-    // The action will go through to execution. Whether it succeeds or fails
-    // (because there's no real apt-get in the test sandbox) is irrelevant —
-    // what matters is that the response is NOT conflict_response.
     let last = msgs.last().unwrap();
     assert_ne!(
         last["type"], "conflict_response",
-        "AptInstall with empty slot must NOT receive conflict_response: {last}"
+        "AptInstall with no lock held must NOT receive conflict_response: {last}"
     );
 }
 
-/// The slot can be set, cleared, and re-set without dead-lock or stale state.
-#[tokio::test]
-async fn slot_state_machine_transitions_cleanly() {
-    let dir = tempdir().unwrap();
-    let state = test_state(&dir);
+/// Which lock an action contends for is derived from its own argv, so a new
+/// `apt-get` action joins the gate without anyone registering it. Pin the
+/// derivation for one action per resource class.
+#[test]
+fn exclusive_resource_is_derived_from_the_action_argv() {
+    use sysknife_daemon::actions::exclusive_resource;
 
-    // Start: None
-    assert!(state.running_high_risk_reboot.lock().await.is_none());
+    let find = |name: &str| {
+        catalogue()
+            .into_iter()
+            .flat_map(|(_, specs)| specs)
+            .find(|s| s.action_name == name)
+            .unwrap_or_else(|| panic!("{name} must exist in the catalogue"))
+    };
 
-    // Set
-    {
-        let mut s = state.running_high_risk_reboot.lock().await;
-        *s = Some("hash-1".to_string());
-    }
     assert_eq!(
-        state.running_high_risk_reboot.lock().await.as_deref(),
-        Some("hash-1")
+        exclusive_resource(&find("AptUpgrade")),
+        Some(ExclusiveResource::Dpkg),
+        "apt-get actions must contend for the dpkg lock"
     );
-
-    // Clear
-    {
-        let mut s = state.running_high_risk_reboot.lock().await;
-        *s = None;
-    }
-    assert!(state.running_high_risk_reboot.lock().await.is_none());
-
-    // Re-set
-    {
-        let mut s = state.running_high_risk_reboot.lock().await;
-        *s = Some("hash-2".to_string());
-    }
     assert_eq!(
-        state.running_high_risk_reboot.lock().await.as_deref(),
-        Some("hash-2")
+        exclusive_resource(&find("SnapInstall")),
+        Some(ExclusiveResource::Snap),
+        "snap actions must contend for the snapd change queue"
     );
-}
-
-/// The gate must allow concurrent connections to share the slot via
-/// `Arc<Mutex<…>>` — both `state.clone()` instances see the same slot.
-#[tokio::test]
-async fn cloned_state_shares_the_same_slot() {
-    let dir = tempdir().unwrap();
-    let state_a = test_state(&dir);
-    let state_b = state_a.clone();
-
-    {
-        let mut s = state_a.running_high_risk_reboot.lock().await;
-        *s = Some("via-a".to_string());
-    }
     assert_eq!(
-        state_b.running_high_risk_reboot.lock().await.as_deref(),
-        Some("via-a"),
-        "cloning DaemonState must share the running_high_risk_reboot Arc"
+        exclusive_resource(&find("UpdateSystem")),
+        Some(ExclusiveResource::RpmOstree),
+        "rpm-ostree actions must contend for the rpm-ostree lock"
+    );
+    assert_eq!(
+        exclusive_resource(&find("RestartService")),
+        None,
+        "a systemctl action holds no package-manager lock"
     );
 }

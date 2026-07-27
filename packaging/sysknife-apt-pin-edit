@@ -31,7 +31,9 @@ PREFS_D = "/etc/apt/preferences.d"
 PREFIX = "sysknife-"
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-PACKAGE_RE = re.compile(r"^[A-Za-z0-9.+*?_:-]{1,128}$")
+# Mirrors validated_apt_package in actions/validate.rs, including its
+# refusal of a leading "-" so a package name can never act as a flag.
+PACKAGE_RE = re.compile(r"^(?!-)[A-Za-z0-9.+*?_:-]{1,128}$")
 PIN_RE = re.compile(r"^[A-Za-z0-9 =.,:/*_+-]{1,200}$")
 
 

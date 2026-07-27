@@ -1,8 +1,10 @@
+use crate::actions::ExclusiveResource;
 use crate::audit_forward::AuditForwarder;
 use crate::policy::PolicyTable;
 use crate::store::{AuditStore, SqliteStore};
 use crate::transactions::{TransactionStore, TransactionStoreError};
 use crate::transport::listen::{bind_unix_listener, ListenTarget, ListenTargetError};
+use std::collections::HashMap;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -38,34 +40,39 @@ pub struct DaemonState {
     /// sink is configured; events recorded by the dispatcher are then only
     /// written to the local hash-chained store.
     pub forwarder: Option<AuditForwarder>,
-    /// Coarse concurrency guard for High-risk reboot-required actions (ME4).
+    /// Concurrency guard keyed by the system lock each in-flight mutating
+    /// action holds (ME4).
     ///
-    /// Holds the `request_hash` of any currently executing action whose
-    /// `ActionSpec` has `risk_level == High && reboot_required == true` (e.g.
-    /// `UbuntuReleaseUpgrade`, `AddLayeredPackage`, `RebaseSystem`). `None`
-    /// when no such action is in flight.
+    /// Maps an [`ExclusiveResource`] to the `request_hash` of the action
+    /// currently holding it. A mutating action is rejected with a
+    /// `ConflictResponse` when either
     ///
-    /// The guard is one-directional, not mutual exclusion between all
-    /// mutating actions: every mutating action checks this slot before it is
-    /// allowed to start, but only a High-risk + reboot-required action ever
-    /// *claims* it (sets it to `Some`). So while a High-risk +
-    /// reboot-required action is in flight, every other mutating action —
-    /// including another High-risk + reboot-required one — is rejected with
-    /// a `ConflictResponse` rather than racing the in-flight upgrade and
-    /// causing dpkg/rpm-ostree lock contention. An ordinary mutating action
-    /// (e.g. `StartService`) never claims the slot itself, so it neither
-    /// blocks other ordinary mutating actions nor blocks a High-risk +
-    /// reboot-required action that starts while it is still running.
+    /// * [`ExclusiveResource::System`] is held — a reboot-required action
+    ///   (release upgrade, rebase, layered install) is in flight and conflicts
+    ///   with everything mutating; or
+    /// * its own resource is held — e.g. a second `AptUpgrade` while the first
+    ///   still owns [`ExclusiveResource::Dpkg`].
     ///
-    /// The slot is `Arc<Mutex<…>>` so cloned `DaemonState` values — one per
-    /// IPC connection — all share the same underlying guard. `Mutex::lock`
-    /// is held for at most a few microseconds; this does not become a
-    /// hot-path bottleneck because read-only actions skip the check entirely.
+    /// This replaced a single `Option<String>` slot that only High-risk
+    /// *reboot-required* actions ever claimed. Under that rule `AptUpgrade`
+    /// (High risk, `reboot_required: false`) claimed nothing, so two
+    /// concurrent `apt-get dist-upgrade` runs both passed the gate and then
+    /// collided on `/var/lib/dpkg/lock-frontend` — the exact contention the
+    /// gate exists to prevent, and one that can leave dpkg needing
+    /// `--configure -a`.
+    ///
+    /// Actions with no shared lock (`exclusive_resource` returns `None`, e.g.
+    /// `StartService`) still respect a held `System` but never block each
+    /// other, so unrelated work is not serialised behind a long `apt` run.
+    ///
+    /// The map is `Arc<Mutex<…>>` so cloned `DaemonState` values — one per IPC
+    /// connection — all share the same guard. `Mutex::lock` is held for at
+    /// most a few microseconds; read-only actions skip the check entirely.
     ///
     /// On daemon crash the in-memory guard is lost. That is correct: the
     /// daemon's SQLite store will show the orphaned `Running` row; the
     /// operator can inspect it via `ListJobHistory`.
-    pub running_high_risk_reboot: Arc<Mutex<Option<String>>>,
+    pub running_exclusive: Arc<Mutex<HashMap<ExclusiveResource, String>>>,
 }
 
 #[derive(Debug)]
@@ -116,7 +123,7 @@ impl DaemonState {
             policy,
             host_distro: sysknife_core::distro::detect().ok(),
             forwarder,
-            running_high_risk_reboot: Arc::new(Mutex::new(None)),
+            running_exclusive: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -136,7 +143,7 @@ impl DaemonState {
             policy,
             host_distro: sysknife_core::distro::detect().ok(),
             forwarder,
-            running_high_risk_reboot: Arc::new(Mutex::new(None)),
+            running_exclusive: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

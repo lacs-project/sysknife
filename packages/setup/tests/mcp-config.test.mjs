@@ -54,3 +54,38 @@ test('handles a file with no mcpServers key', () => {
   assert.equal(merged.somethingElse, true);
   assert.deepEqual(Object.keys(merged.mcpServers), ['sysknife']);
 });
+
+test('refuses to merge when the existing config cannot be read', () => {
+  // A read failure is not malformed JSON. Silently starting from {} would make
+  // the caller write a fresh file over the top, discarding every other MCP
+  // server the user had configured.
+  const file = tmpFile('{"mcpServers":{"other":{"command":"x"}}}');
+  fs.chmodSync(file, 0o000);
+  try {
+    // Running as root defeats the permission check; skip rather than assert
+    // something the environment cannot demonstrate.
+    let readable = true;
+    try {
+      fs.readFileSync(file, 'utf8');
+    } catch {
+      readable = false;
+    }
+    if (readable) return;
+
+    assert.throws(
+      () => mergeMcpServers(file, SYSKNIFE),
+      /refusing to overwrite/,
+      'an unreadable config must abort the merge, not silently reset it'
+    );
+  } finally {
+    fs.chmodSync(file, 0o600);
+  }
+});
+
+test('still starts fresh when the existing config is malformed JSON', () => {
+  // The other half of the contract: unparseable content has nothing worth
+  // preserving, so the wizard proceeds instead of dying.
+  const file = tmpFile('{not valid json');
+  const merged = mergeMcpServers(file, SYSKNIFE);
+  assert.deepEqual(merged.mcpServers, SYSKNIFE);
+});

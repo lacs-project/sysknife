@@ -746,7 +746,12 @@ pub fn validated_syslog_host(s: &str, param: &'static str) -> Result<String, Exe
 
 /// Validate an apt package-name glob (`[A-Za-z0-9.+*?_:-]`, 1..=128).
 pub fn validated_apt_package(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    // A leading `-` would land in flag position when the value is passed as a
+    // bare argument (`apt-cache policy <package>`), letting a package name act
+    // as an option. Every sibling validator in this file rejects it; this one
+    // was the sole exception.
     if s.is_empty()
+        || s.starts_with('-')
         || s.len() > 128
         || !s.chars().all(|c| {
             c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '*' | '?' | '_' | ':' | '-')

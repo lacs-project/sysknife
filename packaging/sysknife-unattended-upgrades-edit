@@ -44,11 +44,17 @@ def main() -> None:
     if args.enable:
         # Ensure the package is present (idempotent). We already run as root via
         # sudo, so apt-get needs no further privilege escalation.
+        # NEEDRESTART_MODE=a is as load-bearing as DEBIAN_FRONTEND here: without
+        # it the needrestart post-install hook can open an interactive TUI and
+        # block forever on terminal input this process will never provide.
+        # Absolute apt-get path for the same reason apt.rs uses one — sudo
+        # matches argument tokens literally against the sudoers rule.
         result = subprocess.run(
             [
                 "/usr/bin/env",
                 "DEBIAN_FRONTEND=noninteractive",
-                "apt-get",
+                "NEEDRESTART_MODE=a",
+                "/usr/bin/apt-get",
                 "install",
                 "-y",
                 "unattended-upgrades",

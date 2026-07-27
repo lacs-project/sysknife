@@ -929,6 +929,13 @@ async fn authenticate_vsock_token(
 // Main dispatch loop (shared by Unix and vsock paths)
 // ---------------------------------------------------------------------------
 
+/// How long a connection may wait for its next request before the daemon
+/// closes it and frees the connection slot. Generous enough for an
+/// interactive session (preview → read the plan → approve in another
+/// terminal → execute), short enough that idle sockets cannot pin the
+/// `MAX_CONNECTIONS` pool indefinitely.
+const IDLE_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
 async fn dispatch_loop<S>(
     framed: &mut FramedStream<S>,
     state: DaemonState,
@@ -939,10 +946,29 @@ async fn dispatch_loop<S>(
     S: AsyncRead + AsyncWrite + Unpin,
 {
     loop {
-        let raw = match framed.recv().await {
-            Ok(bytes) => bytes,
-            Err(FramingError::Io(_)) => break, // peer closed
-            Err(FramingError::MessageTooLarge(_)) => break, // framing violation
+        // Bound how long a connection may sit idle between requests.
+        //
+        // Without this, the lowest-privilege caller can open MAX_CONNECTIONS
+        // sockets, never write a byte, and hold every semaphore permit
+        // forever — the next connection is dropped at accept, including one
+        // from an Admin trying to approve something. The pre-auth vsock path
+        // already bounds its handshake for exactly this reason; the post-auth
+        // loop had no equivalent on either transport.
+        //
+        // This is an *idle* bound: it only applies while waiting for the next
+        // request. A long-running action is executing inside a handler, not
+        // parked here, so a 45-minute upgrade is unaffected.
+        let raw = match tokio::time::timeout(IDLE_CONNECTION_TIMEOUT, framed.recv()).await {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(FramingError::Io(_))) => break, // peer closed
+            Ok(Err(FramingError::MessageTooLarge(_))) => break, // framing violation
+            Err(_) => {
+                eprintln!(
+                    "[sysknife-daemon] closing connection idle for more than {}s",
+                    IDLE_CONNECTION_TIMEOUT.as_secs()
+                );
+                break;
+            }
         };
 
         let msg: Value = match serde_json::from_slice(&raw) {
@@ -1910,14 +1936,24 @@ fn forward_status_change_event(
     });
 }
 
-async fn release_high_risk_slot(state: &DaemonState, owns_slot: bool, request_hash: &str) {
-    if !owns_slot {
+/// Release every exclusion lock this request claimed.
+///
+/// Each entry is removed only when it still records *this* request's hash, so
+/// a late release can never evict a lock a different job has since taken.
+async fn release_exclusive_slots(
+    state: &DaemonState,
+    claimed: &[crate::actions::ExclusiveResource],
+    request_hash: &str,
+) {
+    if claimed.is_empty() {
         return;
     }
 
-    let mut slot = state.running_high_risk_reboot.lock().await;
-    if slot.as_deref() == Some(request_hash) {
-        *slot = None;
+    let mut slots = state.running_exclusive.lock().await;
+    for resource in claimed {
+        if slots.get(resource).map(String::as_str) == Some(request_hash) {
+            slots.remove(resource);
+        }
     }
 }
 
@@ -2054,36 +2090,65 @@ async fn handle_execute(
     // The slot is held for the duration of the action only when the new action
     // is itself High-risk + reboot-required; other mutating actions are blocked
     // while a high-risk action is in-flight but do not themselves set the slot.
-    let is_mutating = state
-        .policy
-        .min_role_for_action(action_name)
-        .map(|r| crate::auth::role_rank(&r) > crate::auth::role_rank(&CallerRole::Observer))
-        .unwrap_or(false);
-
     let is_high_risk_reboot =
         spec.risk_level == sysknife_types::RiskLevel::High && spec.reboot_required;
 
-    // Defensive invariant: the slot is only ever *claimed* inside `if
-    // is_mutating { ... }` below, but `release_high_risk_slot` runs
-    // unconditionally on every exit path (see calls further down). If a
-    // future action were classified High-risk + reboot-required yet not
-    // mutating (e.g. an Observer-role action), it would skip the claim but
-    // still attempt the release — harmless today (release is a no-op unless
-    // the hash matches a claimed slot) but a sign the risk/role policy tables
-    // have drifted out of sync. Policy validation prevents this today; this
-    // assertion catches a future regression cheaply rather than relying on
-    // that invariant holding silently forever.
-    debug_assert!(
-        !is_high_risk_reboot || is_mutating,
-        "high-risk+reboot action must be mutating (action {action_name:?} is High risk \
-         + reboot_required but policy does not require Dev/Admin to run it)"
-    );
+    let policy_says_mutating = match state.policy.min_role_for_action(action_name) {
+        Some(r) => crate::auth::role_rank(&r) > crate::auth::role_rank(&CallerRole::Observer),
+        None => {
+            // Unreachable today: `authorize_action` above rejects any action
+            // the policy table does not know. Treat the miss as mutating
+            // anyway — the failure direction of a lookup miss must be "gate
+            // it", never "let it through ungated".
+            eprintln!(
+                "[sysknife-daemon] WARNING: no policy entry for {action_name:?} at the \
+                 concurrency gate; treating it as mutating"
+            );
+            true
+        }
+    };
 
-    // Check the gate for any mutating action; only set it for high-risk+reboot.
+    // A High-risk reboot-required action is mutating by definition. Deriving
+    // this from the spec as well as the policy table means a drift between the
+    // two tables cannot silently downgrade an upgrade-class action to
+    // "ungated". The previous code asserted this relationship with
+    // `debug_assert!`, which is compiled out of release builds — precisely the
+    // binary that ships.
+    let is_mutating = policy_says_mutating || is_high_risk_reboot;
+    if is_high_risk_reboot && !policy_says_mutating {
+        eprintln!(
+            "[sysknife-daemon] WARNING: {action_name:?} is High-risk + reboot-required but the \
+             policy table does not require Dev/Admin for it; gating it as mutating anyway. \
+             The risk and role tables have drifted."
+        );
+    }
+
+    // Which system locks this request will hold while it runs.
+    let mut to_claim: Vec<crate::actions::ExclusiveResource> = Vec::new();
+    if is_high_risk_reboot {
+        to_claim.push(crate::actions::ExclusiveResource::System);
+    }
+    let own_resource = crate::actions::exclusive_resource(&spec);
+    if let Some(r) = own_resource {
+        if !to_claim.contains(&r) {
+            to_claim.push(r);
+        }
+    }
+    if !is_mutating {
+        to_claim.clear();
+    }
+
+    // Check the gate for any mutating action, and claim every lock it needs.
     if is_mutating {
-        let mut slot = state.running_high_risk_reboot.lock().await;
-        if let Some(running_hash) = slot.as_ref() {
-            // Another high-risk reboot-required action is already executing.
+        let mut slots = state.running_exclusive.lock().await;
+        // Conflict on a system-wide job first (it excludes everything), then
+        // on this action's own resource.
+        let blocking = slots
+            .get(&crate::actions::ExclusiveResource::System)
+            .map(|h| (crate::actions::ExclusiveResource::System, h.clone()))
+            .or_else(|| own_resource.and_then(|r| slots.get(&r).map(|h| (r, h.clone()))));
+        if let Some((blocking_resource, running_hash)) = blocking {
+            // Another mutating action already holds a lock this one needs.
             // Return a typed Conflict response so the shell can surface a
             // "wait, an upgrade is running" message rather than a generic error.
             //
@@ -2101,8 +2166,9 @@ async fn handle_execute(
             // only way to get a new TTL window is a new transaction, which
             // means re-running the preview.
             let ttl = crate::transactions::APPROVAL_RECEIPT_TTL_MINUTES;
+            let held = blocking_resource.label();
             let msg = format!(
-                "a High-risk reboot-required action is already executing (request_hash \
+                "another mutating action is already executing and holds {held} (request_hash \
                  {running_hash}); retry after the current job completes. This approval \
                  expires {ttl} minutes after it was issued, and that window is anchored to \
                  when the preview was created — re-running `sysknife approve` on this same \
@@ -2110,7 +2176,7 @@ async fn handle_execute(
                  window has passed, re-run the preview (which mints a fresh transaction) and \
                  approve that new transaction instead"
             );
-            drop(slot); // release before I/O
+            drop(slots); // release before I/O
             return send_response(
                 framed,
                 &DaemonResponse::ConflictResponse {
@@ -2121,10 +2187,10 @@ async fn handle_execute(
             )
             .await;
         }
-        if is_high_risk_reboot {
-            // Claim the slot before releasing the lock so no other connection
-            // can race between the check and the set.
-            *slot = Some(stored_hash.clone());
+        // Claim every lock before releasing the mutex so no other connection
+        // can race between the check and the set.
+        for resource in &to_claim {
+            slots.insert(*resource, stored_hash.clone());
         }
         // Lock drops here via RAII, releasing for other read-only actions.
     }
@@ -2136,7 +2202,7 @@ async fn handle_execute(
     {
         Ok(c) => c,
         Err(e) => {
-            release_high_risk_slot(state, is_high_risk_reboot, &stored_hash).await;
+            release_exclusive_slots(state, &to_claim, &stored_hash).await;
             return send_error(
                 framed,
                 request_id,
@@ -2147,7 +2213,7 @@ async fn handle_execute(
         }
     };
     if !claimed {
-        release_high_risk_slot(state, is_high_risk_reboot, &stored_hash).await;
+        release_exclusive_slots(state, &to_claim, &stored_hash).await;
         return send_error(
             framed,
             request_id,
@@ -2169,7 +2235,7 @@ async fn handle_execute(
     )
     .await
     {
-        release_high_risk_slot(state, is_high_risk_reboot, &stored_hash).await;
+        release_exclusive_slots(state, &to_claim, &stored_hash).await;
         if let Err(status_error) =
             update_terminal_status(state, transaction_id, JobState::Failed).await
         {
@@ -2296,7 +2362,7 @@ async fn handle_execute(
     // (success OR failure). The slot was only set when this action was
     // itself High-risk + reboot-required; for other mutating actions the
     // guard was read but never written, so there is nothing to clear.
-    release_high_risk_slot(state, is_high_risk_reboot, &stored_hash).await;
+    release_exclusive_slots(state, &to_claim, &stored_hash).await;
 
     // Update the transaction record. A failure here is an audit-trail loss —
     // log it and surface it as a warning in the job result so the client is
@@ -3609,8 +3675,8 @@ mod tests {
 
         assert!(result.is_err(), "the initial response write must fail");
         assert!(
-            state.running_high_risk_reboot.lock().await.is_none(),
-            "a disconnected client must not retain the global reboot slot"
+            state.running_exclusive.lock().await.is_empty(),
+            "a disconnected client must not retain any exclusion lock"
         );
         assert_eq!(
             state
@@ -4307,12 +4373,45 @@ mod tests {
             Arc::new(crate::executor::RealActionExecutor)
         }
 
+        /// The daemon refuses a token file other local users can read, so
+        /// tests must provision one the way an operator is told to
+        /// (`install -m 600`). `std::fs::write` alone lands at 0644 under the
+        /// usual umask and would be rejected.
+        fn write_token_mode(path: &std::path::Path, mode: u32) {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+
+        /// A bearer token any local user can read is not a credential. The
+        /// daemon must refuse it rather than grant `token_role()` to whoever
+        /// presents it.
+        #[tokio::test]
+        async fn group_or_world_readable_token_file_is_rejected() {
+            let dir = tempdir().unwrap();
+            let token_path = dir.path().join("token");
+            std::fs::write(&token_path, "test-secret").unwrap();
+            write_token_mode(&token_path, 0o644);
+
+            assert!(
+                crate::auth::validate_token_against_file("test-secret", &token_path).is_none(),
+                "a 0644 token file must be rejected even when the token matches"
+            );
+
+            // Same file, same token, tightened permissions — now accepted.
+            write_token_mode(&token_path, 0o600);
+            assert!(
+                crate::auth::validate_token_against_file("test-secret", &token_path).is_some(),
+                "a 0600 token file with a matching token must be accepted"
+            );
+        }
+
         /// Send a valid auth frame then a `query_state` — connection must succeed.
         #[tokio::test]
         async fn valid_token_grants_access() {
             let dir = tempdir().unwrap();
             let token_path = dir.path().join("token");
             std::fs::write(&token_path, "test-secret").unwrap();
+            write_token_mode(&token_path, 0o600);
 
             let (client, server) = tokio::io::duplex(4 * 1024 * 1024);
             let state = test_state(&dir);
@@ -4347,6 +4446,7 @@ mod tests {
             let dir = tempdir().unwrap();
             let token_path = dir.path().join("token");
             std::fs::write(&token_path, "correct").unwrap();
+            write_token_mode(&token_path, 0o600);
 
             let (client, server) = tokio::io::duplex(4 * 1024 * 1024);
             let state = test_state(&dir);
@@ -4379,6 +4479,7 @@ mod tests {
             let dir = tempdir().unwrap();
             let token_path = dir.path().join("token");
             std::fs::write(&token_path, "secret").unwrap();
+            write_token_mode(&token_path, 0o600);
 
             let (client, server) = tokio::io::duplex(4 * 1024 * 1024);
 
@@ -4398,6 +4499,7 @@ mod tests {
             let dir = tempdir().unwrap();
             let token_path = dir.path().join("token");
             std::fs::write(&token_path, "secret").unwrap();
+            write_token_mode(&token_path, 0o600);
 
             let (client, server) = tokio::io::duplex(4 * 1024 * 1024);
 
@@ -4419,6 +4521,7 @@ mod tests {
             let dir = tempdir().unwrap();
             let token_path = dir.path().join("token");
             std::fs::write(&token_path, "secret").unwrap();
+            write_token_mode(&token_path, 0o600);
 
             let (client, server) = tokio::io::duplex(4 * 1024 * 1024);
 
