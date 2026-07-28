@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [0.2.14] — 2026-07-28
+
+### Added
+
+- **`.codex-plugin/plugin.json`** — the manifest Codex plugin directories read
+  to list SysKnife. `hashgraph-online/awesome-codex-plugins` fetches this
+  repository's default branch and fails a listing PR when the manifest is
+  absent, which is exactly what was blocking
+  [their #327](https://github.com/hashgraph-online/awesome-codex-plugins/pull/327).
+  It carries the required identity, licence and interface fields, and a
+  `composerIcon` pointing at the committed 16KB `assets/raster/sysknife-256.png`.
+- `.codex-plugin/mcp.json` declares how to launch the server, with **no `env`
+  block**: credentials come from the environment, and a tracked manifest holding
+  a placeholder API key is an easy way to commit a real one by accident (the
+  root `.mcp.json` is gitignored for that reason). `command` is the bare
+  `sysknife` so it resolves from `PATH` after any supported install.
+
+### Changed
+
+- `scripts/check_release_versions.sh` covers the plugin manifest, so a release
+  that bumps the crates but forgets it fails CI instead of leaving a plugin
+  directory advertising a version that was never shipped.
+
+No behaviour change to any binary; this release exists so the published version
+and the manifest a directory reads agree.
+
 ## [0.2.13] — 2026-07-27
 
 The last item v0.2.12 deferred: the audit chain could say what was authorised,
