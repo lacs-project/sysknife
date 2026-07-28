@@ -33,6 +33,11 @@ versions+=("$(node -p "require('$repo_root/packages/setup/package.json').version
 # The Codex plugin manifest reports the version to plugin directories, so a
 # release that forgets it publishes a listing that misstates what is shipped.
 versions+=("$(node -p "require('$repo_root/.codex-plugin/plugin.json').version")")
+# server.json is the manifest published to the official MCP Registry. Its
+# version names the crate version whose rendered README carries the ownership
+# marker, so a stale value here fails authorization at publish time.
+versions+=("$(node -p "require('$repo_root/server.json').version")")
+versions+=("$(node -p "require('$repo_root/server.json').packages[0].version")")
 
 baseline="${versions[0]}"
 for version in "${versions[@]}"; do

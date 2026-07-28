@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [Unreleased]
+
+### Added
+
+- **`server.json`** at the repository root: the manifest published to the
+  official [MCP Registry](https://registry.modelcontextprotocol.io) under
+  `io.github.lacs-project/sysknife`. It lists the `cargo` package
+  `sysknife-cli` with `mcp-server` as a positional argument, which is what the
+  registry's cargo validator and `mcp-publisher validate` accept. No new
+  package and no version bump: the ownership marker has shipped in the crate
+  README since 0.2.6, so the already-published 0.2.14 crate is what gets
+  listed.
+- `tests/release/registry-manifest.test.sh` guards the listing. The failure it
+  exists for is quiet: the validator proves ownership by searching the crate's
+  **rendered** crates.io README for a plain-text `mcp-name:` token, and
+  crates.io strips HTML comments when rendering, so moving the marker into a
+  comment or dropping it during a README rewrite breaks the next publish with
+  nothing in the repository looking wrong. The test also pins the registry type,
+  base URL, transport, crate identity, and the `mcp-server` argument. It runs in
+  CI and in the release preflight.
+
+### Changed
+
+- `scripts/check_release_versions.sh` covers both `server.json` version fields,
+  so a release cannot bump the crates and leave the registry listing pointing at
+  a version whose README the validator will not fetch.
+- `docs/mcp-registry.md` records the two-call crates.io check that proves the
+  marker is live in a given published version, rather than only present in the
+  repository.
+
 ## [0.2.14] — 2026-07-28
 
 ### Added

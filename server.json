@@ -1,0 +1,46 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.lacs-project/sysknife",
+  "title": "SysKnife",
+  "description": "Administers Linux via typed, approval-gated actions with an Ed25519-signed audit trail.",
+  "version": "0.2.14",
+  "websiteUrl": "https://lacs-project.github.io/sysknife/",
+  "repository": {
+    "url": "https://github.com/lacs-project/sysknife",
+    "source": "github"
+  },
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/lacs-project/sysknife/main/assets/raster/sysknife-256.png",
+      "mimeType": "image/png",
+      "sizes": ["256x256"]
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "cargo",
+      "registryBaseUrl": "https://crates.io",
+      "identifier": "sysknife-cli",
+      "version": "0.2.14",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "valueHint": "subcommand",
+          "value": "mcp-server"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "SYSKNIFE_SOCKET",
+          "description": "Where the privileged daemon listens: a unix:// path, a vsock:// target, or a bare path. Defaults to wherever the daemon bound, so it is only needed for a non-default install or a remote VM.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

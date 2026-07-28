@@ -269,6 +269,7 @@ run_hygiene_group() {
     run_step 'hygiene: check_release_versions.sh' bash "$repo_root/scripts/check_release_versions.sh"
     run_step 'hygiene: public-claims.test.sh' bash "$repo_root/tests/release/public-claims.test.sh"
     run_step 'hygiene: npm test --prefix packages/setup' npm test --prefix "$repo_root/packages/setup"
+    run_step 'hygiene: registry-manifest.test.sh' bash "$repo_root/tests/release/registry-manifest.test.sh"
     run_step 'hygiene: release-rehearsal.test.sh' bash "$repo_root/tests/release/release-rehearsal.test.sh"
     run_step 'hygiene: ubuntu-vm-bootstrap.test.sh' bash "$repo_root/tests/e2e/ubuntu-vm-bootstrap.test.sh"
 
