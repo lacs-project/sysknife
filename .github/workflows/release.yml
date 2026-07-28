@@ -285,3 +285,98 @@ jobs:
             "dist/sha256sums-linux-aarch64.txt" \
             "dist/sysknife-${VERSION}-linux-x86_64.spdx.json" \
             "dist/sysknife-${VERSION}-linux-aarch64.spdx.json"
+
+  post-release-checklist:
+    name: File the manual post-release steps
+    # Only after publication actually succeeded: a checklist for a release that
+    # never shipped is worse than no checklist.
+    needs: [release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read  # gh release download
+      issues: write  # gh issue create
+
+    steps:
+      - name: Fetch the published checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release download "$VERSION" --repo "$REPO" \
+            --pattern sha256sums-linux-x86_64.txt --dir .
+
+      - name: Open the checklist issue
+        # Two directory listings cannot be automated from CI: the MCP Registry
+        # requires a device-code login, and Glama's build spec is a browser-only
+        # admin form. Left implicit, both get forgotten, and the listings then
+        # advertise a version nobody can install. The issue carries the exact
+        # commands and the real checksum for this tag.
+        #
+        # Every interpolated value is server-controlled (the tag we pushed, the
+        # static repo path, the actor who pushed it); no user text is shelled.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          binary="sysknife-${VERSION}-linux-x86_64"
+          sha="$(awk -v f="$binary" '$2 == f { print $1 }' sha256sums-linux-x86_64.txt)"
+          if [ -z "$sha" ]; then
+            echo "::error::no checksum for $binary in sha256sums-linux-x86_64.txt"
+            exit 1
+          fi
+          version_no_v="${VERSION#v}"
+
+          cat > body.md <<EOF
+          \`${VERSION}\` is published to npm, crates.io, and GitHub Releases. Two
+          directory listings still point at the previous version, and neither can be
+          updated from CI.
+
+          ### 1. Official MCP Registry
+
+          \`server.json\` already names \`sysknife-cli@${version_no_v}\`. The validator reads
+          the **published** crate's rendered README for the \`mcp-name:\` marker, so this
+          step only works now that crates.io has the version.
+
+          \`\`\`sh
+          mcp-publisher login github   # device code, cannot run unattended
+          mcp-publisher publish        # from the repository root
+          \`\`\`
+
+          Verify:
+
+          \`\`\`sh
+          curl -sS "https://registry.modelcontextprotocol.io/v0/servers?search=sysknife" \\
+            | grep -o '"version":"${version_no_v}"'
+          \`\`\`
+
+          ### 2. Glama build spec
+
+          Browser-only: <https://glama.ai/mcp/servers/lacs-project/sysknife/admin/dockerfile>
+
+          Replace **Build steps** with the following, leave every other field alone
+          (in particular keep the \`mcp-proxy --\` prefix in CMD arguments, which is how
+          Glama exposes a stdio server), then click **Build & Release**:
+
+          \`\`\`json
+          [
+            "curl -fsSL -o /app/sysknife https://github.com/${REPO}/releases/download/${VERSION}/${binary}",
+            "echo \\"${sha}  /app/sysknife\\" | sha256sum -c -",
+            "chmod +x /app/sysknife"
+          ]
+          \`\`\`
+
+          ### Notes
+
+          - Checksum above is read from this release's \`sha256sums-linux-x86_64.txt\`, not hand-copied.
+          - Neither step blocks users installing \`${VERSION}\`; they affect discovery only.
+          - Close this issue once both are done.
+          EOF
+
+          gh issue create --repo "$REPO" \
+            --title "Post-release manual steps for ${VERSION}" \
+            --body-file body.md \
+            --assignee "$ACTOR"
