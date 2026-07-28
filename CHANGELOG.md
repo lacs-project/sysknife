@@ -59,8 +59,26 @@ happened.
   `claim_approved_for_execution` now require the signing key and refuse on a
   read-only store, since both append to the event chain.
 
+- `PlanningError::Provider` carries a `ProviderError` instead of its rendered
+  string. The shell recovered the classification by searching that string for
+  `"429"` and `"http"`, so editing a `#[error(...)]` format string in
+  `provider.rs` could silently reclassify a rate limit as a parse error. The
+  three planner tests that all asserted `Provider(_)` now assert the variant.
+- New `TransactionId` and `ApprovalReceipt` newtypes.
+  `DaemonClient::execute(transaction_id, action_name, params, approval_receipt, …)`
+  took three bare `&str` in a row, so transposing two of them compiled and
+  surfaced at runtime as a stale-approval error — which reads like an expiry,
+  not a call-site bug. `ApprovalReceipt` is a bearer credential, so its `Debug`
+  is redacted and it has no `Display`; the one place it is meant to be printed
+  calls `as_str()` explicitly. The MCP wire structs keep plain strings so the
+  published JSON Schema is unchanged.
+
 ### Fixed
 
+- **The MCP server introduced itself as `rmcp`.** `Implementation::from_build_env()`
+  resolves `CARGO_PKG_*` at the crate where the macro expands, which is `rmcp`,
+  so `initialize` reported the name and version of the transport library rather
+  than of SysKnife — the string clients and registry listings display.
 - **`describe` had no authorization check.** It renders the exact command an
   action would run, so any caller could enumerate the argv of every privileged
   action on the host. It now applies the same authorization gate and platform

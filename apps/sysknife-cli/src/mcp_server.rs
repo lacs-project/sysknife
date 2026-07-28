@@ -46,7 +46,7 @@ use rmcp::{
     ErrorData, ServerHandler, ServiceExt,
 };
 use serde::{Deserialize, Serialize};
-use sysknife_types::RiskLevel;
+use sysknife_types::{ApprovalReceipt, RiskLevel, TransactionId};
 
 use sysknife_brain::config::BrainConfig;
 use sysknife_brain::planner::LlmPlanner;
@@ -390,6 +390,20 @@ impl SysknifeMcpServer {
     }
 }
 
+/// Identity this server reports in `initialize`.
+///
+/// `Implementation::from_build_env()` resolves `CARGO_PKG_*` at the crate where
+/// the macro expands — which is `rmcp` — so the server introduced itself to
+/// every client, and to directory listings, as "rmcp" at rmcp's version. The
+/// struct is `#[non_exhaustive]`, so the fields are overwritten rather than
+/// rebuilt, which also keeps any future field at its upstream default.
+fn sysknife_implementation() -> Implementation {
+    let mut implementation = Implementation::from_build_env();
+    implementation.name = "sysknife".to_string();
+    implementation.version = env!("CARGO_PKG_VERSION").to_string();
+    implementation
+}
+
 #[tool_handler]
 impl ServerHandler for SysknifeMcpServer {
     fn get_info(&self) -> ServerInfo {
@@ -399,7 +413,11 @@ impl ServerHandler for SysknifeMcpServer {
                 .enable_resources()
                 .build(),
         )
-        .with_server_info(Implementation::from_build_env())
+        // Not `Implementation::from_build_env()`: that macro resolves
+        // `CARGO_PKG_*` at the crate where it is expanded, which is `rmcp`, so
+        // the server introduced itself to every client as "rmcp" at rmcp's
+        // version. Directory listings and client UIs show this string.
+        .with_server_info(sysknife_implementation())
         .with_instructions(
             "SysKnife provides planning and execution tools for Linux system administration.",
         )
@@ -523,7 +541,11 @@ async fn enrich_with_commands(
             .preview(&step.action_name, &step.params)
             .await
             .map_err(|e| format!("preview failed for {}: {e}", step.action_name))?;
-        step.transaction_id = prepared.transaction_id;
+        // The MCP wire structs keep plain strings: their JSON Schema is what
+        // the agent sees, and a bare string is the honest description of an
+        // opaque identifier. The newtypes guard the internal call sites, so the
+        // conversion happens once, here at the boundary.
+        step.transaction_id = prepared.transaction_id.into_inner();
         step.risk_level = match prepared.preview.risk_level {
             RiskLevel::Low => "low",
             RiskLevel::Medium => "medium",
@@ -552,10 +574,10 @@ async fn execute_steps_inner(steps: Vec<StepToExecute>) -> Result<ExecuteOutput,
         let mut output_lines: Vec<String> = Vec::new();
         let result = client
             .execute(
-                &step.transaction_id,
+                &TransactionId::new(step.transaction_id.clone()),
                 &step.action_name,
                 &step.params,
-                &step.approval_receipt,
+                &ApprovalReceipt::new(step.approval_receipt.clone()),
                 |line| output_lines.push(line.to_owned()),
             )
             .await
@@ -1181,6 +1203,16 @@ mod tests {
             Some(SYSKNIFE_DISCOVERY_DESCRIPTION)
         );
         assert_eq!(resource.mime_type.as_deref(), Some("text/plain"));
+    }
+
+    #[test]
+    fn the_server_introduces_itself_as_sysknife() {
+        // `Implementation::from_build_env()` expands inside the rmcp crate, so
+        // it reported name "rmcp" and rmcp's version — the string clients and
+        // registry listings display for this server.
+        let info = SysknifeMcpServer.get_info();
+        assert_eq!(info.server_info.name, "sysknife");
+        assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
     }
 
     #[test]

@@ -74,7 +74,13 @@ async fn dispatch(
 
         // --- sysknife approve <transaction-id> ---
         Some(Command::Approve { transaction_id }) => {
-            runner::run_approve(transaction_id, socket, cli.json, log).await
+            runner::run_approve(
+                &sysknife_types::TransactionId::new(transaction_id.clone()),
+                socket,
+                cli.json,
+                log,
+            )
+            .await
         }
 
         // --- sysknife mcp-server ---

@@ -25,7 +25,8 @@ use sysknife_brain::config::BrainConfig;
 use sysknife_brain::planner::{LlmPlanner, PlanRiskLevel};
 use sysknife_brain::PlanEvent;
 use sysknife_types::{
-    DistroHint, RiskLevel, DISTRO_FAMILY_DEBIAN, DISTRO_FAMILY_FEDORA, DISTRO_FAMILY_OTHER,
+    DistroHint, RiskLevel, TransactionId, DISTRO_FAMILY_DEBIAN, DISTRO_FAMILY_FEDORA,
+    DISTRO_FAMILY_OTHER,
 };
 
 use sysknife_brain::state_client::StateClient as _;
@@ -220,7 +221,7 @@ fn daemon_risk_within_approved(approved: &PlanRiskLevel, daemon: &PlanRiskLevel)
 }
 
 pub async fn run_approve(
-    transaction_id: &str,
+    transaction_id: &TransactionId,
     socket: SocketTarget,
     json: bool,
     log: &Logger,
@@ -255,13 +256,15 @@ pub async fn run_approve(
     if json {
         log.println(
             &serde_json::json!({
-                "transaction_id": transaction_id,
-                "approval_receipt": receipt,
+                "transaction_id": transaction_id.as_str(),
+                "approval_receipt": receipt.as_str(),
             })
             .to_string(),
         );
     } else {
-        log.println(&format!("Approval receipt: {receipt}"));
+        // The one place the receipt is meant to leave the process: the
+        // operator has to be able to paste it into `sysknife execute`.
+        log.println(&format!("Approval receipt: {}", receipt.as_str()));
     }
     Ok(())
 }
