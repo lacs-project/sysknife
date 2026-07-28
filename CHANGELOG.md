@@ -12,6 +12,16 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Fixed
 
+- **`sysknife_doctor` over MCP reported the socket as Rust `Debug`.** The CLI was
+  fixed to print `unix:///run/…` but `mcp_server.rs` kept its own
+  `format!("{socket:?}")`, so the two disagreed about the same value and MCP
+  clients received `Unix("/run/sysknife/daemon.sock")` — not a string anything can
+  put back into `SYSKNIFE_SOCKET`. The field's schema description documented that
+  Debug form as its example, which is what an LLM reads. Caught by Glama's build
+  harness running a real MCP client against the server, not by this repository's
+  own tests. A test now asserts no source file in the crate formats a socket with
+  `Debug`, because the same defect was introduced and then half-fixed twice.
+
 - **`npx sysknife-setup` could not install anything, on any platform.** The
   release-metadata request reused the asset-download `Accept:
   application/octet-stream`, and GitHub answers that with **HTTP 415** on the
@@ -86,6 +96,9 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   someone arriving from the MCP Registry reads — now leads with the fact that the
   crate is half of SysKnife: it plans and dry-runs, and executing needs the
   privileged daemon.
+- README carries the Glama server-score badge (currently license A, quality A,
+  maintenance B). The badge stopped being a generic placeholder once the server
+  had a Glama release built from its own Dockerfile spec.
 - The setup wizard's target prompt says "Target" rather than "VM Target" and
   leads with this machine, since the documented headline case is a local install.
   Its socket-unreachable hint now matches the socket's kind rather than always

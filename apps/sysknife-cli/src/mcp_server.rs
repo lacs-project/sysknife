@@ -215,7 +215,8 @@ pub struct HistoryOutput {
 /// provider, and audit-chain health at the moment the tool was called.
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct DoctorReport {
-    /// Resolved daemon socket target, e.g. `"Unix(\"/run/sysknife/daemon.sock\")"`.
+    /// Resolved daemon socket target as a URI, e.g. `"unix:///run/sysknife/daemon.sock"`
+    /// or `"vsock://3:7777"`. Accepted verbatim by `SYSKNIFE_SOCKET`.
     pub daemon_socket: String,
     /// `true` iff the daemon answered `query_state` within the socket timeout.
     pub daemon_reachable: bool,
@@ -719,7 +720,10 @@ async fn doctor_inner() -> DoctorReport {
     let mut warnings: Vec<String> = Vec::new();
 
     let socket = resolve_socket_target();
-    let socket_label = format!("{socket:?}");
+    // `label()`, not `{:?}`: this string is published to MCP clients, and
+    // `Unix("/run/…")` is Rust internals rather than something a caller can put
+    // back into SYSKNIFE_SOCKET. Must match what `sysknife doctor` prints.
+    let socket_label = socket.label();
 
     // Detect the running distro — non-fatal if /etc/os-release is absent.
     let distro = match sysknife_core::distro::detect() {
@@ -1377,5 +1381,89 @@ mod tests {
 
         std::env::remove_var("SYSKNIFE_SOCKET");
         server.abort();
+    }
+
+    // -----------------------------------------------------------------------
+    // The socket label an MCP client reads
+    //
+    // `sysknife doctor` on the CLI was fixed to render sockets as
+    // `unix:///run/…` instead of Rust's `Unix("/run/…")`, but the MCP path
+    // kept its own `format!("{socket:?}")` and was missed. The two then
+    // disagreed about the same value, and the schema description shipped the
+    // Debug form as the documented example — which is what an LLM, and
+    // Glama's tool evaluator, actually read.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn doctor_reports_the_socket_as_a_uri_not_rust_debug() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("daemon.sock");
+        std::env::set_var("SYSKNIFE_SOCKET", sock.to_str().unwrap());
+
+        let report = doctor_inner().await;
+
+        std::env::remove_var("SYSKNIFE_SOCKET");
+
+        assert_eq!(
+            report.daemon_socket,
+            format!("unix://{}", sock.display()),
+            "the MCP report must use the same URI form as the CLI"
+        );
+        assert!(
+            !report.daemon_socket.contains("Unix("),
+            "no Rust Debug formatting in MCP output: {}",
+            report.daemon_socket
+        );
+        // The value must be something a caller can feed back to SYSKNIFE_SOCKET.
+        assert_eq!(
+            crate::client::SocketTarget::try_from_str(&report.daemon_socket).unwrap(),
+            crate::client::SocketTarget::Unix(sock.clone()),
+        );
+    }
+
+    #[test]
+    fn the_doctor_schema_documents_the_uri_form_not_the_debug_form() {
+        // This description is published to every MCP client as the field's
+        // documentation, so a stale example is a wrong instruction, not a typo.
+        let schema = serde_json::to_string(&schemars::schema_for!(DoctorReport)).unwrap();
+        assert!(
+            !schema.contains("Unix("),
+            "the schema still documents Rust Debug formatting: {schema}"
+        );
+        assert!(
+            schema.contains("unix://"),
+            "the schema should show the URI form as its example"
+        );
+    }
+
+    #[test]
+    fn no_source_file_formats_a_socket_target_with_debug() {
+        // The CLI fix landed and the MCP one was missed, so the same defect
+        // existed twice in one crate. Cheaper to assert the shape is gone than
+        // to rediscover it from a third party's build log.
+        //
+        // The needle is assembled from two halves so this file does not contain
+        // the pattern it forbids, which would make the test fail on itself.
+        let needle = concat!("{socket", ":?}");
+        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap();
+            for (n, line) in src.lines().enumerate() {
+                // Comments do not execute, and the comments explaining this
+                // very defect necessarily quote the pattern.
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                assert!(
+                    !line.contains(needle),
+                    "{}:{} formats a socket with Debug; use SocketTarget::label()",
+                    path.display(),
+                    n + 1
+                );
+            }
+        }
     }
 }
