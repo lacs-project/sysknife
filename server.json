@@ -3,7 +3,7 @@
   "name": "io.github.lacs-project/sysknife",
   "title": "SysKnife",
   "description": "Administers Linux via typed, approval-gated actions with an Ed25519-signed audit trail.",
-  "version": "0.2.14",
+  "version": "0.2.15",
   "websiteUrl": "https://lacs-project.github.io/sysknife/",
   "repository": {
     "url": "https://github.com/lacs-project/sysknife",
@@ -13,7 +13,9 @@
     {
       "src": "https://raw.githubusercontent.com/lacs-project/sysknife/main/assets/raster/sysknife-256.png",
       "mimeType": "image/png",
-      "sizes": ["256x256"]
+      "sizes": [
+        "256x256"
+      ]
     }
   ],
   "packages": [
@@ -21,7 +23,7 @@
       "registryType": "cargo",
       "registryBaseUrl": "https://crates.io",
       "identifier": "sysknife-cli",
-      "version": "0.2.14",
+      "version": "0.2.15",
       "transport": {
         "type": "stdio"
       },
