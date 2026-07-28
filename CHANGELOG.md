@@ -59,6 +59,21 @@ happened.
   `claim_approved_for_execution` now require the signing key and refuse on a
   read-only store, since both append to the event chain.
 
+### Fixed
+
+- **`describe` had no authorization check.** It renders the exact command an
+  action would run, so any caller could enumerate the argv of every privileged
+  action on the host. It now applies the same authorization gate and platform
+  fence as `preview`; an unknown action is still a `validation_failure`.
+- **`query_action` had no platform fence.** A Fedora-only read-only action
+  reached the executor on a Debian host and failed as "rpm-ostree: No such file
+  or directory" instead of the clean `unsupported_platform` refusal `preview`
+  and `execute` return.
+- **`[policy.risk_overrides]` no longer leaks into the platform fence.** Whether
+  an action mutates the system is a property of the action; the fence now reads
+  the compile-time baseline. Previously, raising a read-only action's required
+  role also made that read fail whenever the host distro could not be detected.
+
 ## [0.2.12] — 2026-07-27
 
 Follow-up to the v0.2.11 review sweep: the findings that release deferred.
