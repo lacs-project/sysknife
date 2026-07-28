@@ -38,6 +38,19 @@ fi
 release_workflow="${repo_root}/.github/workflows/release.yml"
 grep -Fq 'check_registry_versions.sh' "$release_workflow"
 grep -Fq 'already exists; skipping' "$release_workflow"
+
+# Two directory listings cannot be automated: the MCP Registry needs a
+# device-code login and Glama's build spec is browser-only. Both were therefore
+# forgotten after releases. The workflow now files a checklist issue naming
+# them, with the freshly published checksum filled in, so the work is visible
+# without anyone reading a build log. Assert the job and both venues survive.
+grep -Fq 'Post-release manual steps' "$release_workflow"
+grep -Fq 'mcp-publisher publish' "$release_workflow"
+grep -Fq 'glama.ai' "$release_workflow"
+# The checklist is only useful if it carries the real checksum for this tag,
+# and only honest if it appears after publication actually succeeded.
+grep -Fq 'sha256sums-linux-x86_64.txt' "$release_workflow"
+grep -Eq 'needs: \[release\]' "$release_workflow"
 # Positive invariant: EVERY `uses:` in EVERY workflow MUST pin a full 40-hex
 # commit SHA. This catches every mutable form (semver tags like @v6.1.0,
 # @stable, @main, per-tool tags like @cargo-nextest, and short SHAs), across
