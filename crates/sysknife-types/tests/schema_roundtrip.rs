@@ -1,6 +1,6 @@
 use sysknife_types::{
-    CallerRole, FailureCategory, JobState, PreviewEnvelope, RequestEnvelope, ResultEnvelope,
-    RiskLevel, TransactionRecord,
+    ApprovalReceipt, CallerRole, FailureCategory, JobState, PreviewEnvelope, RequestEnvelope,
+    ResultEnvelope, RiskLevel, TransactionId, TransactionRecord,
 };
 
 #[test]
@@ -84,4 +84,49 @@ fn failure_category_serializes_stably() {
     let decoded: FailureCategory = serde_json::from_str(&encoded).unwrap();
 
     assert_eq!(value, decoded);
+}
+
+#[test]
+fn caller_role_as_str_matches_serde() {
+    // `as_str` is signed into the audit chain and serde crosses the daemon
+    // wire. Two spellings of the same enum drifting apart would mean a role
+    // recorded in the chain no longer matches the one in a transported
+    // record, so they are pinned to each other rather than to a literal list.
+    for role in [
+        CallerRole::Observer,
+        CallerRole::Dev,
+        CallerRole::Admin,
+        CallerRole::Boot,
+    ] {
+        let json = serde_json::to_string(&role).unwrap();
+        assert_eq!(json, format!("\"{}\"", role.as_str()));
+    }
+}
+
+#[test]
+fn an_approval_receipt_never_renders_itself_in_debug_output() {
+    // The receipt is a one-time bearer credential: whoever holds it can run the
+    // approved step. Any struct carrying one inherits its `Debug`, so a single
+    // `tracing::debug!("{req:?}")` would put a live credential in a log file.
+    let receipt = ApprovalReceipt::new("sk-receipt-deadbeef");
+    let rendered = format!("{receipt:?}");
+    assert!(
+        !rendered.contains("deadbeef"),
+        "Debug leaked the receipt: {rendered}"
+    );
+    // Still reachable where it is genuinely needed.
+    assert_eq!(receipt.as_str(), "sk-receipt-deadbeef");
+}
+
+#[test]
+fn approval_flow_newtypes_stay_bare_strings_on_the_wire() {
+    // `serde(transparent)`: the daemon's JSON IPC frames are unchanged by the
+    // newtypes, so an older peer still parses them.
+    let id = TransactionId::new("tx-abc123");
+    assert_eq!(serde_json::to_string(&id).unwrap(), "\"tx-abc123\"");
+    let back: TransactionId = serde_json::from_str("\"tx-abc123\"").unwrap();
+    assert_eq!(back, id);
+
+    let receipt = ApprovalReceipt::new("receipt-1");
+    assert_eq!(serde_json::to_string(&receipt).unwrap(), "\"receipt-1\"");
 }

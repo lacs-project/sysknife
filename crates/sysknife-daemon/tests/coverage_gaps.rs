@@ -96,6 +96,7 @@ fn make_transaction(action: &str) -> NewTransaction {
         risk_level: RiskLevel::High,
         summary: format!("Test {action}"),
         warnings: vec![],
+        caller_role: CallerRole::Dev,
     }
 }
 
@@ -118,6 +119,7 @@ fn list_transactions_limit_is_capped_at_100() {
                 risk_level: RiskLevel::High,
                 summary: format!("tx {i}"),
                 warnings: vec![],
+                caller_role: CallerRole::Dev,
             })
             .expect("record tx");
     }
@@ -189,6 +191,7 @@ async fn list_job_history_returns_recorded_transactions() {
             risk_level: RiskLevel::High,
             summary: "Stage system update".into(),
             warnings: vec![],
+            caller_role: CallerRole::Dev,
         })
         .await
         .expect("record tx");

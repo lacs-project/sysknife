@@ -84,6 +84,7 @@ fn transaction_records_are_persisted() {
         risk_level: RiskLevel::High,
         summary: "Stage system update".into(),
         warnings: vec!["reboot required".into()],
+        caller_role: CallerRole::Dev,
     };
 
     let record = store.record(transaction).expect("record tx");

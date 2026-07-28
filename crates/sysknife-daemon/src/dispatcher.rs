@@ -682,9 +682,14 @@ fn validate_action_platform(state: &DaemonState, action_name: &str) -> Result<()
     } else {
         None
     };
-    let is_mutating = state
-        .policy
-        .min_role_for_action(action_name)
+    // Deliberately the compile-time baseline, not `state.policy`. Whether an
+    // action mutates the system is a property of the action; whether a given
+    // caller may run it is what `[policy.risk_overrides]` decides. Reading it
+    // from the override-adjusted role let an operator who tightened RBAC on a
+    // read-only action also make that read fail when the host distro could not
+    // be detected — a distro requirement appearing as a side effect of an
+    // access-control change.
+    let is_mutating = crate::policy::min_role_for_action(action_name)
         .is_some_and(|role| role > CallerRole::Observer);
     if required_family.is_none() && !is_mutating {
         return Ok(());
@@ -1099,7 +1104,17 @@ async fn dispatch_loop<S>(
                 request_id,
                 action_name,
                 params,
-            } => handle_describe(framed, action_name, params, request_id).await,
+            } => {
+                handle_describe(
+                    framed,
+                    &state,
+                    &caller_role,
+                    action_name,
+                    params,
+                    request_id,
+                )
+                .await
+            }
             DaemonRequest::Cancel {
                 request_id,
                 transaction_id,
@@ -1463,6 +1478,15 @@ async fn handle_query_action(
         .await;
     }
 
+    // Same fence preview and execute apply. Without it a Fedora-only read-only
+    // action reached the executor on a Debian host and failed as "rpm-ostree:
+    // No such file or directory" — an execution error where the other paths
+    // give a clean refusal. Read-only actions with no family requirement short
+    // out inside `validate_action_platform`, so this costs them nothing.
+    if let Err(message) = validate_action_platform(state, action_name) {
+        return send_error(framed, request_id, "unsupported_platform", message).await;
+    }
+
     // Special case: ListJobHistory queries the daemon's own transaction
     // store rather than executing a system command. Handle it here to
     // avoid routing through the ActionSpec/executor path.
@@ -1627,12 +1651,47 @@ async fn handle_query_action(
 /// exactly what will run.
 async fn handle_describe(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
+    state: &DaemonState,
+    caller_role: &CallerRole,
     action_name: &str,
     params: &Value,
     request_id: &str,
 ) -> Result<(), HandlerError> {
     use crate::actions::ActionMechanism;
     use crate::executor::build_action_spec;
+
+    // Describe renders the exact command an action would run. It used to apply
+    // neither the authorization gate nor the platform fence, so any caller
+    // could enumerate the argv of every privileged action on the host and get
+    // a rendered command for actions this distro cannot run. Both gates match
+    // `handle_preview` so the three read paths agree on who may ask what.
+    //
+    // Unknown actions are rejected first: an unrecognised name is a client
+    // error, and reporting it as an authorization failure would both mislead
+    // the caller and make "does this action exist" indistinguishable from
+    // "am I allowed to see it" — which is the wrong trade for a name the
+    // catalogue is public about anyway.
+    if state.policy.min_role_for_action(action_name).is_none() {
+        return send_error(
+            framed,
+            request_id,
+            "validation_failure",
+            format!("unknown action: {action_name}"),
+        )
+        .await;
+    }
+    if !authorize_action(&state.policy, caller_role, action_name) {
+        return send_error(
+            framed,
+            request_id,
+            "authorization_failure",
+            format!("action '{action_name}' is not allowed for {caller_role:?} role"),
+        )
+        .await;
+    }
+    if let Err(message) = validate_action_platform(state, action_name) {
+        return send_error(framed, request_id, "unsupported_platform", message).await;
+    }
 
     // ListJobHistory is handled directly in the dispatcher (SQLite query) and
     // has no ActionSpec.  Return a synthetic describe response so callers get a
@@ -1797,6 +1856,9 @@ async fn handle_preview(
         risk_level: spec.risk_level,
         summary: preview.summary.clone(),
         warnings: preview.warnings.clone(),
+        // The role the daemon resolved for this connection, not anything the
+        // request carried. Signing it is what lets the audit answer "who".
+        caller_role: *caller_role,
     };
 
     let recorded = match state.audit.record_previewed(new_tx, preview.clone()).await {
@@ -3541,6 +3603,31 @@ mod tests {
     }
 
     #[test]
+    fn raising_a_read_only_action_via_risk_overrides_does_not_arm_the_platform_fence() {
+        // `[policy.risk_overrides]` answers "who may run this", not "is this a
+        // mutation". Deriving `is_mutating` from the override-adjusted role let
+        // an operator who tightened RBAC on a harmless read also make that read
+        // fail whenever the host distro could not be detected — a restriction
+        // they never asked for, appearing in an unrelated subsystem.
+        let dir = tempdir().unwrap();
+        let mut state = test_state(&dir);
+        state.host_distro = None;
+        let overrides =
+            std::collections::HashMap::from([("GetDiskUsage".to_string(), "high".to_string())]);
+        state.policy = crate::policy::PolicyTable::from_overrides(&overrides).unwrap();
+
+        assert_eq!(
+            state.policy.min_role_for_action("GetDiskUsage"),
+            Some(CallerRole::Admin),
+            "the override still governs authorization"
+        );
+        assert!(
+            validate_action_platform(&state, "GetDiskUsage").is_ok(),
+            "a read-only action stays exempt from the distro fence"
+        );
+    }
+
+    #[test]
     fn supported_hosts_still_enforce_action_family() {
         let dir = tempdir().unwrap();
         let mut state = test_state(&dir);
@@ -3550,6 +3637,115 @@ mod tests {
         });
         assert!(validate_action_platform(&state, "AptInstall").is_ok());
         assert!(validate_action_platform(&state, "AddLayeredPackage").is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // query_action / describe — the same fences as preview and execute
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn query_action_refuses_an_action_the_host_family_cannot_run() {
+        // `preview` and `execute` both call `validate_action_platform`;
+        // `query_action` reached `build_action_spec` and ran the command. On a
+        // Debian host that meant shelling out to `rpm-ostree`, so the caller
+        // got a "No such file or directory" execution error instead of the
+        // clean refusal the other two paths give.
+        let dir = tempdir().unwrap();
+        let mut state = test_state(&dir);
+        state.host_distro = Some(sysknife_core::distro::DistroId::Ubuntu {
+            major: 24,
+            minor: 4,
+        });
+
+        let resps = exchange(
+            state,
+            CallerRole::Observer,
+            vec![json!({
+                "type": "query_action",
+                "request_id": "r1",
+                "action_name": "GetLayeredPackages",
+                "params": {}
+            })],
+            1,
+        )
+        .await;
+
+        assert_eq!(resps[0]["type"], "error_response");
+        assert_eq!(resps[0]["category"], "unsupported_platform");
+    }
+
+    #[tokio::test]
+    async fn describe_refuses_an_action_the_caller_is_not_allowed_to_run() {
+        // Describe renders the exact command an action would run. It had no
+        // authorization check at all, so an Observer could enumerate the argv
+        // of every privileged action on the box.
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+
+        let resps = exchange(
+            state,
+            CallerRole::Observer,
+            vec![json!({
+                "type": "describe",
+                "request_id": "r1",
+                "action_name": "GrantSudoAccess",
+                "params": {"username": "alice", "commands": "/usr/bin/ls", "nopasswd": false}
+            })],
+            1,
+        )
+        .await;
+
+        assert_eq!(resps[0]["type"], "error_response");
+        assert_eq!(resps[0]["category"], "authorization_failure");
+    }
+
+    #[tokio::test]
+    async fn describe_refuses_an_action_the_host_family_cannot_run() {
+        let dir = tempdir().unwrap();
+        let mut state = test_state(&dir);
+        state.host_distro = Some(sysknife_core::distro::DistroId::Ubuntu {
+            major: 24,
+            minor: 4,
+        });
+
+        let resps = exchange(
+            state,
+            CallerRole::Admin,
+            vec![json!({
+                "type": "describe",
+                "request_id": "r1",
+                "action_name": "AddLayeredPackage",
+                "params": {"package": "vim"}
+            })],
+            1,
+        )
+        .await;
+
+        assert_eq!(resps[0]["type"], "error_response");
+        assert_eq!(resps[0]["category"], "unsupported_platform");
+    }
+
+    #[tokio::test]
+    async fn describe_still_answers_for_an_allowed_action() {
+        // The fences must not turn describe into a privileged-only call: a
+        // read-only action stays describable by an Observer.
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+
+        let resps = exchange(
+            state,
+            CallerRole::Observer,
+            vec![json!({
+                "type": "describe",
+                "request_id": "r1",
+                "action_name": "GetDiskUsage",
+                "params": {}
+            })],
+            1,
+        )
+        .await;
+
+        assert_eq!(resps[0]["type"], "describe_response");
     }
 
     // ------------------------------------------------------------------
@@ -3921,6 +4117,11 @@ mod tests {
             }
             async fn fetch_chain_rows(&self) -> Result<Vec<ChainRow>, TransactionStoreError> {
                 self.0.fetch_chain_rows().await
+            }
+            async fn fetch_event_rows(
+                &self,
+            ) -> Result<Vec<crate::audit_chain::EventRow>, TransactionStoreError> {
+                self.0.fetch_event_rows().await
             }
             async fn verify_audit_chain(
                 &self,

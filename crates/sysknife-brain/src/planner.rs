@@ -490,17 +490,19 @@ pub enum PlanningError {
     #[error("planner ended without proposing a plan")]
     NoPlanProposed,
 
+    /// Carries the provider failure structurally.
+    ///
+    /// This used to be a `String` built from `ProviderError::to_string()`,
+    /// which threw away a classification the provider layer had already made.
+    /// Callers that needed it back — the shell's error mapper — recovered it by
+    /// searching the rendered message for `"429"` and `"http"`, so an edit to a
+    /// `#[error(...)]` format string in `provider.rs` could silently reclassify
+    /// a rate limit as a parse error.
     #[error("provider error: {0}")]
-    Provider(String),
+    Provider(#[from] ProviderError),
 
     #[error("invalid plan output: {0}")]
     InvalidPlanOutput(String),
-}
-
-impl From<ProviderError> for PlanningError {
-    fn from(e: ProviderError) -> Self {
-        Self::Provider(e.to_string())
-    }
 }
 
 impl From<PlanValidationError> for PlanningError {

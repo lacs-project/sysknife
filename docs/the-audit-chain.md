@@ -24,8 +24,10 @@ the daemon made about one action, at the moment it made it:
 | `approval_id` | Which signed approval receipt authorized execution, if any |
 | `warnings_json` | Warnings surfaced to the user before approval |
 | `created_at` | When the row was written |
+| `caller_role` | Which privilege tier the daemon resolved for the connection that asked |
+| `event_tip` | The approval-event chain tip at insert time (see below) |
 
-These eleven fields are serialized into a stable, self-describing byte
+These thirteen fields are serialized into a stable, self-describing byte
 string (tag + value pairs, with a prefix-free escape scheme so no field's
 content can be crafted to alias another field's boundary), then signed. The
 resulting signature *is* the row's `chain_hash` — there is no separate hash
@@ -36,6 +38,19 @@ The mutable `status` column (queued → running → succeeded/failed/rolled
 back) is **not** part of the signed content. The chain protects the
 *authorization decision* captured at insert time, not the live execution
 state — a scope decision, not an oversight (see [Limits](#limits-and-honest-scope)).
+```
+
+```admonish info title="Rows written before v0.2.13"
+`caller_role` and `event_tip` were added in v0.2.13. Rows written by an
+earlier daemon were signed over an encoding that has no such fields, so each
+row carries a `chain_version` column and verification reproduces the exact
+encoding that row was signed under. An upgraded daemon appends v2 rows onto
+an existing v1 chain and the whole chain still verifies in one walk — an
+upgrade never makes a healthy audit log look tampered.
+
+The version is not a hiding place: relabelling a v2 row as v1 to erase its
+`caller_role` makes verification re-encode it without the identity fields, so
+the stored signature no longer verifies and the row reports as broken.
 ```
 
 ## The hash chain: each entry links to the one before it
@@ -94,6 +109,42 @@ Two more properties fall out of the implementation:
   always produce the identical signature. This makes chain verification
   reproducible without any randomness or nonce bookkeeping on the verifier's
   side.
+
+## The approval-event chain
+
+The transaction chain records what the daemon *authorized*. It says nothing
+about whether a human then approved it, whether that approval was spent, or
+whether it was retracted — those lifecycle facts used to live only in
+`transaction_approvals`, a plain mutable table. Deleting a row from it left
+`sysknife audit verify` reporting `Intact`, which made the record that a
+privileged action had been approved the one part of the trail an attacker
+could erase without leaving a mark.
+
+Approval events are now their own forward Ed25519 chain, under their own
+domain tag (`sysknife-audit-event-v1`), with one row per state change:
+
+| `kind` | When it is written |
+|---|---|
+| `approval_granted` | A receipt was minted for a queued transaction |
+| `approval_consumed` | A receipt was spent to move a transaction to `Running` |
+| `approval_revoked` | An undelivered receipt was retracted before it could be spent |
+
+Each event and the state change it records commit in the same database
+transaction, so a state change without its event (or the reverse) is not a
+reachable state. Deleting an event from the middle of the chain breaks the
+next event's `prev_chain_hash`, exactly as it does for transaction rows.
+
+**Cross-chain binding.** Deleting events from the *end* of the event chain
+would leave a self-consistent remainder, the same tail-truncation blind spot
+the transaction chain has. That is what `event_tip` is for: every transaction
+row signs the event-chain tip as of its insert. Because signed checkpoints
+anchor the *transaction* chain, and transaction rows commit to event tips,
+anchoring transitively covers the event chain. `sysknife audit verify`
+reports the binding check alongside the two chain walks.
+
+The residual exposure is the same bounded tail every append-only log has:
+events appended after the most recent transaction row are not yet bound by
+anything, until the next row is written.
 
 ## Signed checkpoints: closing the truncation gap
 
@@ -163,10 +214,16 @@ Anchor and check signed checkpoints against an external database:
 SYSKNIFE_CHECKPOINT_DB="postgres://user@host/checkpoints" sysknife audit checkpoint
 ```
 
+Three checks run: the transaction chain, the approval-event chain, and the
+binding between them. All three are reported, and any one of them can fail the
+command — a clean transaction chain must never mask a tampered approval trail.
+
 **A clean run looks like:**
 
 ```text
 OK: 4128 row(s) verified in sqlite
+OK: 512 approval event(s) verified
+OK: 4128 row(s) still match the approval event they committed to
 ```
 
 **A detected tamper looks like:**
@@ -183,11 +240,26 @@ signature mismatch — same report shape, different `expected`/`actual`
 pair. Either failure is reported at the *first* broken row; rows before it
 are still proven intact.
 
+**Deleted approval events look like:**
+
+```text
+OK: 4128 row(s) verified in sqlite
+OK: 300 approval event(s) verified
+BROKEN: transaction seq=4128 committed to approval event 71ac…9d2f, which is
+no longer in the event chain — approval events were deleted from the end of
+the chain
+```
+
+Note that the event chain itself still walks clean there: truncating its tail
+leaves a self-consistent remainder. The binding is what catches it.
+
 Exit codes matter for automation: `0` intact, `1` broken (a real tamper was
 detected), `2` cannot verify (missing key file, unreadable database, wrong
 key generation loaded). The 1-vs-2 split is deliberate — a CI job that only
 checks for a nonzero exit code must not silently treat "I couldn't check"
-the same as "I checked and it's fine."
+the same as "I checked and it's fine." When the three checks disagree, the
+worst wins, and `1` outranks `2`: if anything is provably broken, saying
+"could not verify" would understate what is known.
 
 ## Limits and honest scope {#limits-and-honest-scope}
 
@@ -204,7 +276,9 @@ it does and does not prove:
   does not mean "the action's final status is trustworthy."
 - **Truncation needs an external sink to be detectable at all.** Without a
   checkpoint anchored off-host, deleting the tail of the chain is invisible
-  to `sysknife audit verify` by construction.
+  to `sysknife audit verify` by construction. The same applies to approval
+  events appended after the last transaction row: nothing has committed to
+  them yet.
 - **Key rotation is manual today.** Every row carries a `key_id` (currently
   always `"v1"`); rotation means regenerating the chain from scratch until
   a planned epoch-aware rotation flow lands.

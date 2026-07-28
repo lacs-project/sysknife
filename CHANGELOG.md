@@ -8,6 +8,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [0.2.13] — 2026-07-27
+
+The last item v0.2.12 deferred: the audit chain could say what was authorised,
+but not who asked for it, and nothing signed recorded that an approval ever
+happened.
+
+### Added
+
+- **`caller_role` is now part of the signed chain content.** Every transaction
+  row commits to the privilege tier the daemon resolved for the connection that
+  requested the action (from `SO_PEERCRED`, or the vsock token — never from the
+  request body). "Which role asked for this" is the first question any audit of
+  a privileged action starts with, and until now no signed record answered it.
+- **An approval-event chain.** `approval_granted`, `approval_consumed` and
+  `approval_revoked` are recorded in a second forward Ed25519 chain under its
+  own domain tag, each event committing in the same database transaction as the
+  state change it records. Previously these lifecycle facts lived only in
+  `transaction_approvals`, a plain mutable table: deleting a row left
+  `sysknife audit verify` reporting `Intact`, so the record that a privileged
+  action had been approved was the one part of the trail that could be erased
+  without leaving a mark.
+- **Cross-chain binding.** Each transaction row signs the approval-event chain
+  tip as of its insert. Deleting events from the *end* of the event chain
+  leaves a self-consistent remainder that the chain walk cannot see; the
+  committed tip catches it. Because checkpoints anchor the transaction chain,
+  this extends off-host anchoring to the event chain without a second sink.
+- `sysknife audit verify` reports all three checks and fails on any of them.
+  A detected tamper (exit `1`) outranks an inconclusive check (exit `2`), so a
+  broken chain is never reported as "could not verify". The MCP
+  `sysknife_audit_verify` report gains `events_checked`,
+  `approval_events_status` and `binding_status`, and its top-level `status` is
+  now the worst of the three rather than the transaction chain alone.
+
+### Changed
+
+- **Schema version 2, with a real migration.** Rows carry a `chain_version`
+  column and verification reproduces the exact encoding each row was signed
+  under, so a chain written by v0.2.12 or earlier still verifies after the
+  upgrade and new rows append onto it in the same walk. Backfilling the new
+  fields instead would have changed every historical message and reported the
+  whole chain as broken — an upgrade that looks identical to a compromise. The
+  SQLite backend gained an ordered migration list mirroring the Postgres one;
+  its previous `CREATE TABLE IF NOT EXISTS` batch had no way to express "add a
+  column to an existing database".
+- `CallerRole::as_str` replaces `format!("{role:?}")` for anything that is
+  written down. `Debug` carries no stability promise, and this string is inside
+  a signature.
+- `TransactionStore::revoke_unconsumed_approval` and
+  `claim_approved_for_execution` now require the signing key and refuse on a
+  read-only store, since both append to the event chain.
+
+- `PlanningError::Provider` carries a `ProviderError` instead of its rendered
+  string. The shell recovered the classification by searching that string for
+  `"429"` and `"http"`, so editing a `#[error(...)]` format string in
+  `provider.rs` could silently reclassify a rate limit as a parse error. The
+  three planner tests that all asserted `Provider(_)` now assert the variant.
+- New `TransactionId` and `ApprovalReceipt` newtypes.
+  `DaemonClient::execute(transaction_id, action_name, params, approval_receipt, …)`
+  took three bare `&str` in a row, so transposing two of them compiled and
+  surfaced at runtime as a stale-approval error — which reads like an expiry,
+  not a call-site bug. `ApprovalReceipt` is a bearer credential, so its `Debug`
+  is redacted and it has no `Display`; the one place it is meant to be printed
+  calls `as_str()` explicitly. The MCP wire structs keep plain strings so the
+  published JSON Schema is unchanged.
+
+- Tests for three paths that had none: the MCP server over real stdio JSON-RPC
+  (`initialize` → `tools/list` against the spawned binary — everything else
+  called the handlers directly and skipped the wire), the approval gate
+  `run_intent` actually runs, and `PostgresCheckpointSink` against a live
+  database. The last one immediately caught a real bug: `fetch_chain_rows_from_pool`
+  still selected the pre-migration column list, so every Postgres chain read
+  would have failed with "no column found for name: chain_version". Both
+  backends now build that list from one constant.
+
+### Fixed
+
+- **The MCP server introduced itself as `rmcp`.** `Implementation::from_build_env()`
+  resolves `CARGO_PKG_*` at the crate where the macro expands, which is `rmcp`,
+  so `initialize` reported the name and version of the transport library rather
+  than of SysKnife — the string clients and registry listings display.
+- **`describe` had no authorization check.** It renders the exact command an
+  action would run, so any caller could enumerate the argv of every privileged
+  action on the host. It now applies the same authorization gate and platform
+  fence as `preview`; an unknown action is still a `validation_failure`.
+- **`query_action` had no platform fence.** A Fedora-only read-only action
+  reached the executor on a Debian host and failed as "rpm-ostree: No such file
+  or directory" instead of the clean `unsupported_platform` refusal `preview`
+  and `execute` return.
+- **`[policy.risk_overrides]` no longer leaks into the platform fence.** Whether
+  an action mutates the system is a property of the action; the fence now reads
+  the compile-time baseline. Previously, raising a read-only action's required
+  role also made that read fail whenever the host distro could not be detected.
+
 ## [0.2.12] — 2026-07-27
 
 Follow-up to the v0.2.11 review sweep: the findings that release deferred.

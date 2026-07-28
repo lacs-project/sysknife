@@ -147,9 +147,16 @@ writes for every executed action.
 
 #### `sysknife audit verify`
 
-Verify the audit chain. Exits `0` if intact, `1` if any row is broken
-(tampered), `2` if the chain cannot be verified (missing key, unreadable
-database).
+Verify the audit trail: the transaction chain, the approval-event chain, and
+the binding between them. All three are reported and any one can fail the
+command. Exits `0` if everything is intact, `1` if any check finds tampering,
+`2` if a check cannot run at all (missing key, unreadable database). When the
+checks disagree the worst wins, and `1` outranks `2` — if something is provably
+broken, "could not verify" would understate it.
+
+With `--json` the report is an object with a top-level `status` plus a `chain`,
+`approval_events` and `binding` section, so a pipeline can act on which part
+failed.
 
 ```sh
 sysknife audit verify

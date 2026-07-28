@@ -30,17 +30,17 @@ use std::time::Duration;
 use serde_json::Value;
 use sysknife_brain::planner::PlanningError;
 use sysknife_brain::state_client::{CuratedState, StateClient};
-use sysknife_types::{PreviewEnvelope, ResultEnvelope};
+use sysknife_types::{ApprovalReceipt, PreviewEnvelope, ResultEnvelope, TransactionId};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedPreview {
-    pub transaction_id: String,
+    pub transaction_id: TransactionId,
     pub preview: PreviewEnvelope,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ApprovalDetails {
-    pub transaction_id: String,
+    pub transaction_id: TransactionId,
     pub action_name: String,
     pub preview: PreviewEnvelope,
 }
@@ -590,7 +590,7 @@ impl DaemonClient {
                         )
                     })?;
                 Ok(PreparedPreview {
-                    transaction_id: transaction_id.to_string(),
+                    transaction_id: TransactionId::new(transaction_id),
                     preview: envelope,
                 })
             }
@@ -609,7 +609,7 @@ impl DaemonClient {
     /// Fetch the daemon-authoritative preview before asking for approval.
     pub async fn approval_details(
         &self,
-        transaction_id: &str,
+        transaction_id: &TransactionId,
     ) -> Result<ApprovalDetails, CliError> {
         let mut stream = self.connect_async().await?;
         let req = serde_json::to_vec(&serde_json::json!({
@@ -650,7 +650,7 @@ impl DaemonClient {
                         })
                 };
                 Ok(ApprovalDetails {
-                    transaction_id: required("transaction_id")?,
+                    transaction_id: TransactionId::new(required("transaction_id")?),
                     action_name: required("action_name")?,
                     preview: serde_json::from_value(resp["preview"].clone()).map_err(|e| {
                         CliError::ConfigOrDaemon(format!("parse approval preview: {e}"))
@@ -670,7 +670,10 @@ impl DaemonClient {
     }
 
     /// Approve one exact preview and receive its one-time execution receipt.
-    pub async fn approve(&self, transaction_id: &str) -> Result<String, CliError> {
+    pub async fn approve(
+        &self,
+        transaction_id: &TransactionId,
+    ) -> Result<ApprovalReceipt, CliError> {
         let mut stream = self.connect_async().await?;
         let req = serde_json::to_vec(&serde_json::json!({
             "type": "approve",
@@ -700,7 +703,7 @@ impl DaemonClient {
             Some("approval_response") => resp["approval_receipt"]
                 .as_str()
                 .filter(|receipt| !receipt.is_empty())
-                .map(str::to_string)
+                .map(ApprovalReceipt::new)
                 .ok_or_else(|| {
                     CliError::ConfigOrDaemon(
                         "approval_response missing approval_receipt".to_string(),
@@ -775,10 +778,10 @@ impl DaemonClient {
     /// progress line with ANSI escapes already stripped.
     pub async fn execute(
         &self,
-        transaction_id: &str,
+        transaction_id: &TransactionId,
         action_name: &str,
         params: &Value,
-        approval_receipt: &str,
+        approval_receipt: &ApprovalReceipt,
         mut on_line: impl FnMut(&str),
     ) -> Result<ResultEnvelope, CliError> {
         let mut stream = self.connect_async().await?;
@@ -789,7 +792,7 @@ impl DaemonClient {
             "transaction_id": transaction_id,
             "action_name": action_name,
             "params": params,
-            "approval_receipt": approval_receipt,
+            "approval_receipt": approval_receipt.as_str(),
         }))
         .map_err(|e| CliError::ConfigOrDaemon(format!("serialize: {e}")))?;
 
@@ -1055,7 +1058,7 @@ mod tests {
         mock.await.unwrap();
         let _ = tokio::fs::remove_file(&socket_path).await;
 
-        assert_eq!(envelope.transaction_id, "tx-abc123");
+        assert_eq!(envelope.transaction_id.as_str(), "tx-abc123");
         assert_eq!(envelope.preview.request_hash.as_str(), "abcdef1234");
         assert_eq!(envelope.preview.summary, "Collect disk usage statistics");
         assert_eq!(envelope.preview.risk_level, RiskLevel::Low);
@@ -1086,13 +1089,13 @@ mod tests {
         });
 
         let receipt = DaemonClient::new(socket_path.clone())
-            .approve("tx-abc123")
+            .approve(&TransactionId::new("tx-abc123"))
             .await
             .unwrap();
 
         mock.await.unwrap();
         let _ = tokio::fs::remove_file(&socket_path).await;
-        assert_eq!(receipt, "receipt-abc");
+        assert_eq!(receipt.as_str(), "receipt-abc");
     }
 
     #[tokio::test]
@@ -1129,13 +1132,13 @@ mod tests {
         });
 
         let details = DaemonClient::new(socket_path.clone())
-            .approval_details("tx-abc123")
+            .approval_details(&TransactionId::new("tx-abc123"))
             .await
             .unwrap();
         mock.await.unwrap();
         let _ = tokio::fs::remove_file(&socket_path).await;
 
-        assert_eq!(details.transaction_id, "tx-abc123");
+        assert_eq!(details.transaction_id.as_str(), "tx-abc123");
         assert_eq!(details.action_name, "AptInstall");
         assert_eq!(details.preview.summary, "Install vim");
         assert_eq!(details.preview.proposed_change["package"], "vim");
@@ -1199,10 +1202,10 @@ mod tests {
         let mut lines: Vec<String> = Vec::new();
         let result = client
             .execute(
-                "tx-abc123",
+                &TransactionId::new("tx-abc123"),
                 "GetDiskUsage",
                 &serde_json::json!({}),
-                "receipt-abc",
+                &ApprovalReceipt::new("receipt-abc"),
                 |line| lines.push(line.to_owned()),
             )
             .await
@@ -1413,10 +1416,10 @@ mod tests {
         let mut lines: Vec<String> = Vec::new();
         let err = client
             .execute(
-                "tx-xyz",
+                &TransactionId::new("tx-xyz"),
                 "InstallPackage",
                 &serde_json::json!({"name": "vim"}),
-                "receipt-abc",
+                &ApprovalReceipt::new("receipt-abc"),
                 |line| lines.push(line.to_owned()),
             )
             .await
@@ -1468,10 +1471,10 @@ mod tests {
         let client = DaemonClient::new(socket_path.clone());
         let err = client
             .execute(
-                "tx-xyz",
+                &TransactionId::new("tx-xyz"),
                 "InstallPackage",
                 &serde_json::json!({"name": "vim"}),
-                "receipt-abc",
+                &ApprovalReceipt::new("receipt-abc"),
                 |_line| {},
             )
             .await

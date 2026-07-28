@@ -35,7 +35,10 @@ use subtle::ConstantTimeEq;
 use sysknife_types::{JobState, PreviewEnvelope, TransactionRecord};
 use uuid::Uuid;
 
-use crate::audit_chain::{AuditKey, ChainContent, ChainRow, VerifyOutcome, CURRENT_KEY_ID};
+use crate::audit_chain::{
+    AuditEventKind, AuditKey, AuditVerification, ChainContent, ChainIdentity, ChainRow,
+    EventContent, EventRow, VerifyOutcome, CHAIN_VERSION_CURRENT, CURRENT_KEY_ID,
+};
 use crate::audit_watermark::emit_chain_tip_watermark;
 use crate::store::AuditStore;
 use crate::transactions::{
@@ -44,6 +47,17 @@ use crate::transactions::{
 };
 
 const MIGRATION_LOCK_ID: i64 = 0x5359_534b_4e49_4645;
+
+/// Column list every `ChainRow` read shares, kept next to `row_to_chain_row`.
+///
+/// The two read paths each spelled the list out. Adding the caller-identity
+/// columns updated the mapper and one of the two queries, and the miss showed
+/// up only as a runtime "no column found for name: chain_version" from the
+/// live-Postgres test — the unit tests, which never touch this SQL, stayed
+/// green. Mirrors `CHAIN_ROW_COLUMNS` in `transactions.rs`.
+const CHAIN_ROW_COLUMNS: &str = "seq, key_id, transaction_id, request_id, request_hash, \
+     action_name, risk_level, summary, approval_id, warnings_json, \
+     created_at, prev_chain_hash, chain_hash, chain_version, caller_role, event_tip";
 
 struct Migration {
     version: i64,
@@ -89,7 +103,33 @@ const MIGRATIONS: &[Migration] = &[Migration {
         "#,
         "CREATE INDEX IF NOT EXISTS transactions_seq_idx ON transactions(seq)",
     ],
-}];
+},
+    // Mirrors SQLITE_MIGRATIONS v2 in `transactions.rs`. The columns are
+    // nullable with a legacy default because rows written by an earlier binary
+    // were signed over an encoding without them — see `ChainIdentity`.
+    Migration {
+        version: 2,
+        name: "caller_identity_and_approval_events",
+        statements: &[
+            "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS chain_version BIGINT NOT NULL DEFAULT 1",
+            "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS caller_role TEXT",
+            "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS event_tip TEXT",
+            r#"
+            CREATE TABLE IF NOT EXISTS audit_events (
+                seq BIGINT PRIMARY KEY,
+                key_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                transaction_id TEXT NOT NULL,
+                receipt_digest TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                chain_hash TEXT NOT NULL,
+                prev_chain_hash TEXT NOT NULL DEFAULT ''
+            )
+            "#,
+            "CREATE INDEX IF NOT EXISTS audit_events_transaction_idx ON audit_events(transaction_id)",
+        ],
+    },
+];
 
 /// Configuration for the Postgres backend. Built by `main.rs` from
 /// `[storage]` in `config.toml`.
@@ -163,18 +203,34 @@ impl PostgresStore {
         Ok(store)
     }
 
-    /// Verify an existing Postgres chain with only the exported public key.
-    /// This path performs no migrations and never loads the signing key.
-    pub async fn verify_with_pubkey(
+    /// Verify an existing Postgres chain — transaction chain, approval-event
+    /// chain, and the binding between them — with only the exported public
+    /// key. This path performs no migrations and never loads the signing key.
+    pub async fn verify_all_with_pubkey(
         config: &PostgresConfig,
         verifying_key_hex: &str,
-    ) -> Result<VerifyOutcome, TransactionStoreError> {
+    ) -> Result<AuditVerification, TransactionStoreError> {
         let pool = Self::connect_pool(config).await?;
-        let rows = fetch_chain_rows_from_pool(&pool).await?;
-        Ok(crate::audit_chain::verify_chain_with_pubkey(
+        let tx_rows = fetch_chain_rows_from_pool(&pool).await?;
+        // A chain written before the migration has no `audit_events` table.
+        // That is an absent feature, not a missing verification: report zero
+        // events rather than failing the whole verify.
+        let event_rows = fetch_event_rows_from_pool(&pool).await.unwrap_or_default();
+        Ok(crate::audit_chain::verify_all_with_pubkey(
             verifying_key_hex,
-            &rows,
+            &tx_rows,
+            &event_rows,
         ))
+    }
+
+    /// All three checks with the daemon's key.
+    pub async fn verify_all(
+        &self,
+        key: &AuditKey,
+    ) -> Result<AuditVerification, TransactionStoreError> {
+        let tx_rows = fetch_chain_rows_from_pool(&self.pool).await?;
+        let event_rows = fetch_event_rows_from_pool(&self.pool).await?;
+        Ok(crate::audit_chain::verify_all(key, &tx_rows, &event_rows))
     }
 
     /// Apply pending schema migrations atomically. The advisory transaction
@@ -435,6 +491,9 @@ impl AuditStore for PostgresStore {
             )));
         }
         let queued = serialize(&JobState::Queued)?;
+        // Approval row and chained event commit together — an approval absent
+        // from the event chain is exactly what that chain exists to prevent.
+        let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
         let result = sqlx_core::query::query(
             sqlx_core::sql_str::AssertSqlSafe(format!(
                 "INSERT INTO transaction_approvals \
@@ -446,13 +505,24 @@ impl AuditStore for PostgresStore {
                  ON CONFLICT (transaction_id) DO NOTHING"
             )),
         )
-        .bind(receipt_digest)
+        .bind(&receipt_digest)
         .bind(now_iso())
         .bind(transaction_id)
         .bind(&queued)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(map_sqlx_err)?;
+        if result.rows_affected() > 0 {
+            append_event(
+                &mut tx,
+                &self.audit_key,
+                AuditEventKind::ApprovalGranted,
+                transaction_id,
+                &receipt_digest,
+            )
+            .await?;
+        }
+        tx.commit().await.map_err(map_sqlx_err)?;
         Ok((result.rows_affected() > 0).then_some(receipt))
     }
 
@@ -460,14 +530,41 @@ impl AuditStore for PostgresStore {
         &self,
         transaction_id: &str,
     ) -> Result<bool, TransactionStoreError> {
+        let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
+        // Read the digest before the DELETE: the event names which receipt was
+        // retracted, and after the delete there is nothing left to name.
+        let digest: Option<String> = sqlx_core::query_scalar::query_scalar(
+            "SELECT receipt_digest FROM transaction_approvals \
+             WHERE transaction_id = $1 AND consumed_at IS NULL",
+        )
+        .bind(transaction_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_sqlx_err)?;
         let result = sqlx_core::query::query(
             "DELETE FROM transaction_approvals \
              WHERE transaction_id = $1 AND consumed_at IS NULL",
         )
         .bind(transaction_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(map_sqlx_err)?;
+        if result.rows_affected() > 0 {
+            let digest = digest.ok_or_else(|| {
+                TransactionStoreError::DatabaseInvariant(format!(
+                    "revoked an approval for {transaction_id} that had no receipt digest"
+                ))
+            })?;
+            append_event(
+                &mut tx,
+                &self.audit_key,
+                AuditEventKind::ApprovalRevoked,
+                transaction_id,
+                &digest,
+            )
+            .await?;
+        }
+        tx.commit().await.map_err(map_sqlx_err)?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -510,6 +607,14 @@ impl AuditStore for PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(map_sqlx_err)?;
+            append_event(
+                &mut tx,
+                &self.audit_key,
+                AuditEventKind::ApprovalConsumed,
+                transaction_id,
+                receipt_digest,
+            )
+            .await?;
         }
         tx.commit().await.map_err(map_sqlx_err)?;
         Ok(result.rows_affected() > 0)
@@ -665,17 +770,18 @@ impl AuditStore for PostgresStore {
         &self,
         transaction_id: &str,
     ) -> Result<Option<ChainRow>, TransactionStoreError> {
-        let row = sqlx_core::query::query(
-            "SELECT seq, key_id, transaction_id, request_id, request_hash, \
-                    action_name, risk_level, summary, approval_id, warnings_json, \
-                    created_at, prev_chain_hash, chain_hash \
-             FROM transactions WHERE transaction_id = $1",
-        )
+        let row = sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(format!(
+            "SELECT {CHAIN_ROW_COLUMNS} FROM transactions WHERE transaction_id = $1"
+        )))
         .bind(transaction_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(map_sqlx_err)?;
         row.map(row_to_chain_row).transpose()
+    }
+
+    async fn fetch_event_rows(&self) -> Result<Vec<EventRow>, TransactionStoreError> {
+        fetch_event_rows_from_pool(&self.pool).await
     }
 
     async fn fetch_chain_rows(&self) -> Result<Vec<ChainRow>, TransactionStoreError> {
@@ -692,16 +798,81 @@ impl AuditStore for PostgresStore {
 }
 
 async fn fetch_chain_rows_from_pool(pool: &PgPool) -> Result<Vec<ChainRow>, TransactionStoreError> {
-    let rows = sqlx_core::query::query(
-        "SELECT seq, key_id, transaction_id, request_id, request_hash, \
-                    action_name, risk_level, summary, approval_id, warnings_json, \
-                    created_at, prev_chain_hash, chain_hash \
-             FROM transactions ORDER BY seq ASC",
-    )
+    let rows = sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(format!(
+        "SELECT {CHAIN_ROW_COLUMNS} FROM transactions ORDER BY seq ASC"
+    )))
     .fetch_all(pool)
     .await
     .map_err(map_sqlx_err)?;
     rows.into_iter().map(row_to_chain_row).collect()
+}
+
+/// Fetch every approval event in seq order.
+async fn fetch_event_rows_from_pool(pool: &PgPool) -> Result<Vec<EventRow>, TransactionStoreError> {
+    let rows = sqlx_core::query::query(
+        "SELECT seq, key_id, kind, transaction_id, receipt_digest, \
+                created_at, prev_chain_hash, chain_hash \
+         FROM audit_events ORDER BY seq ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(map_sqlx_err)?;
+    rows.into_iter().map(row_to_event_row).collect()
+}
+
+/// Append one signed approval event inside the caller's transaction.
+///
+/// `FOR UPDATE` on the current tip serialises concurrent appends the same way
+/// `insert_transaction` serialises on the transaction chain tip; without it two
+/// approvals could compute the same `seq` and collide on the primary key.
+async fn append_event(
+    tx: &mut sqlx_core::transaction::Transaction<'_, sqlx_postgres::Postgres>,
+    key: &AuditKey,
+    kind: AuditEventKind,
+    transaction_id: &str,
+    receipt_digest: &str,
+) -> Result<(), TransactionStoreError> {
+    let prev: Option<(i64, String)> = sqlx_core::query_as::query_as(
+        "SELECT seq, chain_hash FROM audit_events ORDER BY seq DESC LIMIT 1 FOR UPDATE",
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_sqlx_err)?;
+    let (seq, prev_chain_hash) = match prev {
+        Some((s, h)) => ((s as u64) + 1, h),
+        None => (1, String::new()),
+    };
+    let created_at = now_iso();
+    let key_id = CURRENT_KEY_ID.to_string();
+    let chain_hash = key.event_hash(
+        &EventContent {
+            seq,
+            key_id: &key_id,
+            kind,
+            transaction_id,
+            receipt_digest,
+            created_at: &created_at,
+        },
+        &prev_chain_hash,
+    );
+    sqlx_core::query::query(
+        "INSERT INTO audit_events ( \
+            seq, key_id, kind, transaction_id, receipt_digest, \
+            created_at, chain_hash, prev_chain_hash \
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(seq as i64)
+    .bind(&key_id)
+    .bind(kind.as_str())
+    .bind(transaction_id)
+    .bind(receipt_digest)
+    .bind(&created_at)
+    .bind(&chain_hash)
+    .bind(&prev_chain_hash)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_sqlx_err)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -738,6 +909,16 @@ async fn insert_transaction(
         None => (1, String::new()),
     };
 
+    // Bind the row to the approval-event chain tip as of this insert. Read
+    // inside the same DB transaction as the seq allocation above.
+    let event_tip: String = sqlx_core::query_scalar::query_scalar(
+        "SELECT COALESCE((SELECT chain_hash FROM audit_events ORDER BY seq DESC LIMIT 1), '')",
+    )
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(map_sqlx_err)?;
+    let caller_role = transaction.caller_role.as_str();
+
     let chain_hash = key.chain_hash(
         &ChainContent {
             seq,
@@ -751,6 +932,10 @@ async fn insert_transaction(
             approval_id: approval_id.as_deref(),
             warnings_json: &warnings_json,
             created_at: &created_at,
+            identity: ChainIdentity::V2 {
+                caller_role,
+                event_tip: &event_tip,
+            },
         },
         &prev_chain_hash,
     );
@@ -759,8 +944,9 @@ async fn insert_transaction(
         "INSERT INTO transactions ( \
             transaction_id, request_id, request_hash, action_name, risk_level, \
             status, approval_id, summary, warnings_json, created_at, \
-            seq, key_id, chain_hash, prev_chain_hash \
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+            seq, key_id, chain_hash, prev_chain_hash, \
+            chain_version, caller_role, event_tip \
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
     )
     .bind(transaction_id)
     .bind(&transaction.request_id)
@@ -776,6 +962,9 @@ async fn insert_transaction(
     .bind(&key_id)
     .bind(&chain_hash)
     .bind(&prev_chain_hash)
+    .bind(i64::from(CHAIN_VERSION_CURRENT))
+    .bind(caller_role)
+    .bind(&event_tip)
     .execute(&mut **tx)
     .await
     .map_err(map_sqlx_err)?;
@@ -852,6 +1041,24 @@ fn row_to_chain_row(row: sqlx_postgres::PgRow) -> Result<ChainRow, TransactionSt
         summary: row.try_get("summary").map_err(map_sqlx_err)?,
         approval_id: row.try_get("approval_id").map_err(map_sqlx_err)?,
         warnings_json: row.try_get("warnings_json").map_err(map_sqlx_err)?,
+        created_at: row.try_get("created_at").map_err(map_sqlx_err)?,
+        prev_chain_hash: row.try_get("prev_chain_hash").map_err(map_sqlx_err)?,
+        chain_hash: row.try_get("chain_hash").map_err(map_sqlx_err)?,
+        chain_version: row
+            .try_get::<i64, _>("chain_version")
+            .map_err(map_sqlx_err)? as u32,
+        caller_role: row.try_get("caller_role").map_err(map_sqlx_err)?,
+        event_tip: row.try_get("event_tip").map_err(map_sqlx_err)?,
+    })
+}
+
+fn row_to_event_row(row: sqlx_postgres::PgRow) -> Result<EventRow, TransactionStoreError> {
+    Ok(EventRow {
+        seq: row.try_get::<i64, _>("seq").map_err(map_sqlx_err)? as u64,
+        key_id: row.try_get("key_id").map_err(map_sqlx_err)?,
+        kind: row.try_get("kind").map_err(map_sqlx_err)?,
+        transaction_id: row.try_get("transaction_id").map_err(map_sqlx_err)?,
+        receipt_digest: row.try_get("receipt_digest").map_err(map_sqlx_err)?,
         created_at: row.try_get("created_at").map_err(map_sqlx_err)?,
         prev_chain_hash: row.try_get("prev_chain_hash").map_err(map_sqlx_err)?,
         chain_hash: row.try_get("chain_hash").map_err(map_sqlx_err)?,

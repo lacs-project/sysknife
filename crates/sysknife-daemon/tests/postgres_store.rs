@@ -7,7 +7,7 @@ use sysknife_daemon::audit_chain::{AuditKey, VerifyOutcome};
 use sysknife_daemon::store::postgres::{PostgresConfig, PostgresStore};
 use sysknife_daemon::store::AuditStore;
 use sysknife_daemon::transactions::NewTransaction;
-use sysknife_types::{JobState, PreviewEnvelope, RequestHash, RiskLevel};
+use sysknife_types::{CallerRole, JobState, PreviewEnvelope, RequestHash, RiskLevel};
 
 fn test_url() -> Option<String> {
     std::env::var("SYSKNIFE_TEST_POSTGRES_URL").ok()
@@ -21,6 +21,7 @@ fn new_transaction() -> NewTransaction {
         risk_level: RiskLevel::Medium,
         summary: "Restart sshd".to_string(),
         warnings: vec!["brief connection interruption".to_string()],
+        caller_role: CallerRole::Dev,
     }
 }
 
@@ -57,6 +58,7 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
         .expect("connect to test database");
 
     for table in [
+        "audit_events",
         "transaction_approvals",
         "transaction_previews",
         "transactions",
@@ -124,17 +126,45 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
     .fetch_one(&admin)
     .await
     .expect("read schema migration version");
-    assert_eq!(migration, 1);
+    assert_eq!(
+        migration, 2,
+        "every migration in MIGRATIONS must have applied"
+    );
     assert!(store
         .get("legacy-row")
         .await
         .expect("load legacy row")
         .is_some());
 
-    sqlx_core::query::query("TRUNCATE transaction_approvals, transaction_previews, transactions")
-        .execute(&admin)
+    // Migration 2 must have added the caller-identity columns to a table that
+    // already existed — `CREATE TABLE IF NOT EXISTS` would have skipped it
+    // entirely — and left the pre-existing row on the legacy encoding rather
+    // than backfilling it into a shape its signature was never made over.
+    let legacy_chain_row = store
+        .fetch_chain_row("legacy-row")
         .await
-        .expect("clear legacy fixture before chain checks");
+        .expect("fetch legacy chain row")
+        .expect("legacy row survives the migration");
+    assert_eq!(legacy_chain_row.chain_version, 1);
+    assert_eq!(legacy_chain_row.caller_role, None);
+    assert_eq!(legacy_chain_row.event_tip, None);
+
+    let events_table_exists: bool =
+        sqlx_core::query_scalar::query_scalar("SELECT to_regclass('audit_events') IS NOT NULL")
+            .fetch_one(&admin)
+            .await
+            .expect("probe audit_events");
+    assert!(events_table_exists, "migration 2 creates audit_events");
+
+    // `audit_events` is truncated with the rest: its rows are signed with the
+    // audit key, and this test generates a fresh key per run, so events left
+    // behind by a previous run cannot verify under the new one.
+    sqlx_core::query::query(
+        "TRUNCATE audit_events, transaction_approvals, transaction_previews, transactions",
+    )
+    .execute(&admin)
+    .await
+    .expect("clear legacy fixture before chain checks");
 
     let recorded = store
         .record_previewed(new_transaction(), preview())
@@ -229,12 +259,23 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
         store.verify_audit_chain(&key).await.expect("verify chain"),
         VerifyOutcome::Intact { rows_checked: 1 }
     );
+    let pubkey_only = PostgresStore::verify_all_with_pubkey(&config, &key.verifying_key_hex())
+        .await
+        .expect("verify Postgres chain with public key only");
+    assert_eq!(pubkey_only.chain, VerifyOutcome::Intact { rows_checked: 1 });
+    // The flow above approved and then claimed this transaction, so the event
+    // chain holds exactly those two events — and the auditor path, holding only
+    // the public key, can verify them.
     assert_eq!(
-        PostgresStore::verify_with_pubkey(&config, &key.verifying_key_hex())
-            .await
-            .expect("verify Postgres chain with public key only"),
-        VerifyOutcome::Intact { rows_checked: 1 }
+        pubkey_only.events,
+        VerifyOutcome::Intact { rows_checked: 2 }
     );
+    let events = store.fetch_event_rows().await.expect("fetch events");
+    assert_eq!(
+        events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
+        vec!["approval_granted", "approval_consumed"]
+    );
+    assert_eq!(pubkey_only.exit_code(), 0);
 
     // cancel_queued success path on Postgres: a fresh, never-claimed Queued
     // transaction must cancel (return true) and flip to Canceled. Placed after
@@ -265,16 +306,131 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
             .fetch_one(&admin)
             .await
             .expect("count migrations");
-    assert_eq!(migration_count, 1);
+    // Idempotence: reconnecting re-runs `initialize`, which must not record a
+    // migration a second time.
+    assert_eq!(migration_count, 2);
 
-    let migration_row =
-        sqlx_core::query::query("SELECT version, name FROM schema_migrations WHERE version = 1")
-            .fetch_one(&admin)
-            .await
-            .expect("load migration metadata");
-    assert_eq!(migration_row.try_get::<i64, _>("version").unwrap(), 1);
-    assert_eq!(
-        migration_row.try_get::<String, _>("name").unwrap(),
-        "initial_audit_schema"
+    for (version, name) in [
+        (1_i64, "initial_audit_schema"),
+        (2, "caller_identity_and_approval_events"),
+    ] {
+        let migration_row = sqlx_core::query::query(
+            "SELECT version, name FROM schema_migrations WHERE version = $1",
+        )
+        .bind(version)
+        .fetch_one(&admin)
+        .await
+        .expect("load migration metadata");
+        assert_eq!(migration_row.try_get::<i64, _>("version").unwrap(), version);
+        assert_eq!(migration_row.try_get::<String, _>("name").unwrap(), name);
+    }
+}
+
+/// The `PostgresCheckpointSink` round-trip, against a live database.
+///
+/// Every other checkpoint test runs against `InMemoryCheckpointSink`, which
+/// shares no code with the Postgres implementation: not the `to_regclass`
+/// bootstrap probe, not the `i64`/`u64` seq casts, not the column mapping. The
+/// external anchor is the control that makes tail truncation detectable at
+/// all, so "it works in memory" is the wrong thing to be confident about.
+///
+/// Runs in its own schema. `nextest` executes each test in a separate process
+/// and in parallel, so two destructive tests sharing `public` would race — the
+/// first version of this test tore down the other test's tables mid-run.
+#[tokio::test]
+async fn postgres_checkpoint_sink_round_trips_and_detects_truncation() {
+    use sysknife_daemon::checkpoint_sink::{
+        anchor_once, AnchorOutcome, CheckpointSink, PostgresCheckpointSink,
+    };
+
+    const SCHEMA: &str = "checkpoint_sink_test";
+
+    let Some(url) = test_url() else {
+        eprintln!("SYSKNIFE_TEST_POSTGRES_URL is unset; live Postgres contract not requested");
+        return;
+    };
+    assert!(
+        url.contains("sysknife_test"),
+        "refusing destructive integration test against a non-test database"
     );
+
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(PgConnectOptions::from_str(&url).expect("valid test URL"))
+        .await
+        .expect("connect for schema setup");
+    for statement in [
+        format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE"),
+        format!("CREATE SCHEMA {SCHEMA}"),
+    ] {
+        sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(statement))
+            .execute(&admin)
+            .await
+            .expect("prepare isolated schema");
+    }
+
+    let separator = if url.contains('?') { '&' } else { '?' };
+    let scoped_url = format!("{url}{separator}options=-csearch_path%3D{SCHEMA}");
+
+    let key_dir = tempfile::tempdir().expect("create audit-key directory");
+    let key = AuditKey::load_or_generate(&key_dir.path().join("audit-key"))
+        .expect("generate test audit key");
+    let config = PostgresConfig {
+        url: scoped_url.clone(),
+        ..PostgresConfig::default()
+    };
+
+    let store = PostgresStore::connect(&config, Arc::new(key.clone()))
+        .await
+        .expect("connect store");
+    store.record(new_transaction()).await.expect("record row");
+    let rows = store.fetch_chain_rows().await.expect("fetch chain rows");
+    assert_eq!(rows.len(), 1, "isolated schema should hold exactly our row");
+
+    let sink = PostgresCheckpointSink::connect(&scoped_url)
+        .await
+        .expect("connect checkpoint sink");
+
+    // A second connect must be a no-op, not a failure: the daemon reconnects,
+    // and the bootstrap probe is what keeps a least-privilege role working
+    // against an already-provisioned table.
+    PostgresCheckpointSink::connect(&scoped_url)
+        .await
+        .expect("reconnecting to an existing table succeeds");
+
+    let outcome = anchor_once(&key, &rows, &sink, "2026-07-27T12:00:00Z")
+        .await
+        .expect("anchor");
+    assert_eq!(
+        outcome,
+        AnchorOutcome::Anchored {
+            seq: 1,
+            checkpoints_checked: 1
+        }
+    );
+
+    // Read back through the real column mapping, not the value we wrote.
+    let loaded = sink.load_all().await.expect("load checkpoints");
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].seq, 1);
+    assert_eq!(loaded[0].chain_tip, rows[0].chain_hash);
+
+    // An anchor that cannot be justified must not advance the tip. Treating a
+    // refused anchor as routine is how this defence quietly stops working.
+    let outcome = anchor_once(&key, &[], &sink, "2026-07-27T12:05:00Z")
+        .await
+        .expect("anchor against an empty chain");
+    assert_eq!(outcome, AnchorOutcome::ChainEmpty);
+    assert_eq!(
+        sink.load_all().await.expect("reload checkpoints").len(),
+        1,
+        "a refused anchor must not append a checkpoint"
+    );
+
+    sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(format!(
+        "DROP SCHEMA {SCHEMA} CASCADE"
+    )))
+    .execute(&admin)
+    .await
+    .expect("drop isolated schema");
 }

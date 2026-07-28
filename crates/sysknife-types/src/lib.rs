@@ -379,6 +379,79 @@ impl From<String> for RequestHash {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Approval-flow newtypes
+// ---------------------------------------------------------------------------
+
+/// Identifier for one preview/approve/execute round-trip.
+///
+/// Distinct from [`ApprovalReceipt`] at the type level because the two are
+/// indistinguishable at the value level: both are opaque strings passed side by
+/// side into the same calls. `execute(transaction_id, action_name, params,
+/// approval_receipt, …)` took three bare `&str` in a row, so transposing any
+/// two of them compiled and failed at runtime as a stale-approval error, which
+/// reads like an expiry rather than a call-site bug.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TransactionId(String);
+
+/// A one-time bearer receipt minted by `sysknife approve`.
+///
+/// This is a **credential**: whoever holds it can execute the approved step
+/// once. `Debug` is redacted so a `tracing::debug!("{req:?}")` on any struct
+/// carrying one cannot spill it into a log. Use [`ApprovalReceipt::as_str`]
+/// where the real value is genuinely needed.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ApprovalReceipt(String);
+
+impl std::fmt::Debug for ApprovalReceipt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ApprovalReceipt(<redacted>)")
+    }
+}
+
+macro_rules! opaque_string_newtype {
+    ($name:ident) => {
+        impl $name {
+            pub fn new(s: impl Into<String>) -> Self {
+                Self(s.into())
+            }
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+            pub fn into_inner(self) -> String {
+                self.0
+            }
+        }
+
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl From<String> for $name {
+            fn from(s: String) -> Self {
+                Self(s)
+            }
+        }
+    };
+}
+
+opaque_string_newtype!(TransactionId);
+opaque_string_newtype!(ApprovalReceipt);
+
+// `Display` only for the identifier. `ApprovalReceipt` deliberately has none:
+// a credential that formats itself into any `{}` is one interpolation away
+// from a log line, and the explicit `as_str()` marks the places that really
+// need the secret.
+impl std::fmt::Display for TransactionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Caller privilege tier, ordered least to most privileged.
 ///
 /// **Variant order is the privilege order** and `Ord` is derived from it, so
@@ -396,6 +469,24 @@ pub enum CallerRole {
     Dev,
     Admin,
     Boot,
+}
+
+impl CallerRole {
+    /// Stable lowercase spelling, identical to the serde representation.
+    ///
+    /// The audit chain signs this string, so it is a wire format: renaming a
+    /// variant must not silently change what past signatures were made over.
+    /// `format!("{role:?}")` cannot be used for that — `Debug` carries no
+    /// stability promise and tracks the identifier. `caller_role_as_str_matches_serde`
+    /// pins the two encodings together.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Observer => "observer",
+            Self::Dev => "dev",
+            Self::Admin => "admin",
+            Self::Boot => "boot",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

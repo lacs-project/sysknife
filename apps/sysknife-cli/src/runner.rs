@@ -25,7 +25,8 @@ use sysknife_brain::config::BrainConfig;
 use sysknife_brain::planner::{LlmPlanner, PlanRiskLevel};
 use sysknife_brain::PlanEvent;
 use sysknife_types::{
-    DistroHint, RiskLevel, DISTRO_FAMILY_DEBIAN, DISTRO_FAMILY_FEDORA, DISTRO_FAMILY_OTHER,
+    DistroHint, RiskLevel, TransactionId, DISTRO_FAMILY_DEBIAN, DISTRO_FAMILY_FEDORA,
+    DISTRO_FAMILY_OTHER,
 };
 
 use sysknife_brain::state_client::StateClient as _;
@@ -220,7 +221,7 @@ fn daemon_risk_within_approved(approved: &PlanRiskLevel, daemon: &PlanRiskLevel)
 }
 
 pub async fn run_approve(
-    transaction_id: &str,
+    transaction_id: &TransactionId,
     socket: SocketTarget,
     json: bool,
     log: &Logger,
@@ -255,13 +256,15 @@ pub async fn run_approve(
     if json {
         log.println(
             &serde_json::json!({
-                "transaction_id": transaction_id,
-                "approval_receipt": receipt,
+                "transaction_id": transaction_id.as_str(),
+                "approval_receipt": receipt.as_str(),
             })
             .to_string(),
         );
     } else {
-        log.println(&format!("Approval receipt: {receipt}"));
+        // The one place the receipt is meant to leave the process: the
+        // operator has to be able to paste it into `sysknife execute`.
+        log.println(&format!("Approval receipt: {}", receipt.as_str()));
     }
     Ok(())
 }
@@ -511,7 +514,7 @@ impl RunOpts {
 /// underlying access problem.
 pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(), CliError> {
     use sysknife_core::config::LacsConfig;
-    use sysknife_daemon::audit_chain::{self, AuditKey, VerifyOutcome};
+    use sysknife_daemon::audit_chain::AuditKey;
 
     // Honour the same `[storage]` config the daemon uses, so `sysknife audit
     // verify` works against whichever backend is in production. Without this,
@@ -537,12 +540,7 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
                     "public key file {} could not be read: {e}",
                     pubkey_path.display()
                 );
-                emit_verify_outcome(
-                    &args,
-                    log,
-                    &VerifyOutcome::CannotVerify { reason },
-                    &label_for_diag,
-                );
+                emit_verification(&args, log, &cannot_verify_all(reason), &label_for_diag);
                 return Err(CliError::Exit(2));
             }
         }
@@ -556,12 +554,7 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
                  the exported public key",
                 key_path.display()
             );
-            emit_verify_outcome(
-                &args,
-                log,
-                &VerifyOutcome::CannotVerify { reason },
-                &label_for_diag,
-            );
+            emit_verification(&args, log, &cannot_verify_all(reason), &label_for_diag);
             return Err(CliError::Exit(2));
         }
 
@@ -569,12 +562,7 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
             Ok(k) => Verifier::Private(Box::new(k)),
             Err(e) => {
                 let reason = format!("audit key load failed: {e}");
-                emit_verify_outcome(
-                    &args,
-                    log,
-                    &VerifyOutcome::CannotVerify { reason },
-                    &label_for_diag,
-                );
+                emit_verification(&args, log, &cannot_verify_all(reason), &label_for_diag);
                 return Err(CliError::Exit(2));
             }
         }
@@ -589,8 +577,8 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
         _ => verify_sqlite(&db_path, &verifier).await,
     };
 
-    let exit_code = audit_chain::outcome_to_exit_code(&outcome);
-    emit_verify_outcome(&args, log, &outcome, &label_for_diag);
+    let exit_code = outcome.exit_code();
+    emit_verification(&args, log, &outcome, &label_for_diag);
     if exit_code == 0 {
         Ok(())
     } else {
@@ -707,64 +695,75 @@ pub(crate) enum Verifier {
     Public(String),
 }
 
+use sysknife_daemon::audit_chain::AuditVerification;
+
+/// Lift a single "we could not even read the rows" reason into all three
+/// checks, so the caller never has to special-case a partially populated
+/// result.
+fn cannot_verify_all(reason: String) -> AuditVerification {
+    use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
+    AuditVerification {
+        chain: VerifyOutcome::CannotVerify {
+            reason: reason.clone(),
+        },
+        events: VerifyOutcome::CannotVerify { reason },
+        binding: BindingOutcome::Consistent {
+            bindings_checked: 0,
+        },
+    }
+}
+
 pub(crate) async fn verify_sqlite(
     db_path: &std::path::Path,
     verifier: &Verifier,
-) -> sysknife_daemon::audit_chain::VerifyOutcome {
-    use sysknife_daemon::audit_chain::VerifyOutcome;
+) -> AuditVerification {
+    use sysknife_daemon::audit_chain::{verify_all, verify_all_with_pubkey};
     use sysknife_daemon::transactions::TransactionStore;
 
     if !db_path.exists() {
-        return VerifyOutcome::CannotVerify {
-            reason: format!(
-                "audit database not found at {}; set $SYSKNIFE_DATABASE_PATH \
-                 or run the daemon first",
-                db_path.display()
-            ),
-        };
+        return cannot_verify_all(format!(
+            "audit database not found at {}; set $SYSKNIFE_DATABASE_PATH \
+             or run the daemon first",
+            db_path.display()
+        ));
     }
     let store = match TransactionStore::open_read_only(db_path) {
         Ok(s) => s,
-        Err(e) => {
-            return VerifyOutcome::CannotVerify {
-                reason: format!("opening audit database failed: {e}"),
-            };
-        }
+        Err(e) => return cannot_verify_all(format!("opening audit database failed: {e}")),
     };
-    let result = match verifier {
-        Verifier::Private(key) => store.verify_audit_chain(key),
-        Verifier::Public(vk_hex) => store.verify_audit_chain_with_pubkey(vk_hex),
+    let tx_rows = match store.fetch_chain_rows() {
+        Ok(rows) => rows,
+        Err(e) => return cannot_verify_all(format!("audit chain query failed: {e}")),
     };
-    match result {
-        Ok(o) => o,
-        Err(e) => VerifyOutcome::CannotVerify {
-            reason: format!("audit chain query failed: {e}"),
-        },
+    let event_rows = match store.fetch_event_rows() {
+        Ok(rows) => rows,
+        Err(e) => return cannot_verify_all(format!("approval-event query failed: {e}")),
+    };
+    match verifier {
+        Verifier::Private(key) => verify_all(key, &tx_rows, &event_rows),
+        Verifier::Public(vk_hex) => verify_all_with_pubkey(vk_hex, &tx_rows, &event_rows),
     }
 }
 
 pub(crate) async fn verify_postgres(
     storage: &sysknife_core::config::StorageSection,
     verifier: &Verifier,
-) -> sysknife_daemon::audit_chain::VerifyOutcome {
+) -> AuditVerification {
     use sysknife_core::config::StorageBackend;
-    use sysknife_daemon::audit_chain::VerifyOutcome;
     use sysknife_daemon::store::postgres::{PostgresConfig, PostgresStore};
-    use sysknife_daemon::store::AuditStore;
 
     // Project the relaxed config form into the type-state-checked enum;
     // the match below makes future backends a compile-time decision.
     let parsed = match storage.parsed() {
         Ok(p) => p,
-        Err(reason) => return VerifyOutcome::CannotVerify { reason },
+        Err(reason) => return cannot_verify_all(reason),
     };
     let (url, pool) =
         match parsed {
-            StorageBackend::Sqlite => return VerifyOutcome::CannotVerify {
-                reason:
-                    "verify_postgres called with backend = \"sqlite\" — caller picks the wrong path"
-                        .to_string(),
-            },
+            StorageBackend::Sqlite => return cannot_verify_all(
+                "verify_postgres called with backend = \"sqlite\" — caller picks the wrong path"
+                    .to_string(),
+            ),
             StorageBackend::Postgres { url, pool } => (url, pool),
         };
 
@@ -789,99 +788,195 @@ pub(crate) async fn verify_postgres(
             let store =
                 match PostgresStore::connect(&cfg, std::sync::Arc::new((**key).clone())).await {
                     Ok(s) => s,
-                    Err(e) => {
-                        return VerifyOutcome::CannotVerify {
-                            reason: format!("postgres connect failed: {e}"),
-                        };
-                    }
+                    Err(e) => return cannot_verify_all(format!("postgres connect failed: {e}")),
                 };
-            match store.verify_audit_chain(key).await {
-                Ok(outcome) => outcome,
-                Err(e) => VerifyOutcome::CannotVerify {
-                    reason: format!("postgres audit chain query failed: {e}"),
-                },
+            match store.verify_all(key).await {
+                Ok(verification) => verification,
+                Err(e) => cannot_verify_all(format!("postgres audit chain query failed: {e}")),
             }
         }
         Verifier::Public(verifying_key_hex) => {
-            match PostgresStore::verify_with_pubkey(&cfg, verifying_key_hex).await {
-                Ok(outcome) => outcome,
-                Err(e) => VerifyOutcome::CannotVerify {
-                    reason: format!("postgres audit chain query failed: {e}"),
-                },
+            match PostgresStore::verify_all_with_pubkey(&cfg, verifying_key_hex).await {
+                Ok(verification) => verification,
+                Err(e) => cannot_verify_all(format!("postgres audit chain query failed: {e}")),
             }
         }
     }
 }
 
-fn emit_verify_outcome(
+/// Render all three checks. The transaction chain stays the headline line so
+/// existing output and exit codes are unchanged for a clean chain; the other
+/// two are reported underneath and can independently fail the command.
+fn emit_verification(
     args: &AuditVerifyArgs,
     log: &Logger,
-    outcome: &sysknife_daemon::audit_chain::VerifyOutcome,
+    verification: &AuditVerification,
     backend_label: &str,
 ) {
-    use sysknife_daemon::audit_chain::VerifyOutcome;
+    use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
+
     if args.json {
-        let payload = match outcome {
-            VerifyOutcome::Intact { rows_checked } => json!({
-                "status": "intact",
-                "rows_checked": rows_checked,
-                "backend": backend_label,
-            }),
-            VerifyOutcome::Broken {
-                rows_checked,
-                first_broken_seq,
-                first_broken_transaction_id,
-                expected,
-                actual,
-            } => json!({
-                "status": "broken",
-                "rows_checked": rows_checked,
-                "first_broken_seq": first_broken_seq,
-                "first_broken_transaction_id": first_broken_transaction_id,
-                "expected": expected,
-                "actual": actual,
-                "backend": backend_label,
-            }),
-            VerifyOutcome::CannotVerify { reason } => json!({
-                "status": "cannot_verify",
-                "reason": reason,
-                "backend": backend_label,
-            }),
-        };
+        let payload = json!({
+            "status": status_word(verification.exit_code()),
+            "backend": backend_label,
+            "chain": outcome_json(&verification.chain),
+            "approval_events": outcome_json(&verification.events),
+            "binding": match &verification.binding {
+                BindingOutcome::Consistent { bindings_checked } => json!({
+                    "status": "consistent",
+                    "bindings_checked": bindings_checked,
+                }),
+                BindingOutcome::MissingEvent { transaction_seq, event_tip } => json!({
+                    "status": "missing_event",
+                    "transaction_seq": transaction_seq,
+                    "event_tip": event_tip,
+                }),
+            },
+        });
         log.println(
             &serde_json::to_string_pretty(&payload)
                 .expect("verify outcome payload is serializable"),
         );
-    } else {
-        match outcome {
-            VerifyOutcome::Intact { rows_checked } => {
-                log.println(&format!(
-                    "OK: {rows_checked} row(s) verified in {backend_label}"
-                ));
-            }
-            VerifyOutcome::Broken {
-                rows_checked,
-                first_broken_seq,
-                first_broken_transaction_id,
-                expected,
-                actual,
-            } => {
-                log.println(&format!(
-                    "BROKEN: chain intact for first {rows_checked} row(s); \
-                     row seq={first_broken_seq} (transaction {first_broken_transaction_id}) \
-                     does not chain.\n  expected: {expected}\n  actual:   {actual}"
-                ));
-            }
-            VerifyOutcome::CannotVerify { reason } => {
-                log.println(&format!("CANNOT VERIFY: {reason}"));
-            }
+        return;
+    }
+
+    match &verification.chain {
+        VerifyOutcome::Intact { rows_checked } => {
+            log.println(&format!(
+                "OK: {rows_checked} row(s) verified in {backend_label}"
+            ));
         }
+        VerifyOutcome::Broken {
+            rows_checked,
+            first_broken_seq,
+            first_broken_transaction_id,
+            expected,
+            actual,
+        } => {
+            log.println(&format!(
+                "BROKEN: chain intact for first {rows_checked} row(s); \
+                 row seq={first_broken_seq} (transaction {first_broken_transaction_id}) \
+                 does not chain.\n  expected: {expected}\n  actual:   {actual}"
+            ));
+        }
+        VerifyOutcome::CannotVerify { reason } => {
+            log.println(&format!("CANNOT VERIFY: {reason}"));
+        }
+    }
+
+    match &verification.events {
+        VerifyOutcome::Intact { rows_checked } => {
+            log.println(&format!("OK: {rows_checked} approval event(s) verified"));
+        }
+        VerifyOutcome::Broken {
+            rows_checked,
+            first_broken_seq,
+            first_broken_transaction_id,
+            ..
+        } => {
+            log.println(&format!(
+                "BROKEN: approval events intact for first {rows_checked}; \
+                 event seq={first_broken_seq} (transaction {first_broken_transaction_id}) \
+                 does not chain"
+            ));
+        }
+        VerifyOutcome::CannotVerify { reason } => {
+            log.println(&format!("CANNOT VERIFY approval events: {reason}"));
+        }
+    }
+
+    match &verification.binding {
+        BindingOutcome::Consistent { bindings_checked } => {
+            log.println(&format!(
+                "OK: {bindings_checked} row(s) still match the approval event they committed to"
+            ));
+        }
+        BindingOutcome::MissingEvent {
+            transaction_seq,
+            event_tip,
+        } => {
+            log.println(&format!(
+                "BROKEN: transaction seq={transaction_seq} committed to approval event \
+                 {event_tip}, which is no longer in the event chain — approval events \
+                 were deleted from the end of the chain"
+            ));
+        }
+    }
+}
+
+fn status_word(exit_code: i32) -> &'static str {
+    match exit_code {
+        0 => "intact",
+        1 => "broken",
+        _ => "cannot_verify",
+    }
+}
+
+fn outcome_json(outcome: &sysknife_daemon::audit_chain::VerifyOutcome) -> serde_json::Value {
+    use sysknife_daemon::audit_chain::VerifyOutcome;
+    match outcome {
+        VerifyOutcome::Intact { rows_checked } => json!({
+            "status": "intact",
+            "rows_checked": rows_checked,
+        }),
+        VerifyOutcome::Broken {
+            rows_checked,
+            first_broken_seq,
+            first_broken_transaction_id,
+            expected,
+            actual,
+        } => json!({
+            "status": "broken",
+            "rows_checked": rows_checked,
+            "first_broken_seq": first_broken_seq,
+            "first_broken_transaction_id": first_broken_transaction_id,
+            "expected": expected,
+            "actual": actual,
+        }),
+        VerifyOutcome::CannotVerify { reason } => json!({
+            "status": "cannot_verify",
+            "reason": reason,
+        }),
     }
 }
 
 // ---------------------------------------------------------------------------
 // run_intent
 // ---------------------------------------------------------------------------
+
+/// What `run_intent` does with one [`ApprovalDecision`].
+///
+/// Extracted from the two gates in `run_intent` (plan-level and, under
+/// `--step-by-step`, per step). They were near-identical `match` blocks over
+/// the same enum, so the two could disagree about what a decision means — and
+/// neither was reachable in a test without an LLM provider and a live daemon.
+#[derive(Debug)]
+enum GateAction {
+    /// Execute without asking.
+    Proceed,
+    /// Ask the operator; a "no" is a rejection.
+    AskOperator,
+    /// Do not execute, and do not ask.
+    Refuse(CliError),
+}
+
+/// Map an approval decision onto the gate's behaviour.
+///
+/// `highest` is the risk being gated: the plan's highest for the plan-level
+/// gate, the step's own under `--step-by-step`.
+fn gate_action(decision: ApprovalDecision, highest: &PlanRiskLevel) -> GateAction {
+    match decision {
+        ApprovalDecision::AutoApproved => GateAction::Proceed,
+        ApprovalDecision::RequiresPrompt => GateAction::AskOperator,
+        ApprovalDecision::RequiresInteraction => GateAction::Refuse(CliError::NonInteractive),
+        ApprovalDecision::ExceedsCeiling(ceiling) => {
+            GateAction::Refuse(CliError::RiskCeilingExceeded {
+                highest: highest.clone(),
+                ceiling,
+            })
+        }
+    }
+}
 
 /// Plan and (optionally) execute a single natural-language intent.
 pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<(), CliError> {
@@ -1012,11 +1107,12 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     let policy = opts.approval_policy();
 
     if !opts.step_by_step {
-        match policy.decide_plan(&plan) {
-            ApprovalDecision::AutoApproved => {}
-            ApprovalDecision::RequiresPrompt => {
+        let highest = plan.highest_risk().expect("plan has steps").clone();
+        match gate_action(policy.decide_plan(&plan), &highest) {
+            GateAction::Proceed => {}
+            GateAction::Refuse(err) => return Err(err),
+            GateAction::AskOperator => {
                 let n = plan.steps().len();
-                let highest = plan.highest_risk().expect("plan has steps");
                 let msg = if opts.json {
                     "Execute this plan?".to_owned()
                 } else {
@@ -1024,22 +1120,12 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
                         "  {} step{}, {} risk — execute?",
                         n,
                         if n == 1 { "" } else { "s" },
-                        crate::render::risk_colored(highest),
+                        crate::render::risk_colored(&highest),
                     )
                 };
                 if !prompt_confirm(&msg).await {
                     return Err(CliError::Rejected);
                 }
-            }
-            ApprovalDecision::RequiresInteraction => return Err(CliError::NonInteractive),
-            ApprovalDecision::ExceedsCeiling(ceiling) => {
-                let highest = plan
-                    .highest_risk()
-                    .expect("ExceedsCeiling implies at least one step");
-                return Err(CliError::RiskCeilingExceeded {
-                    highest: highest.clone(),
-                    ceiling,
-                });
             }
         }
     }
@@ -1066,9 +1152,10 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     for step in plan.steps() {
         // Step-by-step: approve each step before previewing it.
         if opts.step_by_step {
-            match policy.decide_step(step.risk_level()) {
-                ApprovalDecision::AutoApproved => {}
-                ApprovalDecision::RequiresPrompt => {
+            match gate_action(policy.decide_step(step.risk_level()), step.risk_level()) {
+                GateAction::Proceed => {}
+                GateAction::Refuse(err) => return Err(err),
+                GateAction::AskOperator => {
                     let msg = if opts.json {
                         format!("Execute {} ({})?", step.action_name(), step.summary())
                     } else {
@@ -1081,13 +1168,6 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
                     if !prompt_confirm(&msg).await {
                         return Err(CliError::Rejected);
                     }
-                }
-                ApprovalDecision::RequiresInteraction => return Err(CliError::NonInteractive),
-                ApprovalDecision::ExceedsCeiling(ceiling) => {
-                    return Err(CliError::RiskCeilingExceeded {
-                        highest: step.risk_level().clone(),
-                        ceiling,
-                    });
                 }
             }
         }
@@ -1807,5 +1887,66 @@ mod tests {
         let t = resolve_socket_target();
         unsafe { std::env::remove_var("SYSKNIFE_SOCKET") };
         assert_eq!(t, crate::client::SocketTarget::Vsock { cid: 3, port: 7777 });
+    }
+
+    // ── the approval gate `run_intent` actually runs ──────────────────────
+
+    #[test]
+    fn only_an_auto_approved_decision_reaches_execution() {
+        // The safety property of both gates in `run_intent`, checked over every
+        // decision the policy can return. `ApprovalPolicy` itself is well
+        // covered; what was untested is that `run_intent` obeys it — the two
+        // gates were inline `match` blocks unreachable without an LLM provider
+        // and a live daemon.
+        let risk = PlanRiskLevel::High;
+        let decisions = [
+            ApprovalDecision::AutoApproved,
+            ApprovalDecision::RequiresPrompt,
+            ApprovalDecision::RequiresInteraction,
+            ApprovalDecision::ExceedsCeiling(MaxRisk::Low),
+        ];
+        for decision in decisions {
+            let expected_to_proceed = matches!(decision, ApprovalDecision::AutoApproved);
+            let label = format!("{decision:?}");
+            let proceeds = matches!(gate_action(decision, &risk), GateAction::Proceed);
+            assert_eq!(
+                proceeds, expected_to_proceed,
+                "only AutoApproved may execute without asking; {label} did not match"
+            );
+        }
+    }
+
+    #[test]
+    fn a_prompt_decision_asks_rather_than_refusing_or_running() {
+        assert!(matches!(
+            gate_action(ApprovalDecision::RequiresPrompt, &PlanRiskLevel::Medium),
+            GateAction::AskOperator
+        ));
+    }
+
+    #[test]
+    fn non_interactive_refuses_without_prompting() {
+        // Prompting here would block forever on a closed stdin in CI or a
+        // systemd unit; the refusal must be silent and immediate.
+        match gate_action(ApprovalDecision::RequiresInteraction, &PlanRiskLevel::High) {
+            GateAction::Refuse(CliError::NonInteractive) => {}
+            other => panic!("expected a NonInteractive refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exceeding_the_ceiling_reports_both_the_risk_and_the_ceiling() {
+        // The error has to name both numbers or the operator cannot tell what
+        // to raise `--max-risk` to.
+        match gate_action(
+            ApprovalDecision::ExceedsCeiling(MaxRisk::Low),
+            &PlanRiskLevel::High,
+        ) {
+            GateAction::Refuse(CliError::RiskCeilingExceeded { highest, ceiling }) => {
+                assert_eq!(highest, PlanRiskLevel::High);
+                assert_eq!(ceiling, MaxRisk::Low);
+            }
+            other => panic!("expected a RiskCeilingExceeded refusal, got {other:?}"),
+        }
     }
 }

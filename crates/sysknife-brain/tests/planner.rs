@@ -421,7 +421,7 @@ async fn provider_error_propagates() {
 
     assert!(matches!(
         planner.plan_intent("do something").await.unwrap_err(),
-        PlanningError::Provider(_)
+        PlanningError::Provider(ProviderError::Http { status: 500, .. })
     ));
 }
 
@@ -432,7 +432,7 @@ async fn auth_error_propagates() {
     ))]));
     assert!(matches!(
         planner.plan_intent("do something").await.unwrap_err(),
-        PlanningError::Provider(_)
+        PlanningError::Provider(ProviderError::Auth(_))
     ));
 }
 
@@ -1787,9 +1787,13 @@ async fn provider_parse_error_propagates() {
         "model returned unparseable JSON".into(),
     ))]));
 
+    // Asserting the variant, not just "some provider error": before
+    // `PlanningError::Provider` carried a `ProviderError`, these three tests
+    // made the identical assertion and could not tell a parse failure from a
+    // rate limit.
     assert!(matches!(
         planner.plan_intent("do something").await.unwrap_err(),
-        PlanningError::Provider(_)
+        PlanningError::Provider(ProviderError::Parse(_))
     ));
 }
 
@@ -1801,7 +1805,7 @@ async fn rate_limit_error_propagates() {
 
     assert!(matches!(
         planner.plan_intent("do something").await.unwrap_err(),
-        PlanningError::Provider(_)
+        PlanningError::Provider(ProviderError::RateLimit(_))
     ));
 }
 
@@ -1813,6 +1817,6 @@ async fn transport_request_error_propagates() {
 
     assert!(matches!(
         planner.plan_intent("do something").await.unwrap_err(),
-        PlanningError::Provider(_)
+        PlanningError::Provider(ProviderError::Request(_))
     ));
 }

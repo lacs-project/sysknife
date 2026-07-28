@@ -434,14 +434,17 @@ fn map_planning_error(err: sysknife_brain::planner::PlanningError) -> ShellError
         }
         PlanningError::RateLimitExceeded { .. } => ("rate_limit_exceeded", err.to_string()),
         PlanningError::StateUnavailable(_) => ("daemon_not_running", err.to_string()),
-        PlanningError::Provider(s) => {
-            if s.contains("429") {
-                ("llm_rate_limit", err.to_string())
-            } else if s.starts_with("http") || s.contains("HTTP") {
-                ("llm_http_error", err.to_string())
-            } else {
-                ("llm_parse_error", err.to_string())
-            }
+        // Matched on the variant, not on the rendered text. The previous
+        // substring search for "429"/"http" depended on the wording of
+        // `ProviderError`'s `#[error(...)]` strings.
+        PlanningError::Provider(provider_err) => {
+            use sysknife_brain::provider::ProviderError;
+            let code = match provider_err {
+                ProviderError::RateLimit(_) => "llm_rate_limit",
+                ProviderError::Http { .. } | ProviderError::Auth(_) => "llm_http_error",
+                ProviderError::Parse(_) | ProviderError::Request(_) => "llm_parse_error",
+            };
+            (code, err.to_string())
         }
         PlanningError::InvalidPlanOutput(_) => ("llm_parse_error", err.to_string()),
         _ => ("unknown", err.to_string()),

@@ -46,7 +46,7 @@ use rmcp::{
     ErrorData, ServerHandler, ServiceExt,
 };
 use serde::{Deserialize, Serialize};
-use sysknife_types::RiskLevel;
+use sysknife_types::{ApprovalReceipt, RiskLevel, TransactionId};
 
 use sysknife_brain::config::BrainConfig;
 use sysknife_brain::planner::LlmPlanner;
@@ -264,6 +264,16 @@ pub struct AuditVerifyReport {
     pub actual: Option<String>,
     /// Human-readable explanation. Only set when `status == "cannot_verify"`.
     pub reason: Option<String>,
+    /// Number of approval events (grant / consume / revoke) checked in the
+    /// second chain.
+    pub events_checked: u64,
+    /// Result of the approval-event chain walk: `"intact"`, `"broken"`, or
+    /// `"cannot_verify"`. Reported separately from `status` so a clean
+    /// authorisation trail can never paper over a tampered approval trail.
+    pub approval_events_status: String,
+    /// `"consistent"` or `"missing_event"`: whether every event tip committed
+    /// by a transaction row is still present in the event chain.
+    pub binding_status: String,
     /// Backend label: a filesystem path for SQLite, the literal `"postgres"`
     /// for Postgres deployments.
     pub backend: String,
@@ -380,6 +390,20 @@ impl SysknifeMcpServer {
     }
 }
 
+/// Identity this server reports in `initialize`.
+///
+/// `Implementation::from_build_env()` resolves `CARGO_PKG_*` at the crate where
+/// the macro expands — which is `rmcp` — so the server introduced itself to
+/// every client, and to directory listings, as "rmcp" at rmcp's version. The
+/// struct is `#[non_exhaustive]`, so the fields are overwritten rather than
+/// rebuilt, which also keeps any future field at its upstream default.
+fn sysknife_implementation() -> Implementation {
+    let mut implementation = Implementation::from_build_env();
+    implementation.name = "sysknife".to_string();
+    implementation.version = env!("CARGO_PKG_VERSION").to_string();
+    implementation
+}
+
 #[tool_handler]
 impl ServerHandler for SysknifeMcpServer {
     fn get_info(&self) -> ServerInfo {
@@ -389,7 +413,11 @@ impl ServerHandler for SysknifeMcpServer {
                 .enable_resources()
                 .build(),
         )
-        .with_server_info(Implementation::from_build_env())
+        // Not `Implementation::from_build_env()`: that macro resolves
+        // `CARGO_PKG_*` at the crate where it is expanded, which is `rmcp`, so
+        // the server introduced itself to every client as "rmcp" at rmcp's
+        // version. Directory listings and client UIs show this string.
+        .with_server_info(sysknife_implementation())
         .with_instructions(
             "SysKnife provides planning and execution tools for Linux system administration.",
         )
@@ -513,7 +541,11 @@ async fn enrich_with_commands(
             .preview(&step.action_name, &step.params)
             .await
             .map_err(|e| format!("preview failed for {}: {e}", step.action_name))?;
-        step.transaction_id = prepared.transaction_id;
+        // The MCP wire structs keep plain strings: their JSON Schema is what
+        // the agent sees, and a bare string is the honest description of an
+        // opaque identifier. The newtypes guard the internal call sites, so the
+        // conversion happens once, here at the boundary.
+        step.transaction_id = prepared.transaction_id.into_inner();
         step.risk_level = match prepared.preview.risk_level {
             RiskLevel::Low => "low",
             RiskLevel::Medium => "medium",
@@ -542,10 +574,10 @@ async fn execute_steps_inner(steps: Vec<StepToExecute>) -> Result<ExecuteOutput,
         let mut output_lines: Vec<String> = Vec::new();
         let result = client
             .execute(
-                &step.transaction_id,
+                &TransactionId::new(step.transaction_id.clone()),
                 &step.action_name,
                 &step.params,
-                &step.approval_receipt,
+                &ApprovalReceipt::new(step.approval_receipt.clone()),
                 |line| output_lines.push(line.to_owned()),
             )
             .await
@@ -766,7 +798,7 @@ async fn audit_chain_quick_check(
     lacs_config: &sysknife_core::config::LacsConfig,
     warnings: &mut Vec<String>,
 ) -> VerifyOutcomeKind {
-    use sysknife_daemon::audit_chain::{AuditKey, VerifyOutcome};
+    use sysknife_daemon::audit_chain::{AuditKey, BindingOutcome, VerifyOutcome};
 
     let db_path = sysknife_core::default_database_path();
     let key_path = std::env::var("SYSKNIFE_AUDIT_KEY_PATH")
@@ -799,13 +831,29 @@ async fn audit_chain_quick_check(
         _ => verify_sqlite(&db_path, &verifier).await,
     };
 
-    match outcome {
-        VerifyOutcome::Intact { .. } => VerifyOutcomeKind::Intact,
-        VerifyOutcome::Broken { .. } => VerifyOutcomeKind::Broken,
-        VerifyOutcome::CannotVerify { reason } => {
-            warnings.push(format!("audit chain cannot be verified: {reason}"));
-            VerifyOutcomeKind::Unknown
+    // The doctor summary reports the worst of the three checks. Reporting only
+    // the transaction chain would call a deployment healthy while its approval
+    // trail was broken.
+    for (label, sub) in [
+        ("audit chain", &outcome.chain),
+        ("approval-event chain", &outcome.events),
+    ] {
+        if let VerifyOutcome::CannotVerify { reason } = sub {
+            warnings.push(format!("{label} cannot be verified: {reason}"));
         }
+    }
+    if let BindingOutcome::MissingEvent {
+        transaction_seq, ..
+    } = &outcome.binding
+    {
+        warnings.push(format!(
+            "transaction seq={transaction_seq} commits to an approval event that no longer exists"
+        ));
+    }
+    match outcome.exit_code() {
+        0 => VerifyOutcomeKind::Intact,
+        1 => VerifyOutcomeKind::Broken,
+        _ => VerifyOutcomeKind::Unknown,
     }
 }
 
@@ -861,12 +909,40 @@ async fn audit_verify_inner() -> AuditVerifyReport {
     outcome_to_report(outcome, backend_label)
 }
 
-fn outcome_to_report(
-    outcome: sysknife_daemon::audit_chain::VerifyOutcome,
-    backend: String,
-) -> AuditVerifyReport {
+/// Short label for one chain walk.
+fn outcome_label(outcome: &sysknife_daemon::audit_chain::VerifyOutcome) -> &'static str {
     use sysknife_daemon::audit_chain::VerifyOutcome;
     match outcome {
+        VerifyOutcome::Intact { .. } => "intact",
+        VerifyOutcome::Broken { .. } => "broken",
+        VerifyOutcome::CannotVerify { .. } => "cannot_verify",
+    }
+}
+
+fn outcome_to_report(
+    verification: sysknife_daemon::audit_chain::AuditVerification,
+    backend: String,
+) -> AuditVerifyReport {
+    use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
+
+    let events_checked = match &verification.events {
+        VerifyOutcome::Intact { rows_checked } | VerifyOutcome::Broken { rows_checked, .. } => {
+            *rows_checked
+        }
+        VerifyOutcome::CannotVerify { .. } => 0,
+    };
+    let approval_events_status = outcome_label(&verification.events).to_string();
+    let binding_status = match &verification.binding {
+        BindingOutcome::Consistent { .. } => "consistent",
+        BindingOutcome::MissingEvent { .. } => "missing_event",
+    }
+    .to_string();
+
+    // The detail fields describe the first *break*, wherever it was found. A
+    // broken transaction chain is reported ahead of a broken event chain
+    // because it is the one checkpoints anchor.
+    let overall = verification.exit_code();
+    let mut report = match verification.chain {
         VerifyOutcome::Intact { rows_checked } => AuditVerifyReport {
             status: "intact".to_string(),
             rows_checked,
@@ -876,6 +952,9 @@ fn outcome_to_report(
             actual: None,
             reason: None,
             backend,
+            events_checked,
+            approval_events_status,
+            binding_status,
         },
         VerifyOutcome::Broken {
             rows_checked,
@@ -892,9 +971,30 @@ fn outcome_to_report(
             actual: Some(actual),
             reason: None,
             backend,
+            events_checked,
+            approval_events_status,
+            binding_status,
         },
-        VerifyOutcome::CannotVerify { reason } => cannot_verify_report(backend, reason),
+        VerifyOutcome::CannotVerify { reason } => {
+            let mut r = cannot_verify_report(backend, reason);
+            r.events_checked = events_checked;
+            r.approval_events_status = approval_events_status;
+            r.binding_status = binding_status;
+            r
+        }
+    };
+
+    // `status` is the headline an MCP client is most likely to read alone, so
+    // it must reflect the worst of the three checks, not just the first.
+    if report.status == "intact" {
+        report.status = match overall {
+            0 => "intact",
+            1 => "broken",
+            _ => "cannot_verify",
+        }
+        .to_string();
     }
+    report
 }
 
 fn cannot_verify_report(backend: String, reason: String) -> AuditVerifyReport {
@@ -907,6 +1007,9 @@ fn cannot_verify_report(backend: String, reason: String) -> AuditVerifyReport {
         actual: None,
         reason: Some(reason),
         backend,
+        events_checked: 0,
+        approval_events_status: "cannot_verify".to_string(),
+        binding_status: "consistent".to_string(),
     }
 }
 
@@ -1100,6 +1203,16 @@ mod tests {
             Some(SYSKNIFE_DISCOVERY_DESCRIPTION)
         );
         assert_eq!(resource.mime_type.as_deref(), Some("text/plain"));
+    }
+
+    #[test]
+    fn the_server_introduces_itself_as_sysknife() {
+        // `Implementation::from_build_env()` expands inside the rmcp crate, so
+        // it reported name "rmcp" and rmcp's version — the string clients and
+        // registry listings display for this server.
+        let info = SysknifeMcpServer.get_info();
+        assert_eq!(info.server_info.name, "sysknife");
+        assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
     }
 
     #[test]

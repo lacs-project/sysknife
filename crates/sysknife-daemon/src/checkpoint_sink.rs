@@ -336,7 +336,8 @@ pub fn spawn_periodic_anchor(
 mod tests {
     use super::*;
     use crate::audit_chain::{
-        verify_checkpoints, AuditKey, ChainContent, ChainRow, CheckpointOutcome,
+        verify_checkpoints, AuditKey, ChainContent, ChainIdentity, ChainRow, CheckpointOutcome,
+        CHAIN_VERSION_CURRENT,
     };
     use sysknife_types::RiskLevel;
 
@@ -363,6 +364,10 @@ mod tests {
                 approval_id: None,
                 warnings_json: "[]",
                 created_at: "2026-04-24T12:00:00Z",
+                identity: ChainIdentity::V2 {
+                    caller_role: "dev",
+                    event_tip: "",
+                },
             };
             let hash = key.chain_hash(&content, &prev);
             rows.push(ChainRow {
@@ -379,6 +384,9 @@ mod tests {
                 created_at: "2026-04-24T12:00:00Z".to_string(),
                 prev_chain_hash: prev.clone(),
                 chain_hash: hash.clone(),
+                chain_version: CHAIN_VERSION_CURRENT,
+                caller_role: Some("dev".to_string()),
+                event_tip: Some(String::new()),
             });
             prev = hash;
         }
@@ -455,6 +463,7 @@ mod anchor_tests {
                 approval_id: row.approval_id.as_deref(),
                 warnings_json: &row.warnings_json,
                 created_at: &row.created_at,
+                identity: row.identity().expect("fixture rows are well-formed"),
             };
             let hash = key.chain_hash(&content, &prev);
             let mut cloned = row.clone();
