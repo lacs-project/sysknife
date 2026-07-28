@@ -17,6 +17,7 @@
   <a href="https://github.com/lacs-project/sysknife/issues"><img src="https://img.shields.io/github/issues/lacs-project/sysknife?style=flat-square" alt="Issues"></a>
   <a href="https://github.com/lacs-project/sysknife/discussions"><img src="https://img.shields.io/github/discussions/lacs-project/sysknife?style=flat-square&label=discuss" alt="Discussions"></a>
   <a href="https://www.npmjs.com/package/sysknife-setup"><img src="https://img.shields.io/npm/v/sysknife-setup?style=flat-square&logo=npm&label=npx%20setup" alt="npm version"></a>
+  <a href="https://glama.ai/mcp/servers/lacs-project/sysknife"><img src="https://glama.ai/mcp/servers/lacs-project/sysknife/badges/score.svg" alt="Glama MCP server quality score"></a>
 </p>
 
 <p align="center">
