@@ -72,6 +72,40 @@ The tag pattern does not accept prerelease suffixes. Do not move or reuse a
 published tag. If publication partly fails, diagnose and rerun the workflow on
 the same commit; do not publish a different tree under the same version.
 
+Tags are signed. SSH signing is configured per repository so it cannot leak into
+unrelated work:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/git-signing -C "sysknife git signing"
+gh ssh-key add ~/.ssh/git-signing.pub --type signing --title "git signing (sysknife)"
+git config gpg.format ssh
+git config user.signingkey ~/.ssh/git-signing.pub
+git config tag.gpgsign true
+```
+
+Verify before pushing: `git tag -v v0.2.15` must report a good signature. An
+unverifiable tag on a published release is worse than an unsigned one.
+
+## Manual steps after publication
+
+Two directory listings cannot be updated from CI, so the release workflow files
+a checklist issue titled `Post-release manual steps for <tag>` and assigns it to
+whoever pushed the tag. It carries the exact commands and the real checksum read
+from that release's `sha256sums-linux-x86_64.txt`.
+
+1. **Official MCP Registry.** `mcp-publisher login github` is a device-code flow
+   and cannot run unattended. The publish must also wait for crates.io to have
+   the version, because the validator reads the *published* crate's rendered
+   README for the `mcp-name:` marker.
+2. **Glama build spec.** The admin form is browser-only. Only the build steps
+   change per release, to the new binary URL and checksum. Leave the
+   `mcp-proxy --` prefix in the CMD arguments alone; that is how Glama exposes a
+   stdio server over HTTP.
+
+Neither step blocks anyone installing the release. They affect discovery only, so
+they are not release blockers, which is exactly why they need a ticket rather
+than a line in a log nobody reads.
+
 ## Registry details
 
 ### npm
