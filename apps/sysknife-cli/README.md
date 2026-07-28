@@ -22,7 +22,7 @@ privileged work itself. Planning and `--dry-run` work without it.
 
 A C compiler and linker are required (the TLS and SQLite dependencies build
 native code). On a machine with only `rustup`, the build fails at
-`error: linker \`cc\` not found`.
+`error: linker cc not found`.
 
 ```sh
 sudo apt-get install -y build-essential   # Debian/Ubuntu

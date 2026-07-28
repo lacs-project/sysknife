@@ -41,7 +41,7 @@ does not, because the sudoers grants belong to the `sysknife` system user.
 **Prerequisites:** Rust stable (`rustup update stable`), **a C compiler and
 linker**, and an LLM provider (see Step 2). The TLS and SQLite dependencies
 build native code, so a machine with only `rustup` fails at
-`error: linker \`cc\` not found`. `cmake` is not required.
+`error: linker cc not found`. `cmake` is not required.
 
 ```sh
 sudo apt-get install -y build-essential   # Debian/Ubuntu

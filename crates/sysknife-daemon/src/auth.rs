@@ -31,7 +31,8 @@ fn higher_role(current: CallerRole, candidate: CallerRole) -> CallerRole {
     current.max(candidate)
 }
 
-/// The group that grants `role`, i.e. the inverse of [`role_for_group`].
+/// The group that grants `role`, i.e. the inverse of the private
+/// `role_for_group` mapping above.
 ///
 /// Exists so a refusal can name the group to join. `wheel` also grants Admin,
 /// but the SysKnife group is the one to recommend: it is what `make install`

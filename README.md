@@ -126,7 +126,7 @@ the prompt, enforces the receipt boundary.
 
 Needs Rust stable **and a C compiler** (`build-essential`): the TLS and SQLite
 dependencies build native code, so a rustup-only machine stops at
-`error: linker \`cc\` not found`. `cmake` is not required. Budget 7 to 12
+`error: linker cc not found`. `cmake` is not required. Budget 7 to 12
 minutes for the ~400-crate build (6m56s on Ubuntu 24.04, 11m43s on 22.04).
 
 ```sh

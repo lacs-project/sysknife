@@ -75,7 +75,7 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   (`build-essential`) are required, and that **`cmake` is not**. `.github/`
   installs cmake before building this workspace, so the natural inference was
   that it was needed; clean-container runs disprove it — `aws-lc-sys` builds
-  from `gcc` alone, and the only hard failure is `error: linker \`cc\` not found`
+  from `gcc` alone, and the only hard failure is `error: linker cc not found`
   with no compiler at all. Build time is stated too: 6m56s on Ubuntu 24.04,
   11m43s on 22.04, about 400 crates.
 - `docs/quickstart.md` is now the canonical install page, and README and
@@ -90,6 +90,12 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   leads with this machine, since the documented headline case is a local install.
   Its socket-unreachable hint now matches the socket's kind rather than always
   naming the system unit.
+- `scripts/check_release_versions.sh` covers both `server.json` version fields,
+  so a release cannot bump the crates and leave the registry listing pointing at
+  a version whose README the validator will not fetch.
+- `docs/mcp-registry.md` records the two-call crates.io check that proves the
+  marker is live in a given published version, rather than only present in the
+  repository.
 
 ### Added
 
@@ -109,15 +115,6 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   nothing in the repository looking wrong. The test also pins the registry type,
   base URL, transport, crate identity, and the `mcp-server` argument. It runs in
   CI and in the release preflight.
-
-### Changed
-
-- `scripts/check_release_versions.sh` covers both `server.json` version fields,
-  so a release cannot bump the crates and leave the registry listing pointing at
-  a version whose README the validator will not fetch.
-- `docs/mcp-registry.md` records the two-call crates.io check that proves the
-  marker is live in a given published version, rather than only present in the
-  repository.
 
 ## [0.2.14] — 2026-07-28
 
