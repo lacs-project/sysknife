@@ -73,6 +73,15 @@ happened.
   calls `as_str()` explicitly. The MCP wire structs keep plain strings so the
   published JSON Schema is unchanged.
 
+- Tests for three paths that had none: the MCP server over real stdio JSON-RPC
+  (`initialize` → `tools/list` against the spawned binary — everything else
+  called the handlers directly and skipped the wire), the approval gate
+  `run_intent` actually runs, and `PostgresCheckpointSink` against a live
+  database. The last one immediately caught a real bug: `fetch_chain_rows_from_pool`
+  still selected the pre-migration column list, so every Postgres chain read
+  would have failed with "no column found for name: chain_version". Both
+  backends now build that list from one constant.
+
 ### Fixed
 
 - **The MCP server introduced itself as `rmcp`.** `Implementation::from_build_env()`

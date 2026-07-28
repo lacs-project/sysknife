@@ -944,6 +944,40 @@ fn outcome_json(outcome: &sysknife_daemon::audit_chain::VerifyOutcome) -> serde_
 // run_intent
 // ---------------------------------------------------------------------------
 
+/// What `run_intent` does with one [`ApprovalDecision`].
+///
+/// Extracted from the two gates in `run_intent` (plan-level and, under
+/// `--step-by-step`, per step). They were near-identical `match` blocks over
+/// the same enum, so the two could disagree about what a decision means — and
+/// neither was reachable in a test without an LLM provider and a live daemon.
+#[derive(Debug)]
+enum GateAction {
+    /// Execute without asking.
+    Proceed,
+    /// Ask the operator; a "no" is a rejection.
+    AskOperator,
+    /// Do not execute, and do not ask.
+    Refuse(CliError),
+}
+
+/// Map an approval decision onto the gate's behaviour.
+///
+/// `highest` is the risk being gated: the plan's highest for the plan-level
+/// gate, the step's own under `--step-by-step`.
+fn gate_action(decision: ApprovalDecision, highest: &PlanRiskLevel) -> GateAction {
+    match decision {
+        ApprovalDecision::AutoApproved => GateAction::Proceed,
+        ApprovalDecision::RequiresPrompt => GateAction::AskOperator,
+        ApprovalDecision::RequiresInteraction => GateAction::Refuse(CliError::NonInteractive),
+        ApprovalDecision::ExceedsCeiling(ceiling) => {
+            GateAction::Refuse(CliError::RiskCeilingExceeded {
+                highest: highest.clone(),
+                ceiling,
+            })
+        }
+    }
+}
+
 /// Plan and (optionally) execute a single natural-language intent.
 pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<(), CliError> {
     let config = BrainConfig::from_env().map_err(|e| CliError::ConfigOrDaemon(e.to_string()))?;
@@ -1073,11 +1107,12 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     let policy = opts.approval_policy();
 
     if !opts.step_by_step {
-        match policy.decide_plan(&plan) {
-            ApprovalDecision::AutoApproved => {}
-            ApprovalDecision::RequiresPrompt => {
+        let highest = plan.highest_risk().expect("plan has steps").clone();
+        match gate_action(policy.decide_plan(&plan), &highest) {
+            GateAction::Proceed => {}
+            GateAction::Refuse(err) => return Err(err),
+            GateAction::AskOperator => {
                 let n = plan.steps().len();
-                let highest = plan.highest_risk().expect("plan has steps");
                 let msg = if opts.json {
                     "Execute this plan?".to_owned()
                 } else {
@@ -1085,22 +1120,12 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
                         "  {} step{}, {} risk — execute?",
                         n,
                         if n == 1 { "" } else { "s" },
-                        crate::render::risk_colored(highest),
+                        crate::render::risk_colored(&highest),
                     )
                 };
                 if !prompt_confirm(&msg).await {
                     return Err(CliError::Rejected);
                 }
-            }
-            ApprovalDecision::RequiresInteraction => return Err(CliError::NonInteractive),
-            ApprovalDecision::ExceedsCeiling(ceiling) => {
-                let highest = plan
-                    .highest_risk()
-                    .expect("ExceedsCeiling implies at least one step");
-                return Err(CliError::RiskCeilingExceeded {
-                    highest: highest.clone(),
-                    ceiling,
-                });
             }
         }
     }
@@ -1127,9 +1152,10 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     for step in plan.steps() {
         // Step-by-step: approve each step before previewing it.
         if opts.step_by_step {
-            match policy.decide_step(step.risk_level()) {
-                ApprovalDecision::AutoApproved => {}
-                ApprovalDecision::RequiresPrompt => {
+            match gate_action(policy.decide_step(step.risk_level()), step.risk_level()) {
+                GateAction::Proceed => {}
+                GateAction::Refuse(err) => return Err(err),
+                GateAction::AskOperator => {
                     let msg = if opts.json {
                         format!("Execute {} ({})?", step.action_name(), step.summary())
                     } else {
@@ -1142,13 +1168,6 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
                     if !prompt_confirm(&msg).await {
                         return Err(CliError::Rejected);
                     }
-                }
-                ApprovalDecision::RequiresInteraction => return Err(CliError::NonInteractive),
-                ApprovalDecision::ExceedsCeiling(ceiling) => {
-                    return Err(CliError::RiskCeilingExceeded {
-                        highest: step.risk_level().clone(),
-                        ceiling,
-                    });
                 }
             }
         }
@@ -1868,5 +1887,66 @@ mod tests {
         let t = resolve_socket_target();
         unsafe { std::env::remove_var("SYSKNIFE_SOCKET") };
         assert_eq!(t, crate::client::SocketTarget::Vsock { cid: 3, port: 7777 });
+    }
+
+    // ── the approval gate `run_intent` actually runs ──────────────────────
+
+    #[test]
+    fn only_an_auto_approved_decision_reaches_execution() {
+        // The safety property of both gates in `run_intent`, checked over every
+        // decision the policy can return. `ApprovalPolicy` itself is well
+        // covered; what was untested is that `run_intent` obeys it — the two
+        // gates were inline `match` blocks unreachable without an LLM provider
+        // and a live daemon.
+        let risk = PlanRiskLevel::High;
+        let decisions = [
+            ApprovalDecision::AutoApproved,
+            ApprovalDecision::RequiresPrompt,
+            ApprovalDecision::RequiresInteraction,
+            ApprovalDecision::ExceedsCeiling(MaxRisk::Low),
+        ];
+        for decision in decisions {
+            let expected_to_proceed = matches!(decision, ApprovalDecision::AutoApproved);
+            let label = format!("{decision:?}");
+            let proceeds = matches!(gate_action(decision, &risk), GateAction::Proceed);
+            assert_eq!(
+                proceeds, expected_to_proceed,
+                "only AutoApproved may execute without asking; {label} did not match"
+            );
+        }
+    }
+
+    #[test]
+    fn a_prompt_decision_asks_rather_than_refusing_or_running() {
+        assert!(matches!(
+            gate_action(ApprovalDecision::RequiresPrompt, &PlanRiskLevel::Medium),
+            GateAction::AskOperator
+        ));
+    }
+
+    #[test]
+    fn non_interactive_refuses_without_prompting() {
+        // Prompting here would block forever on a closed stdin in CI or a
+        // systemd unit; the refusal must be silent and immediate.
+        match gate_action(ApprovalDecision::RequiresInteraction, &PlanRiskLevel::High) {
+            GateAction::Refuse(CliError::NonInteractive) => {}
+            other => panic!("expected a NonInteractive refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exceeding_the_ceiling_reports_both_the_risk_and_the_ceiling() {
+        // The error has to name both numbers or the operator cannot tell what
+        // to raise `--max-risk` to.
+        match gate_action(
+            ApprovalDecision::ExceedsCeiling(MaxRisk::Low),
+            &PlanRiskLevel::High,
+        ) {
+            GateAction::Refuse(CliError::RiskCeilingExceeded { highest, ceiling }) => {
+                assert_eq!(highest, PlanRiskLevel::High);
+                assert_eq!(ceiling, MaxRisk::Low);
+            }
+            other => panic!("expected a RiskCeilingExceeded refusal, got {other:?}"),
+        }
     }
 }

@@ -48,6 +48,17 @@ use crate::transactions::{
 
 const MIGRATION_LOCK_ID: i64 = 0x5359_534b_4e49_4645;
 
+/// Column list every `ChainRow` read shares, kept next to `row_to_chain_row`.
+///
+/// The two read paths each spelled the list out. Adding the caller-identity
+/// columns updated the mapper and one of the two queries, and the miss showed
+/// up only as a runtime "no column found for name: chain_version" from the
+/// live-Postgres test — the unit tests, which never touch this SQL, stayed
+/// green. Mirrors `CHAIN_ROW_COLUMNS` in `transactions.rs`.
+const CHAIN_ROW_COLUMNS: &str = "seq, key_id, transaction_id, request_id, request_hash, \
+     action_name, risk_level, summary, approval_id, warnings_json, \
+     created_at, prev_chain_hash, chain_hash, chain_version, caller_role, event_tip";
+
 struct Migration {
     version: i64,
     name: &'static str,
@@ -759,12 +770,9 @@ impl AuditStore for PostgresStore {
         &self,
         transaction_id: &str,
     ) -> Result<Option<ChainRow>, TransactionStoreError> {
-        let row = sqlx_core::query::query(
-            "SELECT seq, key_id, transaction_id, request_id, request_hash, \
-                    action_name, risk_level, summary, approval_id, warnings_json, \
-                    created_at, prev_chain_hash, chain_hash \
-             FROM transactions WHERE transaction_id = $1",
-        )
+        let row = sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(format!(
+            "SELECT {CHAIN_ROW_COLUMNS} FROM transactions WHERE transaction_id = $1"
+        )))
         .bind(transaction_id)
         .fetch_optional(&self.pool)
         .await
@@ -790,12 +798,9 @@ impl AuditStore for PostgresStore {
 }
 
 async fn fetch_chain_rows_from_pool(pool: &PgPool) -> Result<Vec<ChainRow>, TransactionStoreError> {
-    let rows = sqlx_core::query::query(
-        "SELECT seq, key_id, transaction_id, request_id, request_hash, \
-                    action_name, risk_level, summary, approval_id, warnings_json, \
-                    created_at, prev_chain_hash, chain_hash \
-             FROM transactions ORDER BY seq ASC",
-    )
+    let rows = sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(format!(
+        "SELECT {CHAIN_ROW_COLUMNS} FROM transactions ORDER BY seq ASC"
+    )))
     .fetch_all(pool)
     .await
     .map_err(map_sqlx_err)?;
