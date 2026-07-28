@@ -143,9 +143,11 @@ the security boundary.
 npx sysknife-setup
 ```
 
-The wizard detects your installed `sysknife` binary, asks for the daemon
-socket and LLM provider, and then asks which integration to configure.
-No manual file editing needed.
+Needs Node 18 or newer (Ubuntu 22.04's apt Node is 12, which is too old). The
+wizard detects your installed `sysknife` binary, asks for the daemon socket and
+LLM provider, and then asks which integration to configure. No manual file
+editing needed. For install options and prerequisites in full, see the
+canonical [Quick Start](quickstart.md).
 
 If you already know the target, skip the picker:
 
@@ -208,7 +210,11 @@ If you prefer to edit `.mcp.json` by hand:
 
 For vsock add `SYSKNIFE_TOKEN` alongside `SYSKNIFE_SOCKET`.
 
-### 4. Build the binary
+### 4. If you skipped the prebuilt download: build the binary
+
+Not a step in the sequence above — an alternative to the wizard's download, for
+building from source. Needs a C compiler (`sudo apt-get install -y
+build-essential` on Ubuntu); `cmake` is not required.
 
 ```sh
 cargo build -p sysknife-cli --release

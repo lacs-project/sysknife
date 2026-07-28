@@ -39,7 +39,7 @@ const readline = require('readline');
 const crypto   = require('crypto');
 
 const { installBinaryIfMissing } = require('./install-binary.js');
-const { installDaemonService }   = require('./install-daemon.js');
+const { installDaemonService, parseDaemonMode } = require('./install-daemon.js');
 const { mergeMcpServers }        = require('./mcp-config.js');
 
 // ---------------------------------------------------------------------------
@@ -262,6 +262,28 @@ if (NO_PROMPTS && !HAVE_EXPLICIT_INTEGRATION_FLAGS) {
   process.exit(2);
 }
 
+// Which daemon to install is a capability decision, not a default: the
+// user-mode service cannot perform mutating actions (see
+// userModeCapabilityWarning). So an unattended run has to say which one it
+// wants rather than inherit a guess.
+let DAEMON_MODE;
+try {
+  DAEMON_MODE = parseDaemonMode(process.argv.slice(2));
+} catch (e) {
+  console.error(e.message);
+  process.exit(2);
+}
+if (NO_PROMPTS && DAEMON_MODE === null) {
+  console.error(
+    'sysknife-setup: --no-prompts requires --daemon-mode=system, --daemon-mode=user, '
+    + 'or --daemon-mode=skip.\n'
+    + '  system  the privileged service; needed for installing packages, restarting services\n'
+    + '  user    runs as you, no sudo; read-only actions only\n'
+    + '  skip    do not install a service',
+  );
+  process.exit(2);
+}
+
 // ---------------------------------------------------------------------------
 // Hookify rule content (Claude Code only)
 // ---------------------------------------------------------------------------
@@ -413,11 +435,12 @@ guest VM queries — local shell returns host data, not VM data.
 
 async function collectTarget(rl, lineQueue, idx) {
   console.log();
-  console.log(`  ${B}── VM Target ${idx} ${'─'.repeat(40 - String(idx).length)}${X}`);
+  console.log(`  ${B}── Target ${idx} ${'─'.repeat(43 - String(idx).length)}${X}`);
   console.log(`  ${D}Socket examples:${X}`);
-  console.log(`    ${D}/run/sysknife/daemon.sock${X}   ${D}local daemon (systemd default)${X}`);
-  console.log(`    ${D}/tmp/sysknife-vm.sock${X}        ${D}SSH tunnel to a VM${X}`);
-  console.log(`    ${D}vsock://10:9734${X}              ${D}virtio-vsock (CID:port)${X}`);
+  console.log(`    ${D}${runtimeSocketPath()}${X}  ${D}this machine, user service (default)${X}`);
+  console.log(`    ${D}/run/sysknife/daemon.sock${X}   ${D}this machine, system service${X}`);
+  console.log(`    ${D}/tmp/sysknife-vm.sock${X}        ${D}another host, over an SSH tunnel${X}`);
+  console.log(`    ${D}vsock://10:9734${X}              ${D}a VM, over virtio-vsock (CID:port)${X}`);
 
   const defaultSocket = runtimeSocketPath();
   const socket = await ask(rl, lineQueue, 'Daemon socket', defaultSocket);
@@ -430,7 +453,12 @@ async function collectTarget(rl, lineQueue, idx) {
       ok(`Daemon socket reachable: ${socket}`);
     } else if (reachable === false) {
       warn(`Daemon socket not reachable: ${socket}`);
-      step(`Start the daemon:  sudo systemctl start sysknife-daemon`);
+      // A socket under /run/user/<uid> belongs to the user service; telling
+      // someone to `sudo systemctl start` it sends them to a unit that does
+      // not exist on their machine.
+      step(socket.includes('/run/user/')
+        ? `Start the daemon:  systemctl --user start sysknife-daemon`
+        : `Start the daemon:  sudo systemctl start sysknife-daemon`);
       step(`       or build:   cargo run -p sysknife-daemon`);
     }
   }
@@ -832,8 +860,8 @@ async function main() {
   const daemonBinPath = binaryPath.replace(/\/sysknife$/, '/sysknife-daemon');
   await installDaemonService({
     ask: askWrapper,
-    noPrompts: NO_PROMPTS,
     daemonBinPath,
+    daemonMode: DAEMON_MODE,
   });
 
   // ── Socket validation ─────────────────────────────────────────────────────
@@ -917,6 +945,12 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
   --all         Configure Claude Code, Cursor, and Codex CLI.
   --no-binary   Skip prebuilt binary download (build from source instead).
   --no-prompts  Accept all defaults non-interactively (useful for scripts/tests).
+                Requires --daemon-mode, since the daemon choice decides which
+                actions will work.
+  --daemon-mode=system|user|skip
+                system  privileged service; required for mutating actions
+                user    runs as you, no sudo; read-only actions only
+                skip    install no service
   --help, -h    Show this help message and exit.
 
 \x1b[1mDESCRIPTION\x1b[0m

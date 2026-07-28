@@ -33,6 +33,21 @@ pub enum CliError {
     #[error("plan requires interactive approval but --non-interactive was set")]
     NonInteractive,
 
+    /// Produced when `sysknife approve` is run without a terminal on stdin.
+    ///
+    /// Distinct from [`Self::NonInteractive`] because the cause is different and
+    /// the old shared message was simply wrong here: `approve` has no
+    /// `--non-interactive` flag, so telling the user it "was set" sent anyone
+    /// who piped or scripted the command looking for a flag that does not exist.
+    ///
+    /// Exit code 1 — a human decision is still required before this can run.
+    #[error(
+        "sysknife approve needs a terminal to confirm on, and stdin is not one \
+         (it is a pipe, a redirect, or a non-interactive ssh command). \
+         Run it directly in a shell."
+    )]
+    ApprovalNeedsTerminal,
+
     /// Produced by subcommands that have their own exit-code semantics (e.g.
     /// `sysknife audit verify` uses 0/1/2). The wrapped value is the literal
     /// exit code the process should return.
@@ -43,7 +58,10 @@ pub enum CliError {
 impl CliError {
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::Rejected | Self::RiskCeilingExceeded { .. } | Self::NonInteractive => 1,
+            Self::Rejected
+            | Self::RiskCeilingExceeded { .. }
+            | Self::NonInteractive
+            | Self::ApprovalNeedsTerminal => 1,
             Self::ExecutionFailed(_) => 2,
             Self::PlanningFailed(_) => 3,
             Self::ConfigOrDaemon(_) => 4,
@@ -76,6 +94,31 @@ mod tests {
     #[test]
     fn exit_code_non_interactive_is_1() {
         assert_eq!(CliError::NonInteractive.exit_code(), 1);
+    }
+
+    #[test]
+    fn exit_code_approval_needs_terminal_is_1() {
+        assert_eq!(CliError::ApprovalNeedsTerminal.exit_code(), 1);
+    }
+
+    #[test]
+    fn a_missing_terminal_is_not_reported_as_a_flag_the_user_never_passed() {
+        // `sysknife approve` has no --non-interactive flag, so the shared
+        // message used to state a cause that could not be true.
+        let msg = CliError::ApprovalNeedsTerminal.to_string();
+        assert!(
+            !msg.contains("--non-interactive"),
+            "must not blame a flag that does not exist for this subcommand: {msg}"
+        );
+        assert!(msg.contains("terminal"), "names the real cause: {msg}");
+        assert!(
+            msg.contains("Run it directly in a shell"),
+            "tells the user what to do instead: {msg}"
+        );
+        // The genuine flag case keeps its own, accurate wording.
+        assert!(CliError::NonInteractive
+            .to_string()
+            .contains("--non-interactive"));
     }
 
     #[test]

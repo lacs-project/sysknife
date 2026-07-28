@@ -613,6 +613,26 @@ fn authorize_action(
     policy.action_allowed(caller, action_name)
 }
 
+/// The message for a refused action.
+///
+/// Refusals used to end at "is not allowed for Observer role", which is true and
+/// unactionable. When the required role is known, name the group that grants it
+/// and the command to join. The role ceiling can be raised per action via
+/// `[policy.risk_overrides]`, so the effective minimum is read from the live
+/// policy rather than the compile-time baseline.
+fn authorization_failure_message(
+    policy: &crate::policy::PolicyTable,
+    caller: &CallerRole,
+    action_name: &str,
+) -> String {
+    match policy.min_role_for_action(action_name) {
+        Some(required) => crate::auth::denial_message(action_name, *caller, required),
+        // No baseline entry means the action is not in the catalogue at all;
+        // there is no group to recommend.
+        None => format!("action '{action_name}' is not allowed for {caller:?} role"),
+    }
+}
+
 /// Authorize a caller to act on an existing transaction (approve / cancel /
 /// view details), keyed on the transaction's own action. Transaction IDs are
 /// enumerable by any Observer-tier caller via history, so without this a
@@ -641,9 +661,10 @@ async fn authorize_for_transaction(
                     framed,
                     request_id,
                     "authorization_failure",
-                    format!(
-                        "action '{}' is not allowed for {caller_role:?} role",
-                        transaction.action_name
+                    authorization_failure_message(
+                        &state.policy,
+                        caller_role,
+                        &transaction.action_name,
                     ),
                 )
                 .await?;
@@ -1250,10 +1271,7 @@ async fn handle_approval_details(
             framed,
             request_id,
             "authorization_failure",
-            format!(
-                "action '{}' is not allowed for {caller_role:?} role",
-                transaction.action_name
-            ),
+            authorization_failure_message(&state.policy, caller_role, &transaction.action_name),
         )
         .await;
     }
@@ -1685,7 +1703,7 @@ async fn handle_describe(
             framed,
             request_id,
             "authorization_failure",
-            format!("action '{action_name}' is not allowed for {caller_role:?} role"),
+            authorization_failure_message(&state.policy, caller_role, action_name),
         )
         .await;
     }
@@ -1775,7 +1793,7 @@ async fn handle_preview(
             framed,
             request_id,
             "authorization_failure",
-            format!("action '{action_name}' is not allowed for {caller_role:?} role"),
+            authorization_failure_message(&state.policy, caller_role, action_name),
         )
         .await;
     }
@@ -2087,7 +2105,7 @@ async fn handle_execute(
             framed,
             request_id,
             "authorization_failure",
-            format!("action '{action_name}' is not allowed for {caller_role:?} role"),
+            authorization_failure_message(&state.policy, caller_role, action_name),
         )
         .await;
     }

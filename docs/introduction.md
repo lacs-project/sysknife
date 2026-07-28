@@ -111,11 +111,15 @@ SysKnife, not an afterthought.
 > See [Distro Support](distro-support.md) for the full matrix.
 
 ```sh
+sudo apt-get install -y build-essential          # Rust stable and a C compiler
 git clone https://github.com/lacs-project/sysknife
-cd sysknife && make build && sudo make install
+cd sysknife && make build && sudo make install   # ~7-12 min: about 400 crates
 sudo systemctl enable --now sysknife-daemon
 sysknife "show disk usage"
 ```
+
+For prebuilt binaries instead of a build, run `npx sysknife-setup` (Node 18+).
+See the canonical [Quick Start](quickstart.md).
 
 No API key needed if you have [Ollama](https://ollama.com) running locally —
 SysKnife auto-detects it. See [Quick Start](quickstart.md).

@@ -37,6 +37,16 @@ const RELEASES_API = 'https://api.github.com/repos/lacs-project/sysknife/release
 /** User-agent required by GitHub API. */
 const USER_AGENT = 'sysknife-setup/0.1 (node)';
 
+// Two endpoints, two media types, and they are not interchangeable.
+//
+// The releases *metadata* endpoint answers `Accept: application/octet-stream`
+// with **HTTP 415 Unsupported Media Type**, so asking for it there fails every
+// install before a single byte is downloaded. Asset downloads, in contrast,
+// require the octet-stream type to get the file rather than its JSON envelope.
+// Verified against the live API: json → 200, octet-stream → 415.
+const GITHUB_JSON_ACCEPT = 'application/vnd.github+json';
+const ASSET_ACCEPT = 'application/octet-stream';
+
 /**
  * Default install path when XDG_BIN_HOME is not set and ~/.local/bin is not
  * on PATH.  We prefer ~/.local/bin over /usr/local/bin so that the common
@@ -181,21 +191,25 @@ async function chooseInstallDir(ask, noPrompts) {
  * Follows up to 5 redirects.  Rejects on HTTP errors.
  *
  * @param {string} url
- * @param {number} [redirectsLeft=5]
+ * @param {{ accept?: string, redirectsLeft?: number }} [opts]
+ *        `accept` defaults to {@link ASSET_ACCEPT}; metadata requests must pass
+ *        {@link GITHUB_JSON_ACCEPT} or GitHub answers HTTP 415.
  * @returns {Promise<Buffer>}
  */
-function fetchBuffer(url, redirectsLeft = 5) {
+function fetchBuffer(url, opts = {}) {
+  const accept = opts.accept || ASSET_ACCEPT;
+  const redirectsLeft = opts.redirectsLeft === undefined ? 5 : opts.redirectsLeft;
   return new Promise((resolve, reject) => {
     const req = https.get(url, {
       headers: {
         'User-Agent': USER_AGENT,
-        Accept: 'application/octet-stream',
+        Accept: accept,
       },
     }, (res) => {
       if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
         if (redirectsLeft <= 0) { reject(new Error('Too many redirects')); return; }
         req.destroy();
-        resolve(fetchBuffer(res.headers.location, redirectsLeft - 1));
+        resolve(fetchBuffer(res.headers.location, { accept, redirectsLeft: redirectsLeft - 1 }));
         return;
       }
       if (res.statusCode !== 200) {
@@ -272,8 +286,11 @@ function fetchWithProgress(url, label, redirectsLeft = 5) {
  * @param {string} [url] override for testing
  * @returns {Promise<object>}
  */
-async function fetchLatestRelease(url = RELEASES_API) {
-  const buf = await fetchBuffer(url);
+// `fetch` is injectable so the Accept header this sends can be asserted
+// offline; see tests/release-metadata.test.mjs. Production always uses the
+// default.
+async function fetchLatestRelease(url = RELEASES_API, fetch = fetchBuffer) {
+  const buf = await fetch(url, { accept: GITHUB_JSON_ACCEPT });
   return JSON.parse(buf.toString('utf8'));
 }
 
@@ -550,4 +567,12 @@ async function installBinaryIfMissing(opts) {
   return { installed: true, path: cliDest };
 }
 
-module.exports = { installBinaryIfMissing, detectPlatform, verifySha256, isOnPath };
+module.exports = {
+  installBinaryIfMissing,
+  detectPlatform,
+  verifySha256,
+  isOnPath,
+  fetchLatestRelease,
+  GITHUB_JSON_ACCEPT,
+  ASSET_ACCEPT,
+};

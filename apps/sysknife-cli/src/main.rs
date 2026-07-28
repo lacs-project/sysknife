@@ -49,7 +49,12 @@ async fn main() {
     .await;
 
     if let Err(e) = result {
-        eprintln!("sysknife: {e}");
+        // `Exit` means the subcommand owns its own output and has already
+        // printed a report (e.g. `doctor`, `audit verify`). Printing here too
+        // showed the user the same failure twice.
+        if !matches!(e, crate::error::CliError::Exit(_)) {
+            eprintln!("sysknife: {e}");
+        }
         std::process::exit(e.exit_code());
     }
 }

@@ -379,7 +379,9 @@ fn map_openai_error(err: async_openai::error::OpenAIError) -> ProviderError {
                     "OpenAI authentication error: {}",
                     msg
                 );
-                ProviderError::Auth("OpenAI authentication failed — check your API key".to_string())
+                ProviderError::Auth(
+                    "OpenAI authentication failed — check OPENAI_API_KEY".to_string(),
+                )
             }
             super::StatusClass::RateLimit => {
                 tracing::warn!(
@@ -412,7 +414,7 @@ fn map_openai_error(err: async_openai::error::OpenAIError) -> ProviderError {
             "OpenAI authentication error: {}",
             msg
         );
-        ProviderError::Auth("OpenAI authentication failed — check your API key".to_string())
+        ProviderError::Auth("OpenAI authentication failed — check OPENAI_API_KEY".to_string())
     } else if msg.contains("429") || msg.to_lowercase().contains("rate limit") {
         tracing::warn!(
             target: "sysknife_brain::openai_adapter",
@@ -931,7 +933,7 @@ mod tests {
         );
         if let ProviderError::Auth(msg) = mapped {
             assert_eq!(
-                msg, "OpenAI authentication failed — check your API key",
+                msg, "OpenAI authentication failed — check OPENAI_API_KEY",
                 "auth message must be the fixed key-safe string, not the raw SDK text"
             );
         }
@@ -1013,7 +1015,7 @@ mod tests {
         // ProviderError::Auth — it returns a fixed, safe message instead.
         // We can't construct OpenAIError directly, so we test the rule by
         // confirming the fixed string is what the production code returns.
-        let fixed_msg = "OpenAI authentication failed — check your API key";
+        let fixed_msg = "OpenAI authentication failed — check OPENAI_API_KEY";
         // Verify the string constant in production code matches what callers expect.
         assert!(
             fixed_msg.contains("authentication failed"),

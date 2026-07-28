@@ -24,7 +24,8 @@ SSH into the guest and run:
 git clone https://github.com/lacs-project/sysknife
 cd sysknife
 
-# Build and install (requires Rust stable)
+# Build and install (requires Rust stable and a C compiler:
+#   sudo apt-get install -y build-essential   — cmake is not needed)
 make build
 sudo make install
 

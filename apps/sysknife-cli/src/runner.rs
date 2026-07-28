@@ -227,7 +227,7 @@ pub async fn run_approve(
     log: &Logger,
 ) -> Result<(), CliError> {
     if !std::io::stdin().is_terminal() {
-        return Err(CliError::NonInteractive);
+        return Err(CliError::ApprovalNeedsTerminal);
     }
     let client = DaemonClient::new(socket);
     let details = client.approval_details(transaction_id).await?;
@@ -368,7 +368,9 @@ pub async fn run_doctor(
 ) -> Result<(), CliError> {
     let config = BrainConfig::from_env().map_err(|e| CliError::ConfigOrDaemon(e.to_string()))?;
 
-    let socket_label = format!("{socket:?}");
+    // `{:?}` printed `Unix("/run/…")` at users; `label()` gives the URI form
+    // they can put back into SYSKNIFE_SOCKET.
+    let socket_label = socket.label();
     let client = DaemonClient::new(socket);
 
     // Detect the running distro once; failure is non-fatal for doctor.
@@ -409,12 +411,16 @@ pub async fn run_doctor(
         }
         Err(e) => {
             if json_out {
-                let out = json!({ "ok": false, "error": e.to_string() });
+                // Scripts need to know which socket failed, not just that one did.
+                let out = json!({ "ok": false, "socket": socket_label, "error": e.to_string() });
                 log.println(&serde_json::to_string(&out).expect("static JSON"));
             } else {
-                crate::render::print_doctor_fail(&e.to_string());
+                crate::render::print_doctor_fail(&socket_label, &e.to_string());
             }
-            Err(CliError::ConfigOrDaemon(e.to_string()))
+            // The report above is the user-facing output; `Exit` carries the
+            // code (4, as for any config/daemon failure) without main
+            // re-printing the same sentence underneath it.
+            Err(CliError::Exit(4))
         }
     }
 }
@@ -987,6 +993,16 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     // (the daemon will produce its own error at execution time).
     let distro = sysknife_core::distro::detect().ok();
 
+    // Captured before `config` is moved into the planner below.
+    let provider_label = config.provider_name().to_string();
+    let model_label = config.model_name().to_string();
+
+    // Nothing used to say a provider had been picked by elimination, so a
+    // keyless first run failed against a port the user had never heard of.
+    if let Some(notice) = config.provider_guess_notice() {
+        eprintln!("! {notice}");
+    }
+
     let plan_client = DaemonClient::new(opts.socket.clone());
 
     // Layer 3: planning event channel — planner emits PlanEvent as it works;
@@ -1004,6 +1020,12 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     // Layer 1: spinner — auto-hidden by indicatif when stderr is not a TTY.
     let spinner =
         (!opts.json).then(|| crate::render::make_spinner(format!("Planning \"{intent}\"…")));
+
+    // …and because it is hidden there, a piped or ssh'd run would otherwise
+    // print nothing at all while the provider thinks. Say it once instead.
+    if !io::stderr().is_terminal() {
+        crate::render::print_planning_notice(&provider_label, &model_label, &intent);
+    }
 
     // Spawn event updater: receives PlanEvent and updates the spinner message.
     // The task exits naturally when the channel closes (i.e. when the planner

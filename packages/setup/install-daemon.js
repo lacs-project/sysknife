@@ -8,7 +8,7 @@
  *   installDaemonService(opts) → Promise<void>
  *
  *   opts.ask(question, defaultVal)  — async prompt helper from index.js
- *   opts.noPrompts                  — boolean; accept all defaults silently
+ *   opts.daemonMode                 — 'system' | 'user' | 'skip'; null asks
  *   opts.daemonBinPath              — absolute path to sysknife-daemon binary
  *
  * Two install modes:
@@ -148,6 +148,56 @@ function systemctl(args, userMode = false) {
 }
 
 // ---------------------------------------------------------------------------
+// Daemon mode selection
+// ---------------------------------------------------------------------------
+
+/** The three answers the daemon-mode question has. */
+const DAEMON_MODES = ['system', 'user', 'skip'];
+
+/**
+ * Read `--daemon-mode=<mode>` from argv.
+ *
+ * Returns null when the flag is absent, so callers can tell "not specified"
+ * from a value. Deliberately does not default: defaulting silently to the
+ * user-mode service is what left automated installs unable to perform any
+ * mutating action.
+ *
+ * @param {string[]} argv
+ * @returns {string|null}
+ * @throws when the flag is present with a value that is not a known mode
+ */
+function parseDaemonMode(argv) {
+  const flag = argv.find(a => a.startsWith('--daemon-mode'));
+  if (!flag) return null;
+  const value = flag.includes('=') ? flag.slice(flag.indexOf('=') + 1) : '';
+  if (!DAEMON_MODES.includes(value)) {
+    throw new Error(
+      `sysknife-setup: --daemon-mode must be one of: ${DAEMON_MODES.join(', ')} (got "${value}")`,
+    );
+  }
+  return value;
+}
+
+/**
+ * What a user-mode daemon cannot do, and how to get a daemon that can.
+ *
+ * The daemon runs privileged actions by shelling out through `sudo`, and the
+ * NOPASSWD grants that makes non-interactive live in packaging/sysknife-sudoers,
+ * installed only by `sudo make install` and scoped to the `sysknife` system
+ * user. A user-mode unit runs as the invoking human instead, so those grants do
+ * not apply to it.
+ */
+function userModeCapabilityWarning() {
+  return (
+    'This is a user-mode daemon running as you, so read-only actions work but '
+    + 'mutating ones (installing packages, restarting services, writing config) '
+    + 'will fail with "sudo: a password is required". Those need the system '
+    + 'service and its sudoers grants: clone the repo and run `sudo make install`, '
+    + 'then `sudo systemctl enable --now sysknife-daemon`.'
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -157,10 +207,10 @@ function systemctl(args, userMode = false) {
  *
  * Skips silently when systemd is not detected.
  *
- * @param {{ ask: Function, noPrompts: boolean, daemonBinPath: string }} opts
+ * @param {{ ask: Function, daemonBinPath: string, daemonMode: string|null }} opts
  */
 async function installDaemonService(opts) {
-  const { ask, noPrompts = false, daemonBinPath } = opts;
+  const { ask, daemonBinPath, daemonMode = null } = opts;
 
   if (!hasSystemd()) {
     warn('systemd not detected — skipping daemon service install.');
@@ -176,8 +226,11 @@ async function installDaemonService(opts) {
   console.log(`  3) Skip`);
   console.log();
 
-  const defaultChoice = noPrompts ? '1' : undefined;
-  const choice = (await ask('Install daemon service (1 / 2 / 3)', defaultChoice || '1')).trim();
+  // An explicit --daemon-mode answers the question outright. Without it there
+  // must be a human to ask: `noPrompts` used to silently mean "1" (user mode),
+  // which quietly produced a daemon that could not mutate anything.
+  const preset = { system: '2', user: '1', skip: '3' }[daemonMode];
+  const choice = preset || (await ask('Install daemon service (1 / 2 / 3)', '1')).trim();
 
   if (choice === '3' || choice.toLowerCase().startsWith('s')) {
     step('Skipping daemon service install.');
@@ -192,6 +245,7 @@ async function installDaemonService(opts) {
 
   // Default: choice === '1' or anything else → user service
   await _installUserService(daemonBinPath);
+  warn(userModeCapabilityWarning());
 }
 
 /** Install a user-level service under ~/.config/systemd/user/. */
@@ -265,4 +319,12 @@ async function _installSystemService(daemonBinPath) {
   step(`Daemon binary path that will be used:  ${daemonBinPath}`);
 }
 
-module.exports = { installDaemonService, userUnitContent, runtimeSocketPath, runtimeDir };
+module.exports = {
+  installDaemonService,
+  userUnitContent,
+  runtimeSocketPath,
+  runtimeDir,
+  parseDaemonMode,
+  userModeCapabilityWarning,
+  DAEMON_MODES,
+};
