@@ -214,10 +214,16 @@ Anchor and check signed checkpoints against an external database:
 SYSKNIFE_CHECKPOINT_DB="postgres://user@host/checkpoints" sysknife audit checkpoint
 ```
 
+Three checks run: the transaction chain, the approval-event chain, and the
+binding between them. All three are reported, and any one of them can fail the
+command — a clean transaction chain must never mask a tampered approval trail.
+
 **A clean run looks like:**
 
 ```text
 OK: 4128 row(s) verified in sqlite
+OK: 512 approval event(s) verified
+OK: 4128 row(s) still match the approval event they committed to
 ```
 
 **A detected tamper looks like:**
@@ -234,11 +240,26 @@ signature mismatch — same report shape, different `expected`/`actual`
 pair. Either failure is reported at the *first* broken row; rows before it
 are still proven intact.
 
+**Deleted approval events look like:**
+
+```text
+OK: 4128 row(s) verified in sqlite
+OK: 300 approval event(s) verified
+BROKEN: transaction seq=4128 committed to approval event 71ac…9d2f, which is
+no longer in the event chain — approval events were deleted from the end of
+the chain
+```
+
+Note that the event chain itself still walks clean there: truncating its tail
+leaves a self-consistent remainder. The binding is what catches it.
+
 Exit codes matter for automation: `0` intact, `1` broken (a real tamper was
 detected), `2` cannot verify (missing key file, unreadable database, wrong
 key generation loaded). The 1-vs-2 split is deliberate — a CI job that only
 checks for a nonzero exit code must not silently treat "I couldn't check"
-the same as "I checked and it's fine."
+the same as "I checked and it's fine." When the three checks disagree, the
+worst wins, and `1` outranks `2`: if anything is provably broken, saying
+"could not verify" would understate what is known.
 
 ## Limits and honest scope {#limits-and-honest-scope}
 
