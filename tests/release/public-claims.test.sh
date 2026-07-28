@@ -47,7 +47,21 @@ assert_rejected() {
     fi
 }
 
-sed -i 's/1,405 Rust tests/1,256 Rust tests/' "$fixture/README.md"
+# Derive the baseline from the checker rather than repeating the literal here.
+# When the baseline moved, this mutation silently became a no-op: the sed matched
+# nothing, the checker legitimately passed, and the assertion below then blamed
+# the checker. A test whose mutation can stop mutating is worse than no test.
+baseline="$(grep -oE "expected [0-9],[0-9]{3} Rust tests" "$checker" | head -1 \
+    | grep -oE '[0-9],[0-9]{3}')"
+if [[ -z "$baseline" ]]; then
+    printf 'FAIL: could not read the test-count baseline from %s\n' "$checker" >&2
+    exit 1
+fi
+sed -i "s/${baseline} Rust tests/1,256 Rust tests/" "$fixture/README.md"
+if ! grep -q '1,256 Rust tests' "$fixture/README.md"; then
+    printf 'FAIL: baseline mutation did not apply; fixture would pass vacuously\n' >&2
+    exit 1
+fi
 assert_rejected 'old test count'
 cp "$repo_root/README.md" "$fixture/README.md"
 

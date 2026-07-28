@@ -148,6 +148,15 @@ anything, until the next row is written.
 
 ## Signed checkpoints: closing the truncation gap
 
+> **The default deployment has no anchor.** Anchoring is opt-in via
+> `SYSKNIFE_CHECKPOINT_DB`, and `packaging/sysknife-daemon.service` does not set
+> it, so a stock system install **cannot detect tail truncation** — the gap this
+> section describes is open until you configure a sink. The daemon says so at
+> startup and `sysknife audit verify` repeats it beside every verdict, because
+> `OK: N rows verified` would otherwise read as "nothing was removed". Setup
+> instructions are in
+> [SECURITY.md](../SECURITY.md#audit-anchoring-in-the-default-deployment).
+
 A hash chain alone cannot detect one specific attack: **tail truncation**.
 If an attacker with write access to the audit database deletes the most
 recent *K* rows, the remaining chain is still perfectly self-consistent —

@@ -4848,7 +4848,6 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tokio-vsock",
- "tracing",
  "uuid",
  "zeroize",
 ]

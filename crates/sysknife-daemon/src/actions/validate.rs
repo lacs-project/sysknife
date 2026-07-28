@@ -1,5 +1,62 @@
 use crate::executor::ExecutorError;
 
+// ---------------------------------------------------------------------------
+// Field bounds
+// ---------------------------------------------------------------------------
+//
+// Every validator below rejects over-long input. The bounds are named because
+// most are not arbitrary: they come from a standard (DNS, TCP, email) or from
+// the file format the value ends up in (/etc/fstab, sudoers, sysctl.d). A bare
+// `> 253` in a hostname check reads as a guess; `MAX_DNS_NAME_LEN` says where
+// the number is from, and stops the next validator inventing a different
+// number for the same concept.
+
+/// Longest local account name accepted. `useradd` enforces 32 on Linux.
+const MAX_USERNAME_LEN: usize = 32;
+/// Longest presentation-format DNS name (RFC 1035). Applies to hostnames and
+/// to bare domains, which is why both validators share it.
+const MAX_DNS_NAME_LEN: usize = 253;
+/// Longest single DNS label between dots (RFC 1035).
+const MAX_DNS_LABEL_LEN: usize = 63;
+/// Highest TCP/UDP port number.
+pub(crate) const MAX_PORT: u32 = 65_535;
+/// Longest LVM volume/group name (LVM's own limit is 128 including NUL).
+const MAX_LVM_NAME_LEN: usize = 127;
+/// Longest LVM size expression, e.g. `20G`, `100%FREE`.
+const MAX_LVM_SIZE_LEN: usize = 32;
+/// Longest `journalctl --since/--until` expression.
+const MAX_JOURNAL_TIME_LEN: usize = 64;
+/// Longest `journalctl --grep` pattern.
+const MAX_JOURNAL_GREP_LEN: usize = 256;
+/// Longest sysctl key, e.g. `net.ipv4.tcp_syncookies`.
+const MAX_SYSCTL_KEY_LEN: usize = 128;
+/// Longest sysctl value.
+const MAX_SYSCTL_VALUE_LEN: usize = 200;
+/// Longest systemd memory/CPU limit expression, e.g. `500M`, `infinity`.
+const MAX_MEMORY_LIMIT_LEN: usize = 24;
+/// Longest `TasksMax` digit string — u64 needs 20, so 12 is already generous.
+const MAX_TASKS_MAX_DIGITS: usize = 12;
+/// Longest field written into an `/etc/fstab` line: device, mount point,
+/// options, and swap file path all land there, so one bound governs them.
+const MAX_FSTAB_FIELD_LEN: usize = 256;
+/// Longest sudoers drop-in file name under `/etc/sudoers.d/`.
+const MAX_SUDOERS_NAME_LEN: usize = 64;
+/// Longest absolute path accepted for log and audit targets. `NAME_MAX` is 255
+/// on ext4/xfs, used here as a whole-path bound.
+const MAX_ABSOLUTE_PATH_LEN: usize = 255;
+/// Longest remote syslog host, which may be an address rather than a name.
+const MAX_SYSLOG_HOST_LEN: usize = 255;
+/// Longest Debian package name. Policy allows far less; this only stops abuse.
+const MAX_APT_PACKAGE_LEN: usize = 128;
+/// Longest apt pin expression, e.g. `version 1.24.*`, `release a=noble`.
+const MAX_APT_PIN_EXPR_LEN: usize = 200;
+/// Longest command list in a sudoers grant — several absolute paths.
+const MAX_SUDO_COMMANDS_LEN: usize = 1024;
+/// Longest email address (RFC 5321 path limit).
+const MAX_EMAIL_LEN: usize = 254;
+/// Shortest possible email address: `a@b`.
+const MIN_EMAIL_LEN: usize = 3;
+
 /// Validate a username: `[a-zA-Z0-9._-]`, 1-32 chars, must not start with `-`
 /// or `.`, and must not contain `..`.
 ///
@@ -10,7 +67,7 @@ use crate::executor::ExecutorError;
 /// escaping the per-user home directory. `.` and `..` are also caught by the
 /// leading-`.` check; the `..` substring guard additionally rejects `a..b`.
 pub fn validated_username(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.is_empty() || s.len() > 32 {
+    if s.is_empty() || s.len() > MAX_USERNAME_LEN {
         return Err(ExecutorError::InvalidParam(param));
     }
     if s.starts_with('-') || s.starts_with('.') || s.contains("..") {
@@ -102,7 +159,7 @@ pub fn validated_unit_name(s: &str, param: &'static str) -> Result<String, Execu
 /// A leading `-` is both invalid per RFC 1123 (labels start alphanumeric) and
 /// an option-injection vector when interpolated into `hostnamectl set-hostname`.
 pub fn validated_hostname(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.is_empty() || s.len() > 253 || s.starts_with('-') {
+    if s.is_empty() || s.len() > MAX_DNS_NAME_LEN || s.starts_with('-') {
         return Err(ExecutorError::InvalidParam(param));
     }
     if !s
@@ -113,7 +170,7 @@ pub fn validated_hostname(s: &str, param: &'static str) -> Result<String, Execut
     }
     // Each label between dots must be 1-63 chars.
     for label in s.split('.') {
-        if label.is_empty() || label.len() > 63 {
+        if label.is_empty() || label.len() > MAX_DNS_LABEL_LEN {
             return Err(ExecutorError::InvalidParam(param));
         }
     }
@@ -290,7 +347,7 @@ pub fn validated_port_or_service(s: &str, param: &'static str) -> Result<String,
         let port: u32 = port_part
             .parse()
             .map_err(|_| ExecutorError::InvalidParam(param))?;
-        if port == 0 || port > 65535 {
+        if port == 0 || port > MAX_PORT {
             return Err(ExecutorError::InvalidParam(param));
         }
         return Ok(s.to_string());
@@ -299,7 +356,7 @@ pub fn validated_port_or_service(s: &str, param: &'static str) -> Result<String,
     // Bare-port form: all digits.
     if s.chars().all(|c| c.is_ascii_digit()) {
         let port: u32 = s.parse().map_err(|_| ExecutorError::InvalidParam(param))?;
-        if port == 0 || port > 65535 {
+        if port == 0 || port > MAX_PORT {
             return Err(ExecutorError::InvalidParam(param));
         }
         return Ok(s.to_string());
@@ -368,7 +425,7 @@ pub fn validated_safe_arg(s: &str, param: &'static str) -> Result<String, Execut
 /// the action, never by the caller), and cap the length at 127. Reserved bare
 /// names `.` and `..` are rejected by the first-char rule.
 pub fn validated_lvm_name(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.is_empty() || s.len() > 127 {
+    if s.is_empty() || s.len() > MAX_LVM_NAME_LEN {
         return Err(ExecutorError::InvalidParam(param));
     }
     let mut chars = s.chars();
@@ -394,7 +451,7 @@ pub fn validated_lvm_name(s: &str, param: &'static str) -> Result<String, Execut
 /// forms (`+50%FREE`) are intentionally not accepted here — add a dedicated
 /// extent-percent path if needed rather than widening this validator.
 pub fn validated_lvm_size(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.len() > 32 {
+    if s.len() > MAX_LVM_SIZE_LEN {
         return Err(ExecutorError::InvalidParam(param));
     }
     let body = s.strip_prefix('+').unwrap_or(s);
@@ -451,7 +508,7 @@ pub fn validated_journal_priority(s: &str, param: &'static str) -> Result<String
 /// surface, and there is no shell, so we only enforce a printable-ASCII
 /// allowlist (letters, digits, space, and `:-+.,`) and a length cap.
 pub fn validated_journal_time(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.is_empty() || s.len() > 64 {
+    if s.is_empty() || s.len() > MAX_JOURNAL_TIME_LEN {
         return Err(ExecutorError::InvalidParam(param));
     }
     if !s
@@ -469,7 +526,7 @@ pub fn validated_journal_time(s: &str, param: &'static str) -> Result<String, Ex
 /// metacharacter is inert. We only reject control characters (which have no
 /// place in a single-line pattern) and cap the length.
 pub fn validated_journal_grep(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.is_empty() || s.len() > 256 {
+    if s.is_empty() || s.len() > MAX_JOURNAL_GREP_LEN {
         return Err(ExecutorError::InvalidParam(param));
     }
     if s.chars().any(|c| c.is_control()) {
@@ -485,7 +542,7 @@ pub fn validated_journal_grep(s: &str, param: &'static str) -> Result<String, Ex
 /// SysKnife always uses the dotted form, never `net/ipv4/...`. Length ≤ 128.
 /// Mirrors `KEY_RE` in `packaging/sysknife-sysctl-edit`.
 pub fn validated_sysctl_key(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.is_empty() || s.len() > 128 {
+    if s.is_empty() || s.len() > MAX_SYSCTL_KEY_LEN {
         return Err(ExecutorError::InvalidParam(param));
     }
     let first = s.chars().next().unwrap();
@@ -506,7 +563,7 @@ pub fn validated_sysctl_key(s: &str, param: &'static str) -> Result<String, Exec
 /// lists such as `4096 87380 6291456`). Length 1..=200. Mirrors `VALUE_RE` in
 /// `packaging/sysknife-sysctl-edit`.
 pub fn validated_sysctl_value(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.is_empty() || s.len() > 200 {
+    if s.is_empty() || s.len() > MAX_SYSCTL_VALUE_LEN {
         return Err(ExecutorError::InvalidParam(param));
     }
     if !s
@@ -524,7 +581,7 @@ pub fn validated_memory_limit(s: &str, param: &'static str) -> Result<String, Ex
     if s == "infinity" {
         return Ok(s.to_string());
     }
-    if s.len() > 24 {
+    if s.len() > MAX_MEMORY_LIMIT_LEN {
         return Err(ExecutorError::InvalidParam(param));
     }
     let digits = match s.chars().last() {
@@ -554,7 +611,7 @@ pub fn validated_tasks_max(s: &str, param: &'static str) -> Result<String, Execu
     if s == "infinity" {
         return Ok(s.to_string());
     }
-    if s.is_empty() || s.len() > 12 || !s.chars().all(|c| c.is_ascii_digit()) {
+    if s.is_empty() || s.len() > MAX_TASKS_MAX_DIGITS || !s.chars().all(|c| c.is_ascii_digit()) {
         return Err(ExecutorError::InvalidParam(param));
     }
     Ok(s.to_string())
@@ -590,7 +647,7 @@ const CRITICAL_MOUNTPOINTS: &[&str] = &[
 /// Validate a mount source: a `/dev/…` node, `UUID=…`, `LABEL=…`, a cifs
 /// `//host/share`, or an nfs `host:/export`. No leading dash / shell metachars.
 pub fn validated_mount_device(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.is_empty() || s.len() > 256 || s.starts_with('-') || s.contains("..") {
+    if s.is_empty() || s.len() > MAX_FSTAB_FIELD_LEN || s.starts_with('-') || s.contains("..") {
         return Err(ExecutorError::InvalidParam(param));
     }
     let dev_like = s.starts_with("/dev/")
@@ -631,7 +688,7 @@ pub fn validated_mount_device(s: &str, param: &'static str) -> Result<String, Ex
 /// Validate a mountpoint: absolute, no `..`, safe charset, and not a critical
 /// system mountpoint. Mirrors `valid_mountpoint` in the helper.
 pub fn validated_mount_point(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if !s.starts_with('/') || s.len() > 256 || s.contains("..") {
+    if !s.starts_with('/') || s.len() > MAX_FSTAB_FIELD_LEN || s.contains("..") {
         return Err(ExecutorError::InvalidParam(param));
     }
     if !s
@@ -658,7 +715,7 @@ pub fn validated_fstype(s: &str, param: &'static str) -> Result<String, Executor
 /// Validate a comma-separated mount options string (charset only; the helper
 /// forces `nofail` in). Empty is allowed (helper defaults to `defaults`).
 pub fn validated_mount_options(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.len() > 256 {
+    if s.len() > MAX_FSTAB_FIELD_LEN {
         return Err(ExecutorError::InvalidParam(param));
     }
     if !s.chars().all(|c| {
@@ -672,7 +729,7 @@ pub fn validated_mount_options(s: &str, param: &'static str) -> Result<String, E
 
 /// Validate an absolute file path for a swap file (no `..`, safe charset).
 pub fn validated_swap_path(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if !s.starts_with('/') || s.len() > 256 || s.contains("..") {
+    if !s.starts_with('/') || s.len() > MAX_FSTAB_FIELD_LEN || s.contains("..") {
         return Err(ExecutorError::InvalidParam(param));
     }
     if !s
@@ -691,7 +748,7 @@ pub fn validated_swap_path(s: &str, param: &'static str) -> Result<String, Execu
 /// `packaging/sysknife-sudoers-edit`. The file lands at
 /// `/etc/sudoers.d/sysknife-grant-<name>`.
 pub fn validated_sudoers_name(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.is_empty() || s.len() > 64 {
+    if s.is_empty() || s.len() > MAX_SUDOERS_NAME_LEN {
         return Err(ExecutorError::InvalidParam(param));
     }
     let first = s.chars().next().unwrap();
@@ -717,7 +774,7 @@ pub fn validated_apt_pin_name(s: &str, param: &'static str) -> Result<String, Ex
 /// Validate a log path/glob for logrotate: absolute, no `..`, charset
 /// `[A-Za-z0-9/._*-]`, 1..=255. Mirrors `PATH_RE` in `packaging/sysknife-log-edit`.
 pub fn validated_log_path(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if !s.starts_with('/') || s.len() > 255 || s.contains("..") {
+    if !s.starts_with('/') || s.len() > MAX_ABSOLUTE_PATH_LEN || s.contains("..") {
         return Err(ExecutorError::InvalidParam(param));
     }
     if !s
@@ -732,7 +789,7 @@ pub fn validated_log_path(s: &str, param: &'static str) -> Result<String, Execut
 /// Validate a syslog collector host: a hostname or IPv4/IPv6 literal
 /// (`[A-Za-z0-9.:_-]`, no `..`, 1..=255). Mirrors `HOST_RE` in the helper.
 pub fn validated_syslog_host(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.is_empty() || s.len() > 255 || s.contains("..") || s.starts_with('-') {
+    if s.is_empty() || s.len() > MAX_SYSLOG_HOST_LEN || s.contains("..") || s.starts_with('-') {
         return Err(ExecutorError::InvalidParam(param));
     }
     if !s
@@ -752,7 +809,7 @@ pub fn validated_apt_package(s: &str, param: &'static str) -> Result<String, Exe
     // was the sole exception.
     if s.is_empty()
         || s.starts_with('-')
-        || s.len() > 128
+        || s.len() > MAX_APT_PACKAGE_LEN
         || !s.chars().all(|c| {
             c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '*' | '?' | '_' | ':' | '-')
         })
@@ -767,7 +824,7 @@ pub fn validated_apt_package(s: &str, param: &'static str) -> Result<String, Exe
 /// `PIN_RE` in the helper.
 pub fn validated_apt_pin_expr(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     if s.is_empty()
-        || s.len() > 200
+        || s.len() > MAX_APT_PIN_EXPR_LEN
         || !s.chars().all(|c| {
             c.is_ascii_alphanumeric()
                 || matches!(c, ' ' | '=' | '.' | ',' | ':' | '/' | '*' | '_' | '+' | '-')
@@ -785,7 +842,7 @@ pub fn validated_sudo_commands(s: &str, param: &'static str) -> Result<String, E
     if s == "ALL" {
         return Ok(s.to_string());
     }
-    if s.is_empty() || s.len() > 1024 {
+    if s.is_empty() || s.len() > MAX_SUDO_COMMANDS_LEN {
         return Err(ExecutorError::InvalidParam(param));
     }
     let cmds: Vec<&str> = s.split(',').filter(|c| !c.is_empty()).collect();
@@ -837,7 +894,7 @@ pub fn validated_pro_service(s: &str, param: &'static str) -> Result<String, Exe
 /// (no `*` — audit watches a concrete file/dir), 1..=255. Mirrors `PATH_RE` in
 /// `packaging/sysknife-audit-edit`.
 pub fn validated_audit_path(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if !s.starts_with('/') || s.len() > 255 || s.contains("..") {
+    if !s.starts_with('/') || s.len() > MAX_ABSOLUTE_PATH_LEN || s.contains("..") {
         return Err(ExecutorError::InvalidParam(param));
     }
     if !s
@@ -876,7 +933,7 @@ pub fn validated_audit_perms(s: &str, param: &'static str) -> Result<String, Exe
 /// no leading `-`/`.`, no `..`, total 1..=253. Blocks option/argument injection.
 pub fn validated_domain(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     if s.is_empty()
-        || s.len() > 253
+        || s.len() > MAX_DNS_NAME_LEN
         || s.contains("..")
         || s.starts_with('-')
         || s.starts_with('.')
@@ -897,7 +954,7 @@ pub fn validated_domain(s: &str, param: &'static str) -> Result<String, Executor
 /// non-empty local + domain parts, conservative charset, 3..=254. Not a full
 /// RFC 5322 parser — just enough to block injection and obvious garbage.
 pub fn validated_email(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if s.len() < 3 || s.len() > 254 {
+    if s.len() < MIN_EMAIL_LEN || s.len() > MAX_EMAIL_LEN {
         return Err(ExecutorError::InvalidParam(param));
     }
     let parts: Vec<&str> = s.split('@').collect();

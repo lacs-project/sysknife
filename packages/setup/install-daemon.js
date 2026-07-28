@@ -235,17 +235,17 @@ async function installDaemonService(opts) {
   if (choice === '3' || choice.toLowerCase().startsWith('s')) {
     step('Skipping daemon service install.');
     step(`Start manually:  ${daemonBinPath}`);
-    return;
+    return { mode: 'skip', daemonInstalled: false, manualSteps: [`Start manually:  ${daemonBinPath}`] };
   }
 
   if (choice === '2') {
-    await _installSystemService(daemonBinPath);
-    return;
+    return await _installSystemService(daemonBinPath);
   }
 
   // Default: choice === '1' or anything else → user service
   await _installUserService(daemonBinPath);
   warn(userModeCapabilityWarning());
+  return { mode: 'user', daemonInstalled: true, manualSteps: [] };
 }
 
 /** Install a user-level service under ~/.config/systemd/user/. */
@@ -288,35 +288,68 @@ async function _installUserService(daemonBinPath) {
   }
 }
 
-/** Pre-flight check and instructions for the system-level service. */
+/**
+ * Pre-flight check and instructions for the system-level service.
+ *
+ * This deliberately does NOT install anything. The system service needs a
+ * system user, sudoers and polkit policy, root-owned helper executables and
+ * tmpfiles/sysusers fragments; installing those from a Node wizard would mean
+ * asking for root and writing privileged policy from an npm package. The
+ * Makefile owns that job.
+ *
+ * What this function must get right is honesty: it returns
+ * `daemonInstalled: false` and the exact command sequence, so the caller
+ * reports "not installed yet" instead of a success banner for a daemon that
+ * does not exist.
+ */
 async function _installSystemService(daemonBinPath) {
+  const unitPresent = fs.existsSync(SYSTEM_UNIT_PATH);
+
+  // `sudo make install` — the Makefile's own header requires root, and the
+  // previous wording omitted sudo, so the copied command failed on the first
+  // privileged install step.
+  const manualSteps = unitPresent
+    ? [
+        'sudo systemctl daemon-reload',
+        'sudo systemctl enable --now sysknife-daemon',
+      ]
+    : [
+        'git clone https://github.com/lacs-project/sysknife',
+        'cd sysknife',
+        'sudo make install',
+        'sudo systemctl enable --now sysknife-daemon',
+        'sudo usermod -aG sysknife,sysknife-admin "$USER"   # then log out and back in',
+      ];
+
   console.log();
   console.log(`  ${B}System-level daemon install${X}`);
   console.log();
-  console.log(`  The system service requires:`);
-  step('A dedicated `sysknife` system user and group');
-  step('Polkit rules and/or sudoers entries');
+  console.log(`  ${Y}This wizard does not install the system service.${X}`);
+  console.log(`  It needs root-owned policy that the repository Makefile installs:`);
+  step('A dedicated `sysknife` system user, socket group and role groups');
+  step('Polkit rules and sudoers entries');
+  step('Root-owned helper executables under /usr/lib/sysknife');
   step('/run/sysknife and /var/lib/sysknife directories');
   console.log();
-  console.log(`  The repository Makefile handles all of this:`);
+  if (unitPresent) {
+    ok(`${SYSTEM_UNIT_PATH} already exists — only a reload is needed.`);
+  }
+  console.log(`  Run these, then re-run this wizard with ${B}--daemon-mode=skip${X}:`);
   console.log();
-  console.log(`    ${D}git clone https://github.com/lacs-project/sysknife${X}`);
-  console.log(`    ${D}cd sysknife && make install${X}`);
+  for (const cmd of manualSteps) {
+    console.log(`    ${D}${cmd}${X}`);
+  }
   console.log();
 
   if (!canSudoNoPass()) {
     warn('sudo is not available without a password on this session.');
-    step('Ensure you have sudo privileges before running make install.');
+    step('Ensure you have sudo privileges before running sudo make install.');
   }
 
-  if (fs.existsSync(SYSTEM_UNIT_PATH)) {
-    ok(`${SYSTEM_UNIT_PATH} already exists.`);
-    step('Reload: sudo systemctl daemon-reload && sudo systemctl restart sysknife-daemon');
-  } else {
-    step('After make install:  sudo systemctl enable --now sysknife-daemon');
-  }
+  step(`Daemon binary this wizard downloaded:  ${daemonBinPath}`);
+  step('The system unit runs its own copy installed by the Makefile.');
 
-  step(`Daemon binary path that will be used:  ${daemonBinPath}`);
+  return { mode: 'system', daemonInstalled: false, manualSteps };
 }
 
 module.exports = {

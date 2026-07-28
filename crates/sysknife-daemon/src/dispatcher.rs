@@ -56,6 +56,7 @@ use sysknife_types::{CallerRole, JobState, PreviewEnvelope, RequestEnvelope};
 fn credential_keys_for(action_name: &str) -> &'static [&'static str] {
     match action_name {
         "ProAttach" => &["token"],
+        "ConfigureWifi" => &["password"],
         _ => &[],
     }
 }
@@ -92,12 +93,29 @@ fn redact_params(action_name: &str, params: &Value) -> Value {
 /// Positional redaction is applied FIRST to guarantee correctness even when
 /// the credential value coincidentally equals a structural argv element (e.g.
 /// `token == "attach"` — red-team finding ME2).
-fn credential_argv_position(action_name: &str) -> Option<usize> {
+fn credential_argv_spec(action_name: &str) -> Option<CredentialArgvSpec> {
     match action_name {
-        // `sudo pro attach <token>` — token is always the last element.
-        "ProAttach" => Some(usize::MAX),
+        // `sudo pro attach <token>` — the token is always the final element.
+        "ProAttach" => Some(CredentialArgvSpec::Last),
+        // `sudo nmcli device wifi connect <ssid> password <pw>` — the pair is
+        // omitted entirely for open networks, so the credential has no fixed
+        // index and is not reliably last either.
+        "ConfigureWifi" => Some(CredentialArgvSpec::AfterKeyword("password")),
         _ => None,
     }
+}
+
+/// Where an action's credential sits inside its rendered argv.
+///
+/// A spec is authoritative: when one exists the credential lives at exactly
+/// that slot, so redaction never has to match on the secret's text and can
+/// therefore not clobber a structural element that happens to share it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialArgvSpec {
+    /// The credential is the final argv element.
+    Last,
+    /// The credential is the element immediately after `keyword`.
+    AfterKeyword(&'static str),
 }
 
 /// Replace the credential argv element(s) with `<REDACTED>`.
@@ -130,14 +148,21 @@ fn redact_argv(action_name: &str, params: &Value, args: &[String]) -> Vec<String
     let mut out: Vec<String> = args.to_vec();
 
     // Step 1 — positional redaction (authoritative when a spec exists).
-    if let Some(pos) = credential_argv_position(action_name) {
-        let idx = if pos == usize::MAX {
-            // Sentinel: last element.
-            out.len().saturating_sub(1)
-        } else {
-            pos
+    if let Some(spec) = credential_argv_spec(action_name) {
+        let idx = match spec {
+            CredentialArgvSpec::Last => Some(out.len().saturating_sub(1)),
+            // Take the LAST keyword occurrence that still has a successor.
+            // "last" handles an SSID that is itself named `password`; the
+            // successor requirement handles a password whose value is the
+            // literal `password`, where the final occurrence IS the secret.
+            CredentialArgvSpec::AfterKeyword(keyword) => out
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(i, arg)| arg.as_str() == keyword && i + 1 < out.len())
+                .map(|(i, _)| i + 1),
         };
-        if idx < out.len() {
+        if let Some(idx) = idx.filter(|i| *i < out.len()) {
             out[idx] = "<REDACTED>".to_string();
         }
         // Positional spec is authoritative — skip value-match to avoid
@@ -960,6 +985,30 @@ async fn authenticate_vsock_token(
 /// `MAX_CONNECTIONS` pool indefinitely.
 const IDLE_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
+/// How long a freshly accepted connection may stay silent before its first
+/// request.
+///
+/// The idle bound above exists so a parked connection cannot squat a
+/// `MAX_CONNECTIONS` permit forever, but 15 minutes is a generous allowance to
+/// hand a peer that has not yet proved it wants anything. Every real client
+/// writes its request immediately after `connect()`, so the pre-request window
+/// can be short — and it is the cheapest window to abuse, because occupying it
+/// needs only socket-group membership, not any mutating role.
+const FIRST_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Read deadline for the next frame, given how many requests this connection
+/// has already been served.
+///
+/// Split out as a pure function so the policy is unit-testable without driving
+/// a socket through a paused clock.
+fn read_deadline(requests_served: usize) -> std::time::Duration {
+    if requests_served == 0 {
+        FIRST_REQUEST_TIMEOUT
+    } else {
+        IDLE_CONNECTION_TIMEOUT
+    }
+}
+
 async fn dispatch_loop<S>(
     framed: &mut FramedStream<S>,
     state: DaemonState,
@@ -969,6 +1018,7 @@ async fn dispatch_loop<S>(
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let mut requests_served: usize = 0;
     loop {
         // Bound how long a connection may sit idle between requests.
         //
@@ -982,18 +1032,27 @@ async fn dispatch_loop<S>(
         // This is an *idle* bound: it only applies while waiting for the next
         // request. A long-running action is executing inside a handler, not
         // parked here, so a 45-minute upgrade is unaffected.
-        let raw = match tokio::time::timeout(IDLE_CONNECTION_TIMEOUT, framed.recv()).await {
+        let deadline = read_deadline(requests_served);
+        let raw = match tokio::time::timeout(deadline, framed.recv()).await {
             Ok(Ok(bytes)) => bytes,
             Ok(Err(FramingError::Io(_))) => break, // peer closed
             Ok(Err(FramingError::MessageTooLarge(_))) => break, // framing violation
             Err(_) => {
-                eprintln!(
-                    "[sysknife-daemon] closing connection idle for more than {}s",
-                    IDLE_CONNECTION_TIMEOUT.as_secs()
-                );
+                if requests_served == 0 {
+                    eprintln!(
+                        "[sysknife-daemon] closing connection that sent no request within {}s",
+                        deadline.as_secs()
+                    );
+                } else {
+                    eprintln!(
+                        "[sysknife-daemon] closing connection idle for more than {}s",
+                        deadline.as_secs()
+                    );
+                }
                 break;
             }
         };
+        requests_served += 1;
 
         let msg: Value = match serde_json::from_slice(&raw) {
             Ok(v) => v,
@@ -2712,6 +2771,40 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // Connection read deadlines
+    // ------------------------------------------------------------------
+
+    /// A caller that connects and never sends anything must be cut loose
+    /// quickly. It holds one of MAX_CONNECTIONS semaphore permits while it
+    /// waits, so the pre-request window is the cheap-denial window: a member of
+    /// the socket group needs no role at all to occupy every slot.
+    #[test]
+    fn first_request_deadline_is_much_tighter_than_the_idle_deadline() {
+        let first = read_deadline(0);
+        let idle = read_deadline(1);
+        assert!(
+            first < idle,
+            "pre-request deadline {first:?} must be tighter than the between-request \
+             deadline {idle:?}; otherwise a silent connection squats a permit for the \
+             full idle window"
+        );
+        assert_eq!(idle, IDLE_CONNECTION_TIMEOUT);
+    }
+
+    /// Once a caller has been served, idling is legitimate: an MCP server holds
+    /// its connection open between tool calls. The tighter bound must apply to
+    /// the first request only.
+    #[test]
+    fn served_connections_keep_the_full_idle_allowance() {
+        for served in 1..5 {
+            assert_eq!(
+                read_deadline(served),
+                IDLE_CONNECTION_TIMEOUT,
+                "request {served} must not be held to the pre-request deadline"
+            );
+        }
+    }
+
     // Credential redaction
     // ------------------------------------------------------------------
 
@@ -2729,6 +2822,82 @@ mod tests {
             !s.contains("super-secret-test-only"),
             "token leaked into proposed_change JSON: {s}"
         );
+    }
+
+    #[test]
+    fn redact_params_replaces_configure_wifi_password() {
+        let params = json!({"ssid": "HomeNet", "password": "correct-horse-test-only"});
+        let r = redact_params("ConfigureWifi", &params);
+        assert_eq!(r["password"].as_str(), Some("<REDACTED>"));
+        // The SSID is not a secret and must survive for the preview to be useful.
+        assert_eq!(r["ssid"].as_str(), Some("HomeNet"));
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(
+            !s.contains("correct-horse-test-only"),
+            "wifi password leaked into proposed_change JSON: {s}"
+        );
+    }
+
+    /// `nmcli device wifi connect <ssid> password <pw>` — the secret is the
+    /// element after the `password` keyword, not a fixed index, because the
+    /// keyword pair is absent for open networks.
+    #[test]
+    fn redact_argv_replaces_wifi_password_after_keyword() {
+        let params = json!({"ssid": "HomeNet", "password": "correct-horse-test-only"});
+        let argv = wifi_argv(&["HomeNet", "password", "correct-horse-test-only"]);
+        let r = redact_argv("ConfigureWifi", &params, &argv);
+        assert_eq!(r.last().map(String::as_str), Some("<REDACTED>"));
+        assert!(
+            !r.iter().any(|a| a == "correct-horse-test-only"),
+            "wifi password survived argv redaction: {r:?}"
+        );
+    }
+
+    /// Open network: there is no password pair, so nothing may be redacted —
+    /// in particular the SSID must not be mistaken for the credential.
+    #[test]
+    fn redact_argv_leaves_open_network_argv_intact() {
+        let params = json!({"ssid": "CafeWifi"});
+        let argv = wifi_argv(&["CafeWifi"]);
+        let r = redact_argv("ConfigureWifi", &params, &argv);
+        assert_eq!(r, argv, "open-network argv must be unchanged");
+    }
+
+    /// An SSID that is literally `password` must not shift redaction onto the
+    /// keyword and leave the secret in place.
+    #[test]
+    fn redact_argv_handles_ssid_named_password() {
+        let params = json!({"ssid": "password", "password": "s3cret-test-only"});
+        let argv = wifi_argv(&["password", "password", "s3cret-test-only"]);
+        let r = redact_argv("ConfigureWifi", &params, &argv);
+        assert!(
+            !r.iter().any(|a| a == "s3cret-test-only"),
+            "secret leaked when the SSID is named 'password': {r:?}"
+        );
+        // The SSID itself is not secret and is still shown.
+        assert_eq!(r.iter().filter(|a| *a == "password").count(), 2);
+    }
+
+    /// A password whose value is the literal keyword `password` is the mirror
+    /// case: the last keyword occurrence IS the secret, so anchoring must use
+    /// the last occurrence that still has a successor.
+    #[test]
+    fn redact_argv_handles_password_valued_password() {
+        let params = json!({"ssid": "HomeNet", "password": "password"});
+        let argv = wifi_argv(&["HomeNet", "password", "password"]);
+        let r = redact_argv("ConfigureWifi", &params, &argv);
+        assert_eq!(r.last().map(String::as_str), Some("<REDACTED>"));
+    }
+
+    /// Build the argv `network::configure_wifi` produces, so these tests stay
+    /// honest about the real command shape.
+    fn wifi_argv(tail: &[&str]) -> Vec<String> {
+        let mut argv: Vec<String> = ["nmcli", "device", "wifi", "connect"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        argv.extend(tail.iter().map(|s| (*s).to_string()));
+        argv
     }
 
     #[test]
@@ -3613,11 +3782,22 @@ mod tests {
         });
         assert!(validate_action_platform(&state, "AptInstall").is_err());
 
+        // Below the support floor: no longer receiving Ubuntu security updates.
         state.host_distro = Some(sysknife_core::distro::DistroId::Ubuntu {
-            major: 20,
+            major: 18,
             minor: 4,
         });
         assert!(validate_action_platform(&state, "UpdateSystem").is_err());
+
+        // The counterpart assertion, so this test keeps its teeth: releases at
+        // and above the floor DO reach the mutation path, interim ones included.
+        for (major, minor) in [(20, 4), (25, 10), (26, 4)] {
+            state.host_distro = Some(sysknife_core::distro::DistroId::Ubuntu { major, minor });
+            assert!(
+                validate_action_platform(&state, "UpdateSystem").is_ok(),
+                "Ubuntu {major}.{minor:02} must be able to run mutating actions"
+            );
+        }
     }
 
     #[test]

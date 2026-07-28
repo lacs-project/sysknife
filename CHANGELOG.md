@@ -8,6 +8,140 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [Unreleased]
+
+A whole-repository review pass (four independent read-only reviewers, one per
+lens: UX, security, dead code, and drift between code and docs) followed by the
+fixes. Scope for this repository is now stated once and enforced: **Ubuntu is the
+supported platform, every release from 20.04 up**, and the Tauri GUI is out of
+scope.
+
+### Fixed
+
+- **Ubuntu 20.04 and every interim release were refused as unsupported hosts.**
+  `DistroId::is_supported()` accepted exactly `22.04 | 24.04 | 26.04`, and the
+  daemon refuses *every mutating action* when that is false — so a user on 20.04,
+  25.10 or 26.10 could plan and then be told their host was unsupported.
+  Eligibility is now all Ubuntu releases from 20.04 up, separated explicitly from
+  VM-validation tier, which stays a narrower per-release claim.
+- **The CLI never read `config.toml`.** `docs/configuration.md` said the daemon
+  and CLI both read it at startup; only the daemon did, so a configured
+  `[daemon] socket` or `[llm]` provider was silently ignored by the CLI *and* by
+  the MCP server, which shares the entry point. Startup is now synchronous up to
+  the runtime build, because applying the file sets environment variables and
+  that is only sound while single-threaded. Environment values still win.
+- **Approval was collected before the authoritative preview was shown.** The
+  operator saw planner summaries and risk, answered "execute?", and only then did
+  the daemon preview — carrying `proposed_change`, `expected_side_effects` and
+  `rollback_available` — get printed, immediately before execution. The preview
+  was never a decision point. Previews are now fetched and rendered first;
+  `--step-by-step` confirms every step against its preview, and the default mode
+  re-confirms HIGH risk, the one class `--yes` can never auto-approve.
+- **Nine of ten privileged helpers were never installed.** `packaging/` ships
+  twelve helper scripts and `sysknife-sudoers` grants ten, but `make
+  daemon-install` installed only `grub-kargs-edit`, so sysctl, PAM, auditd,
+  mount, fail2ban, logging, sshd-option, scheduled-job and apt-pin actions failed
+  at execution time after a source install. A new test derives the required set
+  from the daemon's own source, so packaging a helper without installing it now
+  fails CI.
+- **`--daemon-mode=system` reported success while installing nothing.** The
+  branch printed a paragraph about the Makefile and returned, leaving MCP clients
+  configured against a daemon that did not exist; the command it printed also
+  omitted the `sudo` the Makefile requires. It now returns its outcome, the
+  wizard states plainly that the daemon is not installed yet, and the printed
+  sequence includes `sudo make install` and the group-membership step.
+- **`sysknife audit verify` read the wrong audit store on a system install.**
+  `SYSKNIFE_DATABASE_PATH` reaches the daemon through its unit's `Environment=`
+  lines, which a CLI run by an operator never sees, so verification looked in
+  `~/.local/state` and reported the chain unverifiable on a healthy install. It
+  now resolves the system store when no per-user store exists, says which store
+  it read, and names the root-owned key case.
+- **`doctor` could not recognise socket-permission denial.** `/run/sysknife` is
+  `0750 sysknife:sysknife` and a sudo admin is not in that group automatically,
+  so every request failed while `systemctl status` looked healthy. `doctor` now
+  leads with the `usermod -aG` fix and the required re-login when the failure is
+  `Permission denied`.
+- **`--non-interactive` was documented as exiting 3**, contradicting both the
+  implementation and the exit-code table three rows below it. It is 1.
+- **The MCP registry publish check verified a hard-coded old version.** The
+  snippet pinned `0.2.14` while `server.json` named `0.2.15`, so the ownership
+  marker could pass for an artefact that was not being published. It now reads
+  the version from the manifest.
+- **The vsock guide configured only the client**, leaving the daemon on its
+  default Unix socket so the advertised no-SSH connection could not work. The
+  daemon-side `SYSKNIFE_LISTEN_URI` drop-in is now part of the procedure.
+
+### Security
+
+- **Wi-Fi passwords were stored in the audit database.** `credential_keys_for`
+  covered only `ProAttach.token`, so a `ConfigureWifi` password was persisted in
+  the preview's `proposed_change` and returned in preview output. It is now
+  redacted from both params and argv. The argv rule is keyword-anchored rather
+  than positional or value-matched, because the `password <pw>` pair is absent for
+  open networks and value-matching would clobber a structural element when the
+  SSID or the password is itself the word `password`.
+- **A silent connection could squat an IPC slot for fifteen minutes.** Each
+  accepted connection holds one of `MAX_CONNECTIONS` permits and the accept loop
+  *drops* new connections when they are gone, so a member of the socket group —
+  needing no role at all — could deny service cheaply. The between-request idle
+  bound stays 15 minutes; a connection that has not yet sent its first request
+  now gets 30 seconds.
+- **`sysknife audit verify` implied more than it proved.** A truncated chain
+  verifies: the retained prefix chains correctly and the walk starts from an empty
+  predecessor. Because the packaged unit configures no independent checkpoint
+  anchor, the default deployment cannot detect that removal, and the verdict now
+  says so instead of letting `OK` be read as "nothing was removed".
+- **Release-artefact trust is now documented honestly**, and
+  `SYSKNIFE_PINNED_SHA256SUMS` lets an operator require a digest obtained
+  independently of the release. The installer also prints the digest it accepted.
+  A malformed or unreadable pin aborts the install rather than degrading to a
+  no-op.
+
+### Added
+
+- MCP `sysknife_plan` steps now carry the daemon's whole preview —
+  `current_state`, `proposed_change`, `expected_side_effects`, `reboot_required`,
+  `rollback_available` and `warnings` — so an agent can state what it is asking
+  the operator to approve. `sysknife_execute` results carry `rollback_ref`, which
+  `docs/automatic-rollback.md` already promised.
+
+### Removed
+
+- **`crates/sysknife-daemon/src/distro.rs`**, an entire duplicate distro model
+  and parser compiled into the published daemon library with no caller anywhere
+  in the workspace. `HACKING.md` §18 pointed contributors at it as the extension
+  point for adding a distro, describing a dispatch shape that was never built;
+  that section now documents the real routing path through
+  `sysknife-core::distro` and `action_family`.
+- `InMemoryCheckpointSink` moved behind `cfg(test)` — it was a production-facing
+  type documented for "tests and dry runs" with no dry-run consumer.
+- The daemon's unused direct `tracing` dependency.
+
+### Changed
+
+- **Named the magic numbers in the validators and the executor.** Field bounds
+  (`MAX_DNS_NAME_LEN`, `MAX_DNS_LABEL_LEN`, `MAX_PORT`, `MAX_FSTAB_FIELD_LEN`,
+  `MAX_EMAIL_LEN`, …) and tool ceilings (`MAX_PASSWORD_AGE_DAYS`,
+  `MAX_LOCKOUT_WINDOW_SECS`, `MAX_FAIL2BAN_WINDOW_SECS`, `MAX_JOURNAL_LINES`,
+  `MAX_SWAP_SIZE_MB`) now say where they come from — a standard, or the format
+  the value is written into. Three duplications collapsed in the process: the
+  rate-limit window was spelled `60` at each of the three sites that define what
+  "per minute" means including the retry message, the provider adapters
+  truncated log previews at a bare `200` in four places, and `65535` appeared in
+  both the port validator and the executor. Values are unchanged; verified by
+  inlining every new constant and confirming the resulting literal multiset
+  matches the previous revision exactly.
+- Calendar-arithmetic constants (`146097`, `719468`, `153`) were deliberately
+  left alone: they are only meaningful as part of Howard Hinnant's
+  `civil_from_days` algorithm and naming them individually would obscure it.
+
+### Known gaps
+
+- The signed chain still binds rows to the caller's *role*, not to the
+  individual account, so two `sysknife-admin` members are indistinguishable in
+  the audit trail. Recording the uid means a new signed row encoding across both
+  storage backends and is tracked in SECURITY.md rather than bundled here.
+
 ## [0.2.15] — 2026-07-28
 
 The install path was broken for every new user: `npx sysknife-setup`, the command

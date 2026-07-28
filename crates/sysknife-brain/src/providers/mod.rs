@@ -208,3 +208,9 @@ mod tests {
         assert_eq!(result, input);
     }
 }
+
+/// How much of a provider response to echo into a diagnostic line.
+///
+/// Both adapters truncated previews at a bare `200`, in four places, so the
+/// same decision was spelled four times and could drift three ways.
+pub(crate) const LOG_PREVIEW_CHARS: usize = 200;

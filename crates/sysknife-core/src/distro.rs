@@ -21,6 +21,16 @@
 /// [`ParseError::FileTooLarge`].
 pub const MAX_OS_RELEASE_BYTES: usize = 10 * 1024;
 
+/// Oldest Fedora Atomic release still eligible. Legacy: Fedora is no longer a
+/// supported target, but existing installs keep working.
+pub const OLDEST_ELIGIBLE_FEDORA_ATOMIC: u32 = 41;
+
+/// Oldest Ubuntu major version SysKnife acts on (20 → 20.04).
+///
+/// Ubuntu encodes its version as `YY.MM`, so comparing the major alone covers
+/// every release in a year, interim ones included.
+pub const OLDEST_SUPPORTED_UBUNTU_MAJOR: u32 = 20;
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -208,18 +218,32 @@ impl DistroId {
     /// Returns `true` for distros and versions with a shipped action backend.
     ///
     /// Support policy:
-    /// - Fedora Atomic variants 41+ (Silverblue, Kinoite, and siblings)
-    /// - Ubuntu LTS: 22.04, 24.04, 26.04 (interim releases like 26.10 are excluded)
+    /// - Ubuntu 20.04 and later, **every** release: LTS and interim alike.
+    ///   Ubuntu is the supported platform, so eligibility must not depend on
+    ///   the LTS cadence — the apt, snap, ufw and netplan tooling every action
+    ///   drives is present across those releases.
+    /// - Fedora Atomic variants 41+ (Silverblue, Kinoite, and siblings) remain
+    ///   eligible from earlier releases, but are no longer a supported target;
+    ///   see `docs/distro-support.md`.
     ///
-    /// Plain Fedora remains detectable so the planner can explain the gap, but
-    /// it is not supported until the dedicated `dnf` action family ships.
+    /// # Eligibility is not validation coverage
+    ///
+    /// This predicate answers "may SysKnife act on this host at all" — the
+    /// daemon refuses every *mutating* action when it is false. It is not a
+    /// claim that a release has been VM-validated; `docs/distro-support.md`
+    /// tracks validation tiers separately, and a release can be supported here
+    /// while listed as smoke-tested there.
+    ///
+    /// Releases below 20.04 are excluded because they no longer receive Ubuntu
+    /// security updates. `UbuntuCore` is excluded for a structural reason
+    /// rather than an age one: it has no apt and a read-only root, so the
+    /// Debian-family action set cannot apply. Plain Fedora stays detectable so
+    /// the planner can explain the gap rather than fail opaquely.
     pub fn is_supported(&self) -> bool {
         match self {
             Self::Fedora { .. } => false,
-            Self::FedoraSilverblue { version } => *version >= 41,
-            Self::Ubuntu { major, minor } => {
-                matches!((*major, *minor), (22, 4) | (24, 4) | (26, 4))
-            }
+            Self::FedoraSilverblue { version } => *version >= OLDEST_ELIGIBLE_FEDORA_ATOMIC,
+            Self::Ubuntu { major, .. } => *major >= OLDEST_SUPPORTED_UBUNTU_MAJOR,
             Self::UbuntuCore { .. } | Self::Debian { .. } | Self::Other { .. } => false,
         }
     }
@@ -1013,8 +1037,8 @@ SUPPORT_END="2028-03-15"
     }
 
     #[test]
-    fn unsupported_ubuntu_2004() {
-        assert!(!DistroId::Ubuntu {
+    fn supported_ubuntu_2004_is_the_oldest_supported_release() {
+        assert!(DistroId::Ubuntu {
             major: 20,
             minor: 4
         }
@@ -1022,11 +1046,32 @@ SUPPORT_END="2028-03-15"
     }
 
     #[test]
-    fn unsupported_ubuntu_interim_2610() {
-        // 26.10 is an interim release — only 26.04 is claimed.
-        assert!(!DistroId::Ubuntu {
+    fn supported_ubuntu_interim_2610() {
+        // Interim releases carry the same apt/snap/ufw tooling as the LTS they
+        // follow, so support eligibility does not depend on the LTS cadence.
+        assert!(DistroId::Ubuntu {
             major: 26,
             minor: 10
+        }
+        .is_supported());
+    }
+
+    #[test]
+    fn supported_ubuntu_interim_2510() {
+        assert!(DistroId::Ubuntu {
+            major: 25,
+            minor: 10
+        }
+        .is_supported());
+    }
+
+    #[test]
+    fn unsupported_ubuntu_1804_predates_the_support_floor() {
+        // 18.04 reached end of standard support upstream; SysKnife does not
+        // claim releases that no longer receive Ubuntu security updates.
+        assert!(!DistroId::Ubuntu {
+            major: 18,
+            minor: 4
         }
         .is_supported());
     }

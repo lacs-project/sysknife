@@ -84,6 +84,53 @@ pub fn resolve_socket_target() -> SocketTarget {
     })
 }
 
+/// Whether an independent checkpoint anchor is configured for this deployment.
+///
+/// Reads the same variable the daemon reads, so the CLI cannot claim an anchor
+/// the daemon is not using.
+fn anchor_configured() -> bool {
+    std::env::var("SYSKNIFE_CHECKPOINT_DB").is_ok_and(|v| !v.trim().is_empty())
+}
+
+/// The caveat that belongs next to a verification verdict when no independent
+/// checkpoint anchor is configured.
+///
+/// Truncating the newest rows needs no signing key: the retained prefix still
+/// chains, and verification walks it from an empty expected predecessor, so it
+/// reports `Intact`. Detecting the loss requires a previously anchored signed
+/// tip in a store the host attacker does not control. Returning `None` when an
+/// anchor exists keeps the normal output free of noise.
+fn anchor_caveat(anchor_configured: bool) -> Option<&'static str> {
+    if anchor_configured {
+        return None;
+    }
+    Some(
+        "NOTE: no independent checkpoint anchor is configured, so removal of the \
+         newest rows would not be detectable — a truncated chain still verifies. \
+         Set SYSKNIFE_CHECKPOINT_DB and run `sysknife audit checkpoint` \
+         periodically; see docs/the-audit-chain.md.",
+    )
+}
+
+/// Whether this step needs an operator confirmation *after* its preview has
+/// been rendered.
+///
+/// Two modes, one rule:
+///
+/// - `--step-by-step` asks about every step, so every step is confirmed here,
+///   where the daemon's proposed change is already visible.
+/// - Otherwise the single plan-level prompt covers the scope of the run, and
+///   re-asking per step would turn one prompt into N. HIGH risk is the
+///   exception: it is the one class `--yes` can never auto-approve
+///   (`HARDCODED_MAX_AUTO_APPROVE` is MEDIUM), and it is where "what exactly
+///   changes" matters most, so it is re-confirmed against the real preview.
+///
+/// This adds no new refusal class to `--non-interactive`: a plan containing a
+/// HIGH step is already refused at the plan gate before this point.
+fn post_preview_confirmation_required(step_by_step: bool, risk: &PlanRiskLevel) -> bool {
+    step_by_step || matches!(risk, PlanRiskLevel::High)
+}
+
 // ---------------------------------------------------------------------------
 // since_to_hours
 // ---------------------------------------------------------------------------
@@ -527,12 +574,24 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
     // a Postgres-backed deployment can never verify its chain from the CLI.
     let lacs_config = LacsConfig::load();
 
+    // A system-installed daemon keeps its chain in /var/lib/sysknife, but that
+    // path reaches it through the unit's own Environment= lines, which a CLI run
+    // by an operator never sees. Resolving only the per-user path therefore made
+    // `audit verify` read an absent store and report the chain as unverifiable
+    // on a perfectly healthy install.
+    let store = sysknife_core::resolve_audit_store();
+
     let label_for_diag = match lacs_config.storage.as_ref() {
         Some(s) if s.backend.eq_ignore_ascii_case("postgres") => "postgres".to_string(),
-        _ => sysknife_core::default_database_path().display().to_string(),
+        _ => store.path().display().to_string(),
     };
 
-    let db_path = sysknife_core::default_database_path();
+    // Reading a store the operator did not name is never silent.
+    if let Some(note) = store.note() {
+        log.print_stderr(&format!("note: {note}"));
+    }
+
+    let db_path = store.path().to_path_buf();
 
     // Build the verifier. With `--pubkey`, verify using only the exported
     // public key (the auditor path, no private key). Otherwise load the private
@@ -555,10 +614,19 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
 
         if !key_path.exists() {
             let reason = format!(
-                "audit key not found at {}; the daemon generates this on first run, \
-                 set $SYSKNIFE_AUDIT_KEY_PATH, or pass --pubkey <FILE> to verify with \
-                 the exported public key",
-                key_path.display()
+                "audit key not found or not readable at {}; the daemon generates this \
+                 on first run, set $SYSKNIFE_AUDIT_KEY_PATH, or pass --pubkey <FILE> to \
+                 verify with the exported public key{}",
+                key_path.display(),
+                // The system store lives under a root-owned directory, so an
+                // operator hits this path with a healthy chain. Say which of the
+                // two escape hatches applies to that case.
+                if store.path() == std::path::Path::new(sysknife_core::PRODUCTION_DATABASE_PATH) {
+                    "; the system daemon's key is root-owned, so run this under sudo or \
+                     verify with --pubkey"
+                } else {
+                    ""
+                }
             );
             emit_verification(&args, log, &cannot_verify_all(reason), &label_for_diag);
             return Err(CliError::Exit(2));
@@ -827,6 +895,11 @@ fn emit_verification(
             "backend": backend_label,
             "chain": outcome_json(&verification.chain),
             "approval_events": outcome_json(&verification.events),
+            "audit_anchor": if anchor_configured() {
+                json!({"configured": true})
+            } else {
+                json!({"configured": false, "caveat": anchor_caveat(false)})
+            },
             "binding": match &verification.binding {
                 BindingOutcome::Consistent { bindings_checked } => json!({
                     "status": "consistent",
@@ -868,6 +941,12 @@ fn emit_verification(
         VerifyOutcome::CannotVerify { reason } => {
             log.println(&format!("CANNOT VERIFY: {reason}"));
         }
+    }
+
+    // Sits directly under the chain verdict, because that verdict is what an
+    // operator reads as "the audit log is fine".
+    if let Some(caveat) = anchor_caveat(anchor_configured()) {
+        log.println(caveat);
     }
 
     match &verification.events {
@@ -1172,38 +1251,21 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     let start = std::time::Instant::now();
 
     for step in plan.steps() {
-        // Step-by-step: approve each step before previewing it.
-        if opts.step_by_step {
-            match gate_action(policy.decide_step(step.risk_level()), step.risk_level()) {
-                GateAction::Proceed => {}
-                GateAction::Refuse(err) => return Err(err),
-                GateAction::AskOperator => {
-                    let msg = if opts.json {
-                        format!("Execute {} ({})?", step.action_name(), step.summary())
-                    } else {
-                        format!(
-                            "Execute {} ({} risk)?",
-                            step.action_name(),
-                            crate::render::risk_colored(step.risk_level()),
-                        )
-                    };
-                    if !prompt_confirm(&msg).await {
-                        return Err(CliError::Rejected);
-                    }
-                }
-            }
-        }
-
-        // Preview the step.
+        // Preview BEFORE asking. The plan printed above carries planner
+        // summaries and risk only; the daemon's preview is what says which
+        // package version arrives, which file changes, whether a reboot follows
+        // and whether a rollback exists. Asking first and previewing afterwards
+        // meant the preview was never a decision point — consent had already
+        // been given and execution followed immediately.
         let prepared = exec_client
             .preview(step.action_name(), step.params())
             .await?;
         let preview = &prepared.preview;
 
-        // Fail closed on CLI/daemon risk skew: the approval decision above used
-        // the CLI's own linked catalogue. If the live daemon rates this step
-        // higher than we approved it at, refuse to mint a receipt rather than
-        // execute above the approved risk (see `daemon_risk_within_approved`).
+        // Fail closed on CLI/daemon risk skew: the plan-level decision used the
+        // CLI's own linked catalogue. If the live daemon rates this step higher
+        // than we approved it at, refuse to mint a receipt rather than execute
+        // above the approved risk (see `daemon_risk_within_approved`).
         let daemon_risk = plan_risk_of(preview.risk_level);
         if !daemon_risk_within_approved(step.risk_level(), &daemon_risk) {
             return Err(CliError::ConfigOrDaemon(format!(
@@ -1220,6 +1282,31 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
             log.println(&serde_json::to_string(preview).expect("PreviewEnvelope is Serialize"));
         } else {
             crate::render::print_step_header(step.action_name(), preview);
+        }
+
+        // Now that the authoritative preview is on screen, take the approval
+        // decision for this step. `--step-by-step` asks about every step;
+        // otherwise the plan-level prompt already covered scope and only HIGH
+        // risk is re-confirmed here (see `post_preview_confirmation_required`).
+        if post_preview_confirmation_required(opts.step_by_step, step.risk_level()) {
+            match gate_action(policy.decide_step(step.risk_level()), step.risk_level()) {
+                GateAction::Proceed => {}
+                GateAction::Refuse(err) => return Err(err),
+                GateAction::AskOperator => {
+                    let msg = if opts.json {
+                        format!("Execute {} ({})?", step.action_name(), step.summary())
+                    } else {
+                        format!(
+                            "Apply {} ({} risk) as previewed above?",
+                            step.action_name(),
+                            crate::render::risk_colored(step.risk_level()),
+                        )
+                    };
+                    if !prompt_confirm(&msg).await {
+                        return Err(CliError::Rejected);
+                    }
+                }
+            }
         }
 
         // Spinner clears on the first output line so execution output
@@ -1424,6 +1511,109 @@ async fn prompt_exact(msg: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Audit-integrity caveat
+    // -----------------------------------------------------------------------
+
+    /// "OK: N rows verified" is true and incomplete. A chain whose newest rows
+    /// were deleted still verifies: the remaining prefix chains correctly and
+    /// the verifier starts from an empty predecessor. Only an independent
+    /// checkpoint anchor makes that removal detectable, and the packaged unit
+    /// configures none, so the default deployment must say so next to its
+    /// verdict rather than let "OK" be read as "nothing was removed".
+    #[test]
+    fn a_verdict_without_an_anchor_carries_a_truncation_caveat() {
+        let caveat = anchor_caveat(false).expect("unanchored chains need a caveat");
+        assert!(
+            caveat.to_lowercase().contains("truncat"),
+            "the caveat must name what is undetectable, got: {caveat}"
+        );
+        assert!(
+            caveat.contains("SYSKNIFE_CHECKPOINT_DB"),
+            "and how to fix it, got: {caveat}"
+        );
+    }
+
+    #[test]
+    fn an_anchored_chain_needs_no_caveat() {
+        assert_eq!(
+            anchor_caveat(true),
+            None,
+            "with an anchor configured the verdict stands on its own"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Approval happens after the authoritative preview
+    // -----------------------------------------------------------------------
+
+    /// Step-by-step mode asks about every step, so every step must be asked
+    /// about *after* its preview is on screen.
+    #[test]
+    fn step_by_step_confirms_every_step_after_its_preview() {
+        for risk in [
+            PlanRiskLevel::Low,
+            PlanRiskLevel::Medium,
+            PlanRiskLevel::High,
+        ] {
+            assert!(
+                post_preview_confirmation_required(true, &risk),
+                "--step-by-step must confirm {risk:?} steps at the preview"
+            );
+        }
+    }
+
+    /// In the default single-approval mode the plan prompt covers scope, so
+    /// re-asking about every step would turn one prompt into N. HIGH is the
+    /// exception: it is the class that can never be auto-approved, and the
+    /// preview is the only place the operator sees what actually changes.
+    #[test]
+    fn default_mode_reconfirms_only_high_risk_steps_at_the_preview() {
+        assert!(!post_preview_confirmation_required(
+            false,
+            &PlanRiskLevel::Low
+        ));
+        assert!(!post_preview_confirmation_required(
+            false,
+            &PlanRiskLevel::Medium
+        ));
+        assert!(post_preview_confirmation_required(
+            false,
+            &PlanRiskLevel::High
+        ));
+    }
+
+    /// Structural guard on the execute loop: the daemon preview must be
+    /// fetched before any approval decision is taken for that step.
+    ///
+    /// The defect this replaces was purely one of order — the operator was
+    /// asked "execute?" while only planner summaries had been printed, and the
+    /// preview carrying `proposed_change`, `expected_side_effects` and
+    /// `rollback_available` arrived afterwards, when consent had already been
+    /// given. A behavioural test would need a live daemon and an LLM, so the
+    /// order is pinned in the source instead.
+    #[test]
+    fn the_execute_loop_previews_before_it_gates() {
+        let src = include_str!("runner.rs");
+        let loop_start = src
+            .find("    // ---- execute steps ---")
+            .expect("execute-steps section marker present");
+        let body = &src[loop_start..];
+
+        let preview_at = body
+            .find(".preview(step.action_name()")
+            .expect("the loop previews each step");
+        let gate_at = body
+            .find("policy.decide_step(")
+            .expect("the loop gates each step");
+
+        assert!(
+            preview_at < gate_at,
+            "approval is decided before the preview is fetched; the operator would \
+             consent without seeing the daemon's proposed change"
+        );
+    }
     use sysknife_brain::action_name::ActionName;
     use sysknife_brain::planner::{AuthorizedPlan, Plan, PlanStep};
 

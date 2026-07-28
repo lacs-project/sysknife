@@ -249,6 +249,68 @@ cryptographically protected regardless of FSS status.
 
 ---
 
+## Release Artefact Trust
+
+`npx sysknife-setup` downloads `sysknife`, `sysknife-daemon` and
+`sha256sums-linux-<arch>.txt` from the GitHub release over TLS, then verifies
+each binary against that checksum file. Be precise about what that does and does
+not establish:
+
+- **It does** detect corruption in transit, a truncated download, and a swapped
+  or mismatched asset within the release.
+- **It does not** prove the release itself is authentic. The binaries and the
+  checksum file share one trust root — whoever can publish a release can publish
+  a malicious daemon together with a matching checksum. The daemon holds broad
+  passwordless `sudo` grants, so that is the consequential case.
+
+Two controls exist today:
+
+1. **Signed tags.** Release tags are SSH-signed from `v0.2.15` onward, so the
+   commit a release was built from can be verified independently of the release
+   assets:
+   ```sh
+   git verify-tag v0.2.15
+   ```
+2. **Out-of-band digest pinning.** Point `SYSKNIFE_PINNED_SHA256SUMS` at a
+   checksum file you obtained independently — from a signed tag, an internal
+   mirror, or config management — and the installer requires every asset to match
+   both it and the release's own sums:
+   ```sh
+   SYSKNIFE_PINNED_SHA256SUMS=/etc/sysknife/trusted-sums.txt npx sysknife-setup
+   ```
+   An unreadable or malformed pin aborts the install. A security control that
+   silently degrades to a no-op is worse than none.
+
+Publisher-signed release manifests with a pinned key embedded in the installer
+are the remaining step; that needs key-custody decisions and is not yet in place.
+
+## Audit Anchoring in the Default Deployment
+
+The signed chain detects modification of any row. It does **not**, on its own,
+detect removal of the newest rows: the retained prefix still chains, and
+verification walks it from an empty expected predecessor, so a truncated chain
+reports as intact.
+
+Detecting truncation requires a previously anchored signed tip in a store the
+host attacker does not control. That is opt-in via `SYSKNIFE_CHECKPOINT_DB`, and
+the packaged unit does not configure it, so **the default system deployment
+cannot detect tail truncation.** `sysknife audit verify` now says so beside its
+verdict rather than letting `OK` be read as "nothing was removed".
+
+For a deployment that claims tamper-evident retention:
+
+```sh
+# An independent, append-only Postgres database — not the SysKnife store.
+sudo systemctl edit sysknife-daemon
+# [Service]
+# Environment="SYSKNIFE_CHECKPOINT_DB=postgres://sysknife@anchor-host/anchors"
+```
+
+Grant the role only `INSERT` and `SELECT` on `audit_checkpoints` and `REVOKE
+UPDATE, DELETE`. Append-only permissions do not stop a database superuser; the
+signature is what makes tampering detectable, and the independence is what makes
+removal detectable.
+
 ## Known Limitations
 
 These are acknowledged gaps tracked as open issues. They do not
@@ -261,3 +323,4 @@ security certification work.
 | Tool output injection | [#98](https://github.com/lacs-project/sysknife/issues/98) | `query_*` results re-enter the LLM context unsanitized. A crafted service description or package name could attempt prompt injection. Impact is bounded by Layer 2–5. |
 | Action param validation | — | Action params are typed per-handler but not validated at a shared schema boundary. A compromised LLM could propose valid action + malicious params (e.g. `AddAuthorizedKey` with an attacker-controlled key). |
 | UDP audit forwarding | — | External RFC 5424 forwarding is best effort and provides no delivery acknowledgement. Use the transaction database and tested backups as the durable record. |
+| Caller attribution granularity | — | The signed chain binds each row to the caller's *role* (`chain_version = 2`), not to the individual account. Two members of `sysknife-admin` produce indistinguishable signed records, so the trail establishes "an Admin did this", not which Unix account. The uid is available at the `SO_PEERCRED` boundary where the role is already derived; recording it means a new signed row encoding (`chain_version = 3`) across both storage backends, and is tracked separately rather than bundled into an unrelated change. |

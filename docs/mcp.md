@@ -50,6 +50,12 @@ Each `PlanStep`:
 | `params`      | object | Action-specific parameters               |
 | `command`     | string | Daemon-resolved shell command, e.g. `"timedatectl"` |
 | `transaction_id` | string | Daemon identity for this immutable preview |
+| `warnings` | string[] | Preview-time warnings (reboot required, platform caveats). Relay these to the operator **before** collecting approval |
+| `current_state` | object | Relevant system state as the daemon found it |
+| `proposed_change` | object | What the daemon will change, as it resolved it — the substance of what is being approved |
+| `expected_side_effects` | string[] | Side effects beyond the change itself |
+| `reboot_required` | bool | Whether the step needs a reboot to take effect |
+| `rollback_available` | bool | Whether failure can be rolled back automatically |
 
 ---
 
@@ -85,6 +91,7 @@ Each `StepResult`:
 | `warnings`       | `string[]` | Daemon warnings                          |
 | `needs_reboot`   | bool       | Whether this step needs a reboot         |
 | `transaction_id` | string     | Daemon audit transaction ID              |
+| `rollback_ref` | string \| null | What was rolled back after a failure, when anything was; `null` otherwise |
 
 ---
 
@@ -180,9 +187,20 @@ the socket path.
 virsh dumpxml <vm-name> | grep cid
 ```
 
-Set `SYSKNIFE_SOCKET=vsock://<CID>:9734` and `SYSKNIFE_TOKEN=<hex>` when
-the wizard asks. The wizard detects the `vsock://` prefix and prompts for
-the token automatically.
+The daemon must be told to listen on vsock as well — it binds a Unix socket by
+default, so configuring only the client leaves the two on different transports
+and nothing connects. On the VM:
+
+```sh
+sudo systemctl edit sysknife-daemon
+# [Service]
+# Environment="SYSKNIFE_LISTEN_URI=vsock://:9734"
+sudo systemctl restart sysknife-daemon
+```
+
+Then, on the host, set `SYSKNIFE_SOCKET=vsock://<CID>:9734` and
+`SYSKNIFE_TOKEN=<hex>` when the wizard asks. The wizard detects the `vsock://`
+prefix and prompts for the token automatically.
 
 See [VM + Daemon Setup](vm-daemon-setup.md) for the complete walkthrough
 including token generation, libvirt XML, and troubleshooting.
