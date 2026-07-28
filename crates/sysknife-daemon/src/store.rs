@@ -33,7 +33,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use sysknife_types::{JobState, PreviewEnvelope, TransactionRecord};
 
-use crate::audit_chain::{AuditKey, ChainRow, VerifyOutcome};
+use crate::audit_chain::{AuditKey, ChainRow, EventRow, VerifyOutcome};
 use crate::transactions::{
     NewTransaction, RecordedPreviewedTransaction, TransactionStore, TransactionStoreError,
 };
@@ -163,10 +163,41 @@ pub trait AuditStore: Send + Sync + std::fmt::Debug {
 
     async fn fetch_chain_rows(&self) -> Result<Vec<ChainRow>, TransactionStoreError>;
 
+    /// Every approval event, in seq order. Backs the second chain that records
+    /// grant/consume/revoke — see `audit_chain::AuditEventKind`.
+    async fn fetch_event_rows(&self) -> Result<Vec<EventRow>, TransactionStoreError>;
+
     async fn verify_audit_chain(
         &self,
         key: &AuditKey,
     ) -> Result<VerifyOutcome, TransactionStoreError>;
+
+    /// Walk the approval-event chain.
+    ///
+    /// Provided rather than required: it is the same signature walk over rows
+    /// the backend has already fetched, so a backend that implements
+    /// `fetch_event_rows` correctly cannot get this wrong, and an override
+    /// would be a second place for the two chains' verification to drift.
+    async fn verify_event_chain(
+        &self,
+        key: &AuditKey,
+    ) -> Result<VerifyOutcome, TransactionStoreError> {
+        let rows = self.fetch_event_rows().await?;
+        Ok(crate::audit_chain::verify_event_chain(key, &rows))
+    }
+
+    /// Check that every event tip committed by a transaction row still exists
+    /// in the event chain. See `audit_chain::verify_event_binding`.
+    async fn verify_event_binding(
+        &self,
+    ) -> Result<crate::audit_chain::BindingOutcome, TransactionStoreError> {
+        let tx_rows = self.fetch_chain_rows().await?;
+        let event_rows = self.fetch_event_rows().await?;
+        Ok(crate::audit_chain::verify_event_binding(
+            &tx_rows,
+            &event_rows,
+        ))
+    }
 }
 
 /// Adapter that exposes the existing rusqlite-backed [`TransactionStore`]
@@ -342,6 +373,11 @@ impl AuditStore for SqliteStore {
         blocking(move || inner.fetch_chain_rows()).await
     }
 
+    async fn fetch_event_rows(&self) -> Result<Vec<EventRow>, TransactionStoreError> {
+        let inner = Arc::clone(&self.inner);
+        blocking(move || inner.fetch_event_rows()).await
+    }
+
     async fn verify_audit_chain(
         &self,
         key: &AuditKey,
@@ -363,7 +399,7 @@ mod tests {
     use super::*;
     use crate::audit_chain::AuditKey;
     use crate::transactions::NewTransaction;
-    use sysknife_types::RiskLevel;
+    use sysknife_types::{CallerRole, RiskLevel};
     use tempfile::tempdir;
 
     fn sqlite_store(path: std::path::PathBuf) -> SqliteStore {
@@ -379,6 +415,7 @@ mod tests {
             risk_level: RiskLevel::High,
             summary: "Upgrade the system".to_string(),
             warnings: vec![],
+            caller_role: CallerRole::Dev,
         }
     }
 

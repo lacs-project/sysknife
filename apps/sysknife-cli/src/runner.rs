@@ -511,7 +511,7 @@ impl RunOpts {
 /// underlying access problem.
 pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(), CliError> {
     use sysknife_core::config::LacsConfig;
-    use sysknife_daemon::audit_chain::{self, AuditKey, VerifyOutcome};
+    use sysknife_daemon::audit_chain::AuditKey;
 
     // Honour the same `[storage]` config the daemon uses, so `sysknife audit
     // verify` works against whichever backend is in production. Without this,
@@ -537,12 +537,7 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
                     "public key file {} could not be read: {e}",
                     pubkey_path.display()
                 );
-                emit_verify_outcome(
-                    &args,
-                    log,
-                    &VerifyOutcome::CannotVerify { reason },
-                    &label_for_diag,
-                );
+                emit_verification(&args, log, &cannot_verify_all(reason), &label_for_diag);
                 return Err(CliError::Exit(2));
             }
         }
@@ -556,12 +551,7 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
                  the exported public key",
                 key_path.display()
             );
-            emit_verify_outcome(
-                &args,
-                log,
-                &VerifyOutcome::CannotVerify { reason },
-                &label_for_diag,
-            );
+            emit_verification(&args, log, &cannot_verify_all(reason), &label_for_diag);
             return Err(CliError::Exit(2));
         }
 
@@ -569,12 +559,7 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
             Ok(k) => Verifier::Private(Box::new(k)),
             Err(e) => {
                 let reason = format!("audit key load failed: {e}");
-                emit_verify_outcome(
-                    &args,
-                    log,
-                    &VerifyOutcome::CannotVerify { reason },
-                    &label_for_diag,
-                );
+                emit_verification(&args, log, &cannot_verify_all(reason), &label_for_diag);
                 return Err(CliError::Exit(2));
             }
         }
@@ -589,8 +574,8 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
         _ => verify_sqlite(&db_path, &verifier).await,
     };
 
-    let exit_code = audit_chain::outcome_to_exit_code(&outcome);
-    emit_verify_outcome(&args, log, &outcome, &label_for_diag);
+    let exit_code = outcome.exit_code();
+    emit_verification(&args, log, &outcome, &label_for_diag);
     if exit_code == 0 {
         Ok(())
     } else {
@@ -707,64 +692,75 @@ pub(crate) enum Verifier {
     Public(String),
 }
 
+use sysknife_daemon::audit_chain::AuditVerification;
+
+/// Lift a single "we could not even read the rows" reason into all three
+/// checks, so the caller never has to special-case a partially populated
+/// result.
+fn cannot_verify_all(reason: String) -> AuditVerification {
+    use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
+    AuditVerification {
+        chain: VerifyOutcome::CannotVerify {
+            reason: reason.clone(),
+        },
+        events: VerifyOutcome::CannotVerify { reason },
+        binding: BindingOutcome::Consistent {
+            bindings_checked: 0,
+        },
+    }
+}
+
 pub(crate) async fn verify_sqlite(
     db_path: &std::path::Path,
     verifier: &Verifier,
-) -> sysknife_daemon::audit_chain::VerifyOutcome {
-    use sysknife_daemon::audit_chain::VerifyOutcome;
+) -> AuditVerification {
+    use sysknife_daemon::audit_chain::{verify_all, verify_all_with_pubkey};
     use sysknife_daemon::transactions::TransactionStore;
 
     if !db_path.exists() {
-        return VerifyOutcome::CannotVerify {
-            reason: format!(
-                "audit database not found at {}; set $SYSKNIFE_DATABASE_PATH \
-                 or run the daemon first",
-                db_path.display()
-            ),
-        };
+        return cannot_verify_all(format!(
+            "audit database not found at {}; set $SYSKNIFE_DATABASE_PATH \
+             or run the daemon first",
+            db_path.display()
+        ));
     }
     let store = match TransactionStore::open_read_only(db_path) {
         Ok(s) => s,
-        Err(e) => {
-            return VerifyOutcome::CannotVerify {
-                reason: format!("opening audit database failed: {e}"),
-            };
-        }
+        Err(e) => return cannot_verify_all(format!("opening audit database failed: {e}")),
     };
-    let result = match verifier {
-        Verifier::Private(key) => store.verify_audit_chain(key),
-        Verifier::Public(vk_hex) => store.verify_audit_chain_with_pubkey(vk_hex),
+    let tx_rows = match store.fetch_chain_rows() {
+        Ok(rows) => rows,
+        Err(e) => return cannot_verify_all(format!("audit chain query failed: {e}")),
     };
-    match result {
-        Ok(o) => o,
-        Err(e) => VerifyOutcome::CannotVerify {
-            reason: format!("audit chain query failed: {e}"),
-        },
+    let event_rows = match store.fetch_event_rows() {
+        Ok(rows) => rows,
+        Err(e) => return cannot_verify_all(format!("approval-event query failed: {e}")),
+    };
+    match verifier {
+        Verifier::Private(key) => verify_all(key, &tx_rows, &event_rows),
+        Verifier::Public(vk_hex) => verify_all_with_pubkey(vk_hex, &tx_rows, &event_rows),
     }
 }
 
 pub(crate) async fn verify_postgres(
     storage: &sysknife_core::config::StorageSection,
     verifier: &Verifier,
-) -> sysknife_daemon::audit_chain::VerifyOutcome {
+) -> AuditVerification {
     use sysknife_core::config::StorageBackend;
-    use sysknife_daemon::audit_chain::VerifyOutcome;
     use sysknife_daemon::store::postgres::{PostgresConfig, PostgresStore};
-    use sysknife_daemon::store::AuditStore;
 
     // Project the relaxed config form into the type-state-checked enum;
     // the match below makes future backends a compile-time decision.
     let parsed = match storage.parsed() {
         Ok(p) => p,
-        Err(reason) => return VerifyOutcome::CannotVerify { reason },
+        Err(reason) => return cannot_verify_all(reason),
     };
     let (url, pool) =
         match parsed {
-            StorageBackend::Sqlite => return VerifyOutcome::CannotVerify {
-                reason:
-                    "verify_postgres called with backend = \"sqlite\" — caller picks the wrong path"
-                        .to_string(),
-            },
+            StorageBackend::Sqlite => return cannot_verify_all(
+                "verify_postgres called with backend = \"sqlite\" — caller picks the wrong path"
+                    .to_string(),
+            ),
             StorageBackend::Postgres { url, pool } => (url, pool),
         };
 
@@ -789,93 +785,155 @@ pub(crate) async fn verify_postgres(
             let store =
                 match PostgresStore::connect(&cfg, std::sync::Arc::new((**key).clone())).await {
                     Ok(s) => s,
-                    Err(e) => {
-                        return VerifyOutcome::CannotVerify {
-                            reason: format!("postgres connect failed: {e}"),
-                        };
-                    }
+                    Err(e) => return cannot_verify_all(format!("postgres connect failed: {e}")),
                 };
-            match store.verify_audit_chain(key).await {
-                Ok(outcome) => outcome,
-                Err(e) => VerifyOutcome::CannotVerify {
-                    reason: format!("postgres audit chain query failed: {e}"),
-                },
+            match store.verify_all(key).await {
+                Ok(verification) => verification,
+                Err(e) => cannot_verify_all(format!("postgres audit chain query failed: {e}")),
             }
         }
         Verifier::Public(verifying_key_hex) => {
-            match PostgresStore::verify_with_pubkey(&cfg, verifying_key_hex).await {
-                Ok(outcome) => outcome,
-                Err(e) => VerifyOutcome::CannotVerify {
-                    reason: format!("postgres audit chain query failed: {e}"),
-                },
+            match PostgresStore::verify_all_with_pubkey(&cfg, verifying_key_hex).await {
+                Ok(verification) => verification,
+                Err(e) => cannot_verify_all(format!("postgres audit chain query failed: {e}")),
             }
         }
     }
 }
 
-fn emit_verify_outcome(
+/// Render all three checks. The transaction chain stays the headline line so
+/// existing output and exit codes are unchanged for a clean chain; the other
+/// two are reported underneath and can independently fail the command.
+fn emit_verification(
     args: &AuditVerifyArgs,
     log: &Logger,
-    outcome: &sysknife_daemon::audit_chain::VerifyOutcome,
+    verification: &AuditVerification,
     backend_label: &str,
 ) {
-    use sysknife_daemon::audit_chain::VerifyOutcome;
+    use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
+
     if args.json {
-        let payload = match outcome {
-            VerifyOutcome::Intact { rows_checked } => json!({
-                "status": "intact",
-                "rows_checked": rows_checked,
-                "backend": backend_label,
-            }),
-            VerifyOutcome::Broken {
-                rows_checked,
-                first_broken_seq,
-                first_broken_transaction_id,
-                expected,
-                actual,
-            } => json!({
-                "status": "broken",
-                "rows_checked": rows_checked,
-                "first_broken_seq": first_broken_seq,
-                "first_broken_transaction_id": first_broken_transaction_id,
-                "expected": expected,
-                "actual": actual,
-                "backend": backend_label,
-            }),
-            VerifyOutcome::CannotVerify { reason } => json!({
-                "status": "cannot_verify",
-                "reason": reason,
-                "backend": backend_label,
-            }),
-        };
+        let payload = json!({
+            "status": status_word(verification.exit_code()),
+            "backend": backend_label,
+            "chain": outcome_json(&verification.chain),
+            "approval_events": outcome_json(&verification.events),
+            "binding": match &verification.binding {
+                BindingOutcome::Consistent { bindings_checked } => json!({
+                    "status": "consistent",
+                    "bindings_checked": bindings_checked,
+                }),
+                BindingOutcome::MissingEvent { transaction_seq, event_tip } => json!({
+                    "status": "missing_event",
+                    "transaction_seq": transaction_seq,
+                    "event_tip": event_tip,
+                }),
+            },
+        });
         log.println(
             &serde_json::to_string_pretty(&payload)
                 .expect("verify outcome payload is serializable"),
         );
-    } else {
-        match outcome {
-            VerifyOutcome::Intact { rows_checked } => {
-                log.println(&format!(
-                    "OK: {rows_checked} row(s) verified in {backend_label}"
-                ));
-            }
-            VerifyOutcome::Broken {
-                rows_checked,
-                first_broken_seq,
-                first_broken_transaction_id,
-                expected,
-                actual,
-            } => {
-                log.println(&format!(
-                    "BROKEN: chain intact for first {rows_checked} row(s); \
-                     row seq={first_broken_seq} (transaction {first_broken_transaction_id}) \
-                     does not chain.\n  expected: {expected}\n  actual:   {actual}"
-                ));
-            }
-            VerifyOutcome::CannotVerify { reason } => {
-                log.println(&format!("CANNOT VERIFY: {reason}"));
-            }
+        return;
+    }
+
+    match &verification.chain {
+        VerifyOutcome::Intact { rows_checked } => {
+            log.println(&format!(
+                "OK: {rows_checked} row(s) verified in {backend_label}"
+            ));
         }
+        VerifyOutcome::Broken {
+            rows_checked,
+            first_broken_seq,
+            first_broken_transaction_id,
+            expected,
+            actual,
+        } => {
+            log.println(&format!(
+                "BROKEN: chain intact for first {rows_checked} row(s); \
+                 row seq={first_broken_seq} (transaction {first_broken_transaction_id}) \
+                 does not chain.\n  expected: {expected}\n  actual:   {actual}"
+            ));
+        }
+        VerifyOutcome::CannotVerify { reason } => {
+            log.println(&format!("CANNOT VERIFY: {reason}"));
+        }
+    }
+
+    match &verification.events {
+        VerifyOutcome::Intact { rows_checked } => {
+            log.println(&format!("OK: {rows_checked} approval event(s) verified"));
+        }
+        VerifyOutcome::Broken {
+            rows_checked,
+            first_broken_seq,
+            first_broken_transaction_id,
+            ..
+        } => {
+            log.println(&format!(
+                "BROKEN: approval events intact for first {rows_checked}; \
+                 event seq={first_broken_seq} (transaction {first_broken_transaction_id}) \
+                 does not chain"
+            ));
+        }
+        VerifyOutcome::CannotVerify { reason } => {
+            log.println(&format!("CANNOT VERIFY approval events: {reason}"));
+        }
+    }
+
+    match &verification.binding {
+        BindingOutcome::Consistent { bindings_checked } => {
+            log.println(&format!(
+                "OK: {bindings_checked} row(s) still match the approval event they committed to"
+            ));
+        }
+        BindingOutcome::MissingEvent {
+            transaction_seq,
+            event_tip,
+        } => {
+            log.println(&format!(
+                "BROKEN: transaction seq={transaction_seq} committed to approval event \
+                 {event_tip}, which is no longer in the event chain — approval events \
+                 were deleted from the end of the chain"
+            ));
+        }
+    }
+}
+
+fn status_word(exit_code: i32) -> &'static str {
+    match exit_code {
+        0 => "intact",
+        1 => "broken",
+        _ => "cannot_verify",
+    }
+}
+
+fn outcome_json(outcome: &sysknife_daemon::audit_chain::VerifyOutcome) -> serde_json::Value {
+    use sysknife_daemon::audit_chain::VerifyOutcome;
+    match outcome {
+        VerifyOutcome::Intact { rows_checked } => json!({
+            "status": "intact",
+            "rows_checked": rows_checked,
+        }),
+        VerifyOutcome::Broken {
+            rows_checked,
+            first_broken_seq,
+            first_broken_transaction_id,
+            expected,
+            actual,
+        } => json!({
+            "status": "broken",
+            "rows_checked": rows_checked,
+            "first_broken_seq": first_broken_seq,
+            "first_broken_transaction_id": first_broken_transaction_id,
+            "expected": expected,
+            "actual": actual,
+        }),
+        VerifyOutcome::CannotVerify { reason } => json!({
+            "status": "cannot_verify",
+            "reason": reason,
+        }),
     }
 }
 

@@ -398,6 +398,24 @@ pub enum CallerRole {
     Boot,
 }
 
+impl CallerRole {
+    /// Stable lowercase spelling, identical to the serde representation.
+    ///
+    /// The audit chain signs this string, so it is a wire format: renaming a
+    /// variant must not silently change what past signatures were made over.
+    /// `format!("{role:?}")` cannot be used for that — `Debug` carries no
+    /// stability promise and tracks the identifier. `caller_role_as_str_matches_serde`
+    /// pins the two encodings together.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Observer => "observer",
+            Self::Dev => "dev",
+            Self::Admin => "admin",
+            Self::Boot => "boot",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RiskLevel {

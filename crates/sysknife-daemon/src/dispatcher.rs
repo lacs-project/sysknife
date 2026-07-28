@@ -1797,6 +1797,9 @@ async fn handle_preview(
         risk_level: spec.risk_level,
         summary: preview.summary.clone(),
         warnings: preview.warnings.clone(),
+        // The role the daemon resolved for this connection, not anything the
+        // request carried. Signing it is what lets the audit answer "who".
+        caller_role: *caller_role,
     };
 
     let recorded = match state.audit.record_previewed(new_tx, preview.clone()).await {
@@ -3921,6 +3924,11 @@ mod tests {
             }
             async fn fetch_chain_rows(&self) -> Result<Vec<ChainRow>, TransactionStoreError> {
                 self.0.fetch_chain_rows().await
+            }
+            async fn fetch_event_rows(
+                &self,
+            ) -> Result<Vec<crate::audit_chain::EventRow>, TransactionStoreError> {
+                self.0.fetch_event_rows().await
             }
             async fn verify_audit_chain(
                 &self,

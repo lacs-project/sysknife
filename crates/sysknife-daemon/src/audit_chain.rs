@@ -86,6 +86,13 @@ pub const HASH_HEX_LEN: usize = 128;
 const ROW_DOMAIN: &[u8] = b"sysknife-audit-row-v1\x1f";
 const CHECKPOINT_DOMAIN: &[u8] = b"sysknife-checkpoint-v1\x1f";
 const APPROVAL_DOMAIN: &[u8] = b"sysknife-approval-receipt-v1\x1f";
+const EVENT_DOMAIN: &[u8] = b"sysknife-audit-event-v1\x1f";
+
+/// Row encoding written before the caller-identity migration: no
+/// `caller_role`, no `event_tip`. Still verifiable — see [`ChainIdentity`].
+pub const CHAIN_VERSION_LEGACY: u32 = 1;
+/// Row encoding written by this binary: adds `caller_role` and `event_tip`.
+pub const CHAIN_VERSION_CURRENT: u32 = 2;
 
 /// Loaded Ed25519 signing key + its identifier. Construct via
 /// [`AuditKey::load_or_generate`].
@@ -393,6 +400,52 @@ fn fill_random(buf: &mut [u8]) -> std::io::Result<()> {
 /// respectively. The escape table is **prefix-free** (every escape starts
 /// with `\\`), so any value can be injected without ambiguity. See
 /// `push_field` for the implementation and tests for the round-trip.
+/// Which generation of the canonical row encoding a row was signed under.
+///
+/// # Why this is an enum and not two `Option` fields
+///
+/// Adding a field to [`ChainContent`] changes the signed message, so every row
+/// written before the change would re-encode differently and report as
+/// `Broken`. Chains already exist in the field, and "delete your audit log to
+/// upgrade" is not an acceptable migration for an audit log. The stored
+/// `chain_version` column therefore selects the encoding **per row**: legacy
+/// rows keep the exact bytes they were signed over, new rows carry the
+/// identity fields.
+///
+/// A downgrade is not a hiding place. Rewriting a `V2` row as `LegacyV1` (to
+/// erase `caller_role`) makes verification re-encode it without the identity
+/// fields, so the stored signature — made over the `V2` message — no longer
+/// verifies and the row reports as `Broken`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainIdentity<'a> {
+    /// `chain_version = 1`. Written before the identity migration.
+    LegacyV1,
+    /// `chain_version = 2`. Binds the row to the authenticated caller and to
+    /// the approval-event chain tip at insert time.
+    V2 {
+        /// Role the daemon resolved for the connection that requested this
+        /// action (`SO_PEERCRED` for Unix sockets, token for vsock). Signing
+        /// it is what lets an auditor answer "who asked for this".
+        caller_role: &'a str,
+        /// `chain_hash` of the last [`EventRow`] at insert time, or `""` when
+        /// the event chain is empty. This is the cross-chain binding: because
+        /// checkpoints anchor the *transaction* chain tip, a committed
+        /// `event_tip` transitively anchors the event chain, so deleting
+        /// approval events below it becomes detectable.
+        event_tip: &'a str,
+    },
+}
+
+impl ChainIdentity<'_> {
+    /// `chain_version` column value for this encoding.
+    pub fn version(&self) -> u32 {
+        match self {
+            Self::LegacyV1 => CHAIN_VERSION_LEGACY,
+            Self::V2 { .. } => CHAIN_VERSION_CURRENT,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainContent<'a> {
     pub seq: u64,
@@ -417,6 +470,8 @@ pub struct ChainContent<'a> {
     /// JSON-canonical (sorted keys) array of warning strings.
     pub warnings_json: &'a str,
     pub created_at: &'a str,
+    /// Encoding generation. See [`ChainIdentity`] for why this is per-row.
+    pub identity: ChainIdentity<'a>,
 }
 
 impl<'a> ChainContent<'a> {
@@ -445,6 +500,23 @@ impl<'a> ChainContent<'a> {
         push_field(&mut buf, "approval_id", approval);
         push_field(&mut buf, "warnings_json", self.warnings_json);
         push_field(&mut buf, "created_at", self.created_at);
+        // v2 fields are *appended*, so a legacy row's bytes are unchanged and
+        // its signature still verifies. The `chain_version` tag leads the
+        // suffix so a future v3 can never alias a v2 message: the two differ
+        // in a signed field, not merely in field count.
+        if let ChainIdentity::V2 {
+            caller_role,
+            event_tip,
+        } = self.identity
+        {
+            push_field(
+                &mut buf,
+                "chain_version",
+                &CHAIN_VERSION_CURRENT.to_string(),
+            );
+            push_field(&mut buf, "caller_role", caller_role);
+            push_field(&mut buf, "event_tip", event_tip);
+        }
         buf
     }
 }
@@ -529,6 +601,47 @@ pub struct ChainRow {
     pub created_at: String,
     pub prev_chain_hash: String,
     pub chain_hash: String,
+    /// Which encoding this row was signed under. See [`ChainIdentity`].
+    pub chain_version: u32,
+    /// `NULL` for legacy rows; required for `chain_version = 2`.
+    pub caller_role: Option<String>,
+    /// `NULL` for legacy rows; required for `chain_version = 2`. May be the
+    /// empty string when the event chain was empty at insert time.
+    pub event_tip: Option<String>,
+}
+
+/// Why a stored row's columns do not describe a verifiable encoding.
+#[derive(Debug)]
+pub(crate) enum RowIdentityError {
+    /// The row claims an encoding this binary does not know how to reproduce.
+    /// Genuinely unverifiable, not evidence of tampering — an older binary
+    /// reading a newer chain lands here.
+    UnknownVersion(u32),
+    /// The row claims `chain_version = 2` but is missing an identity column.
+    /// No message can be reconstructed, and the shape is self-contradictory,
+    /// so this counts as a detected break rather than an inability to check.
+    MissingField(&'static str),
+}
+
+impl ChainRow {
+    /// Recover the encoding this row was signed under, so a caller can rebuild
+    /// the exact message that produced `chain_hash`.
+    pub(crate) fn identity(&self) -> Result<ChainIdentity<'_>, RowIdentityError> {
+        match self.chain_version {
+            CHAIN_VERSION_LEGACY => Ok(ChainIdentity::LegacyV1),
+            CHAIN_VERSION_CURRENT => Ok(ChainIdentity::V2 {
+                caller_role: self
+                    .caller_role
+                    .as_deref()
+                    .ok_or(RowIdentityError::MissingField("caller_role"))?,
+                event_tip: self
+                    .event_tip
+                    .as_deref()
+                    .ok_or(RowIdentityError::MissingField("event_tip"))?,
+            }),
+            other => Err(RowIdentityError::UnknownVersion(other)),
+        }
+    }
 }
 
 /// Verify a chain using the daemon's key. Verification uses the **public** key
@@ -600,6 +713,28 @@ fn verify_rows(vk: &VerifyingKey, expect_key_id: Option<&str>, rows: &[ChainRow]
                 actual: format!("prev_chain_hash={}", row.prev_chain_hash),
             };
         }
+        let identity = match row.identity() {
+            Ok(identity) => identity,
+            Err(RowIdentityError::UnknownVersion(v)) => {
+                return VerifyOutcome::CannotVerify {
+                    reason: format!(
+                        "row seq={} declares chain_version={v}, which this binary cannot \
+                         reproduce (it understands {CHAIN_VERSION_LEGACY}..={CHAIN_VERSION_CURRENT}); \
+                         verify with a build at least as new as the one that wrote the chain",
+                        row.seq
+                    ),
+                };
+            }
+            Err(RowIdentityError::MissingField(field)) => {
+                return VerifyOutcome::Broken {
+                    rows_checked,
+                    first_broken_seq: row.seq,
+                    first_broken_transaction_id: row.transaction_id.clone(),
+                    expected: format!("chain_version={CHAIN_VERSION_CURRENT} row carrying {field}"),
+                    actual: format!("{field}=NULL"),
+                };
+            }
+        };
         let content = ChainContent {
             seq: row.seq,
             key_id: &row.key_id,
@@ -612,6 +747,7 @@ fn verify_rows(vk: &VerifyingKey, expect_key_id: Option<&str>, rows: &[ChainRow]
             approval_id: row.approval_id.as_deref(),
             warnings_json: &row.warnings_json,
             created_at: &row.created_at,
+            identity,
         };
         let msg = chain_message(&content, &row.prev_chain_hash);
         if !signature_ok(vk, &msg, &row.chain_hash) {
@@ -627,6 +763,320 @@ fn verify_rows(vk: &VerifyingKey, expect_key_id: Option<&str>, rows: &[ChainRow]
         rows_checked += 1;
     }
     VerifyOutcome::Intact { rows_checked }
+}
+
+// ── Approval-event chain ─────────────────────────────────────────────────────
+
+/// A lifecycle event on an approval receipt.
+///
+/// The `transactions` chain commits to the *authorisation decision* at preview
+/// time. It says nothing about whether a human ever approved, whether that
+/// approval was spent, or whether it was retracted — those live in
+/// `transaction_approvals`, a plain mutable table. Deleting a row from it used
+/// to leave `sysknife audit verify` reporting `Intact`, so the record that an
+/// approval happened was the one part of the trail an attacker could erase
+/// without leaving a mark. These events are chained so that erasure breaks a
+/// signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditEventKind {
+    /// A receipt was minted for a queued transaction.
+    ApprovalGranted,
+    /// A receipt was spent to move a transaction into `Running`.
+    ApprovalConsumed,
+    /// An undelivered receipt was retracted before it could be spent.
+    ApprovalRevoked,
+}
+
+impl AuditEventKind {
+    /// Stored and signed spelling. Stable on the wire — changing one of these
+    /// strings invalidates every event signature already written.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ApprovalGranted => "approval_granted",
+            Self::ApprovalConsumed => "approval_consumed",
+            Self::ApprovalRevoked => "approval_revoked",
+        }
+    }
+}
+
+/// Immutable content of one approval event, signed into the event chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventContent<'a> {
+    pub seq: u64,
+    pub key_id: &'a str,
+    pub kind: AuditEventKind,
+    pub transaction_id: &'a str,
+    /// The receipt digest the event concerns. Binds the event to the specific
+    /// receipt, so swapping in a different approval's digest breaks the
+    /// signature.
+    pub receipt_digest: &'a str,
+    pub created_at: &'a str,
+}
+
+impl EventContent<'_> {
+    /// Canonical encoding, using the same prefix-free field framing as
+    /// [`ChainContent::canonical_bytes`].
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(256);
+        push_field(&mut buf, "seq", &self.seq.to_string());
+        push_field(&mut buf, "key_id", self.key_id);
+        push_field(&mut buf, "kind", self.kind.as_str());
+        push_field(&mut buf, "transaction_id", self.transaction_id);
+        push_field(&mut buf, "receipt_digest", self.receipt_digest);
+        push_field(&mut buf, "created_at", self.created_at);
+        buf
+    }
+}
+
+fn event_message(content: &EventContent, prev_chain_hash: &str) -> Vec<u8> {
+    let mut msg = EVENT_DOMAIN.to_vec();
+    msg.extend_from_slice(&content.canonical_bytes());
+    msg.extend_from_slice(prev_chain_hash.as_bytes());
+    msg
+}
+
+impl AuditKey {
+    /// Compute the event-chain signature for `content` linked to
+    /// `prev_chain_hash`. Separate domain tag from rows and checkpoints, so an
+    /// event signature can never be replayed as a transaction row.
+    pub fn event_hash(&self, content: &EventContent, prev_chain_hash: &str) -> String {
+        hex::encode(
+            self.signing
+                .sign(&event_message(content, prev_chain_hash))
+                .to_bytes(),
+        )
+    }
+}
+
+/// One approval event as fetched from the store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventRow {
+    pub seq: u64,
+    pub key_id: String,
+    /// Stored spelling of an [`AuditEventKind`]. Kept as a string so an
+    /// unrecognised value read from the database is a verification failure
+    /// rather than a deserialisation panic.
+    pub kind: String,
+    pub transaction_id: String,
+    pub receipt_digest: String,
+    pub created_at: String,
+    pub prev_chain_hash: String,
+    pub chain_hash: String,
+}
+
+/// Verify the approval-event chain with the daemon's key.
+pub fn verify_event_chain(key: &AuditKey, rows: &[EventRow]) -> VerifyOutcome {
+    verify_event_rows(&key.verifying_key(), Some(key.key_id()), rows)
+}
+
+/// Verify the approval-event chain with only the exported public key.
+pub fn verify_event_chain_with_pubkey(verifying_key_hex: &str, rows: &[EventRow]) -> VerifyOutcome {
+    match parse_verifying_key(verifying_key_hex) {
+        Some(vk) => verify_event_rows(&vk, None, rows),
+        None => VerifyOutcome::CannotVerify {
+            reason: format!(
+                "invalid public key hex ({} chars); expected 64 hex chars of a \
+                 32-byte Ed25519 public key",
+                verifying_key_hex.len()
+            ),
+        },
+    }
+}
+
+fn verify_event_rows(
+    vk: &VerifyingKey,
+    expect_key_id: Option<&str>,
+    rows: &[EventRow],
+) -> VerifyOutcome {
+    let mut last_hash = String::new();
+    let mut rows_checked = 0u64;
+    for row in rows {
+        if let Some(kid) = expect_key_id {
+            if row.key_id != kid {
+                return VerifyOutcome::CannotVerify {
+                    reason: format!(
+                        "event seq={} uses key_id={:?} but only {:?} is loaded; \
+                         epoch keys not yet supported",
+                        row.seq, row.key_id, kid
+                    ),
+                };
+            }
+        }
+        if row.prev_chain_hash != last_hash {
+            return VerifyOutcome::Broken {
+                rows_checked,
+                first_broken_seq: row.seq,
+                first_broken_transaction_id: row.transaction_id.clone(),
+                expected: format!("prev_chain_hash={last_hash}"),
+                actual: format!("prev_chain_hash={}", row.prev_chain_hash),
+            };
+        }
+        // An unknown `kind` cannot be re-encoded, so it can never reproduce a
+        // valid signature. Report it as the break it is instead of guessing.
+        let Some(kind) = parse_event_kind(&row.kind) else {
+            return VerifyOutcome::Broken {
+                rows_checked,
+                first_broken_seq: row.seq,
+                first_broken_transaction_id: row.transaction_id.clone(),
+                expected: "a known event kind".to_string(),
+                actual: format!("kind={:?}", row.kind),
+            };
+        };
+        let content = EventContent {
+            seq: row.seq,
+            key_id: &row.key_id,
+            kind,
+            transaction_id: &row.transaction_id,
+            receipt_digest: &row.receipt_digest,
+            created_at: &row.created_at,
+        };
+        if !signature_ok(
+            vk,
+            &event_message(&content, &row.prev_chain_hash),
+            &row.chain_hash,
+        ) {
+            return VerifyOutcome::Broken {
+                rows_checked,
+                first_broken_seq: row.seq,
+                first_broken_transaction_id: row.transaction_id.clone(),
+                expected: "valid ed25519 signature".to_string(),
+                actual: row.chain_hash.clone(),
+            };
+        }
+        last_hash = row.chain_hash.clone();
+        rows_checked += 1;
+    }
+    VerifyOutcome::Intact { rows_checked }
+}
+
+fn parse_event_kind(raw: &str) -> Option<AuditEventKind> {
+    // Exhaustive by construction: the match below fails to compile if a
+    // variant is added without a spelling here.
+    [
+        AuditEventKind::ApprovalGranted,
+        AuditEventKind::ApprovalConsumed,
+        AuditEventKind::ApprovalRevoked,
+    ]
+    .into_iter()
+    .find(|kind| kind.as_str() == raw)
+}
+
+/// Result of checking that the transaction chain's committed `event_tip`
+/// values are still reproducible from the event chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BindingOutcome {
+    /// Every committed tip is present in the event chain.
+    Consistent { bindings_checked: u64 },
+    /// A transaction row committed to an event tip that no longer exists —
+    /// approval events were deleted from the end of the event chain, which the
+    /// event chain walk alone cannot see.
+    MissingEvent {
+        transaction_seq: u64,
+        event_tip: String,
+    },
+}
+
+/// Check the cross-chain binding: each `chain_version = 2` transaction row
+/// signs the event-chain tip as of its insert, so a later deletion of trailing
+/// approval events leaves a tip that can no longer be found.
+///
+/// This is what extends checkpoint anchoring to the event chain for free: the
+/// checkpoints commit to the transaction tip, the transaction rows commit to
+/// event tips. Events appended *after* the last transaction row are still
+/// unanchored until the next row is written — the same bounded tail exposure
+/// the transaction chain has between checkpoints.
+pub fn verify_event_binding(tx_rows: &[ChainRow], event_rows: &[EventRow]) -> BindingOutcome {
+    let known: std::collections::HashSet<&str> = event_rows
+        .iter()
+        .map(|row| row.chain_hash.as_str())
+        .collect();
+    let mut bindings_checked = 0u64;
+    for row in tx_rows {
+        let Some(tip) = row.event_tip.as_deref() else {
+            continue;
+        };
+        if tip.is_empty() {
+            continue;
+        }
+        if !known.contains(tip) {
+            return BindingOutcome::MissingEvent {
+                transaction_seq: row.seq,
+                event_tip: tip.to_string(),
+            };
+        }
+        bindings_checked += 1;
+    }
+    BindingOutcome::Consistent { bindings_checked }
+}
+
+/// Everything `sysknife audit verify` checks, in one value.
+///
+/// Three independent questions, deliberately not collapsed into one enum:
+/// is the authorisation record intact, is the approval record intact, and do
+/// the two still agree. Collapsing them would let a clean transaction chain
+/// mask a tampered approval trail in the summary line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditVerification {
+    pub chain: VerifyOutcome,
+    pub events: VerifyOutcome,
+    pub binding: BindingOutcome,
+}
+
+impl AuditVerification {
+    /// Worst result across all three checks.
+    ///
+    /// A detected tamper (`1`) outranks an inability to check (`2`): if the
+    /// chain is provably broken, reporting "could not verify" because some
+    /// *other* check was inconclusive would understate what is known.
+    pub fn exit_code(&self) -> i32 {
+        let codes = [
+            outcome_to_exit_code(&self.chain),
+            outcome_to_exit_code(&self.events),
+            binding_outcome_to_exit_code(&self.binding),
+        ];
+        if codes.contains(&1) {
+            1
+        } else if codes.contains(&2) {
+            2
+        } else {
+            0
+        }
+    }
+}
+
+/// Run all three checks with the daemon's key.
+pub fn verify_all(
+    key: &AuditKey,
+    tx_rows: &[ChainRow],
+    event_rows: &[EventRow],
+) -> AuditVerification {
+    AuditVerification {
+        chain: verify_chain(key, tx_rows),
+        events: verify_event_chain(key, event_rows),
+        binding: verify_event_binding(tx_rows, event_rows),
+    }
+}
+
+/// Run all three checks with only the exported public key (the auditor path).
+pub fn verify_all_with_pubkey(
+    verifying_key_hex: &str,
+    tx_rows: &[ChainRow],
+    event_rows: &[EventRow],
+) -> AuditVerification {
+    AuditVerification {
+        chain: verify_chain_with_pubkey(verifying_key_hex, tx_rows),
+        events: verify_event_chain_with_pubkey(verifying_key_hex, event_rows),
+        binding: verify_event_binding(tx_rows, event_rows),
+    }
+}
+
+/// Exit code for the binding check, on the same scale as
+/// [`outcome_to_exit_code`]: a missing event is a detected tamper (`1`).
+pub fn binding_outcome_to_exit_code(outcome: &BindingOutcome) -> i32 {
+    match outcome {
+        BindingOutcome::Consistent { .. } => 0,
+        BindingOutcome::MissingEvent { .. } => 1,
+    }
 }
 
 // ── Signed checkpoints (external anchoring / tail-truncation detection) ──────
@@ -794,6 +1244,10 @@ mod tests {
             approval_id: None,
             warnings_json: "[]",
             created_at: "2026-04-24T12:00:00Z",
+            identity: ChainIdentity::V2 {
+                caller_role: "Dev",
+                event_tip: "",
+            },
         }
     }
 
@@ -911,6 +1365,41 @@ mod tests {
 
     // ── verify_chain ──────────────────────────────────────────────────────
 
+    /// Materialise the stored row that `content` would produce, so a test
+    /// never hand-copies field-by-field and accidentally signs one thing while
+    /// storing another.
+    fn row_for(content: &ChainContent<'_>, prev: &str, chain_hash: String) -> ChainRow {
+        let (chain_version, caller_role, event_tip) = match content.identity {
+            ChainIdentity::LegacyV1 => (CHAIN_VERSION_LEGACY, None, None),
+            ChainIdentity::V2 {
+                caller_role,
+                event_tip,
+            } => (
+                CHAIN_VERSION_CURRENT,
+                Some(caller_role.to_string()),
+                Some(event_tip.to_string()),
+            ),
+        };
+        ChainRow {
+            seq: content.seq,
+            key_id: content.key_id.to_string(),
+            transaction_id: content.transaction_id.to_string(),
+            request_id: content.request_id.to_string(),
+            request_hash: content.request_hash.to_string(),
+            action_name: content.action_name.to_string(),
+            risk_level: content.risk_level,
+            summary: content.summary.to_string(),
+            approval_id: content.approval_id.map(str::to_string),
+            warnings_json: content.warnings_json.to_string(),
+            created_at: content.created_at.to_string(),
+            prev_chain_hash: prev.to_string(),
+            chain_hash,
+            chain_version,
+            caller_role,
+            event_tip,
+        }
+    }
+
     fn build_chain(key: &AuditKey, count: usize) -> Vec<ChainRow> {
         let mut rows = Vec::with_capacity(count);
         let mut prev = String::new();
@@ -919,17 +1408,175 @@ mod tests {
             let txid = format!("tx{i}");
             let content = sample_content(seq, &txid);
             let hash = key.chain_hash(&content, &prev);
-            rows.push(ChainRow {
+            rows.push(row_for(&content, &prev, hash.clone()));
+            prev = hash;
+        }
+        rows
+    }
+
+    // ── caller identity in the signed content ─────────────────────────────
+
+    #[test]
+    fn caller_role_is_covered_by_the_row_signature() {
+        // The whole point of the v2 encoding: two rows identical except for
+        // who asked must not share a signature, or the chain cannot answer
+        // "which role requested this".
+        let key = fixed_key();
+        let mut dev = sample_content(1, "txa");
+        dev.identity = ChainIdentity::V2 {
+            caller_role: "Dev",
+            event_tip: "",
+        };
+        let mut boot = sample_content(1, "txa");
+        boot.identity = ChainIdentity::V2 {
+            caller_role: "Boot",
+            event_tip: "",
+        };
+        assert_ne!(key.chain_hash(&dev, ""), key.chain_hash(&boot, ""));
+    }
+
+    #[test]
+    fn event_tip_is_covered_by_the_row_signature() {
+        let key = fixed_key();
+        let mut empty = sample_content(1, "txa");
+        empty.identity = ChainIdentity::V2 {
+            caller_role: "Dev",
+            event_tip: "",
+        };
+        let mut bound = sample_content(1, "txa");
+        bound.identity = ChainIdentity::V2 {
+            caller_role: "Dev",
+            event_tip: "abc123",
+        };
+        assert_ne!(key.chain_hash(&empty, ""), key.chain_hash(&bound, ""));
+    }
+
+    #[test]
+    fn a_legacy_row_written_before_the_migration_still_verifies() {
+        // The migration contract. A chain written by v0.2.12 or earlier has no
+        // caller_role column; re-encoding those rows with an empty identity
+        // would report every historical row as Broken, i.e. an upgrade would
+        // look exactly like a compromise.
+        let key = fixed_key();
+        let mut content = sample_content(1, "tx-legacy");
+        content.identity = ChainIdentity::LegacyV1;
+        let hash = key.chain_hash(&content, "");
+        let row = row_for(&content, "", hash);
+        assert_eq!(row.chain_version, CHAIN_VERSION_LEGACY);
+        assert_eq!(row.caller_role, None);
+        assert_eq!(
+            verify_chain(&key, &[row]),
+            VerifyOutcome::Intact { rows_checked: 1 }
+        );
+    }
+
+    #[test]
+    fn a_chain_that_spans_the_migration_verifies_end_to_end() {
+        // The realistic upgrade shape: old rows, then new rows appended by the
+        // upgraded daemon, in one chain.
+        let key = fixed_key();
+        let mut rows = Vec::new();
+        let mut prev = String::new();
+        for (i, identity) in [
+            ChainIdentity::LegacyV1,
+            ChainIdentity::LegacyV1,
+            ChainIdentity::V2 {
+                caller_role: "Dev",
+                event_tip: "",
+            },
+            ChainIdentity::V2 {
+                caller_role: "Boot",
+                event_tip: "",
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let txid = format!("tx{i}");
+            let mut content = sample_content((i + 1) as u64, &txid);
+            content.identity = identity;
+            let hash = key.chain_hash(&content, &prev);
+            rows.push(row_for(&content, &prev, hash.clone()));
+            prev = hash;
+        }
+        assert_eq!(
+            verify_chain(&key, &rows),
+            VerifyOutcome::Intact { rows_checked: 4 }
+        );
+    }
+
+    #[test]
+    fn downgrading_a_v2_row_to_hide_the_caller_role_breaks_it() {
+        // The attack the version column might invite: relabel a v2 row as
+        // legacy and drop the identity columns, so verification re-encodes it
+        // without caller_role. The stored signature was made over the v2
+        // message, so it cannot verify against the shorter one.
+        let key = fixed_key();
+        let mut rows = build_chain(&key, 2);
+        rows[1].chain_version = CHAIN_VERSION_LEGACY;
+        rows[1].caller_role = None;
+        rows[1].event_tip = None;
+        match verify_chain(&key, &rows) {
+            VerifyOutcome::Broken {
+                first_broken_seq, ..
+            } => assert_eq!(first_broken_seq, 2),
+            other => panic!("expected Broken, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_v2_row_with_a_nulled_caller_role_is_broken_not_merely_unverifiable() {
+        // Nulling the column while leaving chain_version=2 is a
+        // self-contradictory row, not an infrastructure problem. It must map
+        // to exit code 1 (tamper detected), never 2 (could not check) — a CI
+        // gate that treats 2 as "skip" would otherwise wave it through.
+        let key = fixed_key();
+        let mut rows = build_chain(&key, 1);
+        rows[0].caller_role = None;
+        let outcome = verify_chain(&key, &rows);
+        assert!(matches!(outcome, VerifyOutcome::Broken { .. }));
+        assert_eq!(outcome_to_exit_code(&outcome), 1);
+    }
+
+    #[test]
+    fn a_chain_version_this_binary_does_not_know_is_cannot_verify() {
+        // An older binary reading a newer chain genuinely cannot reproduce the
+        // message. That is exit 2, distinct from a detected break.
+        let key = fixed_key();
+        let mut rows = build_chain(&key, 1);
+        rows[0].chain_version = CHAIN_VERSION_CURRENT + 1;
+        let outcome = verify_chain(&key, &rows);
+        assert!(matches!(outcome, VerifyOutcome::CannotVerify { .. }));
+        assert_eq!(outcome_to_exit_code(&outcome), 2);
+    }
+
+    // ── approval-event chain ──────────────────────────────────────────────
+
+    fn event_content<'a>(seq: u64, kind: AuditEventKind, txid: &'a str) -> EventContent<'a> {
+        EventContent {
+            seq,
+            key_id: CURRENT_KEY_ID,
+            kind,
+            transaction_id: txid,
+            receipt_digest: "digest-abc",
+            created_at: "2026-04-24T12:00:00Z",
+        }
+    }
+
+    fn build_event_chain(key: &AuditKey, kinds: &[AuditEventKind]) -> Vec<EventRow> {
+        let mut rows = Vec::with_capacity(kinds.len());
+        let mut prev = String::new();
+        for (i, kind) in kinds.iter().enumerate() {
+            let seq = (i + 1) as u64;
+            let txid = format!("tx{i}");
+            let content = event_content(seq, *kind, &txid);
+            let hash = key.event_hash(&content, &prev);
+            rows.push(EventRow {
                 seq,
                 key_id: content.key_id.to_string(),
+                kind: content.kind.as_str().to_string(),
                 transaction_id: content.transaction_id.to_string(),
-                request_id: content.request_id.to_string(),
-                request_hash: content.request_hash.to_string(),
-                action_name: content.action_name.to_string(),
-                risk_level: content.risk_level,
-                summary: content.summary.to_string(),
-                approval_id: content.approval_id.map(str::to_string),
-                warnings_json: content.warnings_json.to_string(),
+                receipt_digest: content.receipt_digest.to_string(),
                 created_at: content.created_at.to_string(),
                 prev_chain_hash: prev.clone(),
                 chain_hash: hash.clone(),
@@ -937,6 +1584,225 @@ mod tests {
             prev = hash;
         }
         rows
+    }
+
+    #[test]
+    fn event_kind_spellings_are_stable() {
+        // These strings are inside the signed message. Renaming one silently
+        // invalidates every event already written.
+        assert_eq!(AuditEventKind::ApprovalGranted.as_str(), "approval_granted");
+        assert_eq!(
+            AuditEventKind::ApprovalConsumed.as_str(),
+            "approval_consumed"
+        );
+        assert_eq!(AuditEventKind::ApprovalRevoked.as_str(), "approval_revoked");
+    }
+
+    #[test]
+    fn intact_event_chain_verifies() {
+        let key = fixed_key();
+        let rows = build_event_chain(
+            &key,
+            &[
+                AuditEventKind::ApprovalGranted,
+                AuditEventKind::ApprovalConsumed,
+            ],
+        );
+        assert_eq!(
+            verify_event_chain(&key, &rows),
+            VerifyOutcome::Intact { rows_checked: 2 }
+        );
+    }
+
+    #[test]
+    fn deleting_an_approval_event_from_the_middle_breaks_the_event_chain() {
+        // The finding this chain exists for: before it, deleting the record
+        // that an approval happened left `audit verify` reporting Intact.
+        let key = fixed_key();
+        let mut rows = build_event_chain(
+            &key,
+            &[
+                AuditEventKind::ApprovalGranted,
+                AuditEventKind::ApprovalConsumed,
+                AuditEventKind::ApprovalRevoked,
+            ],
+        );
+        rows.remove(1);
+        match verify_event_chain(&key, &rows) {
+            VerifyOutcome::Broken {
+                first_broken_seq, ..
+            } => assert_eq!(first_broken_seq, 3),
+            other => panic!("expected Broken, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn relabelling_a_revocation_as_a_grant_breaks_the_event_chain() {
+        let key = fixed_key();
+        let mut rows = build_event_chain(&key, &[AuditEventKind::ApprovalRevoked]);
+        rows[0].kind = AuditEventKind::ApprovalGranted.as_str().to_string();
+        assert!(matches!(
+            verify_event_chain(&key, &rows),
+            VerifyOutcome::Broken { .. }
+        ));
+    }
+
+    #[test]
+    fn an_unrecognised_event_kind_is_a_break_not_a_panic() {
+        let key = fixed_key();
+        let mut rows = build_event_chain(&key, &[AuditEventKind::ApprovalGranted]);
+        rows[0].kind = "approval_unicorned".to_string();
+        assert!(matches!(
+            verify_event_chain(&key, &rows),
+            VerifyOutcome::Broken { .. }
+        ));
+    }
+
+    #[test]
+    fn a_row_signature_cannot_be_replayed_as_an_event_signature() {
+        // Domain separation, checked functionally rather than by comparing the
+        // tag constants: the tags test proves the bytes differ, this proves the
+        // difference actually reaches the verifier.
+        let key = fixed_key();
+        let content = event_content(1, AuditEventKind::ApprovalGranted, "tx0");
+        let event_sig = key.event_hash(&content, "");
+        let row_sig = key.chain_hash(&sample_content(1, "tx0"), "");
+        assert_ne!(event_sig, row_sig);
+
+        let mut rows = build_event_chain(&key, &[AuditEventKind::ApprovalGranted]);
+        rows[0].chain_hash = row_sig;
+        assert!(matches!(
+            verify_event_chain(&key, &rows),
+            VerifyOutcome::Broken { .. }
+        ));
+    }
+
+    // ── cross-chain binding ───────────────────────────────────────────────
+
+    #[test]
+    fn deleting_the_last_approval_event_is_caught_by_the_transaction_binding() {
+        // Truncating the *tail* of the event chain leaves a self-consistent
+        // event chain — the walk alone cannot see it. It is caught because a
+        // later transaction row signed the tip that no longer exists, and the
+        // transaction chain is what checkpoints anchor.
+        let key = fixed_key();
+        let events = build_event_chain(
+            &key,
+            &[
+                AuditEventKind::ApprovalGranted,
+                AuditEventKind::ApprovalConsumed,
+            ],
+        );
+        let mut content = sample_content(1, "tx-after");
+        content.identity = ChainIdentity::V2 {
+            caller_role: "Dev",
+            event_tip: &events[1].chain_hash,
+        };
+        let hash = key.chain_hash(&content, "");
+        let tx_rows = vec![row_for(&content, "", hash)];
+
+        assert_eq!(
+            verify_event_binding(&tx_rows, &events),
+            BindingOutcome::Consistent {
+                bindings_checked: 1
+            }
+        );
+
+        let truncated = &events[..1];
+        assert_eq!(
+            verify_event_chain(&key, truncated),
+            VerifyOutcome::Intact { rows_checked: 1 },
+            "a truncated event chain still walks clean; the binding is the detector"
+        );
+        match verify_event_binding(&tx_rows, truncated) {
+            BindingOutcome::MissingEvent {
+                transaction_seq, ..
+            } => assert_eq!(transaction_seq, 1),
+            other => panic!("expected MissingEvent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_rows_carry_no_binding_to_check() {
+        // Rows written before the migration never committed to an event tip.
+        // They must not be counted as bindings, and must not fail the check.
+        let key = fixed_key();
+        let mut content = sample_content(1, "tx-legacy");
+        content.identity = ChainIdentity::LegacyV1;
+        let hash = key.chain_hash(&content, "");
+        let rows = vec![row_for(&content, "", hash)];
+        assert_eq!(
+            verify_event_binding(&rows, &[]),
+            BindingOutcome::Consistent {
+                bindings_checked: 0
+            }
+        );
+    }
+
+    #[test]
+    fn a_detected_break_outranks_an_inconclusive_check_in_the_exit_code() {
+        // If one check proves tampering and another merely cannot run, the
+        // command must report the tamper. Reporting 2 ("could not verify")
+        // would let a CI gate that treats 2 as a skip wave a broken chain
+        // through.
+        let verification = AuditVerification {
+            chain: VerifyOutcome::Broken {
+                rows_checked: 1,
+                first_broken_seq: 2,
+                first_broken_transaction_id: "tx".to_string(),
+                expected: "e".to_string(),
+                actual: "a".to_string(),
+            },
+            events: VerifyOutcome::CannotVerify {
+                reason: "no key".to_string(),
+            },
+            binding: BindingOutcome::Consistent {
+                bindings_checked: 0,
+            },
+        };
+        assert_eq!(verification.exit_code(), 1);
+    }
+
+    #[test]
+    fn a_clean_transaction_chain_does_not_mask_a_broken_event_chain() {
+        let verification = AuditVerification {
+            chain: VerifyOutcome::Intact { rows_checked: 3 },
+            events: VerifyOutcome::Intact { rows_checked: 1 },
+            binding: BindingOutcome::MissingEvent {
+                transaction_seq: 3,
+                event_tip: "abc".to_string(),
+            },
+        };
+        assert_eq!(verification.exit_code(), 1);
+    }
+
+    #[test]
+    fn all_three_clean_is_exit_zero() {
+        let verification = AuditVerification {
+            chain: VerifyOutcome::Intact { rows_checked: 3 },
+            events: VerifyOutcome::Intact { rows_checked: 2 },
+            binding: BindingOutcome::Consistent {
+                bindings_checked: 1,
+            },
+        };
+        assert_eq!(verification.exit_code(), 0);
+    }
+
+    #[test]
+    fn binding_exit_codes_split_clean_from_tampered() {
+        assert_eq!(
+            binding_outcome_to_exit_code(&BindingOutcome::Consistent {
+                bindings_checked: 0
+            }),
+            0
+        );
+        assert_eq!(
+            binding_outcome_to_exit_code(&BindingOutcome::MissingEvent {
+                transaction_seq: 7,
+                event_tip: "abc".to_string()
+            }),
+            1
+        );
     }
 
     #[test]
@@ -1016,6 +1882,9 @@ mod tests {
             prev_chain_hash: rows[0].chain_hash.clone(),
             // Not a valid signature; verification must reject this.
             chain_hash: "0".repeat(HASH_HEX_LEN),
+            chain_version: CHAIN_VERSION_CURRENT,
+            caller_role: Some("Dev".to_string()),
+            event_tip: Some(String::new()),
         };
 
         // Renumber the genuine seq=2/3 rows so seq is still 1..=4.
@@ -1434,15 +2303,22 @@ mod tests {
         // Security invariant: row and checkpoint signatures can never
         // cross-verify because their signed messages start with distinct,
         // prefix-free domain tags.
-        assert_ne!(ROW_DOMAIN, CHECKPOINT_DOMAIN);
-        assert_ne!(ROW_DOMAIN, APPROVAL_DOMAIN);
-        assert_ne!(CHECKPOINT_DOMAIN, APPROVAL_DOMAIN);
-        assert!(!ROW_DOMAIN.starts_with(CHECKPOINT_DOMAIN));
-        assert!(!CHECKPOINT_DOMAIN.starts_with(ROW_DOMAIN));
-        assert!(!ROW_DOMAIN.starts_with(APPROVAL_DOMAIN));
-        assert!(!APPROVAL_DOMAIN.starts_with(ROW_DOMAIN));
-        assert!(!CHECKPOINT_DOMAIN.starts_with(APPROVAL_DOMAIN));
-        assert!(!APPROVAL_DOMAIN.starts_with(CHECKPOINT_DOMAIN));
+        // Checked pairwise over the whole set rather than as a hand-written
+        // list: adding a fourth tag to a hand-written list silently leaves the
+        // new tag unchecked against the old ones.
+        let tags: [(&str, &[u8]); 4] = [
+            ("row", ROW_DOMAIN),
+            ("checkpoint", CHECKPOINT_DOMAIN),
+            ("approval", APPROVAL_DOMAIN),
+            ("event", EVENT_DOMAIN),
+        ];
+        for (i, (name_a, a)) in tags.iter().enumerate() {
+            for (name_b, b) in tags.iter().skip(i + 1) {
+                assert_ne!(a, b, "{name_a} and {name_b} share a domain tag");
+                assert!(!a.starts_with(b), "{name_a} is prefixed by {name_b}");
+                assert!(!b.starts_with(a), "{name_b} is prefixed by {name_a}");
+            }
+        }
     }
 
     #[test]

@@ -8,6 +8,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [Unreleased]
+
+The last item v0.2.12 deferred: the audit chain could say what was authorised,
+but not who asked for it, and nothing signed recorded that an approval ever
+happened.
+
+### Added
+
+- **`caller_role` is now part of the signed chain content.** Every transaction
+  row commits to the privilege tier the daemon resolved for the connection that
+  requested the action (from `SO_PEERCRED`, or the vsock token — never from the
+  request body). "Which role asked for this" is the first question any audit of
+  a privileged action starts with, and until now no signed record answered it.
+- **An approval-event chain.** `approval_granted`, `approval_consumed` and
+  `approval_revoked` are recorded in a second forward Ed25519 chain under its
+  own domain tag, each event committing in the same database transaction as the
+  state change it records. Previously these lifecycle facts lived only in
+  `transaction_approvals`, a plain mutable table: deleting a row left
+  `sysknife audit verify` reporting `Intact`, so the record that a privileged
+  action had been approved was the one part of the trail that could be erased
+  without leaving a mark.
+- **Cross-chain binding.** Each transaction row signs the approval-event chain
+  tip as of its insert. Deleting events from the *end* of the event chain
+  leaves a self-consistent remainder that the chain walk cannot see; the
+  committed tip catches it. Because checkpoints anchor the transaction chain,
+  this extends off-host anchoring to the event chain without a second sink.
+- `sysknife audit verify` reports all three checks and fails on any of them.
+  A detected tamper (exit `1`) outranks an inconclusive check (exit `2`), so a
+  broken chain is never reported as "could not verify". The MCP
+  `sysknife_audit_verify` report gains `events_checked`,
+  `approval_events_status` and `binding_status`, and its top-level `status` is
+  now the worst of the three rather than the transaction chain alone.
+
+### Changed
+
+- **Schema version 2, with a real migration.** Rows carry a `chain_version`
+  column and verification reproduces the exact encoding each row was signed
+  under, so a chain written by v0.2.12 or earlier still verifies after the
+  upgrade and new rows append onto it in the same walk. Backfilling the new
+  fields instead would have changed every historical message and reported the
+  whole chain as broken — an upgrade that looks identical to a compromise. The
+  SQLite backend gained an ordered migration list mirroring the Postgres one;
+  its previous `CREATE TABLE IF NOT EXISTS` batch had no way to express "add a
+  column to an existing database".
+- `CallerRole::as_str` replaces `format!("{role:?}")` for anything that is
+  written down. `Debug` carries no stability promise, and this string is inside
+  a signature.
+- `TransactionStore::revoke_unconsumed_approval` and
+  `claim_approved_for_execution` now require the signing key and refuse on a
+  read-only store, since both append to the event chain.
+
 ## [0.2.12] — 2026-07-27
 
 Follow-up to the v0.2.11 review sweep: the findings that release deferred.

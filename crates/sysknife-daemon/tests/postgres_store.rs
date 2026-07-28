@@ -7,7 +7,7 @@ use sysknife_daemon::audit_chain::{AuditKey, VerifyOutcome};
 use sysknife_daemon::store::postgres::{PostgresConfig, PostgresStore};
 use sysknife_daemon::store::AuditStore;
 use sysknife_daemon::transactions::NewTransaction;
-use sysknife_types::{JobState, PreviewEnvelope, RequestHash, RiskLevel};
+use sysknife_types::{CallerRole, JobState, PreviewEnvelope, RequestHash, RiskLevel};
 
 fn test_url() -> Option<String> {
     std::env::var("SYSKNIFE_TEST_POSTGRES_URL").ok()
@@ -21,6 +21,7 @@ fn new_transaction() -> NewTransaction {
         risk_level: RiskLevel::Medium,
         summary: "Restart sshd".to_string(),
         warnings: vec!["brief connection interruption".to_string()],
+        caller_role: CallerRole::Dev,
     }
 }
 
@@ -229,12 +230,17 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
         store.verify_audit_chain(&key).await.expect("verify chain"),
         VerifyOutcome::Intact { rows_checked: 1 }
     );
+    let pubkey_only = PostgresStore::verify_all_with_pubkey(&config, &key.verifying_key_hex())
+        .await
+        .expect("verify Postgres chain with public key only");
+    assert_eq!(pubkey_only.chain, VerifyOutcome::Intact { rows_checked: 1 });
+    // No approval has been granted yet, so the event chain is empty and the
+    // transaction row committed to an empty tip — both must still be clean.
     assert_eq!(
-        PostgresStore::verify_with_pubkey(&config, &key.verifying_key_hex())
-            .await
-            .expect("verify Postgres chain with public key only"),
-        VerifyOutcome::Intact { rows_checked: 1 }
+        pubkey_only.events,
+        VerifyOutcome::Intact { rows_checked: 0 }
     );
+    assert_eq!(pubkey_only.exit_code(), 0);
 
     // cancel_queued success path on Postgres: a fresh, never-claimed Queued
     // transaction must cancel (return true) and flip to Canceled. Placed after

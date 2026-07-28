@@ -1,11 +1,14 @@
-use crate::audit_chain::{self, AuditKey, ChainContent, ChainRow, VerifyOutcome, CURRENT_KEY_ID};
+use crate::audit_chain::{
+    self, AuditEventKind, AuditKey, ChainContent, ChainIdentity, ChainRow, EventContent, EventRow,
+    VerifyOutcome, CHAIN_VERSION_CURRENT, CURRENT_KEY_ID,
+};
 use crate::audit_watermark::emit_chain_tip_watermark;
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
-use sysknife_types::{JobState, PreviewEnvelope, RiskLevel, TransactionRecord};
+use sysknife_types::{CallerRole, JobState, PreviewEnvelope, RiskLevel, TransactionRecord};
 use uuid::Uuid;
 
 /// Lifetime of an approval receipt / preview, in minutes.
@@ -69,6 +72,162 @@ pub struct NewTransaction {
     /// 2. Extend the chain protocol with a dedicated amendment record type.
     pub summary: String,
     pub warnings: Vec<String>,
+    /// Role the daemon resolved for the connection that asked for this action.
+    ///
+    /// Chain-hashed at INSERT alongside `summary`. Before this field existed
+    /// the signed record could say what was authorised but not *who asked*,
+    /// which is the first question any audit of a privileged action starts
+    /// with. Not caller-supplied over the wire: the dispatcher passes the role
+    /// it resolved from `SO_PEERCRED` (or the vsock token), never a value from
+    /// the request body.
+    pub caller_role: CallerRole,
+}
+
+/// One forward-only SQLite schema step, applied in `version` order and
+/// recorded in `schema_migrations`.
+///
+/// This mirrors the Postgres `MIGRATIONS` list deliberately. The SQLite path
+/// used to be a single `CREATE TABLE IF NOT EXISTS` batch plus a hardcoded
+/// `version > 1` guard, which had no way to express "add a column to an
+/// existing database" — `IF NOT EXISTS` skips a table that is already there,
+/// columns and all. Adding the caller-identity columns needed a real step.
+struct SqliteMigration {
+    version: i64,
+    name: &'static str,
+    sql: &'static str,
+}
+
+/// Schema history for the SQLite backend.
+///
+/// Migration 1 covers the append-tamper-evident hash chain (see
+/// `audit_chain.rs` for the full threat model — note that truncation of the
+/// tail is NOT detected by this chain alone; that requires the signed
+/// checkpoints anchored to an append-only sink (`checkpoint_sink`), with the
+/// journald watermark as a lighter best-effort complement):
+///   seq             — monotonic ordering, 1-indexed
+///   key_id          — identifies the key generation (forward-compatible with
+///                     epoch rotation in a follow-up issue)
+///   chain_hash      — ed25519_sign(ROW_DOMAIN || canonical(immutable_fields)
+///                     || prev_chain_hash, key)
+///   prev_chain_hash — chain_hash of the previous row, "" for the first row
+///
+/// `status` is intentionally absent from the chain content — it is mutable.
+/// The chain protects the *authorisation decision* captured at insert time,
+/// not the live execution state.
+const SQLITE_MIGRATIONS: &[SqliteMigration] = &[
+    SqliteMigration {
+        version: 1,
+        name: "initial_audit_schema",
+        sql: r#"
+            CREATE TABLE IF NOT EXISTS transactions (
+                transaction_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                action_name TEXT NOT NULL,
+                risk_level TEXT NOT NULL,
+                status TEXT NOT NULL,
+                approval_id TEXT,
+                summary TEXT NOT NULL,
+                warnings_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                seq INTEGER NOT NULL UNIQUE,
+                key_id TEXT NOT NULL,
+                chain_hash TEXT NOT NULL,
+                prev_chain_hash TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS transaction_previews (
+                transaction_id TEXT PRIMARY KEY,
+                preview_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS transaction_approvals (
+                transaction_id TEXT PRIMARY KEY,
+                receipt_digest TEXT NOT NULL,
+                approved_at TEXT NOT NULL DEFAULT (datetime('now')),
+                consumed_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS transactions_seq_idx ON transactions(seq);
+        "#,
+    },
+    // Caller identity in the signed content, and the approval-event chain.
+    //
+    // The three new `transactions` columns are nullable with a legacy default
+    // on purpose: rows written by an earlier binary were signed over an
+    // encoding that has no such fields, and backfilling them with empty
+    // strings would change every historical message and report the whole chain
+    // as Broken. `chain_version` selects the encoding per row — see
+    // `audit_chain::ChainIdentity`.
+    SqliteMigration {
+        version: 2,
+        name: "caller_identity_and_approval_events",
+        sql: r#"
+            ALTER TABLE transactions ADD COLUMN chain_version INTEGER NOT NULL DEFAULT 1;
+            ALTER TABLE transactions ADD COLUMN caller_role TEXT;
+            ALTER TABLE transactions ADD COLUMN event_tip TEXT;
+
+            CREATE TABLE IF NOT EXISTS audit_events (
+                seq INTEGER PRIMARY KEY,
+                key_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                transaction_id TEXT NOT NULL,
+                receipt_digest TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                chain_hash TEXT NOT NULL,
+                prev_chain_hash TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE INDEX IF NOT EXISTS audit_events_transaction_idx
+                ON audit_events(transaction_id);
+        "#,
+    },
+];
+
+/// Column list for every `ChainRow` read, kept next to the mapper below.
+///
+/// The two read paths (`fetch_chain_rows`, `fetch_chain_row`) used to repeat
+/// both the SELECT and a positional `row.get(n)` block. Adding a column meant
+/// editing four places in step, and a mismatch between the two would surface
+/// as a verification failure rather than a compile error.
+const CHAIN_ROW_COLUMNS: &str = "seq, key_id, transaction_id, request_id, request_hash, \
+     action_name, risk_level, summary, approval_id, warnings_json, \
+     created_at, prev_chain_hash, chain_hash, chain_version, caller_role, event_tip";
+
+fn chain_row_from_sqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChainRow> {
+    Ok(ChainRow {
+        seq: row.get::<_, i64>(0)? as u64,
+        key_id: row.get(1)?,
+        transaction_id: row.get(2)?,
+        request_id: row.get(3)?,
+        request_hash: row.get(4)?,
+        action_name: row.get(5)?,
+        risk_level: deserialize_field(&row.get::<_, String>(6)?).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e))
+        })?,
+        summary: row.get(7)?,
+        approval_id: row.get(8)?,
+        warnings_json: row.get(9)?,
+        created_at: row.get(10)?,
+        prev_chain_hash: row.get(11)?,
+        chain_hash: row.get(12)?,
+        chain_version: row.get::<_, i64>(13)? as u32,
+        caller_role: row.get(14)?,
+        event_tip: row.get(15)?,
+    })
+}
+
+fn event_row_from_sqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRow> {
+    Ok(EventRow {
+        seq: row.get::<_, i64>(0)? as u64,
+        key_id: row.get(1)?,
+        kind: row.get(2)?,
+        transaction_id: row.get(3)?,
+        receipt_digest: row.get(4)?,
+        created_at: row.get(5)?,
+        prev_chain_hash: row.get(6)?,
+        chain_hash: row.get(7)?,
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -368,9 +527,12 @@ impl TransactionStore {
             )));
         }
 
-        let conn = self.connection()?;
+        // The approval row and its chained event commit together: an approval
+        // that is not in the event chain is exactly the gap this chain closes.
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let queued_json = serialize_field(&JobState::Queued)?;
-        let rows_affected = conn.execute(
+        let rows_affected = tx.execute(
             &format!(
                 "INSERT INTO transaction_approvals (transaction_id, receipt_digest) \
                  SELECT transaction_id, ?1 FROM transactions \
@@ -383,6 +545,16 @@ impl TransactionStore {
             ),
             params![receipt_digest, transaction_id, queued_json],
         )?;
+        if rows_affected > 0 {
+            Self::append_event(
+                &tx,
+                key,
+                AuditEventKind::ApprovalGranted,
+                transaction_id,
+                &receipt_digest,
+            )?;
+        }
+        tx.commit()?;
         Ok((rows_affected > 0).then_some(receipt))
     }
 
@@ -392,12 +564,48 @@ impl TransactionStore {
         &self,
         transaction_id: &str,
     ) -> Result<bool, TransactionStoreError> {
-        let conn = self.connection()?;
-        let rows_affected = conn.execute(
+        let key = self
+            .audit_key
+            .as_ref()
+            .ok_or(TransactionStoreError::AuditChainMissing(
+                "this TransactionStore was opened read-only; cannot revoke",
+            ))?;
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Capture the digest before the DELETE: the event has to name which
+        // receipt was retracted, and after the delete there is nothing to name.
+        let digest: Option<String> = tx
+            .query_row(
+                "SELECT receipt_digest FROM transaction_approvals \
+                 WHERE transaction_id = ?1 AND consumed_at IS NULL",
+                params![transaction_id],
+                |row| row.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+        let rows_affected = tx.execute(
             "DELETE FROM transaction_approvals \
              WHERE transaction_id = ?1 AND consumed_at IS NULL",
             params![transaction_id],
         )?;
+        if rows_affected > 0 {
+            let digest = digest.ok_or_else(|| {
+                TransactionStoreError::DatabaseInvariant(format!(
+                    "revoked an approval for {transaction_id} that had no receipt digest"
+                ))
+            })?;
+            Self::append_event(
+                &tx,
+                key,
+                AuditEventKind::ApprovalRevoked,
+                transaction_id,
+                &digest,
+            )?;
+        }
+        tx.commit()?;
         Ok(rows_affected > 0)
     }
 
@@ -407,6 +615,12 @@ impl TransactionStore {
         transaction_id: &str,
         receipt_digest: &str,
     ) -> Result<bool, TransactionStoreError> {
+        let key = self
+            .audit_key
+            .as_ref()
+            .ok_or(TransactionStoreError::AuditChainMissing(
+                "this TransactionStore was opened read-only; cannot claim",
+            ))?;
         let mut conn = self.connection()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let queued_json = serialize_field(&JobState::Queued)?;
@@ -432,6 +646,13 @@ impl TransactionStore {
                  SET consumed_at = datetime('now') \
                  WHERE transaction_id = ?1 AND consumed_at IS NULL",
                 params![transaction_id],
+            )?;
+            Self::append_event(
+                &tx,
+                key,
+                AuditEventKind::ApprovalConsumed,
+                transaction_id,
+                receipt_digest,
             )?;
         }
         tx.commit()?;
@@ -638,64 +859,19 @@ impl TransactionStore {
             [],
             |row| row.get(0),
         )?;
-        if current > 1 {
+        let latest = SQLITE_MIGRATIONS.last().map_or(0, |m| m.version);
+        if current > latest {
             return Err(TransactionStoreError::DatabaseInvariant(format!(
-                "sqlite schema version {current} is newer than this binary supports (1)"
+                "sqlite schema version {current} is newer than this binary supports ({latest})"
             )));
         }
-        // Schema additions for the append-tamper-evident hash chain (see
-        // `audit_chain.rs` for the full threat model — note that truncation of
-        // the tail is NOT detected by this chain alone; that requires the
-        // signed checkpoints anchored to an append-only sink (`checkpoint_sink`),
-        // with the journald watermark as a lighter best-effort complement):
-        //   seq             — monotonic ordering, 1-indexed
-        //   key_id          — identifies the key generation (forward-compatible
-        //                     with epoch rotation in a follow-up issue)
-        //   chain_hash      — ed25519_sign(ROW_DOMAIN || canonical(immutable_fields)
-        //                     || prev_chain_hash, key)
-        //   prev_chain_hash — chain_hash of the previous row, "" for the first row
-        //
-        // status is intentionally absent from the chain content — it is mutable.
-        // The chain protects the *authorisation decision* captured at insert
-        // time, not the live execution state.
-        tx.execute_batch(
-            r#"
-            CREATE TABLE IF NOT EXISTS transactions (
-                transaction_id TEXT PRIMARY KEY,
-                request_id TEXT NOT NULL,
-                request_hash TEXT NOT NULL,
-                action_name TEXT NOT NULL,
-                risk_level TEXT NOT NULL,
-                status TEXT NOT NULL,
-                approval_id TEXT,
-                summary TEXT NOT NULL,
-                warnings_json TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                seq INTEGER NOT NULL UNIQUE,
-                key_id TEXT NOT NULL,
-                chain_hash TEXT NOT NULL,
-                prev_chain_hash TEXT NOT NULL DEFAULT ''
-            );
-
-            CREATE TABLE IF NOT EXISTS transaction_previews (
-                transaction_id TEXT PRIMARY KEY,
-                preview_json TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS transaction_approvals (
-                transaction_id TEXT PRIMARY KEY,
-                receipt_digest TEXT NOT NULL,
-                approved_at TEXT NOT NULL DEFAULT (datetime('now')),
-                consumed_at TEXT
-            );
-
-            CREATE INDEX IF NOT EXISTS transactions_seq_idx ON transactions(seq);
-            "#,
-        )?;
-        tx.execute(
-            "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (1, ?1)",
-            params!["initial_audit_schema"],
-        )?;
+        for migration in SQLITE_MIGRATIONS.iter().filter(|m| m.version > current) {
+            tx.execute_batch(migration.sql)?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)",
+                params![migration.version, migration.name],
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -703,35 +879,26 @@ impl TransactionStore {
     /// Return all rows in seq order with the chain fields needed for verify.
     pub fn fetch_chain_rows(&self) -> Result<Vec<ChainRow>, TransactionStoreError> {
         let conn = self.connection()?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {CHAIN_ROW_COLUMNS} FROM transactions ORDER BY seq ASC"
+        ))?;
+        let rows = stmt.query_map([], chain_row_from_sqlite)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Return every approval event in seq order.
+    pub fn fetch_event_rows(&self) -> Result<Vec<EventRow>, TransactionStoreError> {
+        let conn = self.connection()?;
         let mut stmt = conn.prepare(
-            "SELECT seq, key_id, transaction_id, request_id, request_hash, \
-                    action_name, risk_level, summary, approval_id, warnings_json, \
+            "SELECT seq, key_id, kind, transaction_id, receipt_digest, \
                     created_at, prev_chain_hash, chain_hash \
-             FROM transactions ORDER BY seq ASC",
+             FROM audit_events ORDER BY seq ASC",
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(ChainRow {
-                seq: row.get::<_, i64>(0)? as u64,
-                key_id: row.get(1)?,
-                transaction_id: row.get(2)?,
-                request_id: row.get(3)?,
-                request_hash: row.get(4)?,
-                action_name: row.get(5)?,
-                risk_level: deserialize_field(&row.get::<_, String>(6)?).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        6,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })?,
-                summary: row.get(7)?,
-                approval_id: row.get(8)?,
-                warnings_json: row.get(9)?,
-                created_at: row.get(10)?,
-                prev_chain_hash: row.get(11)?,
-                chain_hash: row.get(12)?,
-            })
-        })?;
+        let rows = stmt.query_map([], event_row_from_sqlite)?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -746,6 +913,25 @@ impl TransactionStore {
     ) -> Result<VerifyOutcome, TransactionStoreError> {
         let rows = self.fetch_chain_rows()?;
         Ok(audit_chain::verify_chain(key, &rows))
+    }
+
+    /// Walk the approval-event chain with `key`.
+    pub fn verify_event_chain(
+        &self,
+        key: &AuditKey,
+    ) -> Result<VerifyOutcome, TransactionStoreError> {
+        let rows = self.fetch_event_rows()?;
+        Ok(audit_chain::verify_event_chain(key, &rows))
+    }
+
+    /// Check that every event tip committed by a transaction row is still
+    /// present in the event chain. See [`audit_chain::verify_event_binding`].
+    pub fn verify_event_binding(
+        &self,
+    ) -> Result<audit_chain::BindingOutcome, TransactionStoreError> {
+        let tx_rows = self.fetch_chain_rows()?;
+        let event_rows = self.fetch_event_rows()?;
+        Ok(audit_chain::verify_event_binding(&tx_rows, &event_rows))
     }
 
     /// Verify the chain with only the hex-encoded Ed25519 **public** key. The
@@ -768,35 +954,12 @@ impl TransactionStore {
         transaction_id: &str,
     ) -> Result<Option<ChainRow>, TransactionStoreError> {
         let conn = self.connection()?;
-        let mut stmt = conn.prepare(
-            "SELECT seq, key_id, transaction_id, request_id, request_hash, \
-                    action_name, risk_level, summary, approval_id, warnings_json, \
-                    created_at, prev_chain_hash, chain_hash \
-             FROM transactions WHERE transaction_id = ?1",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {CHAIN_ROW_COLUMNS} FROM transactions WHERE transaction_id = ?1"
+        ))?;
         let mut rows = stmt.query(params![transaction_id])?;
         if let Some(row) = rows.next()? {
-            Ok(Some(ChainRow {
-                seq: row.get::<_, i64>(0)? as u64,
-                key_id: row.get(1)?,
-                transaction_id: row.get(2)?,
-                request_id: row.get(3)?,
-                request_hash: row.get(4)?,
-                action_name: row.get(5)?,
-                risk_level: deserialize_field(&row.get::<_, String>(6)?).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        6,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })?,
-                summary: row.get(7)?,
-                approval_id: row.get(8)?,
-                warnings_json: row.get(9)?,
-                created_at: row.get(10)?,
-                prev_chain_hash: row.get(11)?,
-                chain_hash: row.get(12)?,
-            }))
+            Ok(Some(chain_row_from_sqlite(row)?))
         } else {
             Ok(None)
         }
@@ -821,6 +984,73 @@ impl TransactionStore {
             Some((seq, hash)) => ((seq as u64) + 1, hash),
             None => (1, String::new()),
         })
+    }
+
+    /// `chain_hash` of the last approval event, or `None` when no event has
+    /// ever been recorded.
+    fn event_chain_tip(conn: &Connection) -> Result<Option<String>, TransactionStoreError> {
+        conn.query_row(
+            "SELECT chain_hash FROM audit_events ORDER BY seq DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other.into()),
+        })
+    }
+
+    /// Append one signed approval event. Must be called inside a DB
+    /// transaction that also performs the state change being recorded: an
+    /// event committed without its state change (or the reverse) would be a
+    /// trail that disagrees with reality.
+    fn append_event(
+        conn: &Connection,
+        key: &AuditKey,
+        kind: AuditEventKind,
+        transaction_id: &str,
+        receipt_digest: &str,
+    ) -> Result<(), TransactionStoreError> {
+        let prev_chain_hash = Self::event_chain_tip(conn)?.unwrap_or_default();
+        let seq: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM audit_events",
+            [],
+            |row| row.get(0),
+        )?;
+        let created_at: String =
+            conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
+                row.get(0)
+            })?;
+        let key_id = CURRENT_KEY_ID.to_string();
+        let chain_hash = key.event_hash(
+            &EventContent {
+                seq: seq as u64,
+                key_id: &key_id,
+                kind,
+                transaction_id,
+                receipt_digest,
+                created_at: &created_at,
+            },
+            &prev_chain_hash,
+        );
+        conn.execute(
+            "INSERT INTO audit_events (
+                seq, key_id, kind, transaction_id, receipt_digest,
+                created_at, chain_hash, prev_chain_hash
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                seq,
+                key_id,
+                kind.as_str(),
+                transaction_id,
+                receipt_digest,
+                created_at,
+                chain_hash,
+                prev_chain_hash,
+            ],
+        )?;
+        Ok(())
     }
 
     fn insert_transaction(
@@ -859,6 +1089,11 @@ impl TransactionStore {
             })?;
 
         let key_id = CURRENT_KEY_ID.to_string();
+        // Bind this row to the approval-event chain as it stands right now.
+        // Read inside the caller's DB transaction so a concurrent event append
+        // cannot land between the read and the insert.
+        let event_tip = Self::event_chain_tip(conn)?.unwrap_or_default();
+        let caller_role = transaction.caller_role.as_str();
         let chain_hash = key.chain_hash(
             &ChainContent {
                 seq,
@@ -872,6 +1107,10 @@ impl TransactionStore {
                 approval_id: approval_id.as_deref(),
                 warnings_json: &warnings_json,
                 created_at: &created_at,
+                identity: ChainIdentity::V2 {
+                    caller_role,
+                    event_tip: &event_tip,
+                },
             },
             &prev_chain_hash,
         );
@@ -903,8 +1142,11 @@ impl TransactionStore {
                 seq,
                 key_id,
                 chain_hash,
-                prev_chain_hash
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                prev_chain_hash,
+                chain_version,
+                caller_role,
+                event_tip
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 transaction_id,
                 request_id,
@@ -920,6 +1162,9 @@ impl TransactionStore {
                 key_id,
                 chain_hash,
                 prev_chain_hash,
+                CHAIN_VERSION_CURRENT as i64,
+                caller_role,
+                event_tip,
             ],
         )?;
 
@@ -986,6 +1231,7 @@ fn deserialize_field<T: DeserializeOwned>(value: &str) -> Result<T, serde_json::
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audit_chain::CHAIN_VERSION_LEGACY;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::tempdir;
 
@@ -995,6 +1241,278 @@ mod tests {
     fn test_store(path: impl AsRef<Path>) -> TransactionStore {
         let key = Arc::new(AuditKey::from_bytes(vec![0x42; 32]));
         TransactionStore::open_with_key(path, key).unwrap()
+    }
+
+    // ── Schema migration ─────────────────────────────────────────────────
+
+    /// Create a database at exactly schema version 1 — the shape a v0.2.12
+    /// daemon left behind — and write one row using the encoding that binary
+    /// signed. Building the fixture from `SQLITE_MIGRATIONS[0]` rather than a
+    /// copied DDL string means it stays honest if migration 1 is ever edited.
+    fn legacy_v1_database(path: &Path, key: &AuditKey) -> String {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (
+                 version INTEGER PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+        conn.execute_batch(SQLITE_MIGRATIONS[0].sql).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (1, ?1)",
+            params![SQLITE_MIGRATIONS[0].name],
+        )
+        .unwrap();
+
+        let transaction_id = "tx-legacy";
+        let created_at = "2026-04-24T12:00:00.000Z";
+        let chain_hash = key.chain_hash(
+            &ChainContent {
+                seq: 1,
+                key_id: CURRENT_KEY_ID,
+                transaction_id,
+                request_id: "req-legacy",
+                request_hash: "hash-legacy",
+                action_name: "UpdateSystem",
+                risk_level: RiskLevel::High,
+                summary: "Upgrade the system",
+                approval_id: None,
+                warnings_json: "[]",
+                created_at,
+                identity: ChainIdentity::LegacyV1,
+            },
+            "",
+        );
+        conn.execute(
+            "INSERT INTO transactions (
+                transaction_id, request_id, request_hash, action_name, risk_level,
+                status, approval_id, summary, warnings_json, created_at,
+                seq, key_id, chain_hash, prev_chain_hash
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, 1, ?10, ?11, '')",
+            params![
+                transaction_id,
+                "req-legacy",
+                "hash-legacy",
+                "UpdateSystem",
+                serialize_field(&RiskLevel::High).unwrap(),
+                serialize_field(&JobState::Queued).unwrap(),
+                "Upgrade the system",
+                "[]",
+                created_at,
+                CURRENT_KEY_ID,
+                chain_hash,
+            ],
+        )
+        .unwrap();
+        transaction_id.to_string()
+    }
+
+    #[test]
+    fn a_database_written_before_the_migration_still_verifies_after_upgrading() {
+        // The migration contract, end to end through the store. An operator
+        // upgrading the daemon must not see their existing audit log start
+        // reporting as tampered — that would make a real compromise
+        // indistinguishable from a routine upgrade.
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("tx.db");
+        let key = AuditKey::from_bytes(vec![0x42; 32]);
+        legacy_v1_database(&db_path, &key);
+
+        let store = test_store(&db_path);
+        assert_eq!(
+            store.verify_audit_chain(&key).unwrap(),
+            VerifyOutcome::Intact { rows_checked: 1 }
+        );
+        let rows = store.fetch_chain_rows().unwrap();
+        assert_eq!(rows[0].chain_version, CHAIN_VERSION_LEGACY);
+        assert_eq!(rows[0].caller_role, None);
+    }
+
+    #[test]
+    fn rows_appended_after_the_migration_chain_onto_legacy_rows() {
+        // Mixed-generation chain written through the real store, not a
+        // hand-built fixture: the new row's prev_chain_hash must link to the
+        // legacy row, and both encodings must verify in one walk.
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("tx.db");
+        let key = AuditKey::from_bytes(vec![0x42; 32]);
+        legacy_v1_database(&db_path, &key);
+
+        let store = test_store(&db_path);
+        store.record(queued_transaction()).unwrap();
+
+        let rows = store.fetch_chain_rows().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].prev_chain_hash, rows[0].chain_hash);
+        assert_eq!(rows[1].chain_version, CHAIN_VERSION_CURRENT);
+        assert_eq!(
+            store.verify_audit_chain(&key).unwrap(),
+            VerifyOutcome::Intact { rows_checked: 2 }
+        );
+    }
+
+    #[test]
+    fn a_schema_newer_than_this_binary_is_refused() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("tx.db");
+        let key = AuditKey::from_bytes(vec![0x42; 32]);
+        legacy_v1_database(&db_path, &key);
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (99, 'from the future')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let err = TransactionStore::open_with_key(&db_path, Arc::new(key)).unwrap_err();
+        assert!(
+            matches!(err, TransactionStoreError::DatabaseInvariant(ref m) if m.contains("99")),
+            "expected a refusal naming the unsupported version, got {err:?}"
+        );
+    }
+
+    // ── caller identity + approval events ────────────────────────────────
+
+    #[test]
+    fn the_signed_row_records_which_role_asked() {
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let mut tx = queued_transaction();
+        tx.caller_role = CallerRole::Admin;
+        store.record(tx).unwrap();
+
+        let rows = store.fetch_chain_rows().unwrap();
+        assert_eq!(rows[0].caller_role.as_deref(), Some("admin"));
+    }
+
+    #[test]
+    fn approving_consuming_and_revoking_each_append_a_chained_event() {
+        let dir = tempdir().unwrap();
+        let key = AuditKey::from_bytes(vec![0x42; 32]);
+        let store = test_store(dir.path().join("tx.db"));
+
+        // Approve then consume.
+        let a = store.record(queued_transaction()).unwrap();
+        let receipt = store
+            .approve_transaction(&a.transaction_id)
+            .unwrap()
+            .expect("queued transaction approves");
+        let digest = audit_chain::approval_receipt_digest(&receipt);
+        assert!(store
+            .claim_approved_for_execution(&a.transaction_id, &digest)
+            .unwrap());
+
+        // Approve then revoke.
+        let b = store.record(queued_transaction()).unwrap();
+        store.approve_transaction(&b.transaction_id).unwrap();
+        assert!(store.revoke_unconsumed_approval(&b.transaction_id).unwrap());
+
+        let events = store.fetch_event_rows().unwrap();
+        let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "approval_granted",
+                "approval_consumed",
+                "approval_granted",
+                "approval_revoked",
+            ]
+        );
+        assert_eq!(
+            store.verify_event_chain(&key).unwrap(),
+            VerifyOutcome::Intact { rows_checked: 4 }
+        );
+    }
+
+    #[test]
+    fn a_failed_approval_appends_no_event() {
+        // Only real state changes get chained. A no-op approve (already
+        // approved) writing an event would make the trail claim something that
+        // did not happen.
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let tx = store.record(queued_transaction()).unwrap();
+        store.approve_transaction(&tx.transaction_id).unwrap();
+        store.approve_transaction(&tx.transaction_id).unwrap();
+        assert_eq!(store.fetch_event_rows().unwrap().len(), 1);
+
+        // Same for a revoke with nothing to revoke.
+        assert!(!store.revoke_unconsumed_approval("no-such-tx").unwrap());
+        assert_eq!(store.fetch_event_rows().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deleting_the_record_that_an_approval_happened_no_longer_goes_unnoticed() {
+        // The finding. Before the event chain, `transaction_approvals` was a
+        // plain table: DELETE the row and `audit verify` still said Intact, so
+        // the fact that a privileged action had been approved could be erased
+        // without a trace. Now the deletion has to survive two independent
+        // checks.
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("tx.db");
+        let key = AuditKey::from_bytes(vec![0x42; 32]);
+        let store = test_store(&db_path);
+
+        let a = store.record(queued_transaction()).unwrap();
+        store.approve_transaction(&a.transaction_id).unwrap();
+        // A later transaction commits to the event tip, which is what carries
+        // the binding into the checkpoint-anchored transaction chain.
+        store.record(queued_transaction()).unwrap();
+
+        assert_eq!(
+            store.verify_event_chain(&key).unwrap(),
+            VerifyOutcome::Intact { rows_checked: 1 }
+        );
+        assert_eq!(
+            store.verify_event_binding().unwrap(),
+            audit_chain::BindingOutcome::Consistent {
+                bindings_checked: 1
+            }
+        );
+
+        // Erase the approval and its event.
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute("DELETE FROM transaction_approvals", [])
+            .unwrap();
+        conn.execute("DELETE FROM audit_events", []).unwrap();
+        drop(conn);
+
+        // The event chain alone is now empty and walks clean — deleting the
+        // only event leaves nothing to contradict. The transaction row's
+        // committed tip is what catches it.
+        assert_eq!(
+            store.verify_event_chain(&key).unwrap(),
+            VerifyOutcome::Intact { rows_checked: 0 }
+        );
+        match store.verify_event_binding().unwrap() {
+            audit_chain::BindingOutcome::MissingEvent {
+                transaction_seq, ..
+            } => assert_eq!(transaction_seq, 2),
+            other => panic!("expected MissingEvent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_read_only_store_cannot_revoke_or_claim() {
+        // Both paths now append to the event chain, so both need the signing
+        // key. Refusing loudly beats silently skipping the event.
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("tx.db");
+        let store = test_store(&db_path);
+        store.record(queued_transaction()).unwrap();
+
+        let read_only = TransactionStore::open_read_only(&db_path).unwrap();
+        assert!(matches!(
+            read_only.revoke_unconsumed_approval("tx"),
+            Err(TransactionStoreError::AuditChainMissing(_))
+        ));
+        assert!(matches!(
+            read_only.claim_approved_for_execution("tx", "digest"),
+            Err(TransactionStoreError::AuditChainMissing(_))
+        ));
     }
 
     // ── Audit chain integration tests ────────────────────────────────────
@@ -1073,6 +1591,7 @@ mod tests {
                         risk_level: RiskLevel::Low,
                         summary: format!("worker {w} record {r}"),
                         warnings: vec![],
+                        caller_role: CallerRole::Dev,
                     };
                     store
                         .record(tx)
@@ -1253,6 +1772,7 @@ mod tests {
             risk_level: RiskLevel::High,
             summary: "Upgrade the system".to_string(),
             warnings: vec![],
+            caller_role: CallerRole::Dev,
         }
     }
 

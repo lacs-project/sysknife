@@ -85,3 +85,20 @@ fn failure_category_serializes_stably() {
 
     assert_eq!(value, decoded);
 }
+
+#[test]
+fn caller_role_as_str_matches_serde() {
+    // `as_str` is signed into the audit chain and serde crosses the daemon
+    // wire. Two spellings of the same enum drifting apart would mean a role
+    // recorded in the chain no longer matches the one in a transported
+    // record, so they are pinned to each other rather than to a literal list.
+    for role in [
+        CallerRole::Observer,
+        CallerRole::Dev,
+        CallerRole::Admin,
+        CallerRole::Boot,
+    ] {
+        let json = serde_json::to_string(&role).unwrap();
+        assert_eq!(json, format!("\"{}\"", role.as_str()));
+    }
+}

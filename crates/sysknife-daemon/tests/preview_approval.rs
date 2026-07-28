@@ -2,7 +2,7 @@ use serde_json::json;
 use sysknife_daemon::jobs::{allowed_transition, is_terminal};
 use sysknife_daemon::preview::preview_action;
 use sysknife_daemon::transactions::{NewTransaction, TransactionStore};
-use sysknife_types::{JobState, PreviewEnvelope, RequestEnvelope, RiskLevel};
+use sysknife_types::{CallerRole, JobState, PreviewEnvelope, RequestEnvelope, RiskLevel};
 use tempfile::tempdir;
 
 fn request(action_name: &str, request_id: &str, request_hash: &str) -> RequestEnvelope {
@@ -213,6 +213,7 @@ fn previewed_transactions_persist_preview_state() {
         risk_level: RiskLevel::High,
         summary: "Stage system update".to_string(),
         warnings: vec!["system reboot required".to_string()],
+        caller_role: CallerRole::Dev,
     };
 
     let recorded = store
