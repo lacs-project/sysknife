@@ -50,6 +50,9 @@ jobs:
       - name: Test setup package contracts
         run: npm test --prefix packages/setup
 
+      - name: Check MCP Registry manifest coherence
+        run: bash tests/release/registry-manifest.test.sh
+
       - name: Check release rehearsal contract
         run: bash tests/release/release-rehearsal.test.sh
 

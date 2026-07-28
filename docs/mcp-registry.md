@@ -23,8 +23,13 @@ crate directly:
 
 This supersedes the earlier npm-launcher plan: the npm package `sysknife-setup`
 is an installer/wizard, not a stdio server, and `npx sysknife-setup` would launch
-the wizard rather than the server. The `cargo` type avoids that entirely — no
+the wizard rather than the server. Worse than merely wrong, the wizard reads
+answers from stdin when stdin is not a TTY, so it would consume a client's
+`initialize` frame as a prompt answer. The `cargo` type avoids that entirely: no
 dedicated launcher package is needed.
+
+The root `server.json` is accepted by `mcp-publisher validate`, which checks
+against the live registry rather than only the local schema.
 
 Namespace: `io.github.lacs-project/sysknife` (verified by GitHub identity — the
 authenticating account must belong to the `lacs-project` org; no DNS needed).
@@ -46,45 +51,39 @@ crate version whose README carries it (see the release step below).
 
 ## `server.json`
 
-Not shipped as a root file: the `version` is coupled to a published crate
-version that carries the marker, so it is finalized at release time. Template:
+Shipped at the repository root. The `version` is coupled to a published crate
+version that carries the marker, and two checks keep that coupling honest:
 
-```json
-{
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.lacs-project/sysknife",
-  "description": "Let AI operate your Linux box through typed, approval-gated, Ed25519-audited actions instead of shell strings.",
-  "repository": {
-    "url": "https://github.com/lacs-project/sysknife",
-    "source": "github"
-  },
-  "version": "0.2.6",
-  "packages": [
-    {
-      "registryType": "cargo",
-      "registryBaseUrl": "https://crates.io",
-      "identifier": "sysknife-cli",
-      "version": "0.2.6",
-      "transport": { "type": "stdio" },
-      "packageArguments": [
-        { "type": "positional", "valueHint": "subcommand", "value": "mcp-server" }
-      ]
-    }
-  ]
-}
-```
+- `scripts/check_release_versions.sh` includes both `server.json` version fields
+  in the release-wide version comparison, so a release cannot bump the crates
+  and leave the listing pointing at the previous version.
+- `tests/release/registry-manifest.test.sh` asserts the rest of the manifest:
+  `registryType`/`registryBaseUrl`/`transport`, that the identifier is the CLI
+  crate, that the `mcp-server` positional argument is present, and that the
+  ownership marker is in the crate README **outside** an HTML comment. It runs
+  in CI and in the release preflight.
+
+Both mean a stale or incoherent listing fails a check rather than a publish.
 
 ## Publish steps
 
-The crate README marker (`apps/sysknife-cli/README.md`) is already in the repo,
-so the next crate release is registry-ready. To publish the listing:
+The crate README marker (`apps/sysknife-cli/README.md`) is in the repo and has
+shipped in every published crate since 0.2.6, so any current version is
+registry-ready. To publish the listing:
 
-1. **Release a crate version that carries the marker.** The marker landed after
-   0.2.5, so cut the next version (e.g. 0.2.6) via the normal tag-driven
-   release; that publishes `sysknife-cli` with the marker in its README. Confirm
-   the README ships in the packaged crate first
-   (`cargo package -p sysknife-cli --list | grep README.md`), then set the
-   `version` fields in `server.json` to that version.
+1. **Confirm the marker is live in the version `server.json` names.** The
+   validator reads the *rendered* README from crates.io, in two calls:
+   ```sh
+   version=0.2.14
+   ua='sysknife-release/1.0 (https://github.com/lacs-project/sysknife)'
+   url="$(curl -sS -H 'Accept: application/json' -H "User-Agent: $ua" \
+     "https://crates.io/api/v1/crates/sysknife-cli/${version}/readme" \
+     | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).url')"
+   curl -sS -H "User-Agent: $ua" "$url" \
+     | grep -c 'mcp-name: io.github.lacs-project/sysknife'
+   ```
+   A count of `1` means the marker is visible to the validator. A `0` means the
+   listing cannot be published for that version, whatever the repo says.
 2. **Install the publisher CLI:**
    ```sh
    brew install mcp-publisher   # or download from the registry's GitHub Releases
@@ -100,15 +99,18 @@ so the next crate release is registry-ready. To publish the listing:
      ```sh
      ./mcp-publisher login github-oidc
      ```
-4. **Validate and publish** (from the repo root, with `server.json` present):
+4. **Validate and publish** (from the repo root):
    ```sh
-   mcp-publisher validate
+   mcp-publisher validate   # checks server.json against the live registry
    mcp-publisher publish
    ```
+   `validate` needs no authentication, so it is worth running before the login
+   step. Only `publish` requires the token.
 5. **Verify:**
    ```sh
-   curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.lacs-project/sysknife"
+   curl "https://registry.modelcontextprotocol.io/v0/servers?search=sysknife"
    ```
+   The `count` in the response metadata goes from `0` to `1`.
 
 ## Downstream propagation
 

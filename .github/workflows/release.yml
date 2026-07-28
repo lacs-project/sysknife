@@ -46,6 +46,11 @@ jobs:
       - name: Check registry state for resumable publishing
         run: bash scripts/check_registry_versions.sh "${{ github.ref_name }}"
 
+      # The MCP Registry listing is published from server.json against the crate
+      # this release uploads, so an incoherent manifest is a release-time defect.
+      - name: Check MCP Registry manifest coherence
+        run: bash tests/release/registry-manifest.test.sh
+
       - name: Require publication credentials
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
