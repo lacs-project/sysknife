@@ -10,6 +10,93 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Fixed
+
+- **`npx sysknife-setup` could not install anything, on any platform.** The
+  release-metadata request reused the asset-download `Accept:
+  application/octet-stream`, and GitHub answers that with **HTTP 415** on the
+  metadata endpoint, so the advertised primary install path died at
+  `✗ Failed to fetch release metadata` before downloading a byte. Metadata now
+  asks for `application/vnd.github+json`. Verified end to end in a clean
+  `ubuntu:24.04` container: both binaries download, SHA-256 verify, and install.
+- **The wizard crashed with a raw `SyntaxError` on Ubuntu 22.04**, whose
+  `apt install nodejs` gives Node 12. `engines` is only a warning to npx, and a
+  version check inside `index.js` could never run, because a parse error is
+  raised for the whole module before any statement in it executes. The bin
+  entrypoint is now a Node-12-parseable guard that explains the requirement and
+  offers three ways to get a current Node, or to skip Node entirely.
+- **`--no-prompts` silently installed the daemon that cannot do the job.** It
+  always answered "user service", which runs as the invoking user, while the
+  NOPASSWD grants live in `packaging/sysknife-sudoers` scoped to the `sysknife`
+  system user. Since the daemon reaches privileged work through `sudo`, an
+  automated install produced something that answered read-only queries and
+  failed everything else with `sudo: a password is required`. Unattended runs now
+  require `--daemon-mode=system|user|skip`, and choosing user mode prints what
+  will not work and how to get a daemon that can.
+- **A second daemon silently evicted the first.** The bind path removed any
+  existing socket after checking only that it *was* a socket, never that anything
+  was behind it, so starting the daemon twice unlinked the live socket and left
+  the first process's clients dark with no error, warning, or log line. The path
+  is now probe-connected first: a live daemon means refusal, a stale socket is
+  still reclaimed.
+- **Daemon startup dumped Rust `Debug` at operators.** Binding without
+  permission produced `Error: Io("Permission denied (os error 13)")` with no
+  path and no hint, the most likely first-run failure and the worst message in
+  the codebase. `main` now reports through `Display`, the bind failure names the
+  directory and the uid and both ways out, and `listening on …` is printed only
+  after the bind actually succeeds rather than before it.
+- **`sysknife doctor` was the worst-informed command about the thing it exists to
+  diagnose.** It printed neither the socket it dialled (the caller had the label
+  in hand) nor any next step, rendered sockets as `Unix("/run/…")`, and `main`
+  re-printed the whole sentence underneath. It now reports once, names the socket
+  as a URI, and suggests the systemd unit matching the socket's kind — user-mode
+  first for a `/run/user/…` socket, and no local unit at all for vsock.
+- **`sysknife approve` blamed a flag that does not exist.** Without a TTY it
+  returned "plan requires interactive approval but `--non-interactive` was set",
+  which cannot be true: `approve` has no such flag. Piping or scripting it now
+  says stdin is not a terminal.
+- **Planning printed nothing for minutes without a TTY.** `indicatif` hides the
+  spinner when stderr is not a terminal, so an ssh or logged run was
+  indistinguishable from a hang (173s measured). One stderr line now names the
+  provider and model before the request.
+- **A keyless environment chose Ollama without saying so**, then failed against a
+  port the user had never heard of. The fallback now announces itself and lists
+  the keys that would override it.
+- Provider errors no longer name an internal dependency (`Rig completion error:`),
+  and OpenAI auth failures name `OPENAI_API_KEY` instead of "your API key".
+- Authorization refusals name the group that grants the required role and the
+  `usermod` command, including that it only applies to a new login. Previously
+  they ended at "is not allowed for Observer role" — accurate and a dead end.
+
+### Changed
+
+- **Documented the real build prerequisite, which is not the one CI implied.**
+  Every from-source path now states that a C compiler and linker
+  (`build-essential`) are required, and that **`cmake` is not**. `.github/`
+  installs cmake before building this workspace, so the natural inference was
+  that it was needed; clean-container runs disprove it — `aws-lc-sys` builds
+  from `gcc` alone, and the only hard failure is `error: linker cc not found`
+  with no compiler at all. Build time is stated too: 6m56s on Ubuntu 24.04,
+  11m43s on 22.04, about 400 crates.
+- `docs/quickstart.md` is now the canonical install page, and README and
+  `docs/mcp.md` link to it instead of carrying their own slightly different
+  sequences. `docs/mcp.md`'s "Build the binary" is relabelled as the alternative
+  it always was, not step 4 of 5.
+- `apps/sysknife-cli/README.md` — the page crates.io renders, and therefore what
+  someone arriving from the MCP Registry reads — now leads with the fact that the
+  crate is half of SysKnife: it plans and dry-runs, and executing needs the
+  privileged daemon.
+- The setup wizard's target prompt says "Target" rather than "VM Target" and
+  leads with this machine, since the documented headline case is a local install.
+  Its socket-unreachable hint now matches the socket's kind rather than always
+  naming the system unit.
+- `scripts/check_release_versions.sh` covers both `server.json` version fields,
+  so a release cannot bump the crates and leave the registry listing pointing at
+  a version whose README the validator will not fetch.
+- `docs/mcp-registry.md` records the two-call crates.io check that proves the
+  marker is live in a given published version, rather than only present in the
+  repository.
+
 ### Added
 
 - **`server.json`** at the repository root: the manifest published to the
@@ -28,15 +115,6 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   nothing in the repository looking wrong. The test also pins the registry type,
   base URL, transport, crate identity, and the `mcp-server` argument. It runs in
   CI and in the release preflight.
-
-### Changed
-
-- `scripts/check_release_versions.sh` covers both `server.json` version fields,
-  so a release cannot bump the crates and leave the registry listing pointing at
-  a version whose README the validator will not fetch.
-- `docs/mcp-registry.md` records the two-call crates.io check that proves the
-  marker is live in a given published version, rather than only present in the
-  repository.
 
 ## [0.2.14] — 2026-07-28
 

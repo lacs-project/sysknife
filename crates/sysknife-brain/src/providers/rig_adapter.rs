@@ -387,7 +387,9 @@ const AUTH_FAILURE_MSG: &str = "provider authentication failed — check your AP
 
 fn map_rig_error(err: rig::completion::CompletionError) -> ProviderError {
     let msg = sanitize_error_msg(&err.to_string());
-    eprintln!("[sysknife-brain] Rig completion error: {msg}");
+    // "Rig" is the name of a dependency, which means nothing to a user
+    // reading their terminal; say whose request failed instead.
+    eprintln!("[sysknife-brain] LLM request failed: {msg}");
 
     // Prefer the structured HTTP status Rig preserves via
     // `provider_response_status()` (see `impl_provider_response_helpers!` in

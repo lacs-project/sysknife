@@ -7,7 +7,7 @@ use sysknife_daemon::dispatcher::{resolve_caller_role, unix_connection_handler};
 use sysknife_daemon::policy::PolicyTable;
 use sysknife_daemon::state::{DaemonConfig, DaemonState};
 use sysknife_daemon::state_collector::RealCommandRunner;
-use sysknife_daemon::transport::listen::{bind_unix_listener, ListenTarget};
+use sysknife_daemon::transport::listen::{bind_unix_listener, ListenTarget, ListenTargetError};
 use tokio::net::UnixListener;
 use tokio::sync::Semaphore;
 
@@ -24,7 +24,18 @@ const STALE_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 const MAX_CONNECTIONS: usize = 16;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
+    // Report through Display and exit. Returning `Result` from `main` makes Rust
+    // print `Error: Io("Permission denied (os error 13)")` — Debug formatting,
+    // no context — which was the worst message the daemon could produce, and it
+    // appeared underneath the hand-written FATAL lines below as a duplicate.
+    if let Err(e) = run().await {
+        eprintln!("[sysknife-daemon] FATAL: {e}");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Apply config-file values as env var defaults before reading any config.
     // Must run before the tokio runtime starts worker threads.
     let lacs_config = LacsConfig::load();
@@ -41,9 +52,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_ref()
         .and_then(|p| p.risk_overrides.clone())
         .unwrap_or_default();
-    let policy = PolicyTable::from_overrides(&raw_overrides).map_err(|e| {
-        eprintln!("[sysknife-daemon] FATAL: policy validation failed: {e}");
-        e
+    let policy = PolicyTable::from_overrides(&raw_overrides).inspect_err(|_| {
+        // `main` prints the error itself; this adds the context it lacks.
+        eprintln!("[sysknife-daemon] policy validation failed");
     })?;
 
     if policy.override_count() > 0 {
@@ -61,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let forwarder: Option<AuditForwarder> = match build_forwarder(lacs_config.audit.as_ref()) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("[sysknife-daemon] FATAL: audit forwarder config invalid: {e}");
+            eprintln!("[sysknife-daemon] audit forwarder config invalid");
             return Err(e.into());
         }
     };
@@ -90,15 +101,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             DaemonState::open_full(config, policy, forwarder)?
         }
         Err(e) => {
-            eprintln!("[sysknife-daemon] FATAL: postgres backend init failed: {e}");
+            eprintln!("[sysknife-daemon] postgres backend init failed");
             return Err(e.into());
         }
     };
 
     let runner = Arc::new(RealCommandRunner);
     let semaphore = Arc::new(Semaphore::new(MAX_CONNECTIONS));
-
-    eprintln!("[sysknife-daemon] listening on {listen_uri}");
 
     // Reconcile transactions orphaned by a previous crash/restart before we
     // accept any connection: a row still marked Running belonged to an execution
@@ -149,15 +158,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match listen_target {
         ListenTarget::Unix(path) => {
-            let std_listener = bind_unix_listener(&ListenTarget::Unix(path))?;
+            // The most likely first-run mistake is installing the system unit
+            // and starting it without root. The error alone says only
+            // "Permission denied", so add which directory and which uid, and
+            // the two ways out.
+            // Reported here rather than by `main` so the remediation follows the
+            // error instead of preceding it.
+            let std_listener = match bind_unix_listener(&ListenTarget::Unix(path.clone())) {
+                Ok(listener) => listener,
+                Err(e) => {
+                    eprintln!("[sysknife-daemon] FATAL: {e}");
+                    if matches!(e, ListenTargetError::Io(ref m) if m.contains("Permission denied"))
+                    {
+                        eprintln!(
+                            "[sysknife-daemon] {} is not writable by uid {}. Either run the \
+                             system service as root (sudo systemctl start sysknife-daemon), or \
+                             point this daemon at a socket you own with \
+                             SYSKNIFE_LISTEN_URI=unix://$XDG_RUNTIME_DIR/sysknife/daemon.sock",
+                            path.parent().unwrap_or(&path).display(),
+                            unsafe { libc::geteuid() },
+                        );
+                    }
+                    std::process::exit(1);
+                }
+            };
             std_listener.set_nonblocking(true)?;
             let listener = UnixListener::from_std(std_listener)?;
+            // Only true once the bind has actually succeeded.
+            eprintln!("[sysknife-daemon] listening on {listen_uri}");
             unix_accept_loop(listener, state, runner, semaphore).await;
         }
         #[cfg(target_os = "linux")]
         ListenTarget::Vsock { port } => {
             use sysknife_daemon::transport::listen::bind_vsock_listener;
-            let listener = bind_vsock_listener(port)?;
+            let listener = bind_vsock_listener(port).inspect_err(|_| {
+                eprintln!("[sysknife-daemon] cannot bind vsock port {port}");
+            })?;
+            eprintln!("[sysknife-daemon] listening on {listen_uri}");
             vsock_accept_loop(listener, state, runner, semaphore).await;
         }
     }

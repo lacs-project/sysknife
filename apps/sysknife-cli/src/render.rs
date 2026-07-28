@@ -241,12 +241,70 @@ pub fn print_doctor_ok(
     log.println(&format!("  distro    {distro}"));
 }
 
+/// Announce a planning request on a terminal-less stderr.
+///
+/// The spinner is the only thing that tells a user planning is under way, and
+/// `indicatif` hides it when stderr is not a TTY. A slow provider then produced
+/// no output at all for minutes (173s measured against a local Ollama), which
+/// over ssh or in a log file is indistinguishable from a hung process. One line
+/// is enough to tell the two apart, and it goes to stderr so `--json` consumers
+/// reading stdout are unaffected.
+pub fn print_planning_notice(provider: &str, model: &str, intent: &str) {
+    eprintln!("→ planning \"{intent}\" with {provider}/{model}, this can take a minute…");
+}
+
+/// The lines a `sysknife doctor` failure prints, without colour.
+///
+/// Split out from [`print_doctor_fail`] so the wording and the ordering of the
+/// remediation hints are testable. The hint order is not cosmetic: pointing
+/// someone with a user-mode daemon at `sudo systemctl` sends them to a unit that
+/// does not exist on their machine, and a vsock target has no local unit at all.
+fn doctor_fail_lines(socket: &str, error: &str) -> Vec<String> {
+    // Connect failures already name their target, so re-prefixing would print
+    // the socket twice in one sentence.
+    let headline = if error.contains(socket) {
+        format!("daemon unreachable: {error}")
+    } else {
+        format!("daemon unreachable at {socket}: {error}")
+    };
+    let mut lines = vec![headline];
+
+    // A remote daemon is not managed by systemd on this host, so naming local
+    // units would be actively misleading.
+    if socket.starts_with("vsock://") {
+        lines.push("check the daemon on the target VM, and that SYSKNIFE_TOKEN matches".into());
+        return lines;
+    }
+
+    // $XDG_RUNTIME_DIR is /run/user/<uid> on Ubuntu; that is where the setup
+    // wizard's default (user-mode) daemon binds.
+    let user_mode = socket.contains("/run/user/");
+    let system_hint = "system service:  sudo systemctl status sysknife-daemon";
+    let user_hint = "user service:    systemctl --user status sysknife-daemon";
+    if user_mode {
+        lines.push(user_hint.into());
+        lines.push(system_hint.into());
+    } else {
+        lines.push(system_hint.into());
+        lines.push(user_hint.into());
+    }
+    lines
+}
+
 /// Print a `sysknife doctor` failure to stderr.
-pub fn print_doctor_fail(error: &str) {
+pub fn print_doctor_fail(socket: &str, error: &str) {
+    let mut lines = doctor_fail_lines(socket, error).into_iter();
+    let headline = lines.next().expect("always at least one line");
     eprintln!(
-        "{}  daemon unreachable: {error}",
+        "{}  {headline}",
         "✗".if_supports_color(Stream::Stderr, |t| t.red()),
     );
+    for hint in lines {
+        eprintln!(
+            "   {} {hint}",
+            "→".if_supports_color(Stream::Stderr, |t| t.dimmed())
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -299,6 +357,69 @@ mod tests {
         assert!(
             !s.contains("high "),
             "high-risk badge must NOT use lowercase 'high'; got {s:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // `sysknife doctor` failure text
+    //
+    // The whole point of `doctor` is answering "why can't I reach the
+    // daemon". It used to print only:
+    //
+    //   ✗  daemon unreachable: state unavailable: connect: No such file …
+    //
+    // No socket, no next step, even though the caller had the socket
+    // label in hand. These tests pin both, and pin that the remediation
+    // matches the kind of install the socket path implies — telling
+    // someone with a user-mode daemon to run `sudo systemctl` sends them
+    // to a unit that does not exist.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn doctor_failure_names_the_socket_and_a_next_step() {
+        let out = doctor_fail_lines("unix:///run/sysknife/daemon.sock", "connect: No such file");
+        let joined = out.join("\n");
+        assert!(joined.contains("unix:///run/sysknife/daemon.sock"));
+        assert!(joined.contains("connect: No such file"), "keeps the cause");
+        assert!(
+            joined.contains("systemctl"),
+            "must offer a command to run, got: {joined}"
+        );
+    }
+
+    #[test]
+    fn a_system_socket_suggests_the_system_unit_first() {
+        let out = doctor_fail_lines("unix:///run/sysknife/daemon.sock", "boom").join("\n");
+        let system_at = out.find("sudo systemctl").expect("system hint present");
+        let user_at = out.find("systemctl --user").expect("user hint present");
+        assert!(
+            system_at < user_at,
+            "system hint first for /run, got: {out}"
+        );
+    }
+
+    #[test]
+    fn a_per_user_runtime_socket_suggests_the_user_unit_first() {
+        // $XDG_RUNTIME_DIR is /run/user/<uid> on Ubuntu, which is where the
+        // wizard's default (user-mode) daemon binds.
+        let out =
+            doctor_fail_lines("unix:///run/user/1000/sysknife/daemon.sock", "boom").join("\n");
+        let user_at = out.find("systemctl --user").expect("user hint present");
+        let system_at = out.find("sudo systemctl").expect("system hint present");
+        assert!(
+            user_at < system_at,
+            "user hint first for /run/user, got: {out}"
+        );
+    }
+
+    #[test]
+    fn a_vsock_target_does_not_suggest_local_systemd_at_all() {
+        // The daemon is on another host; `systemctl` here would be wrong.
+        let out = doctor_fail_lines("vsock://3:7777", "boom").join("\n");
+        assert!(out.contains("vsock://3:7777"));
+        assert!(
+            !out.contains("systemctl"),
+            "local unit commands are misleading for a remote target, got: {out}"
         );
     }
 

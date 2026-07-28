@@ -11,7 +11,7 @@
   "homepage": "https://github.com/lacs-project/sysknife#readme",
   "bugs": "https://github.com/lacs-project/sysknife/issues",
   "bin": {
-    "sysknife-setup": "index.js",
+    "sysknife-setup": "sysknife-setup.js",
     "sysknife-mcp": "mcp-launcher.js"
   },
   "engines": {
@@ -23,7 +23,9 @@
     "install-daemon.js",
     "mcp-config.js",
     "mcp-launcher.js",
-    "providers.js"
+    "node-preflight.js",
+    "providers.js",
+    "sysknife-setup.js"
   ],
   "keywords": [
     "sysknife",
@@ -38,6 +40,6 @@
   },
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "prepublishOnly": "node index.js --help"
+    "prepublishOnly": "node sysknife-setup.js --help"
   }
 }

@@ -20,6 +20,12 @@ crate directly:
 - Because `sysknife`'s MCP server is a subcommand, the package entry passes
   `mcp-server` as a positional `packageArguments` value. A client resolves the
   listing to `cargo install sysknife-cli` then runs `sysknife mcp-server`.
+- Two things that install implies, and which the registry entry has no field for:
+  it needs a C compiler (`build-essential`; **not** cmake, verified in clean
+  Ubuntu containers) and takes 7 to 12 minutes; and the CLI alone can plan but
+  not execute, because execution belongs to the privileged `sysknife-daemon`.
+  Both are stated up front in `apps/sysknife-cli/README.md`, which is the page
+  crates.io renders and therefore what a registry visitor actually reads.
 
 This supersedes the earlier npm-launcher plan: the npm package `sysknife-setup`
 is an installer/wizard, not a stdio server, and `npx sysknife-setup` would launch

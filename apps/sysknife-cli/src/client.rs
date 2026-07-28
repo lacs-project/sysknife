@@ -102,6 +102,20 @@ impl SocketTarget {
         }
         Ok(Self::Unix(PathBuf::from(s)))
     }
+
+    /// The target as a user-facing URI, in the same form [`Self::try_from_str`]
+    /// accepts.
+    ///
+    /// Every message that mentions the socket uses this. `{:?}` would print
+    /// `Unix("/run/sysknife/daemon.sock")`, which is Rust's internals rather
+    /// than something a reader can paste back into `SYSKNIFE_SOCKET`.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Unix(path) => format!("unix://{}", path.display()),
+            #[cfg(target_os = "linux")]
+            Self::Vsock { cid, port } => format!("vsock://{cid}:{port}"),
+        }
+    }
 }
 
 impl From<PathBuf> for SocketTarget {
@@ -299,8 +313,12 @@ impl DaemonClient {
     fn connect_sync(&self) -> Result<SyncStream, PlanningError> {
         match &self.target {
             SocketTarget::Unix(path) => {
-                let stream = UnixStream::connect(path)
-                    .map_err(|e| PlanningError::StateUnavailable(format!("connect: {e}")))?;
+                let stream = UnixStream::connect(path).map_err(|e| {
+                    PlanningError::StateUnavailable(format!(
+                        "cannot reach the SysKnife daemon at unix://{}: {e}",
+                        path.display()
+                    ))
+                })?;
                 stream
                     .set_read_timeout(Some(SOCKET_TIMEOUT))
                     .map_err(|e| PlanningError::StateUnavailable(format!("set timeout: {e}")))?;
@@ -311,8 +329,12 @@ impl DaemonClient {
             }
             #[cfg(target_os = "linux")]
             SocketTarget::Vsock { cid, port } => {
-                let mut stream = vsock::VsockStream::connect_with_cid_port(*cid, *port)
-                    .map_err(|e| PlanningError::StateUnavailable(format!("connect: {e}")))?;
+                let mut stream =
+                    vsock::VsockStream::connect_with_cid_port(*cid, *port).map_err(|e| {
+                        PlanningError::StateUnavailable(format!(
+                            "cannot reach the SysKnife daemon at vsock://{cid}:{port}: {e}"
+                        ))
+                    })?;
                 stream
                     .set_read_timeout(Some(SOCKET_TIMEOUT))
                     .map_err(|e| PlanningError::StateUnavailable(format!("set timeout: {e}")))?;
@@ -1231,9 +1253,16 @@ mod tests {
         let err = client.curated_state().unwrap_err();
         match err {
             PlanningError::StateUnavailable(msg) => {
+                // Names the target and keeps the OS cause. Asserting on the
+                // socket path rather than the word "connect" is the stronger
+                // contract: a message without the path is useless to a reader.
                 assert!(
-                    msg.contains("connect"),
-                    "error should mention 'connect', got: {msg}"
+                    msg.contains("/tmp/sysknife-no-such-socket-xyzzy.sock"),
+                    "error should name the socket, got: {msg}"
+                );
+                assert!(
+                    msg.contains("No such file or directory"),
+                    "error should keep the OS cause, got: {msg}"
                 );
             }
             other => panic!("expected StateUnavailable, got {other:?}"),
@@ -1676,6 +1705,58 @@ mod tests {
         assert!(SocketTarget::try_from_str("vsock://3:notaport").is_err());
     }
 
+    // -----------------------------------------------------------------
+    // Naming the target in connect failures
+    //
+    // "connect: No such file or directory (os error 2)" was the entire
+    // message a user got when the daemon was not running — it never said
+    // which socket was dialled, so there was nothing to check, fix, or
+    // even paste into a bug report. `label()` also exists because the
+    // socket was previously rendered with `{:?}`, printing
+    // `Unix("/run/…")` at users.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn socket_label_is_a_uri_a_user_can_act_on_not_a_debug_dump() {
+        let unix = SocketTarget::Unix(PathBuf::from("/run/sysknife/daemon.sock"));
+        assert_eq!(unix.label(), "unix:///run/sysknife/daemon.sock");
+        assert!(!unix.label().contains("Unix("), "no Rust Debug formatting");
+        // Round-trips through the parser it is meant to mirror.
+        assert_eq!(SocketTarget::try_from_str(&unix.label()).unwrap(), unix);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn vsock_label_is_the_uri_form_the_parser_accepts() {
+        let target = SocketTarget::Vsock { cid: 3, port: 7777 };
+        assert_eq!(target.label(), "vsock://3:7777");
+        assert_eq!(SocketTarget::try_from_str(&target.label()).unwrap(), target);
+    }
+
+    #[test]
+    fn a_failed_unix_connect_names_the_socket_it_tried() {
+        let missing = std::env::temp_dir().join("sysknife-does-not-exist-4f2a.sock");
+        let client = DaemonClient::new(SocketTarget::Unix(missing.clone()));
+        let err = client.curated_state().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(missing.to_str().unwrap()),
+            "the socket path must appear in the error, got: {msg}"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_failed_vsock_connect_names_the_cid_and_port() {
+        let client = DaemonClient::new(SocketTarget::Vsock {
+            cid: 99,
+            port: 7777,
+        });
+        let msg = client.curated_state().unwrap_err().to_string();
+        assert!(msg.contains("99"), "cid must appear in: {msg}");
+        assert!(msg.contains("7777"), "port must appear in: {msg}");
+    }
+
     #[test]
     #[cfg(target_os = "linux")]
     fn vsock_connection_failure_maps_to_state_unavailable() {
@@ -1687,7 +1768,10 @@ mod tests {
         let err = client.curated_state().unwrap_err();
         match err {
             PlanningError::StateUnavailable(msg) => {
-                assert!(msg.contains("connect"), "expected 'connect' in: {msg}");
+                assert!(
+                    msg.contains("vsock://99:7777"),
+                    "error should name the vsock target, got: {msg}"
+                );
             }
             other => panic!("expected StateUnavailable, got {other:?}"),
         }

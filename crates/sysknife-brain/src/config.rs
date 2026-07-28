@@ -46,6 +46,10 @@ pub const DEFAULT_MAX_TURNS: usize = 10;
 pub struct BrainConfig {
     pub(crate) provider: ProviderConfig,
     pub max_turns: usize,
+    /// True when no provider was named and no key was found, so Ollama was
+    /// picked by elimination rather than by anyone's intent. Drives the notice
+    /// in [`Self::provider_guess_notice`]; see there for why it matters.
+    provider_guessed: bool,
 }
 
 /// Per-provider client configuration.  See [`BrainConfig`] for why this is
@@ -208,6 +212,10 @@ impl BrainConfig {
             }
         };
 
+        let provider_explicit = std::env::var("SYSKNIFE_LLM_PROVIDER").is_ok();
+        let anthropic_key_present = std::env::var("ANTHROPIC_API_KEY")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
         let provider_name = std::env::var("SYSKNIFE_LLM_PROVIDER").unwrap_or_else(|_| {
             // Auto-detect: use anthropic only when a non-whitespace key is present.
             // A whitespace-only key would pass is_ok() but fail validation below,
@@ -292,7 +300,48 @@ impl BrainConfig {
         Ok(Self {
             provider,
             max_turns,
+            // Only a keyless, unnamed fallback counts as a guess: an explicit
+            // SYSKNIFE_LLM_PROVIDER is intent, and a key in the environment is
+            // intent too.
+            provider_guessed: !provider_explicit && !anthropic_key_present,
         })
+    }
+
+    /// True when Ollama was selected by elimination rather than by intent.
+    pub fn provider_was_guessed(&self) -> bool {
+        self.provider_guessed
+    }
+
+    /// A line worth printing before the first request, or `None` when the
+    /// provider was chosen deliberately.
+    ///
+    /// Without this, a fresh install with no keys set produced only a bare
+    /// transport error against `http://localhost:11434` — a port the user had
+    /// never heard of, for a provider nothing told them had been picked.
+    pub fn provider_guess_notice(&self) -> Option<String> {
+        if !self.provider_guessed {
+            return None;
+        }
+        Some(format!(
+            "no LLM provider configured, so falling back to {} at {}. \
+             Install Ollama (https://ollama.com) and `ollama pull {}`, or set one of \
+             ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY, or pick one \
+             explicitly with SYSKNIFE_LLM_PROVIDER.",
+            self.provider_name(),
+            self.base_url_label(),
+            self.model_name(),
+        ))
+    }
+
+    /// The endpoint the provider will be dialled on, for messages that need to
+    /// name it. Cloud providers report their own name rather than a URL, since
+    /// the URL is not the actionable part there.
+    fn base_url_label(&self) -> String {
+        match &self.provider {
+            ProviderConfig::Ollama { base_url, .. } => base_url.clone(),
+            ProviderConfig::Anthropic { base_url, .. } => base_url.clone(),
+            _ => format!("the {} API", self.provider_name()),
+        }
     }
 
     /// Returns the provider name string (e.g. `"anthropic"`, `"ollama"`, `"openai"`).
@@ -331,6 +380,9 @@ impl BrainConfig {
                 model: DEFAULT_OLLAMA_MODEL.into(),
             },
             max_turns: DEFAULT_MAX_TURNS,
+            // Constructed explicitly by a caller that wants Ollama, so this is
+            // intent, not the keyless fallback `from_env` performs.
+            provider_guessed: false,
         }
     }
 }
@@ -429,6 +481,82 @@ mod tests {
         assert!(
             matches!(result, Err(ConfigError::InvalidMaxTurns(_))),
             "expected InvalidMaxTurns, got: {result:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // The keyless Ollama fallback
+    //
+    // With no provider env vars at all, `from_env` quietly selects Ollama.
+    // Almost nobody on a fresh Ubuntu box is running Ollama, so the first
+    // command a new user typed failed with a bare transport error naming a
+    // port they had never heard of, and nothing said a provider had been
+    // guessed. The guess is fine; making it silently was not.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn a_keyless_environment_records_that_ollama_was_only_a_guess() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("SYSKNIFE_LLM_PROVIDER");
+            std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::remove_var("SYSKNIFE_LLM_MODEL");
+            std::env::remove_var("SYSKNIFE_BRAIN_MAX_TURNS");
+        }
+        let cfg = BrainConfig::from_env().expect("keyless env falls back to ollama");
+        assert_eq!(cfg.provider_name(), "ollama");
+        assert!(
+            cfg.provider_was_guessed(),
+            "a keyless fallback must be marked as a guess so the CLI can say so"
+        );
+        let notice = cfg.provider_guess_notice().expect("a notice is available");
+        assert!(notice.contains("ollama"), "names what was picked: {notice}");
+        assert!(
+            notice.contains("ANTHROPIC_API_KEY") || notice.contains("OPENAI_API_KEY"),
+            "names at least one key the user could set instead: {notice}"
+        );
+    }
+
+    #[test]
+    fn an_explicitly_chosen_provider_is_never_reported_as_a_guess() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("SYSKNIFE_LLM_PROVIDER", "ollama");
+            std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::remove_var("SYSKNIFE_LLM_MODEL");
+            std::env::remove_var("SYSKNIFE_BRAIN_MAX_TURNS");
+        }
+        let result = BrainConfig::from_env();
+        unsafe {
+            std::env::remove_var("SYSKNIFE_LLM_PROVIDER");
+        }
+        let cfg = result.expect("explicit ollama is valid");
+        assert!(
+            !cfg.provider_was_guessed(),
+            "the user asked for ollama; do not lecture them about it"
+        );
+        assert!(cfg.provider_guess_notice().is_none());
+    }
+
+    #[test]
+    fn a_key_backed_autodetect_is_not_a_guess_worth_warning_about() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("SYSKNIFE_LLM_PROVIDER");
+            std::env::set_var("ANTHROPIC_API_KEY", "sk-test-key");
+            std::env::remove_var("SYSKNIFE_LLM_MODEL");
+            std::env::remove_var("SYSKNIFE_ANTHROPIC_URL");
+            std::env::remove_var("SYSKNIFE_BRAIN_MAX_TURNS");
+        }
+        let result = BrainConfig::from_env();
+        unsafe {
+            std::env::remove_var("ANTHROPIC_API_KEY");
+        }
+        let cfg = result.expect("key present selects anthropic");
+        assert_eq!(cfg.provider_name(), "anthropic");
+        assert!(
+            !cfg.provider_was_guessed(),
+            "a key in the environment is an intent, not a guess"
         );
     }
 

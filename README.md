@@ -75,6 +75,10 @@ plan and execute from chat.
 npx sysknife-setup
 ```
 
+Needs **Node 18 or newer**. On Ubuntu 22.04 `apt install nodejs` gives Node 12,
+which is too old; the installer says so and how to get a current Node. No Rust
+toolchain and no compile: it downloads verified prebuilt binaries.
+
 [![npm version](https://img.shields.io/npm/v/sysknife-setup?style=flat-square&logo=npm)](https://www.npmjs.com/package/sysknife-setup)
 
 What this does:
@@ -96,7 +100,11 @@ What this does:
    `sysknife_audit_verify` — as first-class tools.
 5. **Installs and starts the daemon as a service** (last step) — a systemd
    *user* service by default (no sudo; kept alive across logout via linger).
-   Pick the system-level service for a production, multi-user host.
+   That service runs as you, so read-only actions work but **mutating ones do
+   not**: installing packages or restarting services needs the system-level
+   service, whose sudoers grants belong to the `sysknife` system user. Pick the
+   system service on any host where you intend to change something, and pass
+   `--daemon-mode=system|user|skip` to choose without a prompt.
 
 | Client          | Files written                                        |
 |-----------------|------------------------------------------------------|
@@ -116,7 +124,13 @@ the prompt, enforces the receipt boundary.
 <details>
 <summary><strong>Manual install — Ubuntu LTS · Fedora Atomic</strong></summary>
 
+Needs Rust stable **and a C compiler** (`build-essential`): the TLS and SQLite
+dependencies build native code, so a rustup-only machine stops at
+`error: linker cc not found`. `cmake` is not required. Budget 7 to 12
+minutes for the ~400-crate build (6m56s on Ubuntu 24.04, 11m43s on 22.04).
+
 ```sh
+sudo apt-get install -y build-essential
 git clone https://github.com/lacs-project/sysknife
 cd sysknife
 make build                            # builds sysknife (CLI) + sysknife-daemon
@@ -124,8 +138,8 @@ sudo make install                     # installs both; daemon runs as a system s
 sudo systemctl enable --now sysknife-daemon
 
 # Then wire your IDE — --no-binary skips the download since you just built them
-# (choose "skip" at the daemon-service prompt; make install already set it up)
-npx sysknife-setup --no-binary
+# (--daemon-mode=skip: make install already set the service up)
+npx sysknife-setup --no-binary --daemon-mode=skip
 ```
 
 Ubuntu 24.04 is validated with 65/65 stories on a live VM. Ubuntu 22.04 and
@@ -325,8 +339,9 @@ are scoped with clear acceptance criteria.
 
 | Channel | Install | Notes |
 |---------|---------|-------|
-| **npm** | `npx sysknife-setup` | [npmjs.com/package/sysknife-setup](https://www.npmjs.com/package/sysknife-setup) — zero-install setup wizard |
-| **crates.io** | `cargo install sysknife-cli` / `cargo install sysknife-daemon` | Published by reviewed version tags; see [docs/release.md](docs/release.md) |
+| **npm** | `npx sysknife-setup` | [npmjs.com/package/sysknife-setup](https://www.npmjs.com/package/sysknife-setup) — setup wizard; needs Node 18+, no compile |
+| **crates.io** | `cargo install sysknife-cli` / `cargo install sysknife-daemon` | Needs `build-essential`; ~7-12 min build. Published by reviewed version tags; see [docs/release.md](docs/release.md) |
+| **MCP Registry** | `io.github.lacs-project/sysknife` | [registry.modelcontextprotocol.io](https://registry.modelcontextprotocol.io) — resolves to the crates.io install above |
 | **GitHub Releases** | Download from [Releases](https://github.com/lacs-project/sysknife/releases) | Prebuilt x86_64 + aarch64 binaries with SHA-256 checksums on every tag |
 
 ## License

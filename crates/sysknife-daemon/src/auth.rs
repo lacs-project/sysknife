@@ -31,6 +31,35 @@ fn higher_role(current: CallerRole, candidate: CallerRole) -> CallerRole {
     current.max(candidate)
 }
 
+/// The group that grants `role`, i.e. the inverse of the private
+/// `role_for_group` mapping above.
+///
+/// Exists so a refusal can name the group to join. `wheel` also grants Admin,
+/// but the SysKnife group is the one to recommend: it is what `make install`
+/// creates, and it scopes access to this daemon rather than to sudo at large.
+pub fn group_for_role(role: CallerRole) -> &'static str {
+    match role {
+        CallerRole::Boot => BOOT_GROUP,
+        CallerRole::Admin => ADMIN_GROUP,
+        CallerRole::Dev => DEV_GROUP,
+        CallerRole::Observer => OBSERVER_GROUP,
+    }
+}
+
+/// The message a caller sees when their role is too low for an action.
+///
+/// Names the action, both roles, the group that would grant the needed role,
+/// and the command to join it — including the part people lose an afternoon to,
+/// that a new group only takes effect in a new login session.
+pub fn denial_message(action: &str, caller: CallerRole, required: CallerRole) -> String {
+    format!(
+        "action '{action}' requires the {required:?} role, but you have {caller:?}. \
+         Join the group that grants it: sudo usermod -aG {group} $USER, \
+         then log out and back in (group membership only applies to a new login).",
+        group = group_for_role(required),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Token authentication (vsock connections)
 // ---------------------------------------------------------------------------
@@ -195,6 +224,57 @@ mod tests {
 
     fn role(groups: &[&str]) -> CallerRole {
         highest_role_from_groups(groups.iter().copied())
+    }
+
+    // -----------------------------------------------------------------
+    // Telling a denied caller how to stop being denied
+    //
+    // Denials named the action and the caller's role and stopped there:
+    // "action 'AptInstall' is not allowed for Observer role". Accurate,
+    // and a dead end — the group that grants the role is not discoverable
+    // from that sentence, and unlike every other well-written message in
+    // this codebase it offered no command to run.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn every_role_maps_back_to_the_group_that_grants_it() {
+        assert_eq!(group_for_role(CallerRole::Observer), OBSERVER_GROUP);
+        assert_eq!(group_for_role(CallerRole::Dev), DEV_GROUP);
+        assert_eq!(group_for_role(CallerRole::Admin), ADMIN_GROUP);
+        assert_eq!(group_for_role(CallerRole::Boot), BOOT_GROUP);
+    }
+
+    #[test]
+    fn the_group_a_role_maps_to_actually_grants_that_role() {
+        // Guards against the two mappings drifting apart: whatever group we
+        // tell the user to join must resolve back to the role they need.
+        for wanted in [
+            CallerRole::Observer,
+            CallerRole::Dev,
+            CallerRole::Admin,
+            CallerRole::Boot,
+        ] {
+            let group = group_for_role(wanted);
+            assert_eq!(
+                role(&[group]),
+                wanted,
+                "joining {group} must grant {wanted:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_denial_says_which_group_to_join_and_how() {
+        let msg = denial_message("AptInstall", CallerRole::Observer, CallerRole::Dev);
+        assert!(msg.contains("AptInstall"), "names the action: {msg}");
+        assert!(msg.contains("Observer"), "names the current role: {msg}");
+        assert!(msg.contains("Dev"), "names the required role: {msg}");
+        assert!(msg.contains(DEV_GROUP), "names the group: {msg}");
+        assert!(msg.contains("usermod"), "gives the command: {msg}");
+        assert!(
+            msg.contains("log out") || msg.contains("new login"),
+            "group membership needs a fresh session; say so: {msg}"
+        );
     }
 
     #[test]

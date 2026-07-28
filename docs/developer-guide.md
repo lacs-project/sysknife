@@ -42,6 +42,11 @@ cd apps/sysknife-shell && pnpm install && cd ../..
 
 ## Building
 
+The workspace builds native code (TLS via aws-lc-sys/ring, SQLite via
+libsqlite3-sys), so a C compiler and linker are required on top of rustup:
+`sudo apt-get install -y build-essential` on Debian/Ubuntu. Without one the
+build stops at `error: linker cc not found`. `cmake` is not required.
+
 ```sh
 # Build all Rust crates (fast, no linking of the Tauri app)
 cargo build --workspace
