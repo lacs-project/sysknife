@@ -30,6 +30,9 @@ versions+=("$(node -p "require('$repo_root/apps/sysknife-shell/package.json').ve
 versions+=("$(node -p "require('$repo_root/apps/sysknife-shell/package-lock.json').version")")
 versions+=("$(node -p "require('$repo_root/apps/sysknife-shell/src-tauri/tauri.conf.json').version")")
 versions+=("$(node -p "require('$repo_root/packages/setup/package.json').version")")
+# The Codex plugin manifest reports the version to plugin directories, so a
+# release that forgets it publishes a listing that misstates what is shipped.
+versions+=("$(node -p "require('$repo_root/.codex-plugin/plugin.json').version")")
 
 baseline="${versions[0]}"
 for version in "${versions[@]}"; do
