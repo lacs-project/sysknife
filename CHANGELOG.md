@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
-## [Unreleased]
+## [0.2.16] — 2026-07-28
 
 A whole-repository review pass (four independent read-only reviewers, one per
 lens: UX, security, dead code, and drift between code and docs) followed by the
