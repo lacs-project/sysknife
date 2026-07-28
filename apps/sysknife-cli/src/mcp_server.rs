@@ -86,6 +86,40 @@ pub struct PlanStepOutput {
     /// caveats). Surfaced so the calling agent can relay them to the operator
     /// before approval; empty when the preview produced none.
     pub warnings: Vec<String>,
+    /// Relevant system state as the daemon found it, before the change.
+    pub current_state: serde_json::Value,
+    /// What the daemon will change, as it resolved it — not as the planner
+    /// described it. This is the substance of what the operator approves.
+    pub proposed_change: serde_json::Value,
+    /// Side effects the daemon expects beyond the change itself.
+    pub expected_side_effects: Vec<String>,
+    /// Whether applying this step requires a reboot to take effect.
+    pub reboot_required: bool,
+    /// Whether this step can be rolled back automatically if it fails.
+    pub rollback_available: bool,
+}
+
+/// Copy the daemon's authoritative preview onto a plan step.
+///
+/// The planner's own summary and risk are a proposal; the preview is what the
+/// daemon will actually do. Everything an operator needs in order to consent
+/// lives in the preview, so an MCP client that only sees the plan cannot relay
+/// the decision unless these fields travel with it.
+///
+/// Pure so the mapping is testable without a daemon.
+fn merge_preview_into_step(step: &mut PlanStepOutput, preview: &sysknife_types::PreviewEnvelope) {
+    step.risk_level = match preview.risk_level {
+        RiskLevel::Low => "low",
+        RiskLevel::Medium => "medium",
+        RiskLevel::High => "high",
+    }
+    .to_string();
+    step.warnings = preview.warnings.clone();
+    step.current_state = preview.current_state.clone();
+    step.proposed_change = preview.proposed_change.clone();
+    step.expected_side_effects = preview.expected_side_effects.clone();
+    step.reboot_required = preview.reboot_required;
+    step.rollback_available = preview.rollback_available;
 }
 
 /// The full plan returned by `sysknife_plan`.
@@ -142,6 +176,10 @@ pub struct StepResult {
     pub needs_reboot: bool,
     /// Daemon transaction ID for audit purposes.
     pub transaction_id: String,
+    /// Identifier of the rollback the daemon performed after a failure, when
+    /// one happened — e.g. the restored file or the previous deployment.
+    /// `null` when the step succeeded or when nothing was rolled back.
+    pub rollback_ref: Option<String>,
 }
 
 /// Output of `sysknife_execute`.
@@ -547,15 +585,9 @@ async fn enrich_with_commands(
         // opaque identifier. The newtypes guard the internal call sites, so the
         // conversion happens once, here at the boundary.
         step.transaction_id = prepared.transaction_id.into_inner();
-        step.risk_level = match prepared.preview.risk_level {
-            RiskLevel::Low => "low",
-            RiskLevel::Medium => "medium",
-            RiskLevel::High => "high",
-        }
-        .to_string();
-        // Carry the preview's warnings through to the plan output rather than
-        // discarding them — the agent needs them to inform the operator.
-        step.warnings = prepared.preview.warnings.clone();
+        // Carry the whole authoritative preview through to the plan output
+        // rather than a slice of it — the agent needs it to inform the operator.
+        merge_preview_into_step(step, &prepared.preview);
     }
     Ok(())
 }
@@ -610,6 +642,9 @@ async fn execute_steps_inner(steps: Vec<StepToExecute>) -> Result<ExecuteOutput,
             warnings: result.warnings,
             needs_reboot,
             transaction_id: result.transaction_id,
+            // `docs/automatic-rollback.md` promises this reaches MCP callers;
+            // the daemon has always sent it, the wire struct simply dropped it.
+            rollback_ref: result.rollback_ref,
         });
 
         // Halt on first failure — do not continue executing subsequent steps.
@@ -1042,6 +1077,100 @@ pub async fn run_mcp_server() -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // The plan an agent sees carries the daemon's authoritative preview
+    // -----------------------------------------------------------------------
+
+    fn sample_preview() -> sysknife_types::PreviewEnvelope {
+        sysknife_types::PreviewEnvelope {
+            summary: "install vim 2:9.1".into(),
+            risk_level: RiskLevel::Medium,
+            current_state: serde_json::json!({"installed": false}),
+            proposed_change: serde_json::json!({"action": "AptInstall", "package": "vim"}),
+            expected_side_effects: vec!["apt lists updated".into()],
+            reboot_required: true,
+            rollback_available: true,
+            warnings: vec!["a reboot is required".into()],
+            request_hash: sysknife_types::RequestHash::new("deadbeef".to_string()),
+        }
+    }
+
+    /// An agent that can only read `sysknife_plan` output must be able to tell
+    /// the operator what changes, what else happens, whether a reboot follows
+    /// and whether failure is recoverable. Dropping those fields left the
+    /// approval request unanswerable from the MCP surface alone.
+    #[test]
+    fn a_plan_step_carries_the_whole_preview_not_a_slice_of_it() {
+        let mut step = PlanStepOutput::default();
+        merge_preview_into_step(&mut step, &sample_preview());
+
+        assert_eq!(step.risk_level, "medium");
+        assert_eq!(step.proposed_change["package"], "vim");
+        assert_eq!(step.current_state["installed"], false);
+        assert_eq!(step.expected_side_effects, vec!["apt lists updated"]);
+        assert!(step.reboot_required, "reboot requirement must survive");
+        assert!(
+            step.rollback_available,
+            "rollback availability must survive"
+        );
+        assert_eq!(step.warnings, vec!["a reboot is required"]);
+    }
+
+    /// The risk the agent reports must be the daemon's, never the planner's.
+    #[test]
+    fn merging_a_preview_overwrites_a_planner_supplied_risk() {
+        let mut step = PlanStepOutput {
+            risk_level: "low".into(),
+            ..PlanStepOutput::default()
+        };
+        let mut preview = sample_preview();
+        preview.risk_level = RiskLevel::High;
+        merge_preview_into_step(&mut step, &preview);
+        assert_eq!(step.risk_level, "high");
+    }
+
+    /// Schema guard: these fields are the contract an MCP client codes against,
+    /// so their names are pinned here rather than only in prose.
+    #[test]
+    fn the_plan_step_schema_exposes_the_preview_fields() {
+        let schema =
+            serde_json::to_value(schemars::schema_for!(PlanStepOutput)).expect("schema serializes");
+        let props = schema["properties"]
+            .as_object()
+            .expect("PlanStepOutput schema has properties");
+        for field in [
+            "current_state",
+            "proposed_change",
+            "expected_side_effects",
+            "reboot_required",
+            "rollback_available",
+            "warnings",
+        ] {
+            assert!(
+                props.contains_key(field),
+                "PlanStep schema must expose {field}; an agent cannot relay what it \
+                 cannot see. Present: {:?}",
+                props.keys().collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// `docs/automatic-rollback.md` tells operators that `rollback_ref` comes
+    /// back over MCP. The result struct silently omitted it.
+    #[test]
+    fn the_step_result_schema_exposes_rollback_ref() {
+        let schema =
+            serde_json::to_value(schemars::schema_for!(StepResult)).expect("schema serializes");
+        let props = schema["properties"]
+            .as_object()
+            .expect("StepResult schema has properties");
+        assert!(
+            props.contains_key("rollback_ref"),
+            "StepResult must report what was rolled back; present: {:?}",
+            props.keys().collect::<Vec<_>>()
+        );
+    }
 
     // -----------------------------------------------------------------------
     // check_plan_steps_distro — MCP planning-path distro guard

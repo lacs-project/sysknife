@@ -16,6 +16,7 @@
 //! Chat Completions uses a single tool-call ID per call (no dual-ID protocol).
 //! `ContentBlock::ToolUse::call_id` is always `None` from this adapter.
 
+use super::LOG_PREVIEW_CHARS;
 use async_openai::{
     config::OpenAIConfig,
     types::chat::{
@@ -288,7 +289,7 @@ fn from_openai_response(
                 target: "sysknife_brain::openai_adapter",
                 "text content ({} chars): {:?}",
                 text.len(),
-                text.chars().take(200).collect::<String>()
+                text.chars().take(LOG_PREVIEW_CHARS).collect::<String>()
             );
             content.push(ContentBlock::Text { text });
         }
@@ -309,13 +310,18 @@ fn from_openai_response(
                     continue;
                 }
             };
-            let args_preview: String = tc.function.arguments.chars().take(200).collect();
+            let args_preview: String = tc
+                .function
+                .arguments
+                .chars()
+                .take(LOG_PREVIEW_CHARS)
+                .collect();
             tracing::trace!(
                 target: "sysknife_brain::openai_adapter",
                 "tool_call: name={}, args={}{}",
                 tc.function.name,
                 args_preview,
-                if tc.function.arguments.len() > 200 { "…" } else { "" }
+                if tc.function.arguments.len() > LOG_PREVIEW_CHARS { "…" } else { "" }
             );
             let input: serde_json::Value =
                 serde_json::from_str(&tc.function.arguments).map_err(|e| {

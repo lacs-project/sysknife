@@ -7,7 +7,8 @@
 //! primary database: they cannot reproduce a previously anchored signed tip
 //! (see [`verify_checkpoints`](crate::audit_chain::verify_checkpoints)).
 //!
-//! This module defines a small [`CheckpointSink`] interface with two backends:
+//! This module defines a small [`CheckpointSink`] interface with one deployable
+//! backend:
 //!
 //! - [`PostgresCheckpointSink`] — writes checkpoints to an append-only
 //!   `audit_checkpoints` table on a separate Postgres database. INSERT-only by
@@ -16,7 +17,11 @@
 //!   and `REVOKE UPDATE, DELETE` so a stolen daemon credential cannot rewrite
 //!   the anchor either. Append-only permissions alone do not stop a DB
 //!   superuser; the *signature* is what makes tampering detectable.
-//! - [`InMemoryCheckpointSink`] — for tests and dry runs.
+//!
+//! It says "two backends" because there was a second, public
+//! `InMemoryCheckpointSink` documented for "tests and dry runs" — with no
+//! dry-run consumer anywhere. The test suite's in-memory sink now lives under
+//! `#[cfg(test)]` in this module, so only the Postgres sink is deployable.
 //!
 //! Additional verifiable backends (immudb, WORM object storage, an RFC 3161
 //! timestamp authority) can implement the same trait.
@@ -25,6 +30,8 @@ use async_trait::async_trait;
 use sqlx_core::row::Row;
 use sqlx_postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 use std::str::FromStr;
+// Only the cfg(test) in-memory sink needs interior mutability.
+#[cfg(test)]
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -56,18 +63,24 @@ pub trait CheckpointSink: Send + Sync {
     async fn load_all(&self) -> Result<Vec<Checkpoint>, CheckpointSinkError>;
 }
 
-/// In-memory checkpoint sink for tests and dry runs. Append-only.
+/// In-memory checkpoint sink used only by this module's tests. Append-only.
+///
+/// Production anchoring always uses [`PostgresCheckpointSink`]; keeping this
+/// behind `cfg(test)` stops it being mistaken for a deployable backend.
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub struct InMemoryCheckpointSink {
     stored: Mutex<Vec<Checkpoint>>,
 }
 
+#[cfg(test)]
 impl InMemoryCheckpointSink {
     pub fn new() -> Self {
         Self::default()
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl CheckpointSink for InMemoryCheckpointSink {
     async fn append(&self, checkpoint: &Checkpoint) -> Result<(), CheckpointSinkError> {

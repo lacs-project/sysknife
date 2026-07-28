@@ -22,9 +22,9 @@
 
 <p align="center">
   <strong>Distros</strong>&nbsp;
-  <img src="https://img.shields.io/badge/Ubuntu%2024.04-validated-2f855a?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu 24.04 validated">
-  <img src="https://img.shields.io/badge/Ubuntu%2022.04%20%2F%2026.04-smoke--tested-d97706?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu 22.04 and 26.04 smoke-tested">
-  <img src="https://img.shields.io/badge/Fedora%20Atomic-current%20validation%20required-294172?style=flat-square&logo=fedora&logoColor=white" alt="Fedora Atomic current validation required">
+  <img src="https://img.shields.io/badge/Ubuntu%2020.04%2B-supported-2f855a?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu 20.04 and later supported">
+  <img src="https://img.shields.io/badge/Ubuntu%2024.04-VM%20validated-2f855a?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu 24.04 VM validated">
+  <img src="https://img.shields.io/badge/Fedora%20Atomic-legacy%2C%20unsupported-6b7280?style=flat-square&logo=fedora&logoColor=white" alt="Fedora Atomic legacy and unsupported">
 </p>
 
 <p align="center">
@@ -51,11 +51,13 @@
 > changes (rpm-ostree) roll back automatically on failure. Every action is
 > Ed25519-signed and audited.
 
-SysKnife never runs a shell command. Every action is a **typed operation**
-with a formal risk level. The AI cannot touch your system directly. A
-privileged daemon executes only what you approve, writes a tamper-evident
-Ed25519-signed audit chain, and rolls back atomic-host (rpm-ostree) changes
-automatically on failure.
+The AI never supplies a command. Every action is a **typed operation** with a
+formal risk level, and the daemon builds the command line itself from the
+action's own definition — some actions do run through `sh -c`, but the shell
+fragment is constructed by SysKnife, never by the model. The AI cannot touch
+your system directly. A privileged daemon executes only what you approve, writes
+a tamper-evident Ed25519-signed audit chain, and rolls back atomic-host
+(rpm-ostree) changes automatically on failure.
 
 **Why typed actions and not a guarded shell?** Red-team research (GuardFall)
 found that **10 of 11 AI agents bypass raw-string shell guards** — an allowlist
@@ -105,7 +107,14 @@ What this does:
    not**: installing packages or restarting services needs the system-level
    service, whose sudoers grants belong to the `sysknife` system user. Pick the
    system service on any host where you intend to change something, and pass
-   `--daemon-mode=system|user|skip` to choose without a prompt.
+   `--daemon-mode=system|user|skip` to choose without a prompt. `--daemon-mode=system`
+   does not install the system service from the wizard — it needs root-owned
+   sudoers, polkit and helper policy that `sudo make install` owns — so it prints
+   the exact sequence and reports the daemon as not yet installed.
+
+   To verify the download against a checksum list you trust independently of the
+   release, set `SYSKNIFE_PINNED_SHA256SUMS=/path/to/sums`; see
+   [SECURITY.md](SECURITY.md#release-artefact-trust).
 
 | Client          | Files written                                        |
 |-----------------|------------------------------------------------------|
@@ -123,7 +132,7 @@ the prompt, enforces the receipt boundary.
 > approval prompts, and audit-log inspection.
 
 <details>
-<summary><strong>Manual install — Ubuntu LTS · Fedora Atomic</strong></summary>
+<summary><strong>Manual install — Ubuntu 20.04+</strong></summary>
 
 Needs Rust stable **and a C compiler** (`build-essential`): the TLS and SQLite
 dependencies build native code, so a rustup-only machine stops at
@@ -137,6 +146,14 @@ cd sysknife
 make build                            # builds sysknife (CLI) + sysknife-daemon
 sudo make install                     # installs both; daemon runs as a system service
 sudo systemctl enable --now sysknife-daemon
+
+# Join the socket group and one role group, or every request is refused with
+# "Permission denied" before any role check runs: /run/sysknife is 0750
+# sysknife:sysknife, and a sudo admin is not in that group automatically.
+# Role groups: sysknife-observer (read-only), sysknife-dev (medium risk),
+# sysknife-admin (high risk). Members of wheel are treated as admin.
+sudo usermod -aG sysknife,sysknife-admin "$USER"
+newgrp sysknife                       # or log out and back in
 
 # Then wire your IDE — --no-binary skips the download since you just built them
 # (--daemon-mode=skip: make install already set the service up)
@@ -242,7 +259,7 @@ milestone.
 | **Ubuntu 22.04 / 26.04 VM tooling** — smoke tests pass on all three LTSes | ✅ |
 | Telegram approval interface | 📋 roadmap |
 
-**1,405 Rust tests and 72 frontend tests** form the current deterministic
+**1,519 Rust tests and 72 frontend tests** form the current deterministic
 release baseline.
 
 ## Configure your LLM

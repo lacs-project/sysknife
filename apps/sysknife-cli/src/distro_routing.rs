@@ -165,11 +165,26 @@ mod tests {
 
     #[test]
     fn apt_install_on_unsupported_ubuntu_release_is_rejected() {
+        // 18.04 is below the support floor: no longer receiving Ubuntu security
+        // updates, so the routing guard still refuses it.
         let distro = DistroId::Ubuntu {
-            major: 20,
+            major: 18,
             minor: 4,
         };
         assert!(check_action_distro("AptInstall", Some(&distro)).is_err());
+    }
+
+    #[test]
+    fn apt_install_is_allowed_on_every_supported_ubuntu_release() {
+        // The counterpart to the test above: interim releases and 20.04 are
+        // supported, so routing must not treat the LTS cadence as a gate.
+        for (major, minor) in [(20, 4), (22, 4), (24, 4), (25, 10), (26, 4), (26, 10)] {
+            let distro = DistroId::Ubuntu { major, minor };
+            assert!(
+                check_action_distro("AptInstall", Some(&distro)).is_ok(),
+                "AptInstall must route on Ubuntu {major}.{minor:02}"
+            );
+        }
     }
 
     #[test]

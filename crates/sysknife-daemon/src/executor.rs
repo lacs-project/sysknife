@@ -29,6 +29,33 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::sync::mpsc::UnboundedSender;
 
+// ---------------------------------------------------------------------------
+// Parameter bounds
+// ---------------------------------------------------------------------------
+//
+// These mirror the ceilings of the tools being driven (`chage`, `faillock`,
+// `pam_pwquality`, `fail2ban`, `journalctl`, `mkswap`). Naming them keeps the
+// rejection reason legible and keeps the same tool's ceiling from being spelled
+// two different ways in two arms of the same match.
+
+/// Longest scheduled-job command line.
+const MAX_SCHEDULED_COMMAND_LEN: usize = 512;
+/// Longest schedule expression (`OnCalendar=` / cron form).
+const MAX_SCHEDULE_EXPR_LEN: usize = 128;
+/// Widest `journalctl --lines` request. Values are clamped, not rejected: an
+/// over-large request is a preference, not an error.
+const MAX_JOURNAL_LINES: u64 = 10_000;
+/// Largest swap file, in MiB (1 TiB).
+const MAX_SWAP_SIZE_MB: u32 = 1_048_576;
+/// `chage`'s own ceiling for password-age days.
+const MAX_PASSWORD_AGE_DAYS: u64 = 99_999;
+/// Widest `pam_pwquality` minimum length.
+const MAX_PASSWORD_MINLEN: u64 = 128;
+/// Longest `faillock` unlock/interval window, in seconds (7 days).
+const MAX_LOCKOUT_WINDOW_SECS: u64 = 604_800;
+/// Longest fail2ban bantime/findtime, in seconds (30 days).
+const MAX_FAIL2BAN_WINDOW_SECS: u64 = 2_592_000;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutorError {
     #[error("unknown action: {0}")]
@@ -487,7 +514,9 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             // Command: reject control characters (newlines would inject extra
             // unit directives). systemd argv-splits ExecStart with no shell.
             let command = require_str(params, "command")?;
-            if command.is_empty() || command.len() > 512 || command.chars().any(|c| c.is_control())
+            if command.is_empty()
+                || command.len() > MAX_SCHEDULED_COMMAND_LEN
+                || command.chars().any(|c| c.is_control())
             {
                 return Err(ExecutorError::InvalidParam("command"));
             }
@@ -495,7 +524,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             // with `systemd-analyze calendar`.
             let schedule = require_str(params, "schedule")?;
             if schedule.is_empty()
-                || schedule.len() > 128
+                || schedule.len() > MAX_SCHEDULE_EXPR_LEN
                 || !schedule.chars().all(|c| {
                     c.is_ascii_alphanumeric()
                         || matches!(c, ' ' | ':' | ',' | '*' | '/' | '.' | '~' | '+' | '-')
@@ -622,7 +651,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
                 .get("lines")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(100)
-                .clamp(1, 10_000) as u32;
+                .clamp(1, MAX_JOURNAL_LINES) as u32;
             let boot = params
                 .get("boot")
                 .and_then(|v| v.as_bool())
@@ -717,7 +746,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             let file = validated_swap_path(require_str(params, "file")?, "file")?;
             let size_mb = require_u32(params, "size_mb")?;
             // 1 MiB .. 1 TiB — reject 0 (empty) and absurdly large requests.
-            if !(1..=1_048_576).contains(&size_mb) {
+            if !(1..=MAX_SWAP_SIZE_MB).contains(&size_mb) {
                 return Err(ExecutorError::InvalidParam("size_mb"));
             }
             Ok(mounts::add_swap(&file, size_mb))
@@ -828,7 +857,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "ConfigureRemoteSyslog" => {
             let host = validated_syslog_host(require_str(params, "host")?, "host")?;
             let port = require_u32(params, "port")?;
-            if !(1..=65535).contains(&port) {
+            if !(1..=crate::actions::validate::MAX_PORT).contains(&port) {
                 return Err(ExecutorError::InvalidParam("port"));
             }
             let protocol = require_str(params, "protocol")?;
@@ -854,7 +883,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             let mut flags = Vec::new();
             for (key, opt) in [("max_days", "-M"), ("min_days", "-m"), ("warn_days", "-W")] {
                 if let Some(n) = params.get(key).and_then(|v| v.as_u64()) {
-                    if n > 99999 {
+                    if n > MAX_PASSWORD_AGE_DAYS {
                         return Err(ExecutorError::InvalidParam(key));
                     }
                     flags.push(opt.to_string());
@@ -871,7 +900,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             // many chars of the class). At least one required.
             let mut extra = Vec::new();
             if let Some(n) = params.get("minlen").and_then(|v| v.as_u64()) {
-                if !(1..=128).contains(&n) {
+                if !(1..=MAX_PASSWORD_MINLEN).contains(&n) {
                     return Err(ExecutorError::InvalidParam("minlen"));
                 }
                 extra.push("--minlen".to_string());
@@ -911,7 +940,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
                 ("fail_interval", "--fail-interval"),
             ] {
                 if let Some(n) = params.get(key).and_then(|v| v.as_u64()) {
-                    if n > 604800 {
+                    if n > MAX_LOCKOUT_WINDOW_SECS {
                         return Err(ExecutorError::InvalidParam(key));
                     }
                     extra.push(flag.to_string());
@@ -1411,7 +1440,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             }
             for (key, flag) in [("bantime", "--bantime"), ("findtime", "--findtime")] {
                 if let Some(n) = params.get(key).and_then(|v| v.as_u64()) {
-                    if n > 2_592_000 {
+                    if n > MAX_FAIL2BAN_WINDOW_SECS {
                         return Err(ExecutorError::InvalidParam(key));
                     }
                     extra.push(flag.to_string());

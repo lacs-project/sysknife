@@ -74,7 +74,21 @@ daemon-install: build
 	install -Dm 440 packaging/sysknife-sudoers $(SUDOERS)/sysknife
 
 	# Privileged helper scripts — root-owned, not writable by sysknife.
+	# Every helper the daemon calls must be here; `cargo nextest run -p
+	# sysknife-daemon --test helper_install_coverage` derives the required set
+	# from the daemon source and fails if one is missing.
+	install -Dm 755 packaging/sysknife-apt-pin-edit $(HELPERS)/apt-pin-edit
+	install -Dm 755 packaging/sysknife-audit-edit $(HELPERS)/audit-edit
+	install -Dm 755 packaging/sysknife-fail2ban-jail-edit $(HELPERS)/fail2ban-jail-edit
 	install -Dm 755 packaging/sysknife-grub-kargs-edit $(HELPERS)/grub-kargs-edit
+	install -Dm 755 packaging/sysknife-log-edit $(HELPERS)/log-edit
+	install -Dm 755 packaging/sysknife-mount-edit $(HELPERS)/mount-edit
+	install -Dm 755 packaging/sysknife-pam-edit $(HELPERS)/pam-edit
+	install -Dm 755 packaging/sysknife-scheduled-job-edit $(HELPERS)/scheduled-job-edit
+	install -Dm 755 packaging/sysknife-sshd-option-edit $(HELPERS)/sshd-option-edit
+	install -Dm 755 packaging/sysknife-sudoers-edit $(HELPERS)/sudoers-edit
+	install -Dm 755 packaging/sysknife-sysctl-edit $(HELPERS)/sysctl-edit
+	install -Dm 755 packaging/sysknife-unattended-upgrades-edit $(HELPERS)/unattended-upgrades-edit
 
 ## ── Uninstall ────────────────────────────────────────────────────────────────
 
@@ -93,7 +107,18 @@ daemon-uninstall:
 	rm -f $(SUDOERS)/sysknife
 	rm -f $(SYSUSERS)/sysknife.conf
 	rm -f $(TMPFILES)/sysknife.conf
+	rm -f $(HELPERS)/apt-pin-edit
+	rm -f $(HELPERS)/audit-edit
+	rm -f $(HELPERS)/fail2ban-jail-edit
 	rm -f $(HELPERS)/grub-kargs-edit
+	rm -f $(HELPERS)/log-edit
+	rm -f $(HELPERS)/mount-edit
+	rm -f $(HELPERS)/pam-edit
+	rm -f $(HELPERS)/scheduled-job-edit
+	rm -f $(HELPERS)/sshd-option-edit
+	rm -f $(HELPERS)/sudoers-edit
+	rm -f $(HELPERS)/sysctl-edit
+	rm -f $(HELPERS)/unattended-upgrades-edit
 	@echo "Daemon uninstalled. User 'sysknife' and /var/lib/sysknife data were NOT removed."
 	@echo "To remove them manually: userdel sysknife && rm -rf /var/lib/sysknife /run/sysknife"
 

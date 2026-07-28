@@ -80,7 +80,9 @@ registry-ready. To publish the listing:
 1. **Confirm the marker is live in the version `server.json` names.** The
    validator reads the *rendered* README from crates.io, in two calls:
    ```sh
-   version=0.2.14
+   # Read the version from the manifest rather than retyping it: checking the
+   # marker for a version other than the one being published proves nothing.
+   version="$(node -p 'require("./server.json").version')"
    ua='sysknife-release/1.0 (https://github.com/lacs-project/sysknife)'
    url="$(curl -sS -H 'Accept: application/json' -H "User-Agent: $ua" \
      "https://crates.io/api/v1/crates/sysknife-cli/${version}/readme" \

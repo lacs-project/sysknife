@@ -771,137 +771,78 @@ run the relevant exec story or write a new Tier-2 integration test in
 `crates/sysknife-daemon/tests/`.
 
 ---
+## 18. Distro detection and action routing
 
-## 18. Adding a new distro
+**Ubuntu is the supported platform** (every release from 20.04 up), so adding a
+distro is not current work. This section describes the machinery as it actually
+is, because the previous version of it described a module that no longer exists
+and a dispatch shape that was never built.
 
-SysKnife dispatches distro-specific actions (package management,
-deployment lifecycle) based on the runtime distro detected in
-`crates/sysknife-daemon/src/distro.rs`. Adding a new distro is a
-four-file change plus optional provisioner updates.
+### Where detection lives
 
-### 1. Distro enum — `crates/sysknife-daemon/src/distro.rs`
+`crates/sysknife-core/src/distro.rs` is the only distro model:
 
-Add a variant and update `as_str`:
+- `DistroId` — the detected distro and version (`Ubuntu { major, minor }`,
+  `UbuntuCore`, `FedoraSilverblue`, `Fedora`, `Debian`, `Other`).
+- `parse_os_release` / `detect_distro` / `detect()` — parse `/etc/os-release`
+  and map it to a `DistroId`. Size-bounded and hostile-input tested.
+- `DistroId::family()` — the package-manager family (`Debian`, `Fedora`, …).
+- `DistroId::is_supported()` — eligibility: may the daemon act on this host at
+  all. **Not** a validation claim; see `docs/distro-support.md`.
 
-```rust
-pub enum Distro {
-    FedoraAtomic,
-    Ubuntu,
-    ArchLinux,    // ← new variant
-    Unknown,
-}
+The daemon crate has no distro module of its own. An earlier duplicate
+(`crates/sysknife-daemon/src/distro.rs`) was compiled into the library but never
+called by anything, and this section used to point contributors at it.
 
-impl Distro {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Distro::FedoraAtomic => "Fedora Atomic",
-            Distro::Ubuntu => "Ubuntu",
-            Distro::ArchLinux => "Arch Linux",
-            Distro::Unknown => "Unknown",
-        }
-    }
-}
-```
+### Where routing is enforced
 
-Update `detect()` to recognise the new `ID=` value from `/etc/os-release`:
+The family lists are one source of truth in
+`crates/sysknife-core/src/action_family.rs`:
 
-```rust
-"arch" => Distro::ArchLinux,
-```
+| Constant | Meaning |
+|---|---|
+| `DEBIAN_ONLY_ACTIONS` | `Apt*`, `Snap*`, `Ufw*`, `Distrobox*`, `Netplan*`, … |
+| `FEDORA_ONLY_ACTIONS` | `RebaseSystem`, `AddLayeredPackage`, … |
 
-Some distros set `VARIANT_ID` in addition to `ID` (as Fedora Atomic
-does for Silverblue vs. Kinoite). Parse both fields and add a `matches!`
-guard if you need variant-level discrimination.
+Three places consume them, so they cannot drift apart:
 
-Add unit tests in the `#[cfg(test)]` block at the bottom of the file —
-at minimum, one test for the `ID=` value you added and one that confirms
-`Distro::ArchLinux.as_str()` returns the expected string.
+1. **CLI, after planning** — `apps/sysknife-cli/src/distro_routing.rs`
+   (`check_action_distro`) rejects a family-mismatched step with a readable
+   message before anything is sent to the daemon. The MCP planning path calls
+   the same function via `check_plan_steps_distro`.
+2. **Daemon, at dispatch** — `validate_action_platform` in
+   `crates/sysknife-daemon/src/dispatcher.rs` is the fence that matters: it
+   refuses family-mismatched actions *and* refuses every mutating action when
+   `is_supported()` is false. The CLI check is a courtesy; this one is the
+   boundary.
+3. **Planner prompt** — `crates/sysknife-brain/src/prompt.rs` renders a
+   per-family prompt (`render_debian_prompt`, `render_fedora_prompt`,
+   `render_generic_prompt`) so the model is never shown the other family's
+   action names. See the prompt rules in `CLAUDE.md`.
 
-### 2. Action module — `crates/sysknife-daemon/src/actions/<distro>.rs`
+### If support ever widens again
 
-Create a new file (e.g. `arch.rs`) with distro-specific implementations
-of every action that differs from the Fedora Atomic baseline. Actions
-that are universal (service control, SSH key ops, user management) do
-**not** need distro-specific variants.
+1. Add the `DistroId` variant, the `detect_distro` arm, and the `family()` and
+   `is_supported()` arms, with unit tests feeding synthetic `/etc/os-release`
+   content (no VM needed).
+2. Add an action module under `crates/sysknife-daemon/src/actions/` for the
+   mechanisms that differ. Universal actions (service control, SSH keys, users)
+   need no per-distro variant.
+3. Add the action names to the matching family constant in
+   `action_family.rs` — the fence tests read those constants.
+4. Add a prompt render function for the new family.
+5. Add `NOPASSWD` grants to `packaging/sysknife-sudoers` for every new
+   privileged binary, and install any new helper in the `Makefile`. The
+   `helper_install_coverage` test derives the required helper set from the
+   daemon source and fails if a helper is packaged but not installed.
+6. Extend `tests/e2e/provision.sh` if the new distro bootstraps differently.
 
-Typical distro-specific actions:
-
-| Action name            | Fedora Atomic           | Ubuntu                    | Arch                      |
-|------------------------|-------------------------|---------------------------|---------------------------|
-| `AddLayeredPackage`    | `rpm-ostree install`    | `apt-get install -y`      | `pacman -S --noconfirm`   |
-| `RemoveLayeredPackage` | `rpm-ostree remove`     | `apt-get remove -y`       | `pacman -R --noconfirm`   |
-| `UpdateSystem`         | `rpm-ostree upgrade`    | `apt-get dist-upgrade -y` | `pacman -Syu --noconfirm` |
-| `GetLayeredPackages`   | `rpm-ostree status`     | `dpkg --get-selections`   | `pacman -Qe`              |
-| `GetPendingUpdates`    | `rpm-ostree upgrade -C` | `apt list --upgradable`   | `checkupdates`            |
-
-The `action_name` field on each `ActionSpec` must match the existing
-catalogue name exactly — the same string the executor dispatches on.
-The `reboot_required` flag should reflect reality for the distro
-(Fedora Atomic: true for package changes; Ubuntu/Arch: false).
-
-### 3. Module registration — `crates/sysknife-daemon/src/actions/mod.rs`
-
-```rust
-pub mod arch;
-```
-
-### 4. Executor dispatch — `crates/sysknife-daemon/src/executor.rs`
-
-For every action that has a distro-specific implementation, add a distro
-check inside the existing match arm. The current pattern (pre-Ubuntu
-wiring) is to call the Fedora Atomic function unconditionally; once
-multiple distros are live, the arm becomes a match on `distro::current()`:
-
-```rust
-use crate::distro::{self, Distro};
-
-// In build_action_spec:
-"AddLayeredPackage" => {
-    let package = validated_safe_arg(require_str(params, "package")?, "package")?;
-    match distro::current() {
-        Distro::FedoraAtomic => Ok(layering::add_layered_package(&package)),
-        Distro::Ubuntu       => Ok(layering_ubuntu::install_package(&package)),
-        Distro::ArchLinux    => Ok(arch::install_package(&package)),
-        Distro::Unknown      => Err(ExecutorError::UnsupportedOnDistro {
-            action: "AddLayeredPackage",
-            distro: distro::current().as_str(),
-        }),
-    }
-}
-```
-
-For rpm-ostree-specific actions (`RebaseSystem`, `PinDeployment`, etc.)
-that have no Ubuntu or Arch equivalent, return an `UnsupportedOnDistro`
-error for the non-Fedora variants rather than silently doing nothing.
-
-### 5. Sudoers — `packaging/sysknife-sudoers`
-
-Add `NOPASSWD` rules for every new privileged binary the new distro's
-action module calls under `sudo`. The packaging file is distro-agnostic;
-add the rule unconditionally (it will simply be unused on distros where
-`apt-get` doesn't exist, etc.).
-
-### 6. Provisioner — `tests/e2e/provision.sh`
-
-If the new distro has a different package manager for build tools (gcc,
-cargo, etc.) or different installation paths, add a distro branch to
-the provisioner. The provisioner currently targets Fedora Atomic only
-(`rpm-ostree`). At minimum, gate the `rpm-ostree` phase on `ID=fedora`
-and add an equivalent `apt-get` or `pacman` phase.
-
-### 7. Distro detection test (`distro.rs`)
-
-The new `detect()` arm must be covered by a unit test inside
-`distro.rs` that feeds synthetic `/etc/os-release` content. No VM
-needed — these tests are fast and run in `cargo nextest run --workspace`.
-
-### 8. Distro verification
+### Verification
 
 ```sh
 cargo nextest run --workspace --locked
 ```
 
-The consistency test does **not** enforce distro dispatch (it calls
-`build_action_spec` with an empty params object on the current distro),
-so manual VM verification on the new distro is required before claiming
-the distro is supported.
+The action-consistency test calls `build_action_spec` with empty params on the
+current distro, so it does not exercise per-distro dispatch. A real VM run is
+still required before claiming a release is validated.

@@ -9,6 +9,7 @@
 //! Groq, DeepSeek, Mistral, xAI, etc.) for free without hand-rolling HTTP clients.
 
 use super::sanitize_error_msg;
+use super::LOG_PREVIEW_CHARS;
 use async_trait::async_trait;
 use futures::StreamExt;
 use rig::completion::{CompletionModel, CompletionRequest, ToolDefinition as RigToolDefinition};
@@ -300,7 +301,7 @@ fn from_rig_response(choice: OneOrMany<AssistantContent>) -> Result<Completion, 
                         target: "sysknife_brain::rig_adapter",
                         "text content ({} chars): {:?}",
                         text.text.len(),
-                        text.text.chars().take(200).collect::<String>()
+                        text.text.chars().take(LOG_PREVIEW_CHARS).collect::<String>()
                     );
                     content.push(ContentBlock::Text {
                         text: text.text.clone(),

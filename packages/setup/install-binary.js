@@ -321,7 +321,24 @@ function assetUrl(release, name) {
  * @param {string} sumsText    - full text of the sha256sums file
  * @param {string} filename    - asset filename to look up
  */
-function verifySha256(data, sumsText, filename) {
+/**
+ * Look up `filename`'s digest in a `sha256sums` file, or return null when the
+ * file does not mention it.
+ *
+ * Used for the out-of-band pin: an operator points
+ * `SYSKNIFE_PINNED_SHA256SUMS` at a checksum file they trust, and every asset
+ * is then required to match both that file and the release's own.
+ */
+function digestFor(sumsText, filename) {
+  const entry = sumsText
+    .split('\n')
+    .map(l => l.replace(/\r$/, ''))
+    .filter(l => l.trim())
+    .find(l => l.endsWith(`  ${filename}`) || l.endsWith(`\t${filename}`));
+  return entry ? entry.split(/\s+/)[0].toLowerCase() : null;
+}
+
+function verifySha256(data, sumsText, filename, opts = {}) {
   const lines = sumsText
     .split('\n')
     .map(l => l.replace(/\r$/, '')) // tolerate CRLF-terminated sums files
@@ -343,6 +360,34 @@ function verifySha256(data, sumsText, filename) {
       `Refusing to install — binary may be corrupted or tampered with.`
     );
   }
+
+  // Out-of-band pin. The release checksum and the release binary share one
+  // trust root, so agreement between them says nothing about whether the
+  // release itself is authentic. An operator who obtained the digest
+  // independently — from the signed git tag, an internal mirror, or a
+  // config-management value — can require it here.
+  if (opts.pinnedSha256 !== undefined && opts.pinnedSha256 !== null) {
+    const pinned = String(opts.pinnedSha256).trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(pinned)) {
+      // Never treat an unusable pin as "no pin": that would silently disable a
+      // control the operator deliberately switched on.
+      throw new Error(
+        `Pinned SHA256 for ${filename} is not a valid digest: ${JSON.stringify(opts.pinnedSha256)}. ` +
+        `Expected 64 hex characters. Refusing to install rather than ignore the pin.`
+      );
+    }
+    if (pinned !== actual) {
+      throw new Error(
+        `Pinned SHA256 mismatch for ${filename}!\n` +
+        `  Pinned:   ${pinned}\n` +
+        `  Release:  ${actual}\n` +
+        `The release verifies against its own checksum file, so this means the pin is ` +
+        `stale or this release is not the artefact you pinned. Refusing to install.`
+      );
+    }
+  }
+
+  return actual;
 }
 
 // ---------------------------------------------------------------------------
@@ -511,6 +556,23 @@ async function installBinaryIfMissing(opts) {
   }
   const sumsText = sumsData.toString('utf8');
 
+  // Optional out-of-band pin: a checksum file the operator trusts, obtained
+  // independently of this download. Every asset must then match both it and the
+  // release's own sums file. An unreadable pin is fatal — a security control the
+  // operator switched on must never degrade to a no-op.
+  const pinnedSumsPath = process.env.SYSKNIFE_PINNED_SHA256SUMS;
+  let pinnedSumsText = null;
+  if (pinnedSumsPath) {
+    try {
+      pinnedSumsText = fs.readFileSync(pinnedSumsPath, 'utf8');
+      ok(`Pinning digests against ${pinnedSumsPath}`);
+    } catch (e) {
+      err(`SYSKNIFE_PINNED_SHA256SUMS is set but ${pinnedSumsPath} could not be read: ${e.message}`);
+      process.exit(1);
+    }
+  }
+  const pinFor = (asset) => (pinnedSumsText ? digestFor(pinnedSumsText, asset) : undefined);
+
   // --- Download and verify sysknife CLI ---
   console.log();
   let cliBuf;
@@ -522,8 +584,10 @@ async function installBinaryIfMissing(opts) {
   }
 
   try {
-    verifySha256(cliBuf, sumsText, cliAsset);
-    ok(`SHA256 verified: ${cliAsset}`);
+    const digest = verifySha256(cliBuf, sumsText, cliAsset, { pinnedSha256: pinFor(cliAsset) });
+    // Print the digest rather than only "verified": a checksum nobody can see
+    // cannot be cross-checked against a signed tag or an internal mirror.
+    ok(`SHA256 verified: ${cliAsset}  ${digest}`);
   } catch (e) {
     err(e.message);
     process.exit(1);
@@ -539,8 +603,10 @@ async function installBinaryIfMissing(opts) {
   }
 
   try {
-    verifySha256(daemonBuf, sumsText, daemonAsset);
-    ok(`SHA256 verified: ${daemonAsset}`);
+    const digest = verifySha256(daemonBuf, sumsText, daemonAsset, { pinnedSha256: pinFor(daemonAsset) });
+    // Print the digest rather than only "verified": a checksum nobody can see
+    // cannot be cross-checked against a signed tag or an internal mirror.
+    ok(`SHA256 verified: ${daemonAsset}  ${digest}`);
   } catch (e) {
     err(e.message);
     process.exit(1);
@@ -571,6 +637,7 @@ module.exports = {
   installBinaryIfMissing,
   detectPlatform,
   verifySha256,
+  digestFor,
   isOnPath,
   fetchLatestRelease,
   GITHUB_JSON_ACCEPT,

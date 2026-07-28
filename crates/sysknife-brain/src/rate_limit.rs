@@ -26,6 +26,13 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Width of the sliding rate-limit window, in seconds.
+///
+/// `DEFAULT_MAX_RPM` is requests *per minute*, so this is what makes the "per
+/// minute" true. It was spelled `60` at each of the three sites that depend on
+/// it, including the user-facing retry message, so the three could disagree.
+pub const RATE_LIMIT_WINDOW_SECS: u64 = 60;
+
 /// Sliding 60-second window rate limiter backed by a plain-text timestamp file.
 ///
 /// Create via [`RateLimiter::new`]; attach to a planner with
@@ -149,7 +156,7 @@ impl RateLimiter {
                 std::time::Duration::ZERO
             })
             .as_secs();
-        let window_start = now.saturating_sub(60);
+        let window_start = now.saturating_sub(RATE_LIMIT_WINDOW_SECS);
 
         // Read and parse existing timestamps; silently ignore malformed lines.
         let raw = std::fs::read_to_string(&self.path).unwrap_or_else(|e| {
@@ -172,7 +179,7 @@ impl RateLimiter {
         if in_window.len() >= self.max_per_minute {
             let oldest = in_window.iter().min().copied().unwrap_or(window_start);
             // How long until the oldest call exits the 60-second window.
-            let retry_after = (oldest + 60).saturating_sub(now).max(1);
+            let retry_after = (oldest + RATE_LIMIT_WINDOW_SECS).saturating_sub(now).max(1);
             return Err(retry_after);
         }
 

@@ -29,6 +29,12 @@ use sysknife_types::{JobState, PreviewEnvelope, ResultEnvelope};
 
 use crate::runner::Logger;
 
+/// Spinner frame interval. Fast enough to read as motion, slow enough not to
+/// flood a piped log.
+const SPINNER_TICK: Duration = Duration::from_millis(80);
+/// Width of the horizontal rules printed between sections.
+const RULE_WIDTH: usize = 50;
+
 // ---------------------------------------------------------------------------
 // Spinner
 // ---------------------------------------------------------------------------
@@ -47,7 +53,7 @@ pub fn make_spinner(msg: impl Into<String>) -> ProgressBar {
             .unwrap(),
     );
     pb.set_message(msg.into());
-    pb.enable_steady_tick(Duration::from_millis(80));
+    pb.enable_steady_tick(SPINNER_TICK);
     pb
 }
 
@@ -93,7 +99,7 @@ pub fn print_plan(plan: &AuthorizedPlan, log: &Logger) {
     log.println(&format!(
         "  {}",
         "─"
-            .repeat(50)
+            .repeat(RULE_WIDTH)
             .if_supports_color(Stream::Stdout, |t| t.dimmed())
     ));
     for (i, step) in plan.steps().enumerate() {
@@ -279,6 +285,28 @@ fn doctor_fail_lines(socket: &str, error: &str) -> Vec<String> {
     // $XDG_RUNTIME_DIR is /run/user/<uid> on Ubuntu; that is where the setup
     // wizard's default (user-mode) daemon binds.
     let user_mode = socket.contains("/run/user/");
+
+    // EACCES on a system socket is the one failure where the daemon is healthy
+    // and `systemctl status` is green: /run/sysknife is 0750 sysknife:sysknife,
+    // so an admin who installed the unit but never joined the group is refused
+    // before any role check runs. Lead with the fix, because the unit hints
+    // below will show nothing wrong. Skipped for /run/user sockets, where the
+    // directory is the caller's own and group membership is not the cause.
+    if !user_mode && error.to_lowercase().contains("permission denied") {
+        lines.push("the daemon is listening, but this account may not open its socket".into());
+        lines.push(
+            "join the socket group and one role group:  \
+             sudo usermod -aG sysknife,sysknife-admin \"$USER\""
+                .into(),
+        );
+        lines.push(
+            "role groups: sysknife-observer (read-only), sysknife-dev (medium risk), \
+             sysknife-admin (high risk)"
+                .into(),
+        );
+        lines.push("then log out and back in, or run:  newgrp sysknife".into());
+    }
+
     let system_hint = "system service:  sudo systemctl status sysknife-daemon";
     let user_hint = "user service:    systemctl --user status sysknife-daemon";
     if user_mode {
@@ -409,6 +437,63 @@ mod tests {
         assert!(
             user_at < system_at,
             "user hint first for /run/user, got: {out}"
+        );
+    }
+
+    #[test]
+    fn permission_denied_names_the_group_fix_not_just_the_unit() {
+        // A healthy system daemon plus a user who is not in the socket group
+        // fails here. `systemctl status` looks fine in that state, so unit
+        // hints alone send the operator hunting in the wrong place.
+        let out = doctor_fail_lines(
+            "unix:///run/sysknife/daemon.sock",
+            "cannot reach the SysKnife daemon at unix:///run/sysknife/daemon.sock: \
+             Permission denied (os error 13)",
+        )
+        .join("\n");
+        assert!(
+            out.contains("usermod -aG"),
+            "must give the membership command, got: {out}"
+        );
+        assert!(
+            out.contains("sysknife-admin"),
+            "must name a role group, not only the socket group, got: {out}"
+        );
+        assert!(
+            out.to_lowercase().contains("log"),
+            "group changes need a new login to take effect; say so, got: {out}"
+        );
+    }
+
+    #[test]
+    fn permission_denied_hint_leads_the_report() {
+        // Ordering is the whole point: the group fix must appear before the
+        // systemd hints, because the daemon is running and the units are fine.
+        let out = doctor_fail_lines(
+            "unix:///run/sysknife/daemon.sock",
+            "Permission denied (os error 13)",
+        )
+        .join("\n");
+        let group_at = out.find("usermod -aG").expect("group hint present");
+        let unit_at = out.find("systemctl").expect("unit hint present");
+        assert!(
+            group_at < unit_at,
+            "the group fix must precede unit hints, got: {out}"
+        );
+    }
+
+    #[test]
+    fn a_missing_socket_does_not_suggest_a_group_change() {
+        // "No such file" means nothing is listening — group membership is not
+        // the problem, and suggesting it would be a wrong lead.
+        let out = doctor_fail_lines(
+            "unix:///run/sysknife/daemon.sock",
+            "No such file or directory (os error 2)",
+        )
+        .join("\n");
+        assert!(
+            !out.contains("usermod"),
+            "no group hint when the socket is absent, got: {out}"
         );
     }
 

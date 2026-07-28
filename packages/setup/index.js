@@ -858,7 +858,7 @@ async function main() {
   // The user may skip; they can always run `systemctl --user enable sysknife-daemon` later.
 
   const daemonBinPath = binaryPath.replace(/\/sysknife$/, '/sysknife-daemon');
-  await installDaemonService({
+  const daemonInstall = await installDaemonService({
     ask: askWrapper,
     daemonBinPath,
     daemonMode: DAEMON_MODE,
@@ -884,6 +884,22 @@ async function main() {
   console.log();
   console.log(`${B}Next steps${X}`);
   console.log();
+
+  // System mode installs nothing from here (it needs root-owned policy the
+  // Makefile owns), so the daemon steps come FIRST and are stated as
+  // outstanding. Reporting MCP configuration as "done" while the daemon does
+  // not exist is what made this look like a successful install.
+  if (daemonInstall && !daemonInstall.daemonInstalled && daemonInstall.mode === 'system') {
+    warn('The system daemon is not installed yet. MCP clients are configured, but');
+    warn('nothing will execute until these steps are done:');
+    console.log();
+    for (const cmd of daemonInstall.manualSteps) {
+      console.log(`    ${D}${cmd}${X}`);
+    }
+    console.log();
+    step('Then re-run:  npx sysknife-setup --daemon-mode=skip');
+    console.log();
+  }
 
   for (const t of targets) {
     targetNextStep(t);

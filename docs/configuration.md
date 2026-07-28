@@ -13,8 +13,19 @@ vars when you need to (CI runs, ad-hoc experiments, distro packagers).
 ## `config.toml` reference
 
 Path: `$XDG_CONFIG_HOME/sysknife/config.toml`, falling back to
-`~/.config/sysknife/config.toml`. The daemon and CLI read this on every
-startup; the GUI reloads it after the wizard finishes.
+`~/.config/sysknife/config.toml`. The daemon, the CLI and the MCP server
+(`sysknife mcp-server`, which shares the CLI's entry point) read it at startup.
+
+Values in the file are applied as **defaults**: anything already set in the
+environment wins, so a one-off `SYSKNIFE_SOCKET=… sysknife doctor` still
+overrides the file. The load happens before the async runtime starts, because
+applying it sets environment variables and that is only sound while the process
+is single-threaded.
+
+> The system daemon is configured by its unit, not by this file. `Environment=`
+> lines in `packaging/sysknife-daemon.service` reach only the daemon's own
+> process, which is why `sysknife audit verify` resolves the system audit store
+> explicitly rather than expecting to inherit `SYSKNIFE_DATABASE_PATH`.
 
 ```toml
 # ─── [daemon] ────────────────────────────────────────────────────────

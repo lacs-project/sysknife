@@ -12,13 +12,42 @@ use clap::Parser;
 use crate::cli::{Cli, Command};
 use crate::runner::{Logger, RunOpts};
 
-#[tokio::main]
-async fn main() {
+/// Startup is deliberately synchronous up to the point the runtime is built.
+///
+/// `LacsConfig::apply_defaults_to_env` writes environment variables, which is
+/// only sound while the process is still single-threaded — a tokio worker pool
+/// reading the environment concurrently would be undefined behaviour. Under
+/// `#[tokio::main]` the runtime already exists by the time `main`'s body runs,
+/// so the config load has to happen here, before the runtime is constructed.
+/// Everything after `block_on` behaves exactly as it did under the attribute.
+fn main() {
     let cli = Cli::parse();
 
-    // Resolve socket target once for all subcommands.
+    // Apply `~/.config/sysknife/config.toml` as env-var defaults so the rest of
+    // the CLI — and the MCP server, which shares this entry point — reads the
+    // operator's configured socket, provider and model instead of only the
+    // process environment. Values already present in the environment win, so an
+    // explicit `SYSKNIFE_*` still overrides the file.
+    sysknife_core::config::LacsConfig::load().apply_defaults_to_env();
+
+    // Resolve socket target once for all subcommands. Must follow the config
+    // load: the socket may come from the file.
     let socket = runner::resolve_socket_target();
 
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("sysknife: could not start the async runtime: {e}");
+            std::process::exit(4);
+        }
+    };
+    runtime.block_on(run(cli, socket));
+}
+
+async fn run(cli: Cli, socket: crate::client::SocketTarget) {
     // Set up logger (tee to file when --log-to is present).
     let log = match Logger::new(cli.log_to.as_deref()) {
         Ok(l) => l,

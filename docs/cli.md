@@ -268,9 +268,9 @@ All flags apply to every subcommand and to free-form intents.
 |---|---|
 | `--yes` | Auto-approve LOW-risk steps.  With `--max-risk medium`, also approves MEDIUM.  HIGH always requires human confirmation. |
 | `--max-risk LEVEL` | Abort if the plan contains any step above this ceiling.  Values: `low`, `medium`, `high`. |
-| `--non-interactive` | Fail immediately (`exit 3`) if any step would require interactive approval.  Use in scripts and CI. |
+| `--non-interactive` | Fail immediately (`exit 1`) if any step would require interactive approval.  Use in scripts and CI. |
 | `--dry-run` | Print the plan and exit without executing anything. |
-| `--step-by-step` | Prompt for approval before each individual step instead of once for the whole plan. |
+| `--step-by-step` | Prompt for approval before each individual step instead of once for the whole plan.  Each prompt comes *after* that step's daemon preview is printed. |
 | `--json` | Emit NDJSON to stdout — one JSON object per event (plan, preview, result).  All colour and spinner output is suppressed.  Safe to pipe. |
 | `--timeout SECS` | Hard wall-clock timeout in seconds.  Aborts the whole operation if exceeded. |
 | `--log-to FILE` | Tee all stdout output to FILE in addition to the terminal.  Appends if the file exists. |
