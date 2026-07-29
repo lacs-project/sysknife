@@ -214,6 +214,7 @@ fn previewed_transactions_persist_preview_state() {
         summary: "Stage system update".to_string(),
         warnings: vec!["system reboot required".to_string()],
         caller_role: CallerRole::Dev,
+        caller_principal: sysknife_daemon::auth::CallerPrincipal::Uid(1000),
     };
 
     let recorded = store

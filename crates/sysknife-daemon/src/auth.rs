@@ -61,6 +61,63 @@ pub fn denial_message(action: &str, caller: CallerRole, required: CallerRole) ->
 }
 
 // ---------------------------------------------------------------------------
+// Caller principal
+// ---------------------------------------------------------------------------
+
+/// Who asked, as opposed to what they were allowed to do.
+///
+/// [`CallerRole`] answers "was this permitted"; two members of
+/// `sysknife-admin` share a role and are indistinguishable by it. The principal
+/// answers "which account", and is signed into the audit chain
+/// ([`crate::audit_chain::ChainIdentity::V3`]) so the trail can name a person
+/// rather than a class.
+///
+/// The scheme prefix is part of the signed value on purpose. `uid:1000` was
+/// attested by the kernel through `SO_PEERCRED`; `token:vsock` means a
+/// pre-shared secret was presented and any holder of that file could have
+/// presented it. Those are different strengths of evidence and an auditor has to
+/// be able to tell them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallerPrincipal {
+    /// A Unix-socket peer whose uid the kernel supplied at `connect()`.
+    Uid(u32),
+    /// A vsock connection authenticated by the pre-shared token. No uid exists
+    /// on that path: the peer is in another kernel.
+    VsockToken,
+    /// `SO_PEERCRED` did not yield a usable peer identity, so the daemon cannot
+    /// name the caller. The connection is still handled, at `Observer` (the
+    /// pre-existing fallback), and the row records that attribution failed
+    /// instead of inventing a uid. A signed lie about who acted would be worse
+    /// than a signed admission of ignorance.
+    Unattributed,
+}
+
+impl CallerPrincipal {
+    /// The exact string signed into the chain and stored in `caller_principal`.
+    pub fn as_signed_str(&self) -> String {
+        match self {
+            Self::Uid(uid) => format!("uid:{uid}"),
+            Self::VsockToken => "token:vsock".to_string(),
+            Self::Unattributed => "unattributed".to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for CallerPrincipal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.as_signed_str())
+    }
+}
+
+/// Role plus principal for one connection, resolved by the daemon and never
+/// taken from the request body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallerAttribution {
+    pub role: CallerRole,
+    pub principal: CallerPrincipal,
+}
+
+// ---------------------------------------------------------------------------
 // Token authentication (vsock connections)
 // ---------------------------------------------------------------------------
 

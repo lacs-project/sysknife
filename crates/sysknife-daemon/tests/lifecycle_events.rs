@@ -44,7 +44,17 @@ async fn spawn_handler(state: DaemonState) -> FramedStream<UnixStream> {
     let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(MockRunner);
     let executor: Arc<dyn ActionExecutor> = Arc::new(sysknife_daemon::executor::RealActionExecutor);
     tokio::spawn(async move {
-        connection_handler_with_executor(server, state, runner, executor, CallerRole::Admin).await;
+        connection_handler_with_executor(
+            server,
+            state,
+            runner,
+            executor,
+            sysknife_daemon::auth::CallerAttribution {
+                role: CallerRole::Admin,
+                principal: sysknife_daemon::auth::CallerPrincipal::Uid(1000),
+            },
+        )
+        .await;
     });
     FramedStream::new(client)
 }
@@ -56,7 +66,17 @@ async fn spawn_handler_with_executor(
     let (client, server) = UnixStream::pair().unwrap();
     let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(MockRunner);
     tokio::spawn(async move {
-        connection_handler_with_executor(server, state, runner, executor, CallerRole::Admin).await;
+        connection_handler_with_executor(
+            server,
+            state,
+            runner,
+            executor,
+            sysknife_daemon::auth::CallerAttribution {
+                role: CallerRole::Admin,
+                principal: sysknife_daemon::auth::CallerPrincipal::Uid(1000),
+            },
+        )
+        .await;
     });
     FramedStream::new(client)
 }
@@ -362,4 +382,12 @@ async fn rollback_execution_includes_lifecycle_events() {
             .any(|l| l.contains("attempting automatic rollback")),
         "should have rollback attempt event; got: {lines:?}"
     );
+}
+
+/// A caller attributed to a uid, as a Unix-socket connection would be.
+fn uid_caller(role: sysknife_types::CallerRole) -> sysknife_daemon::auth::CallerAttribution {
+    sysknife_daemon::auth::CallerAttribution {
+        role,
+        principal: sysknife_daemon::auth::CallerPrincipal::Uid(1000),
+    }
 }

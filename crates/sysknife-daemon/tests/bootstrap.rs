@@ -85,6 +85,7 @@ fn transaction_records_are_persisted() {
         summary: "Stage system update".into(),
         warnings: vec!["reboot required".into()],
         caller_role: CallerRole::Dev,
+        caller_principal: sysknife_daemon::auth::CallerPrincipal::Uid(1000),
     };
 
     let record = store.record(transaction).expect("record tx");

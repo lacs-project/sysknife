@@ -182,7 +182,7 @@ fn redact_argv(action_name: &str, params: &Value, args: &[String]) -> Vec<String
 }
 
 use crate::{
-    auth::highest_role_from_groups,
+    auth::{highest_role_from_groups, CallerAttribution, CallerPrincipal},
     executor::{build_action_spec, rollback_spec_for, ActionExecutor},
     preview::preview_action,
     state::DaemonState,
@@ -499,18 +499,33 @@ fn pidfd_peer_still_live(pidfd: &OwnedFd) -> bool {
 /// is dropped, keeping only the race-free primary GID. On older kernels (e.g.
 /// Ubuntu 22.04) the pidfd is unavailable and the read is best-effort, as before
 /// — no worse than the previous behavior.
-pub fn resolve_caller_role(stream: &UnixStream) -> CallerRole {
-    let (pid, primary_gid) = match stream.peer_cred() {
+pub fn resolve_caller(stream: &UnixStream) -> CallerAttribution {
+    let (pid, primary_gid, uid) = match stream.peer_cred() {
         Ok(cred) => {
             let pid = match cred.pid() {
                 Some(p) if p >= 0 => p as u32,
-                _ => return CallerRole::Observer,
+                _ => {
+                    eprintln!(
+                        "[sysknife-daemon] WARNING: peer_cred() returned no usable pid; \
+                         defaulting to Observer and recording the caller as unattributed"
+                    );
+                    return CallerAttribution {
+                        role: CallerRole::Observer,
+                        principal: CallerPrincipal::Unattributed,
+                    };
+                }
             };
-            (pid, cred.gid())
+            (pid, cred.gid(), cred.uid())
         }
         Err(e) => {
-            eprintln!("[sysknife-daemon] WARNING: peer_cred() failed: {e}; defaulting to Observer");
-            return CallerRole::Observer;
+            eprintln!(
+                "[sysknife-daemon] WARNING: peer_cred() failed: {e}; defaulting to Observer \
+                 and recording the caller as unattributed"
+            );
+            return CallerAttribution {
+                role: CallerRole::Observer,
+                principal: CallerPrincipal::Unattributed,
+            };
         }
     };
 
@@ -551,7 +566,13 @@ pub fn resolve_caller_role(stream: &UnixStream) -> CallerRole {
             "[sysknife-daemon] WARNING: could not resolve groups for PID {pid}; defaulting to Observer"
         );
     }
-    highest_role_from_groups(groups)
+    // The uid comes from the same SO_PEERCRED read as the gid, captured by the
+    // kernel at connect(), so it is race-free in a way the supplementary group
+    // set read from /proc is not.
+    CallerAttribution {
+        role: highest_role_from_groups(groups),
+        principal: CallerPrincipal::Uid(uid),
+    }
 }
 
 /// Read `/etc/group` once and return a `HashMap<gid, group_name>`.
@@ -671,7 +692,7 @@ fn authorization_failure_message(
 async fn authorize_for_transaction(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     state: &DaemonState,
-    caller_role: &CallerRole,
+    caller: &CallerAttribution,
     request_id: &str,
     transaction_id: &str,
     missing_category: &str,
@@ -679,7 +700,7 @@ async fn authorize_for_transaction(
 ) -> Result<bool, HandlerError> {
     match state.audit.get(transaction_id).await {
         Ok(Some(transaction)) => {
-            if authorize_action(&state.policy, caller_role, &transaction.action_name) {
+            if authorize_action(&state.policy, &caller.role, &transaction.action_name) {
                 Ok(true)
             } else {
                 send_error(
@@ -688,7 +709,7 @@ async fn authorize_for_transaction(
                     "authorization_failure",
                     authorization_failure_message(
                         &state.policy,
-                        caller_role,
+                        &caller.role,
                         &transaction.action_name,
                     ),
                 )
@@ -845,12 +866,12 @@ pub async fn unix_connection_handler<S>(
     stream: S,
     state: DaemonState,
     runner: Arc<dyn CommandRunner + Send + Sync>,
-    caller_role: CallerRole,
+    caller: CallerAttribution,
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let executor: Arc<dyn ActionExecutor> = Arc::new(crate::executor::RealActionExecutor);
-    connection_handler_with_executor(stream, state, runner, executor, caller_role).await;
+    connection_handler_with_executor(stream, state, runner, executor, caller).await;
 }
 
 /// Handle a vsock connection: validate token from first frame, then dispatch.
@@ -882,15 +903,21 @@ pub async fn vsock_connection_handler_with_executor<S>(
     let mut framed = FramedStream::new(stream);
 
     let token_path = crate::auth::default_token_path();
-    let caller_role = match authenticate_vsock_token(&mut framed, &token_path).await {
-        Some(role) => role,
+    let caller = match authenticate_vsock_token(&mut framed, &token_path).await {
+        Some(role) => CallerAttribution {
+            role,
+            // A pre-shared token proves possession of a file, not the identity
+            // of a person. Recording it as such keeps the chain honest: any
+            // holder of that token could have made this call.
+            principal: CallerPrincipal::VsockToken,
+        },
         None => {
             eprintln!("[sysknife-daemon] vsock auth failed; closing connection");
             return;
         }
     };
 
-    dispatch_loop(&mut framed, state, runner, executor, caller_role).await;
+    dispatch_loop(&mut framed, state, runner, executor, caller).await;
 }
 
 /// Inner handler that accepts an explicit [`ActionExecutor`].
@@ -902,12 +929,12 @@ pub async fn connection_handler_with_executor<S>(
     state: DaemonState,
     runner: Arc<dyn CommandRunner + Send + Sync>,
     executor: Arc<dyn ActionExecutor>,
-    caller_role: CallerRole,
+    caller: CallerAttribution,
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let mut framed = FramedStream::new(stream);
-    dispatch_loop(&mut framed, state, runner, executor, caller_role).await;
+    dispatch_loop(&mut framed, state, runner, executor, caller).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1014,7 +1041,7 @@ async fn dispatch_loop<S>(
     state: DaemonState,
     runner: Arc<dyn CommandRunner + Send + Sync>,
     executor: Arc<dyn ActionExecutor>,
-    caller_role: CallerRole,
+    caller: CallerAttribution,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -1094,7 +1121,7 @@ async fn dispatch_loop<S>(
                     framed,
                     &state,
                     Arc::clone(&runner),
-                    &caller_role,
+                    &caller,
                     request_id,
                     action_name,
                     params,
@@ -1112,7 +1139,7 @@ async fn dispatch_loop<S>(
                     framed,
                     &state,
                     Arc::clone(&executor),
-                    &caller_role,
+                    &caller,
                     request_id,
                     transaction_id,
                     action_name,
@@ -1124,16 +1151,7 @@ async fn dispatch_loop<S>(
             DaemonRequest::Approve {
                 request_id,
                 transaction_id,
-            } => {
-                handle_approve(
-                    framed,
-                    &state,
-                    &caller_role,
-                    request_id,
-                    transaction_id.as_str(),
-                )
-                .await
-            }
+            } => handle_approve(framed, &state, &caller, request_id, transaction_id.as_str()).await,
             DaemonRequest::ApprovalDetails {
                 request_id,
                 transaction_id,
@@ -1141,7 +1159,7 @@ async fn dispatch_loop<S>(
                 handle_approval_details(
                     framed,
                     &state,
-                    &caller_role,
+                    &caller,
                     request_id,
                     transaction_id.as_str(),
                 )
@@ -1184,30 +1202,11 @@ async fn dispatch_loop<S>(
                 request_id,
                 action_name,
                 params,
-            } => {
-                handle_describe(
-                    framed,
-                    &state,
-                    &caller_role,
-                    action_name,
-                    params,
-                    request_id,
-                )
-                .await
-            }
+            } => handle_describe(framed, &state, &caller, action_name, params, request_id).await,
             DaemonRequest::Cancel {
                 request_id,
                 transaction_id,
-            } => {
-                handle_cancel(
-                    framed,
-                    &state,
-                    &caller_role,
-                    request_id,
-                    transaction_id.as_str(),
-                )
-                .await
-            }
+            } => handle_cancel(framed, &state, &caller, request_id, transaction_id.as_str()).await,
         };
 
         if let Err(e) = result {
@@ -1225,14 +1224,14 @@ fn receipt_digest(receipt: &str) -> String {
 async fn handle_approve(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     state: &DaemonState,
-    caller_role: &CallerRole,
+    caller: &CallerAttribution,
     request_id: &str,
     transaction_id: &str,
 ) -> Result<(), HandlerError> {
     if !authorize_for_transaction(
         framed,
         state,
-        caller_role,
+        caller,
         request_id,
         transaction_id,
         "stale_approval",
@@ -1300,7 +1299,7 @@ async fn handle_approve(
 async fn handle_approval_details(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     state: &DaemonState,
-    caller_role: &CallerRole,
+    caller: &CallerAttribution,
     request_id: &str,
     transaction_id: &str,
 ) -> Result<(), HandlerError> {
@@ -1325,12 +1324,12 @@ async fn handle_approval_details(
             .await;
         }
     };
-    if !authorize_action(&state.policy, caller_role, &transaction.action_name) {
+    if !authorize_action(&state.policy, &caller.role, &transaction.action_name) {
         return send_error(
             framed,
             request_id,
             "authorization_failure",
-            authorization_failure_message(&state.policy, caller_role, &transaction.action_name),
+            authorization_failure_message(&state.policy, &caller.role, &transaction.action_name),
         )
         .await;
     }
@@ -1400,14 +1399,14 @@ async fn handle_query_state(
 async fn handle_cancel(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     state: &DaemonState,
-    caller_role: &CallerRole,
+    caller: &CallerAttribution,
     request_id: &str,
     transaction_id: &str,
 ) -> Result<(), HandlerError> {
     if !authorize_for_transaction(
         framed,
         state,
-        caller_role,
+        caller,
         request_id,
         transaction_id,
         "not_cancelable",
@@ -1729,7 +1728,7 @@ async fn handle_query_action(
 async fn handle_describe(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     state: &DaemonState,
-    caller_role: &CallerRole,
+    caller: &CallerAttribution,
     action_name: &str,
     params: &Value,
     request_id: &str,
@@ -1757,12 +1756,12 @@ async fn handle_describe(
         )
         .await;
     }
-    if !authorize_action(&state.policy, caller_role, action_name) {
+    if !authorize_action(&state.policy, &caller.role, action_name) {
         return send_error(
             framed,
             request_id,
             "authorization_failure",
-            authorization_failure_message(&state.policy, caller_role, action_name),
+            authorization_failure_message(&state.policy, &caller.role, action_name),
         )
         .await;
     }
@@ -1835,7 +1834,7 @@ async fn handle_preview(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     state: &DaemonState,
     runner: Arc<dyn CommandRunner + Send + Sync>,
-    caller_role: &CallerRole,
+    caller: &CallerAttribution,
     request_id: &str,
     action_name: &str,
     params: &Value,
@@ -1847,12 +1846,12 @@ async fn handle_preview(
         }
     };
 
-    if !authorize_action(&state.policy, caller_role, action_name) {
+    if !authorize_action(&state.policy, &caller.role, action_name) {
         return send_error(
             framed,
             request_id,
             "authorization_failure",
-            authorization_failure_message(&state.policy, caller_role, action_name),
+            authorization_failure_message(&state.policy, &caller.role, action_name),
         )
         .await;
     }
@@ -1907,7 +1906,7 @@ async fn handle_preview(
         action_name: action_name.to_string(),
         request_id: request_id.to_string(),
         params: params.clone(),
-        caller_role: *caller_role,
+        caller_role: caller.role,
         request_hash: sysknife_types::RequestHash::new(request_hash.to_string()),
     };
 
@@ -1933,9 +1932,11 @@ async fn handle_preview(
         risk_level: spec.risk_level,
         summary: preview.summary.clone(),
         warnings: preview.warnings.clone(),
-        // The role the daemon resolved for this connection, not anything the
-        // request carried. Signing it is what lets the audit answer "who".
-        caller_role: *caller_role,
+        // Both resolved by the daemon from the connection, never read from the
+        // request body. The role says what was permitted; the principal says
+        // which account asked, which is the question an audit starts with.
+        caller_role: caller.role,
+        caller_principal: caller.principal,
     };
 
     let recorded = match state.audit.record_previewed(new_tx, preview.clone()).await {
@@ -1955,7 +1956,7 @@ async fn handle_preview(
     // response — if the forwarder queue is full or its task is gone, the
     // event is dropped (with a counter + WARN). The local hash-chained log
     // is always written first; the SIEM receives a copy.
-    forward_audit_event(state, &recorded.transaction.transaction_id, caller_role);
+    forward_audit_event(state, &recorded.transaction.transaction_id, &caller.role);
 
     send_response(
         framed,
@@ -2143,7 +2144,7 @@ async fn handle_execute(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     state: &DaemonState,
     executor: Arc<dyn ActionExecutor>,
-    caller_role: &CallerRole,
+    caller: &CallerAttribution,
     request_id: &str,
     transaction_id: &TransactionId,
     action_name: &str,
@@ -2159,12 +2160,12 @@ async fn handle_execute(
         }
     };
 
-    if !authorize_action(&state.policy, caller_role, action_name) {
+    if !authorize_action(&state.policy, &caller.role, action_name) {
         return send_error(
             framed,
             request_id,
             "authorization_failure",
-            authorization_failure_message(&state.policy, caller_role, action_name),
+            authorization_failure_message(&state.policy, &caller.role, action_name),
         )
         .await;
     }
@@ -2510,7 +2511,7 @@ async fn handle_execute(
             // terminal outcome of the action, not just the preview. Best-effort
             // and fire-and-forget — the local hash-chained log is the durable
             // record.
-            forward_status_change_event(state, transaction_id, caller_role, final_status);
+            forward_status_change_event(state, transaction_id, &caller.role, final_status);
         }
         Err(e) => {
             eprintln!(
@@ -2691,6 +2692,14 @@ async fn send_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A uid-attributed caller, the shape a Unix-socket connection produces.
+    fn uid_caller(role: CallerRole) -> CallerAttribution {
+        CallerAttribution {
+            role,
+            principal: CallerPrincipal::Uid(1000),
+        }
+    }
     use crate::{
         state::{DaemonConfig, DaemonState},
         transport::listen::ListenTarget,
@@ -2718,8 +2727,43 @@ mod tests {
         }
     }
 
+    /// The uid must come from the kernel, not from anything the peer says. A
+    /// socketpair peer is this test process, so the expected value is knowable
+    /// and the assertion pins the wiring rather than merely the absence of a
+    /// panic.
     #[tokio::test]
-    async fn resolve_caller_role_matches_the_peers_actual_groups() {
+    async fn resolve_caller_attributes_a_unix_peer_to_its_kernel_reported_uid() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let caller = resolve_caller(&a);
+
+        assert_eq!(
+            caller.principal,
+            CallerPrincipal::Uid(unsafe { libc::geteuid() }),
+            "a Unix-socket caller must be attributed to the peer uid SO_PEERCRED reports"
+        );
+        assert_eq!(
+            caller.principal.as_signed_str(),
+            format!("uid:{}", unsafe { libc::geteuid() }),
+            "and the signed form must carry the uid scheme"
+        );
+    }
+
+    /// A vsock caller presents a shared secret, so the chain must not imply an
+    /// account. `token:vsock` says exactly what was proven: possession of a file
+    /// that any holder could have read.
+    #[test]
+    fn a_vsock_principal_does_not_claim_an_account() {
+        assert_eq!(CallerPrincipal::VsockToken.as_signed_str(), "token:vsock");
+        assert!(
+            !CallerPrincipal::VsockToken
+                .as_signed_str()
+                .starts_with("uid:"),
+            "a token must never render as a uid; that would overstate the evidence"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_caller_matches_the_peers_actual_groups() {
         // This used to call `resolve_caller_role` and discard the result,
         // asserting only "no panic" — it would have passed just as happily if
         // the function returned Boot for everyone.
@@ -2730,7 +2774,7 @@ mod tests {
         // /proc/<pid>/status → /etc/group → role — instead of only its absence
         // of panics.
         let (a, _b) = UnixStream::pair().unwrap();
-        let role = resolve_caller_role(&a);
+        let role = resolve_caller(&a).role;
 
         let gid_map = read_gid_map();
         let expected =
@@ -2743,11 +2787,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_caller_role_never_exceeds_observer_without_a_privileged_group() {
+    async fn resolve_caller_never_exceeds_observer_without_a_privileged_group() {
         // The direction that actually matters for safety: privilege must come
         // from group membership, never from the mere act of connecting.
         let (a, _b) = UnixStream::pair().unwrap();
-        let role = resolve_caller_role(&a);
+        let role = resolve_caller(&a).role;
 
         let gid_map = read_gid_map();
         let groups = groups_for_pid(std::process::id(), &gid_map);
@@ -3043,7 +3087,16 @@ mod tests {
         let state = test_state(&dir);
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         tokio::spawn(async move {
-            unix_connection_handler(server, state, runner(), CallerRole::Observer).await;
+            unix_connection_handler(
+                server,
+                state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: CallerRole::Observer,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
         let mut framed = FramedStream::new(client);
         framed
@@ -3105,7 +3158,16 @@ mod tests {
         let state = test_state(&dir);
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         tokio::spawn(async move {
-            unix_connection_handler(server, state, runner(), CallerRole::Observer).await;
+            unix_connection_handler(
+                server,
+                state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: CallerRole::Observer,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
         let mut framed = FramedStream::new(client);
         let (transaction_id, _) =
@@ -3139,7 +3201,16 @@ mod tests {
         let state = test_state(&dir);
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         tokio::spawn(async move {
-            unix_connection_handler(server, state, runner(), CallerRole::Observer).await;
+            unix_connection_handler(
+                server,
+                state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: CallerRole::Observer,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
         let mut framed = FramedStream::new(client);
 
@@ -3193,7 +3264,16 @@ mod tests {
         let state = test_state(&dir);
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         tokio::spawn(async move {
-            unix_connection_handler(server, state, runner(), CallerRole::Observer).await;
+            unix_connection_handler(
+                server,
+                state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: CallerRole::Observer,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
         let mut framed = FramedStream::new(client);
 
@@ -3259,7 +3339,16 @@ mod tests {
 
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         tokio::spawn(async move {
-            unix_connection_handler(server, state, runner(), CallerRole::Observer).await;
+            unix_connection_handler(
+                server,
+                state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: CallerRole::Observer,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
         let mut framed = FramedStream::new(client);
         framed
@@ -3286,7 +3375,16 @@ mod tests {
         let handler_state = state.clone();
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         tokio::spawn(async move {
-            unix_connection_handler(server, handler_state, runner(), CallerRole::Observer).await;
+            unix_connection_handler(
+                server,
+                handler_state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: CallerRole::Observer,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
         let mut framed = FramedStream::new(client);
 
@@ -3338,7 +3436,16 @@ mod tests {
         let handler_state = state.clone();
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         tokio::spawn(async move {
-            unix_connection_handler(server, handler_state, runner(), CallerRole::Observer).await;
+            unix_connection_handler(
+                server,
+                handler_state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: CallerRole::Observer,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
         let mut framed = FramedStream::new(client);
         let (transaction_id, receipt) =
@@ -3403,7 +3510,16 @@ mod tests {
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         let handler_state = state.clone();
         tokio::spawn(async move {
-            unix_connection_handler(server, handler_state, runner(), CallerRole::Observer).await;
+            unix_connection_handler(
+                server,
+                handler_state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: CallerRole::Observer,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
         let mut framed = FramedStream::new(client);
         framed
@@ -3427,7 +3543,7 @@ mod tests {
         assert!(handle_approve(
             &mut broken_framed,
             &state,
-            &CallerRole::Admin,
+            &uid_caller(CallerRole::Admin),
             "approve-undelivered",
             transaction_id,
         )
@@ -3439,7 +3555,7 @@ mod tests {
         handle_approve(
             &mut retry_framed,
             &state,
-            &CallerRole::Admin,
+            &uid_caller(CallerRole::Admin),
             "approve-retry",
             transaction_id,
         )
@@ -3457,7 +3573,16 @@ mod tests {
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         let handler_state = state.clone();
         tokio::spawn(async move {
-            unix_connection_handler(server, handler_state, runner(), CallerRole::Observer).await;
+            unix_connection_handler(
+                server,
+                handler_state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: CallerRole::Observer,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
         let mut framed = FramedStream::new(client);
         let (transaction_id, receipt) =
@@ -3495,7 +3620,16 @@ mod tests {
     ) -> Vec<Value> {
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         tokio::spawn(async move {
-            unix_connection_handler(server, state, runner(), role).await;
+            unix_connection_handler(
+                server,
+                state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: role,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
 
         let mut framed = FramedStream::new(client);
@@ -3645,7 +3779,16 @@ mod tests {
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         let handler_state = state.clone();
         tokio::spawn(async move {
-            unix_connection_handler(server, handler_state, runner(), CallerRole::Admin).await;
+            unix_connection_handler(
+                server,
+                handler_state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: CallerRole::Admin,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
         let mut framed = FramedStream::new(client);
         framed
@@ -3677,7 +3820,7 @@ mod tests {
                 "approve" => handle_approve(
                     &mut caller,
                     &state,
-                    &CallerRole::Observer,
+                    &uid_caller(CallerRole::Observer),
                     request_id,
                     &transaction_id,
                 )
@@ -3686,7 +3829,7 @@ mod tests {
                 "cancel" => handle_cancel(
                     &mut caller,
                     &state,
-                    &CallerRole::Observer,
+                    &uid_caller(CallerRole::Observer),
                     request_id,
                     &transaction_id,
                 )
@@ -3695,7 +3838,7 @@ mod tests {
                 _ => handle_approval_details(
                     &mut caller,
                     &state,
-                    &CallerRole::Observer,
+                    &uid_caller(CallerRole::Observer),
                     request_id,
                     &transaction_id,
                 )
@@ -3718,7 +3861,7 @@ mod tests {
         handle_approve(
             &mut admin,
             &state,
-            &CallerRole::Admin,
+            &uid_caller(CallerRole::Admin),
             "admin-approve",
             &transaction_id,
         )
@@ -3981,7 +4124,16 @@ mod tests {
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         let handler_state = state.clone();
         tokio::spawn(async move {
-            unix_connection_handler(server, handler_state, runner(), CallerRole::Observer).await;
+            unix_connection_handler(
+                server,
+                handler_state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: CallerRole::Observer,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
         let mut framed = FramedStream::new(client);
         let (transaction_id, receipt) = preview_and_approve(
@@ -4033,7 +4185,16 @@ mod tests {
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         let handler_state = state.clone();
         tokio::spawn(async move {
-            unix_connection_handler(server, handler_state, runner(), CallerRole::Observer).await;
+            unix_connection_handler(
+                server,
+                handler_state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: CallerRole::Observer,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
         let mut framed = FramedStream::new(client);
         let (transaction_id, receipt) =
@@ -4082,7 +4243,16 @@ mod tests {
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         let handler_state = state.clone();
         tokio::spawn(async move {
-            unix_connection_handler(server, handler_state, runner(), CallerRole::Admin).await;
+            unix_connection_handler(
+                server,
+                handler_state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: CallerRole::Admin,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
         let mut preview_stream = FramedStream::new(client);
         let params = json!({"package": "vim"});
@@ -4098,7 +4268,7 @@ mod tests {
             &mut broken_framed,
             &state,
             Arc::new(crate::executor::RealActionExecutor),
-            &CallerRole::Admin,
+            &uid_caller(CallerRole::Admin),
             "execute-disconnected",
             &typed_transaction_id,
             "AddLayeredPackage",
@@ -4136,7 +4306,16 @@ mod tests {
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
 
         tokio::spawn(async move {
-            unix_connection_handler(server, state, runner(), CallerRole::Observer).await;
+            unix_connection_handler(
+                server,
+                state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: CallerRole::Observer,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
 
         let mut framed = FramedStream::new(client);
@@ -4344,7 +4523,16 @@ mod tests {
 
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         tokio::spawn(async move {
-            unix_connection_handler(server, state, runner(), CallerRole::Observer).await;
+            unix_connection_handler(
+                server,
+                state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: CallerRole::Observer,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
         let mut framed = FramedStream::new(client);
 
@@ -4429,7 +4617,16 @@ mod tests {
         {
             let state = state.clone();
             tokio::spawn(async move {
-                unix_connection_handler(ps, state, runner(), CallerRole::Observer).await;
+                unix_connection_handler(
+                    ps,
+                    state,
+                    runner(),
+                    crate::auth::CallerAttribution {
+                        role: CallerRole::Observer,
+                        principal: crate::auth::CallerPrincipal::Uid(1000),
+                    },
+                )
+                .await;
             });
         }
         let mut framed_p = FramedStream::new(pc);
@@ -4459,7 +4656,16 @@ mod tests {
         ) -> Vec<Value> {
             let (c, s) = tokio::net::UnixStream::pair().unwrap();
             tokio::spawn(async move {
-                unix_connection_handler(s, state, runner(), CallerRole::Observer).await;
+                unix_connection_handler(
+                    s,
+                    state,
+                    runner(),
+                    crate::auth::CallerAttribution {
+                        role: CallerRole::Observer,
+                        principal: crate::auth::CallerPrincipal::Uid(1000),
+                    },
+                )
+                .await;
             });
             let mut f = FramedStream::new(c);
             f.send(
@@ -4561,7 +4767,16 @@ mod tests {
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
 
         tokio::spawn(async move {
-            unix_connection_handler(server, state, runner(), CallerRole::Observer).await;
+            unix_connection_handler(
+                server,
+                state,
+                runner(),
+                crate::auth::CallerAttribution {
+                    role: CallerRole::Observer,
+                    principal: crate::auth::CallerPrincipal::Uid(1000),
+                },
+            )
+            .await;
         });
 
         let mut framed = FramedStream::new(client);
@@ -4760,7 +4975,7 @@ mod tests {
                 state,
                 runner(),
                 Arc::new(FastProgressExecutor),
-                CallerRole::Observer,
+                uid_caller(CallerRole::Observer),
             )
             .await;
         });
@@ -4859,7 +5074,17 @@ mod tests {
                 let mut framed = FramedStream::new(server);
                 let role = authenticate_vsock_token(&mut framed, &token_path).await;
                 if let Some(r) = role {
-                    dispatch_loop(&mut framed, state, runner(), executor(), r).await;
+                    dispatch_loop(
+                        &mut framed,
+                        state,
+                        runner(),
+                        executor(),
+                        CallerAttribution {
+                            role: r,
+                            principal: CallerPrincipal::VsockToken,
+                        },
+                    )
+                    .await;
                 }
             });
 
@@ -4996,7 +5221,7 @@ mod tests {
             server,
             state,
             runner(),
-            CallerRole::Observer,
+            uid_caller(CallerRole::Observer),
         ));
 
         let mut framed = FramedStream::new(client);

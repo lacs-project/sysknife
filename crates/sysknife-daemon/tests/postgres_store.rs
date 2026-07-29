@@ -22,6 +22,7 @@ fn new_transaction() -> NewTransaction {
         summary: "Restart sshd".to_string(),
         warnings: vec!["brief connection interruption".to_string()],
         caller_role: CallerRole::Dev,
+        caller_principal: sysknife_daemon::auth::CallerPrincipal::Uid(1000),
     }
 }
 
@@ -127,7 +128,7 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
     .await
     .expect("read schema migration version");
     assert_eq!(
-        migration, 2,
+        migration, 3,
         "every migration in MIGRATIONS must have applied"
     );
     assert!(store
@@ -148,6 +149,11 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
     assert_eq!(legacy_chain_row.chain_version, 1);
     assert_eq!(legacy_chain_row.caller_role, None);
     assert_eq!(legacy_chain_row.event_tip, None);
+    assert_eq!(
+        legacy_chain_row.caller_principal, None,
+        "migration 3 must not backfill a principal onto a row that was signed \
+         without one; any value here would rewrite its message"
+    );
 
     let events_table_exists: bool =
         sqlx_core::query_scalar::query_scalar("SELECT to_regclass('audit_events') IS NOT NULL")
@@ -171,6 +177,22 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
         .await
         .expect("record previewed transaction");
     let transaction_id = &recorded.transaction.transaction_id;
+
+    let fresh_chain_row = store
+        .fetch_chain_row(&recorded.transaction.transaction_id)
+        .await
+        .expect("fetch the row just written")
+        .expect("the row exists");
+    assert_eq!(
+        fresh_chain_row.chain_version,
+        sysknife_daemon::audit_chain::CHAIN_VERSION_CURRENT
+    );
+    assert_eq!(
+        fresh_chain_row.caller_principal.as_deref(),
+        Some("uid:1000"),
+        "the Postgres insert must persist the principal the dispatcher resolved, \
+         exactly as the SQLite path does"
+    );
     assert_eq!(
         store
             .get_preview(transaction_id)
@@ -308,11 +330,12 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
             .expect("count migrations");
     // Idempotence: reconnecting re-runs `initialize`, which must not record a
     // migration a second time.
-    assert_eq!(migration_count, 2);
+    assert_eq!(migration_count, 3);
 
     for (version, name) in [
         (1_i64, "initial_audit_schema"),
         (2, "caller_identity_and_approval_events"),
+        (3, "caller_principal"),
     ] {
         let migration_row = sqlx_core::query::query(
             "SELECT version, name FROM schema_migrations WHERE version = $1",

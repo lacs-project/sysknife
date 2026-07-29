@@ -3,6 +3,7 @@ use crate::audit_chain::{
     VerifyOutcome, CHAIN_VERSION_CURRENT, CURRENT_KEY_ID,
 };
 use crate::audit_watermark::emit_chain_tip_watermark;
+use crate::auth::CallerPrincipal;
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -81,6 +82,14 @@ pub struct NewTransaction {
     /// it resolved from `SO_PEERCRED` (or the vsock token), never a value from
     /// the request body.
     pub caller_role: CallerRole,
+    /// Which account asked, as opposed to what its role permitted.
+    ///
+    /// Chain-hashed at INSERT alongside `caller_role`. The role alone cannot
+    /// separate two members of `sysknife-admin`, so a trail built only from it
+    /// answers "an Admin did this" and stops there. Like the role, this is
+    /// resolved by the dispatcher from the connection, never read from the
+    /// request body. See [`crate::auth::CallerPrincipal`].
+    pub caller_principal: CallerPrincipal,
 }
 
 /// One forward-only SQLite schema step, applied in `version` order and
@@ -182,6 +191,17 @@ const SQLITE_MIGRATIONS: &[SqliteMigration] = &[
                 ON audit_events(transaction_id);
         "#,
     },
+    // Nullable for the same reason the v2 columns are: rows written before this
+    // step were signed over an encoding with no principal field, so backfilling
+    // any value would rewrite their message and report the chain as Broken.
+    // `chain_version` keeps selecting the encoding per row.
+    SqliteMigration {
+        version: 3,
+        name: "caller_principal",
+        sql: r#"
+            ALTER TABLE transactions ADD COLUMN caller_principal TEXT;
+        "#,
+    },
 ];
 
 /// Column list for every `ChainRow` read, kept next to the mapper below.
@@ -192,7 +212,8 @@ const SQLITE_MIGRATIONS: &[SqliteMigration] = &[
 /// as a verification failure rather than a compile error.
 const CHAIN_ROW_COLUMNS: &str = "seq, key_id, transaction_id, request_id, request_hash, \
      action_name, risk_level, summary, approval_id, warnings_json, \
-     created_at, prev_chain_hash, chain_hash, chain_version, caller_role, event_tip";
+     created_at, prev_chain_hash, chain_hash, chain_version, caller_role, event_tip, \
+     caller_principal";
 
 fn chain_row_from_sqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChainRow> {
     Ok(ChainRow {
@@ -214,6 +235,7 @@ fn chain_row_from_sqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChainRow> 
         chain_version: row.get::<_, i64>(13)? as u32,
         caller_role: row.get(14)?,
         event_tip: row.get(15)?,
+        caller_principal: row.get(16)?,
     })
 }
 
@@ -1094,6 +1116,7 @@ impl TransactionStore {
         // cannot land between the read and the insert.
         let event_tip = Self::event_chain_tip(conn)?.unwrap_or_default();
         let caller_role = transaction.caller_role.as_str();
+        let caller_principal = transaction.caller_principal.as_signed_str();
         let chain_hash = key.chain_hash(
             &ChainContent {
                 seq,
@@ -1107,9 +1130,10 @@ impl TransactionStore {
                 approval_id: approval_id.as_deref(),
                 warnings_json: &warnings_json,
                 created_at: &created_at,
-                identity: ChainIdentity::V2 {
+                identity: ChainIdentity::V3 {
                     caller_role,
                     event_tip: &event_tip,
+                    caller_principal: &caller_principal,
                 },
             },
             &prev_chain_hash,
@@ -1145,8 +1169,9 @@ impl TransactionStore {
                 prev_chain_hash,
                 chain_version,
                 caller_role,
-                event_tip
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                event_tip,
+                caller_principal
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 transaction_id,
                 request_id,
@@ -1165,6 +1190,7 @@ impl TransactionStore {
                 CHAIN_VERSION_CURRENT as i64,
                 caller_role,
                 event_tip,
+                caller_principal,
             ],
         )?;
 
@@ -1518,6 +1544,43 @@ mod tests {
     // ── Audit chain integration tests ────────────────────────────────────
 
     #[test]
+    /// The store must persist the principal the dispatcher resolved, under the
+    /// v3 tag, or the chain claims an encoding whose evidence is missing. Reads
+    /// the columns directly rather than through the verifier, so a mismatch
+    /// between what was signed and what was stored is visible.
+    #[test]
+    fn record_persists_the_caller_principal_under_the_current_encoding() {
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let mut tx = queued_transaction();
+        tx.caller_principal = CallerPrincipal::Uid(4242);
+        store.record(tx).unwrap();
+
+        let conn = store.connection().unwrap();
+        let (version, role, principal): (i64, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT chain_version, caller_role, caller_principal FROM transactions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+
+        assert_eq!(version, i64::from(audit_chain::CHAIN_VERSION_CURRENT));
+        assert_eq!(role.as_deref(), Some("dev"));
+        assert_eq!(
+            principal.as_deref(),
+            Some("uid:4242"),
+            "the row must name the account the dispatcher resolved"
+        );
+
+        // And the signature must agree with those columns.
+        let key = AuditKey::from_bytes(vec![0x42; 32]);
+        assert!(matches!(
+            store.verify_audit_chain(&key).unwrap(),
+            audit_chain::VerifyOutcome::Intact { .. }
+        ));
+    }
+
     fn record_writes_audit_chain_columns() {
         let dir = tempdir().unwrap();
         let store = test_store(dir.path().join("tx.db"));
@@ -1592,6 +1655,7 @@ mod tests {
                         summary: format!("worker {w} record {r}"),
                         warnings: vec![],
                         caller_role: CallerRole::Dev,
+                        caller_principal: CallerPrincipal::Uid(1000),
                     };
                     store
                         .record(tx)
@@ -1773,6 +1837,7 @@ mod tests {
             summary: "Upgrade the system".to_string(),
             warnings: vec![],
             caller_role: CallerRole::Dev,
+            caller_principal: CallerPrincipal::Uid(1000),
         }
     }
 
