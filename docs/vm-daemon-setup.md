@@ -117,7 +117,7 @@ sudo usermod -aG sysknife,sysknife-admin <user>
 This is why SysKnife tunnels a Unix socket rather than exposing an HTTP
 listener. SSH supplies authentication, the socket supplies authorization, and
 peer credentials cannot be spoofed by whoever reaches the port. See
-[Registry and Directory Listings](mcp-registry.md#sandboxed-directories-and-the-empty-tool-list) for the
+[Registry and Directory Listings](mcp-registry.md#what-a-directory-sandbox-can-and-cannot-tell-you) for the
 matching decision about network-exposed listings.
 
 ### More than one host

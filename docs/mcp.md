@@ -16,11 +16,13 @@ audit-logged path.
 > Run `npx sysknife-setup` — it detects which AI clients you have installed and
 > writes the correct config files for each one automatically.
 
-> **Found SysKnife on a directory page listing zero tools?** That is expected,
-> not a fault. The MCP server is the unprivileged half of SysKnife and needs a
-> privileged daemon on a real host to have any tools to offer, which a directory's
-> build sandbox cannot provide. See
-> [Registry and Directory Listings](mcp-registry.md#sandboxed-directories-and-the-empty-tool-list).
+> **Found SysKnife on a directory page where the tools error out?** Discovery
+> works anywhere: a directory sandbox lists all five tools, because the tool list
+> is static metadata. Calling them needs a privileged `sysknife-daemon` on a real
+> host, which a build container has no way to provide, so `doctor` reports the
+> socket absent and the rest fail. That is the trust boundary, not a packaging
+> defect. See
+> [Registry and Directory Listings](mcp-registry.md#what-a-directory-sandbox-can-and-cannot-tell-you).
 
 ---
 

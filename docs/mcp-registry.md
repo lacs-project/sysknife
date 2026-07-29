@@ -134,13 +134,25 @@ separate submission. Verified by walking each flow on 2026-07-29:
 | **Smithery** | `smithery.yaml` is in the repository root, declaring the **stdio** form: their CLI spawns `sysknife mcp-server` on the user's own machine, where a daemon can actually exist. Their two *hosted* runtimes (`typescript`, `container`) require Streamable HTTP and would run a daemonless sandbox, so they are the wrong shape here, and `tests/release/smithery-manifest.test.sh` fails the build if someone switches to one. The user still needs the `sysknife` binary installed first; Smithery spawns it, it does not install it. |
 | **mcp.so, LobeHub** | Separate submissions; both reject automated fetches, so use a real browser. |
 
-## Sandboxed directories and the empty tool list
+## What a directory sandbox can and cannot tell you
 
 Most directories work the same way: build a container from the repository, boot
 the server inside it, introspect the tool list, and score what they find. That
 model assumes a self-contained server, one that reaches an API over the network
-or reads files inside its own sandbox. SysKnife is not that, by design, and the
-consequence shows up on those pages as an empty tool list.
+or reads files inside its own sandbox. SysKnife is not that, by design, and it
+pays to be precise about which half of the model still applies.
+
+```admonish warning title="An earlier version of this page was wrong"
+It claimed a sandbox would show SysKnife with an empty tool list, because there
+is no daemon to ask. That is not what happens. Glama's build of `v0.3.0`
+enumerated all five tools, and its Schema tab lists them, with no daemon
+anywhere. `tools/list` is **static metadata** the server answers from its own
+tool definitions; it never touches the socket.
+
+The empty `"tools": []` that prompted the wrong explanation meant something
+duller: no build had been run against the spec yet, so there was no inventory to
+report. Running the build filled it in.
+```
 
 `sysknife mcp-server` is the **unprivileged** half of the system. It plans,
 previews, renders, and forwards. It cannot change anything. Every mutation
@@ -151,19 +163,26 @@ product: it is why an agent cannot hand a shell string to root, and why every
 executed action lands in the signed chain. See
 [Architecture & Trust Boundaries](architecture.md).
 
-Three things follow, and all three are expected rather than broken:
+So the split is between **describing** and **doing**:
 
-1. **No daemon in the sandbox, so no tools.** With nothing listening on the
-   socket, `sysknife doctor` correctly reports it absent and the tool list comes
-   back empty. A directory showing `"tools": []` for SysKnife is reporting the
-   truth about its own container, not a fault in the server.
-2. **stdio needs a wrapper.** Container-based hosts front the binary with a
-   proxy (Glama uses `mcp-proxy --`). Strip that prefix while editing a build
-   spec and the listing stops working.
-3. **A green sandbox run would prove nothing anyway.** The host under
-   administration would be a throwaway container, so "it booted and listed five
-   tools" carries no information about whether SysKnife administers a real
-   Ubuntu machine correctly.
+1. **Discovery works, and should.** `initialize` and `tools/list` are answered
+   from the binary's own definitions, so a sandbox sees all five tools with
+   correct schemas. Nothing is missing from the listing.
+2. **Every tool that needs the daemon fails there, and should.** `sysknife_plan`,
+   `sysknife_execute`, `sysknife_history` and `sysknife_doctor` all reach
+   `sysknife-daemon` over a unix socket at `/run/sysknife/daemon.sock`
+   (`0750 sysknife:sysknife`), which holds the sudoers, polkit and helper policy
+   `sudo make install` owns. In a container there is nothing listening, so
+   `doctor` reports the socket absent and the rest return errors. That is the
+   trust boundary doing its job, not a packaging defect. See
+   [Architecture & Trust Boundaries](architecture.md).
+3. **stdio needs a wrapper.** Container-based hosts front the binary with a proxy
+   (Glama uses `mcp-proxy --`). Strip that prefix while editing a build spec and
+   the listing stops working.
+4. **A green sandbox run still proves little.** "It booted and listed five tools"
+   says the binary starts and its schemas parse. It says nothing about whether
+   SysKnife administers a real Ubuntu host correctly, because the only thing it
+   could have administered was a throwaway container.
 
 The practical guidance: treat these listings as **discovery surface**, not as
 validation. They are cheap inbound links from where people look for MCP servers.
@@ -172,6 +191,6 @@ recorded in [Distro Support](distro-support.md), the story suite, and an audit
 chain a third party can verify with only the public key.
 
 And the inverse, which matters more: **do not relax the daemon boundary to score
-better in a sandbox.** A version of SysKnife that enumerated tools and mutated
-state from inside an unprivileged container would score higher on those pages and
-would no longer be worth installing.
+better in a sandbox.** Enumerating tools there is free and already happens; being
+able to *execute* from inside an unprivileged container is the thing that would
+score higher and make SysKnife not worth installing.
