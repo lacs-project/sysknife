@@ -123,6 +123,55 @@ registry-ready. To publish the listing:
 ## Downstream propagation
 
 One publish to the official registry auto-propagates to the **GitHub MCP
-Registry** and **PulseMCP** (they ingest from it). Glama, mcp.so, Smithery,
-LobeHub, and mcpservers.org still take **separate manual submissions** for
-maximum reach.
+Registry** and **PulseMCP**, which ingest from it. Everything else takes a
+separate submission. Verified by walking each flow on 2026-07-29:
+
+| Directory | How it takes a server |
+|---|---|
+| **PulseMCP** | No submission form exists for servers. Choosing "MCP Server" on `pulsemcp.com/submit` returns instructions only: they ingest the official registry daily and process weekly. The URL field on that page belongs to the *MCP Client* branch. Email `hello@pulsemcp.com` only if a week has passed since the registry publish without a listing. |
+| **mcpservers.org** | Web form: server name, one-sentence description, link, category, contact email. Free tier with a review pass; a paid tier only buys queue position. |
+| **Glama** | Browser-only build spec at `glama.ai/mcp/servers/lacs-project/sysknife/admin/dockerfile`. Keep the `mcp-proxy --` prefix in the CMD arguments: that wrapper is how Glama exposes a stdio server. |
+| **Smithery** | Needs a `smithery.yaml` in the repository declaring a stdio `commandFunction`, alongside the existing `glama.json`. |
+| **mcp.so, LobeHub** | Separate submissions; both reject automated fetches, so use a real browser. |
+
+## Sandboxed directories and the empty tool list
+
+Most directories work the same way: build a container from the repository, boot
+the server inside it, introspect the tool list, and score what they find. That
+model assumes a self-contained server, one that reaches an API over the network
+or reads files inside its own sandbox. SysKnife is not that, by design, and the
+consequence shows up on those pages as an empty tool list.
+
+`sysknife mcp-server` is the **unprivileged** half of the system. It plans,
+previews, renders, and forwards. It cannot change anything. Every mutation
+travels over a unix socket to `sysknife-daemon`, which holds the sudoers, polkit
+and helper policy that `sudo make install` owns, and the socket itself is
+`0750 sysknife:sysknife` at `/run/sysknife/daemon.sock`. That split is the
+product: it is why an agent cannot hand a shell string to root, and why every
+executed action lands in the signed chain. See
+[Architecture & Trust Boundaries](architecture.md).
+
+Three things follow, and all three are expected rather than broken:
+
+1. **No daemon in the sandbox, so no tools.** With nothing listening on the
+   socket, `sysknife doctor` correctly reports it absent and the tool list comes
+   back empty. A directory showing `"tools": []` for SysKnife is reporting the
+   truth about its own container, not a fault in the server.
+2. **stdio needs a wrapper.** Container-based hosts front the binary with a
+   proxy (Glama uses `mcp-proxy --`). Strip that prefix while editing a build
+   spec and the listing stops working.
+3. **A green sandbox run would prove nothing anyway.** The host under
+   administration would be a throwaway container, so "it booted and listed five
+   tools" carries no information about whether SysKnife administers a real
+   Ubuntu machine correctly.
+
+The practical guidance: treat these listings as **discovery surface**, not as
+validation. They are cheap inbound links from where people look for MCP servers.
+The evidence that actually bears on correctness lives elsewhere: the VM runs
+recorded in [Distro Support](distro-support.md), the story suite, and an audit
+chain a third party can verify with only the public key.
+
+And the inverse, which matters more: **do not relax the daemon boundary to score
+better in a sandbox.** A version of SysKnife that enumerated tools and mutated
+state from inside an unprivileged container would score higher on those pages and
+would no longer be worth installing.
