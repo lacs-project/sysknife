@@ -316,6 +316,10 @@ pub struct AuditVerifyReport {
     /// Backend label: a filesystem path for SQLite, the literal `"postgres"`
     /// for Postgres deployments.
     pub backend: String,
+    /// Set when `SYSKNIFE_SOCKET` names a daemon that may not live on this
+    /// machine, because verification reads a local store while every other tool
+    /// travels over that socket. `None` for the local-daemon case.
+    pub daemon_socket_caveat: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -901,6 +905,20 @@ async fn audit_chain_quick_check(
 // ---------------------------------------------------------------------------
 
 async fn audit_verify_inner() -> AuditVerifyReport {
+    // Every path through the verifier, including the early cannot_verify
+    // returns, has to carry the caveat, so it is attached once here rather than
+    // at each return site.
+    with_socket_caveat(
+        audit_verify_local_store().await,
+        crate::runner::remote_daemon_caveat_from_env(),
+    )
+}
+
+/// Verify the chain in the store on **this** machine.
+///
+/// Named for what it actually does: this is a filesystem operation, not a daemon
+/// request, so it says nothing about the host `SYSKNIFE_SOCKET` points at.
+async fn audit_verify_local_store() -> AuditVerifyReport {
     use sysknife_daemon::audit_chain::AuditKey;
 
     let lacs_config = sysknife_core::config::LacsConfig::load();
@@ -994,6 +1012,7 @@ fn outcome_to_report(
             events_checked,
             approval_events_status,
             binding_status,
+            daemon_socket_caveat: None,
         },
         VerifyOutcome::Broken {
             rows_checked,
@@ -1013,6 +1032,7 @@ fn outcome_to_report(
             events_checked,
             approval_events_status,
             binding_status,
+            daemon_socket_caveat: None,
         },
         VerifyOutcome::CannotVerify { reason } => {
             let mut r = cannot_verify_report(backend, reason);
@@ -1036,6 +1056,16 @@ fn outcome_to_report(
     report
 }
 
+/// Attach the "which machine did this verify" caveat to a finished report.
+///
+/// Kept separate from report construction so the three construction sites stay
+/// free of environment reads and the composition is unit-testable without
+/// mutating process env, which parallel tests share.
+fn with_socket_caveat(mut report: AuditVerifyReport, caveat: Option<String>) -> AuditVerifyReport {
+    report.daemon_socket_caveat = caveat;
+    report
+}
+
 fn cannot_verify_report(backend: String, reason: String) -> AuditVerifyReport {
     AuditVerifyReport {
         status: "cannot_verify".to_string(),
@@ -1049,6 +1079,7 @@ fn cannot_verify_report(backend: String, reason: String) -> AuditVerifyReport {
         events_checked: 0,
         approval_events_status: "cannot_verify".to_string(),
         binding_status: "consistent".to_string(),
+        daemon_socket_caveat: None,
     }
 }
 
@@ -1077,6 +1108,47 @@ pub async fn run_mcp_server() -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // An agent must be told when the verdict is about a different machine
+    // -----------------------------------------------------------------------
+
+    /// The agent calling `sysknife_audit_verify` has less context than a human
+    /// at a terminal: it cannot see that `SYSKNIFE_SOCKET` points into a VM or
+    /// down an SSH tunnel. If the report says `intact` and carries nothing else,
+    /// the agent will tell the operator their audit trail is fine, having read a
+    /// chain on the wrong host. The caveat has to travel in the structured
+    /// output, not only in the CLI's human text.
+    #[test]
+    fn the_report_carries_the_which_machine_caveat() {
+        let report = with_socket_caveat(
+            cannot_verify_report("/tmp/store.sqlite".into(), "no key".into()),
+            Some("NOTE: SYSKNIFE_SOCKET is /tmp/sysknife-web01.sock".into()),
+        );
+
+        let caveat = report
+            .daemon_socket_caveat
+            .as_deref()
+            .expect("the caveat must survive onto the report");
+        assert!(caveat.contains("/tmp/sysknife-web01.sock"));
+
+        let json = serde_json::to_value(&report).expect("report serializes");
+        assert!(
+            json.get("daemon_socket_caveat").is_some(),
+            "and must be visible in the tool's JSON output, got: {json}"
+        );
+    }
+
+    /// The local case stays clean: no socket override, no field content, so the
+    /// common path does not train agents to skip the note.
+    #[test]
+    fn a_local_daemon_leaves_the_caveat_empty() {
+        let report = with_socket_caveat(
+            cannot_verify_report("/tmp/store.sqlite".into(), "no key".into()),
+            None,
+        );
+        assert!(report.daemon_socket_caveat.is_none());
+    }
 
     // -----------------------------------------------------------------------
     // The plan an agent sees carries the daemon's authoritative preview

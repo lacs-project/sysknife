@@ -92,6 +92,60 @@ fn anchor_configured() -> bool {
     std::env::var("SYSKNIFE_CHECKPOINT_DB").is_ok_and(|v| !v.trim().is_empty())
 }
 
+/// `remote_daemon_caveat` applied to the process environment.
+///
+/// Mirrors how [`anchor_configured`] reads its own variable rather than taking it
+/// as an argument, so the caveat cannot drift from the socket the client actually
+/// used. An unparseable value yields no caveat: `resolve_socket_target` already
+/// exits with a clear message before verification runs.
+pub(crate) fn remote_daemon_caveat_from_env() -> Option<String> {
+    let raw = std::env::var("SYSKNIFE_SOCKET").ok()?;
+    let target = crate::client::SocketTarget::try_from_str(&raw).ok()?;
+    remote_daemon_caveat(Some(&raw), &target)
+}
+
+/// The caveat that belongs next to a verification verdict when the daemon being
+/// administered may not be the machine whose chain was just read.
+///
+/// SysKnife has two data paths and they do not go to the same place. `plan`,
+/// `execute`, `history` and `doctor` travel over `SYSKNIFE_SOCKET`, which the
+/// documented topologies point at another host: an SSH-forwarded Unix socket, or
+/// a vsock target in a VM. Verification is not a daemon request at all; it opens
+/// a store on the local filesystem (see [`sysknife_core::resolve_audit_store`]).
+///
+/// So an operator who tunnels to `web01`, executes there, then runs `audit
+/// verify` reads their **own** machine's store. If that store exists, which it
+/// does on any laptop that ever ran a user-mode daemon, the verdict is `Intact`
+/// for a chain that has nothing to do with the actions just taken. Silence there
+/// would turn the product's central claim into a false reassurance.
+///
+/// `socket_env` is the raw `SYSKNIFE_SOCKET` value, or `None` when unset. Unset
+/// means the local default, which is the common case and stays quiet: a caveat
+/// printed on every run is a caveat nobody reads.
+fn remote_daemon_caveat(
+    socket_env: Option<&str>,
+    target: &crate::client::SocketTarget,
+) -> Option<String> {
+    let raw = socket_env?;
+
+    #[cfg(target_os = "linux")]
+    if matches!(target, crate::client::SocketTarget::Vsock { .. }) {
+        return Some(format!(
+            "NOTE: SYSKNIFE_SOCKET is {raw}, so the daemon runs in a VM while this \
+             verification read a store on this machine. The chain lives where the daemon \
+             wrote it. Verify inside the VM, or copy its database and exported public key \
+             out and re-run with --pubkey <FILE>."
+        ));
+    }
+
+    Some(format!(
+        "NOTE: SYSKNIFE_SOCKET is {raw}. If that socket is forwarded from another host \
+         (for example `ssh -L`), the actions you took ran there while this verification \
+         read a store on this machine. Verify on the host that owns the daemon, or copy \
+         its database and exported public key out and re-run with --pubkey <FILE>."
+    ))
+}
+
 /// The caveat that belongs next to a verification verdict when no independent
 /// checkpoint anchor is configured.
 ///
@@ -900,6 +954,7 @@ fn emit_verification(
             } else {
                 json!({"configured": false, "caveat": anchor_caveat(false)})
             },
+            "daemon_socket_caveat": remote_daemon_caveat_from_env(),
             "binding": match &verification.binding {
                 BindingOutcome::Consistent { bindings_checked } => json!({
                     "status": "consistent",
@@ -943,8 +998,13 @@ fn emit_verification(
         }
     }
 
-    // Sits directly under the chain verdict, because that verdict is what an
-    // operator reads as "the audit log is fine".
+    // Both caveats sit directly under the chain verdict, because that verdict is
+    // what an operator reads as "the audit log is fine". Which machine was read
+    // comes first: an Intact verdict for the wrong host misleads more than an
+    // unanchored one does.
+    if let Some(caveat) = remote_daemon_caveat_from_env() {
+        log.println(&caveat);
+    }
     if let Some(caveat) = anchor_caveat(anchor_configured()) {
         log.println(caveat);
     }
@@ -1511,6 +1571,71 @@ async fn prompt_exact(msg: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Which machine's chain was verified
+    // -----------------------------------------------------------------------
+
+    /// The control plane and the verifier read different things: `plan`,
+    /// `execute`, `history` and `doctor` all travel to `SYSKNIFE_SOCKET`, while
+    /// verification opens a store on the local filesystem. In the SSH-tunnel
+    /// and vsock topologies the docs recommend, those are two different
+    /// machines, and a laptop that ever ran a user-mode daemon has a local
+    /// chain that verifies happily. "Intact" for the wrong host is the one
+    /// failure this command must never produce silently.
+    #[test]
+    fn a_forwarded_socket_makes_the_verifier_name_the_machine_it_read() {
+        let caveat = remote_daemon_caveat(
+            Some("/tmp/sysknife-web01.sock"),
+            &crate::client::SocketTarget::Unix("/tmp/sysknife-web01.sock".into()),
+        )
+        .expect("an explicitly configured socket must produce a caveat");
+
+        assert!(
+            caveat.contains("/tmp/sysknife-web01.sock"),
+            "the caveat must name the daemon socket in play, got: {caveat}"
+        );
+        assert!(
+            caveat.to_lowercase().contains("this machine"),
+            "and say the store just read is local, got: {caveat}"
+        );
+    }
+
+    /// vsock is unambiguous: the daemon is in another kernel, so the chain
+    /// cannot be on this filesystem. The wording should not hedge.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_vsock_daemon_caveat_says_the_chain_lives_in_the_vm() {
+        let caveat = remote_daemon_caveat(
+            Some("vsock://3:9734"),
+            &crate::client::SocketTarget::Vsock { cid: 3, port: 9734 },
+        )
+        .expect("a vsock target is always another host");
+
+        let lower = caveat.to_lowercase();
+        assert!(
+            lower.contains("vm") || lower.contains("another host"),
+            "name where the chain actually is, got: {caveat}"
+        );
+        assert!(
+            caveat.contains("--pubkey"),
+            "and point at the auditor path that works across machines, got: {caveat}"
+        );
+    }
+
+    /// No env var means the daemon is this machine's own, which is the common
+    /// case. Emitting the caveat there would train operators to ignore it.
+    #[test]
+    fn the_default_socket_produces_no_caveat() {
+        assert!(
+            remote_daemon_caveat(
+                None,
+                &crate::client::SocketTarget::Unix("/run/sysknife/daemon.sock".into())
+            )
+            .is_none(),
+            "an unset SYSKNIFE_SOCKET is the local daemon; stay quiet"
+        );
+    }
 
     // -----------------------------------------------------------------------
     // Audit-integrity caveat

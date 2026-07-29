@@ -211,6 +211,56 @@ Full chain, third-party path:
 sysknife audit verify --pubkey audit-key.pub
 ```
 
+### Verification is host-local, and that matters over a tunnel
+
+`plan`, `execute`, `history` and `doctor` are daemon requests: they travel over
+`SYSKNIFE_SOCKET`, which in the [VM and remote topologies](vm-daemon-setup.md)
+points at another machine. **Verification is not a daemon request.** It opens the
+transaction store on the filesystem of the machine you run it on.
+
+So this sequence does not do what it looks like:
+
+```sh
+ssh -fN -L /tmp/sysknife-web01.sock:/run/sysknife/daemon.sock admin@web01
+SYSKNIFE_SOCKET=/tmp/sysknife-web01.sock sysknife "install ripgrep"   # runs on web01
+sysknife audit verify                                                 # reads THIS machine
+```
+
+The verdict describes your own laptop's chain. If a local store exists, which it
+does on any machine that has ever run a user-mode daemon, the answer is a
+confident `OK` about actions that happened somewhere else.
+
+The command now says so whenever `SYSKNIFE_SOCKET` is set:
+
+```text
+OK: 128 row(s) verified in /home/you/.local/state/sysknife/daemon.sqlite
+NOTE: SYSKNIFE_SOCKET is /tmp/sysknife-web01.sock. If that socket is forwarded
+from another host (for example `ssh -L`), the actions you took ran there while
+this verification read a store on this machine. Verify on the host that owns the
+daemon, or copy its database and exported public key out and re-run with
+--pubkey <FILE>.
+```
+
+The same string travels in `--json` output as `daemon_socket_caveat`, and on the
+`sysknife_audit_verify` MCP tool's report under the same name, so an agent cannot
+report a clean trail for the wrong host either.
+
+Two correct ways to verify a remote host:
+
+```sh
+# On the host that owns the daemon
+ssh admin@web01 'sudo sysknife audit verify'
+
+# Or pull the evidence to an auditor's machine: the store plus the public key,
+# never the private key
+scp admin@web01:/var/lib/sysknife/daemon.sqlite  ./web01.sqlite
+scp admin@web01:/var/lib/sysknife/audit-key.pub ./web01.pub
+SYSKNIFE_DATABASE_PATH=./web01.sqlite sysknife audit verify --pubkey ./web01.pub
+```
+
+The second form is the auditor path the public key exists for: it proves the
+chain without granting daemon access or signing ability.
+
 Machine-readable output for CI or a SIEM pipeline:
 
 ```sh

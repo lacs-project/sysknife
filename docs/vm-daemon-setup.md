@@ -75,6 +75,85 @@ ssh -fN \
 > remote command. The local socket `/tmp/sysknife-vm.sock` is created on the
 > host and forwards transparently to the daemon inside the guest.
 
+Three flags worth adding once you rely on this:
+
+```sh
+ssh -fN \
+  -o ExitOnForwardFailure=yes \
+  -o StreamLocalBindUnlink=yes \
+  -o ServerAliveInterval=30 \
+  -L /tmp/sysknife-vm.sock:/run/sysknife/daemon.sock <user>@<host>
+```
+
+- `ExitOnForwardFailure=yes` makes SSH fail loudly instead of forking a session
+  whose forward never came up, which otherwise looks like a dead daemon.
+- `StreamLocalBindUnlink=yes` removes a stale local socket file. Without it, a
+  second tunnel after an unclean exit fails with "cannot bind".
+- `ServerAliveInterval=30` keeps a long planning session from being dropped by an
+  idle NAT or firewall.
+
+### Who you are over a tunnel
+
+Authorization is **not** carried by the tunnel. The daemon reads the connecting
+peer's credentials with `SO_PEERCRED` and resolves that peer's group membership
+(`resolve_caller_role` in `crates/sysknife-daemon/src/dispatcher.rs`). Over a
+forwarded socket the connecting peer is the `sshd` process on the remote side,
+running as the SSH user, so:
+
+- The role comes from the **remote** user's groups: `sysknife-observer`,
+  `sysknife-dev`, `sysknife-admin`, or `wheel`.
+- That user must also be in the `sysknife` group, because `/run/sysknife` is
+  `0750 sysknife:sysknife`. Without it every request is refused before any role
+  check runs.
+- Your local groups are irrelevant. Being `wheel` on your laptop grants nothing
+  on the remote host.
+
+```sh
+# On the remote host, for the account you SSH in as
+sudo usermod -aG sysknife,sysknife-admin <user>
+# then log out and back in: group membership only applies to a new session
+```
+
+This is why SysKnife tunnels a Unix socket rather than exposing an HTTP
+listener. SSH supplies authentication, the socket supplies authorization, and
+peer credentials cannot be spoofed by whoever reaches the port. See
+[Registry and Directory Listings](mcp-registry.md#sandboxed-directories-and-the-empty-tool-list) for the
+matching decision about network-exposed listings.
+
+### More than one host
+
+Give each host its own local socket and its own MCP server entry. Nothing is
+shared between them, so there is no state to switch:
+
+```sh
+ssh -fN -o ExitOnForwardFailure=yes -o StreamLocalBindUnlink=yes \
+  -L /tmp/sysknife-web01.sock:/run/sysknife/daemon.sock admin@web01
+ssh -fN -o ExitOnForwardFailure=yes -o StreamLocalBindUnlink=yes \
+  -L /tmp/sysknife-db01.sock:/run/sysknife/daemon.sock  admin@db01
+```
+
+```json
+{
+  "mcpServers": {
+    "sysknife-web01": {
+      "command": "sysknife",
+      "args": ["mcp-server"],
+      "env": { "SYSKNIFE_SOCKET": "/tmp/sysknife-web01.sock" }
+    },
+    "sysknife-db01": {
+      "command": "sysknife",
+      "args": ["mcp-server"],
+      "env": { "SYSKNIFE_SOCKET": "/tmp/sysknife-db01.sock" }
+    }
+  }
+}
+```
+
+Each host keeps its own audit chain, on that host. `sysknife audit verify` reads
+the store on the machine you run it on, never through the socket, so verify on
+the host itself or pull its database and public key to an auditor's machine. See
+[Verification is host-local](the-audit-chain.md#verification-is-host-local-and-that-matters-over-a-tunnel).
+
 ### Configure and connect (SSH tunnel)
 
 Run the setup wizard on the host and choose the integration you want:
