@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
-## [0.3.0] — unreleased
+## [0.3.0] — 2026-07-29
 
 The signed audit chain now records **which account** acted, not only which role.
 Schema version 3, with a real migration and no rewrite of existing rows.

@@ -54,7 +54,7 @@ signed under in its `chain_version` column:
 |---|---|---|
 | 1 | the base fields | before v0.2.13 |
 | 2 | `caller_role`, `event_tip` | v0.2.13 |
-| 3 | `caller_principal` | 0.3.0 (unreleased) |
+| 3 | `caller_principal` | 0.3.0 |
 
 Verification reproduces the exact encoding each row claims, so an upgraded
 daemon appends v3 rows onto a chain that already holds v1 and v2 rows and the
