@@ -838,6 +838,8 @@ fn cannot_verify_all(reason: String) -> AuditVerification {
         binding: BindingOutcome::Consistent {
             bindings_checked: 0,
         },
+        // Nothing was read, so nothing is known about attribution either.
+        unattributed_rows: 0,
     }
 }
 
@@ -955,6 +957,7 @@ fn emit_verification(
                 json!({"configured": false, "caveat": anchor_caveat(false)})
             },
             "daemon_socket_caveat": remote_daemon_caveat_from_env(),
+            "unattributed_rows": verification.unattributed_rows,
             "binding": match &verification.binding {
                 BindingOutcome::Consistent { bindings_checked } => json!({
                     "status": "consistent",
@@ -1002,6 +1005,17 @@ fn emit_verification(
     // what an operator reads as "the audit log is fine". Which machine was read
     // comes first: an Intact verdict for the wrong host misleads more than an
     // unanchored one does.
+    if verification.unattributed_rows > 0 {
+        log.println(&format!(
+            "NOTE: {} row(s) record that the daemon could not name the caller \
+             (principal `{}`). Those actions are authentic and verified, but the trail \
+             cannot say which account took them. This happens when SO_PEERCRED yields no \
+             usable peer, or when the peer is not representable in the daemon's \
+             namespaces; see the daemon log for the connections concerned.",
+            verification.unattributed_rows,
+            sysknife_daemon::auth::CallerPrincipal::Unattributed.as_signed_str(),
+        ));
+    }
     if let Some(caveat) = remote_daemon_caveat_from_env() {
         log.println(&caveat);
     }

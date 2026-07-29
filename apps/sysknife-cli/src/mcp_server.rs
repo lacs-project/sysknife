@@ -316,6 +316,11 @@ pub struct AuditVerifyReport {
     /// Backend label: a filesystem path for SQLite, the literal `"postgres"`
     /// for Postgres deployments.
     pub backend: String,
+    /// How many verified rows record that the daemon could not name the caller.
+    ///
+    /// `status: "intact"` with a non-zero count here means the chain is sound and
+    /// the attribution is not: report both, never the first alone.
+    pub unattributed_rows: u64,
     /// Set when `SYSKNIFE_SOCKET` names a daemon that may not live on this
     /// machine, because verification reads a local store while every other tool
     /// travels over that socket. `None` for the local-daemon case.
@@ -982,6 +987,7 @@ fn outcome_to_report(
 ) -> AuditVerifyReport {
     use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
 
+    let unattributed_rows = verification.unattributed_rows;
     let events_checked = match &verification.events {
         VerifyOutcome::Intact { rows_checked } | VerifyOutcome::Broken { rows_checked, .. } => {
             *rows_checked
@@ -1012,6 +1018,7 @@ fn outcome_to_report(
             events_checked,
             approval_events_status,
             binding_status,
+            unattributed_rows,
             daemon_socket_caveat: None,
         },
         VerifyOutcome::Broken {
@@ -1032,6 +1039,7 @@ fn outcome_to_report(
             events_checked,
             approval_events_status,
             binding_status,
+            unattributed_rows,
             daemon_socket_caveat: None,
         },
         VerifyOutcome::CannotVerify { reason } => {
@@ -1079,6 +1087,7 @@ fn cannot_verify_report(backend: String, reason: String) -> AuditVerifyReport {
         events_checked: 0,
         approval_events_status: "cannot_verify".to_string(),
         binding_status: "consistent".to_string(),
+        unattributed_rows: 0,
         daemon_socket_caveat: None,
     }
 }

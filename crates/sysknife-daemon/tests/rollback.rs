@@ -106,7 +106,14 @@ async fn spawn_handler_with_executor(
     let (client, server) = UnixStream::pair().unwrap();
     let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(MockRunner);
     tokio::spawn(async move {
-        connection_handler_with_executor(server, state, runner, executor, CallerRole::Admin).await;
+        connection_handler_with_executor(
+            server,
+            state,
+            runner,
+            executor,
+            sysknife_daemon::auth::CallerAttribution::from_peer_uid(1000, CallerRole::Admin),
+        )
+        .await;
     });
     FramedStream::new(client)
 }

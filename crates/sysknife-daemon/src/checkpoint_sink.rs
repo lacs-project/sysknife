@@ -377,9 +377,10 @@ mod tests {
                 approval_id: None,
                 warnings_json: "[]",
                 created_at: "2026-04-24T12:00:00Z",
-                identity: ChainIdentity::V2 {
+                identity: ChainIdentity::V3 {
                     caller_role: "dev",
                     event_tip: "",
+                    caller_principal: "uid:1000",
                 },
             };
             let hash = key.chain_hash(&content, &prev);
@@ -400,6 +401,7 @@ mod tests {
                 chain_version: CHAIN_VERSION_CURRENT,
                 caller_role: Some("dev".to_string()),
                 event_tip: Some(String::new()),
+                caller_principal: Some("uid:1000".to_string()),
             });
             prev = hash;
         }

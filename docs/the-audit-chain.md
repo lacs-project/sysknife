@@ -10,8 +10,10 @@ for a security-sensitive deployment, this is the page to try to break.
 
 ## What gets recorded
 
-Each row in the transaction table (`sysknife history`) captures the decision
-the daemon made about one action, at the moment it made it:
+Each row in the transaction table captures the decision the daemon made about
+one action, at the moment it made it. `sysknife history` renders a subset;
+`caller_role`, `caller_principal` and `event_tip` are chain fields, read with
+`sysknife audit verify` or directly from the database:
 
 | Field | What it commits to |
 |---|---|
@@ -25,11 +27,15 @@ the daemon made about one action, at the moment it made it:
 | `warnings_json` | Warnings surfaced to the user before approval |
 | `created_at` | When the row was written |
 | `caller_role` | Which privilege tier the daemon resolved for the connection that asked |
+| `caller_principal` | **Which account** asked: `uid:<n>`, `token:vsock`, or `none:unattributed` |
 | `event_tip` | The approval-event chain tip at insert time (see below) |
 
-These thirteen fields are serialized into a stable, self-describing byte
+These fields are serialized into a stable, self-describing byte
 string (tag + value pairs, with a prefix-free escape scheme so no field's
 content can be crafted to alias another field's boundary), then signed. The
+count is per encoding, because the field set grew: v1 signs eleven pairs, v2
+fourteen, v3 fifteen — the fields above plus the `chain_version` tag that names
+the encoding (see below). The
 resulting signature *is* the row's `chain_hash` — there is no separate hash
 step, because Ed25519 already commits to the message.
 
@@ -40,17 +46,53 @@ back) is **not** part of the signed content. The chain protects the
 state — a scope decision, not an oversight (see [Limits](#limits-and-honest-scope)).
 ```
 
-```admonish info title="Rows written before v0.2.13"
-`caller_role` and `event_tip` were added in v0.2.13. Rows written by an
-earlier daemon were signed over an encoding that has no such fields, so each
-row carries a `chain_version` column and verification reproduces the exact
-encoding that row was signed under. An upgraded daemon appends v2 rows onto
-an existing v1 chain and the whole chain still verifies in one walk — an
-upgrade never makes a healthy audit log look tampered.
+```admonish info title="Three row encodings coexist"
+The signed field set grew twice, and each row records which encoding it was
+signed under in its `chain_version` column:
 
-The version is not a hiding place: relabelling a v2 row as v1 to erase its
-`caller_role` makes verification re-encode it without the identity fields, so
-the stored signature no longer verifies and the row reports as broken.
+| Version | Added | Since |
+|---|---|---|
+| 1 | the base fields | before v0.2.13 |
+| 2 | `caller_role`, `event_tip` | v0.2.13 |
+| 3 | `caller_principal` | 0.3.0 (unreleased) |
+
+Verification reproduces the exact encoding each row claims, so an upgraded
+daemon appends v3 rows onto a chain that already holds v1 and v2 rows and the
+whole thing still verifies in one walk. An upgrade never makes a healthy audit
+log look tampered, and older rows are never backfilled: writing a principal
+into a row that was signed without one would change the message it was signed
+over and report the chain as broken.
+
+The version is not a hiding place in either direction. Relabelling a v3 row as
+v2 to erase which account acted makes verification re-encode it without the
+principal, so the stored signature no longer verifies. A v3 row whose principal
+is missing or blank is reported as broken rather than accepted, because it
+claims an encoding that names an account while naming none.
+```
+
+```admonish tip title="Role versus principal"
+They answer different questions and the distinction is the point of v3.
+`caller_role` says **what was permitted**; on a host with two admins it cannot
+separate them. `caller_principal` says **which account asked**.
+
+The scheme prefix is signed along with the value because the strength of the
+evidence differs: `uid:1000` was attested by the kernel through `SO_PEERCRED`,
+while `token:vsock` only proves that someone could read the pre-shared token
+file. A bare string would erase that difference. `none:unattributed` appears when the daemon could
+not establish an account: `SO_PEERCRED` failed, or returned no usable pid, or the
+peer is not representable in the daemon's namespaces, in which case the kernel
+reports the overflow uid (`nobody`) rather than failing. Recording that failure
+beats inventing a uid, because a signed lie about who acted is worse than a
+signed admission of ignorance.
+
+A chain full of `none:unattributed` rows still verifies as intact, and that is
+honest but incomplete, so `sysknife audit verify` reports the count separately
+(`unattributed_rows` in `--json` and on the `sysknife_audit_verify` tool). Intact
+is a statement about tampering, not about how much the trail can tell you.
+
+What a uid does *not* prove: shared logins, `su` into a service account, and uid
+reuse after a user is deleted all weaken it. It identifies an account, not a
+human.
 ```
 
 ## The hash chain: each entry links to the one before it

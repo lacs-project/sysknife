@@ -37,7 +37,7 @@ use uuid::Uuid;
 
 use crate::audit_chain::{
     AuditEventKind, AuditKey, AuditVerification, ChainContent, ChainIdentity, ChainRow,
-    EventContent, EventRow, VerifyOutcome, CHAIN_VERSION_CURRENT, CURRENT_KEY_ID,
+    EventContent, EventRow, VerifyOutcome, CURRENT_KEY_ID,
 };
 use crate::audit_watermark::emit_chain_tip_watermark;
 use crate::store::AuditStore;
@@ -57,7 +57,8 @@ const MIGRATION_LOCK_ID: i64 = 0x5359_534b_4e49_4645;
 /// green. Mirrors `CHAIN_ROW_COLUMNS` in `transactions.rs`.
 const CHAIN_ROW_COLUMNS: &str = "seq, key_id, transaction_id, request_id, request_hash, \
      action_name, risk_level, summary, approval_id, warnings_json, \
-     created_at, prev_chain_hash, chain_hash, chain_version, caller_role, event_tip";
+     created_at, prev_chain_hash, chain_hash, chain_version, caller_role, event_tip, \
+     caller_principal";
 
 struct Migration {
     version: i64,
@@ -128,6 +129,14 @@ const MIGRATIONS: &[Migration] = &[Migration {
             "#,
             "CREATE INDEX IF NOT EXISTS audit_events_transaction_idx ON audit_events(transaction_id)",
         ],
+    },
+    // Mirrors SQLite migration 3. Nullable for the same reason: rows written
+    // before this step were signed over an encoding with no principal, so any
+    // backfill would rewrite their message and report the chain as Broken.
+    Migration {
+        version: 3,
+        name: "caller_principal",
+        statements: &["ALTER TABLE transactions ADD COLUMN IF NOT EXISTS caller_principal TEXT"],
     },
 ];
 
@@ -918,7 +927,15 @@ async fn insert_transaction(
     .await
     .map_err(map_sqlx_err)?;
     let caller_role = transaction.caller_role.as_str();
+    let caller_principal = transaction.caller_principal.as_signed_str();
 
+    // As in the SQLite path: derive the stored version from the identity that was
+    // signed, so the column cannot disagree with the message.
+    let identity = ChainIdentity::V3 {
+        caller_role,
+        event_tip: &event_tip,
+        caller_principal: &caller_principal,
+    };
     let chain_hash = key.chain_hash(
         &ChainContent {
             seq,
@@ -932,10 +949,7 @@ async fn insert_transaction(
             approval_id: approval_id.as_deref(),
             warnings_json: &warnings_json,
             created_at: &created_at,
-            identity: ChainIdentity::V2 {
-                caller_role,
-                event_tip: &event_tip,
-            },
+            identity,
         },
         &prev_chain_hash,
     );
@@ -945,8 +959,8 @@ async fn insert_transaction(
             transaction_id, request_id, request_hash, action_name, risk_level, \
             status, approval_id, summary, warnings_json, created_at, \
             seq, key_id, chain_hash, prev_chain_hash, \
-            chain_version, caller_role, event_tip \
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+            chain_version, caller_role, event_tip, caller_principal \
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)",
     )
     .bind(transaction_id)
     .bind(&transaction.request_id)
@@ -962,9 +976,10 @@ async fn insert_transaction(
     .bind(&key_id)
     .bind(&chain_hash)
     .bind(&prev_chain_hash)
-    .bind(i64::from(CHAIN_VERSION_CURRENT))
+    .bind(i64::from(identity.version()))
     .bind(caller_role)
     .bind(&event_tip)
+    .bind(&caller_principal)
     .execute(&mut **tx)
     .await
     .map_err(map_sqlx_err)?;
@@ -1049,6 +1064,7 @@ fn row_to_chain_row(row: sqlx_postgres::PgRow) -> Result<ChainRow, TransactionSt
             .map_err(map_sqlx_err)? as u32,
         caller_role: row.try_get("caller_role").map_err(map_sqlx_err)?,
         event_tip: row.try_get("event_tip").map_err(map_sqlx_err)?,
+        caller_principal: row.try_get("caller_principal").map_err(map_sqlx_err)?,
     })
 }
 

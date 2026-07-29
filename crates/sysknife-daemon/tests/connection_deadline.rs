@@ -67,7 +67,7 @@ fn spawn_handler(
     let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(MockRunner);
     let executor: Arc<dyn ActionExecutor> = Arc::new(InstantSuccessExecutor);
     let handle = tokio::spawn(async move {
-        connection_handler_with_executor(server, state, runner, executor, role).await;
+        connection_handler_with_executor(server, state, runner, executor, uid_caller(role)).await;
     });
     (FramedStream::new(client), handle)
 }
@@ -133,4 +133,9 @@ async fn a_served_connection_still_accepts_a_second_request() {
             "request {request_id} on a reused connection must still be served: {resp}"
         );
     }
+}
+
+/// A caller attributed to a uid, as a Unix-socket connection would be.
+fn uid_caller(role: sysknife_types::CallerRole) -> sysknife_daemon::auth::CallerAttribution {
+    sysknife_daemon::auth::CallerAttribution::from_peer_uid(1000, role)
 }

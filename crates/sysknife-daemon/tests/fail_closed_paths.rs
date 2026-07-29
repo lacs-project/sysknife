@@ -60,7 +60,7 @@ async fn spawn_handler(
     let (client, server) = UnixStream::pair().unwrap();
     let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(MockRunner);
     tokio::spawn(async move {
-        connection_handler_with_executor(server, state, runner, executor, role).await;
+        connection_handler_with_executor(server, state, runner, executor, uid_caller(role)).await;
     });
     FramedStream::new(client)
 }
@@ -181,4 +181,9 @@ async fn preview_never_reaches_the_executor() {
         resp.get("transaction_id").is_some(),
         "preview must return a transaction to approve: {resp}"
     );
+}
+
+/// A caller attributed to a uid, as a Unix-socket connection would be.
+fn uid_caller(role: sysknife_types::CallerRole) -> sysknife_daemon::auth::CallerAttribution {
+    sysknife_daemon::auth::CallerAttribution::from_peer_uid(1000, role)
 }

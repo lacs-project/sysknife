@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use sysknife_core::{config::LacsConfig, default_database_path, default_listen_uri};
 use sysknife_daemon::audit_forward::{self, AuditForwarder, AuditSinkSpec};
-use sysknife_daemon::dispatcher::{resolve_caller_role, unix_connection_handler};
+use sysknife_daemon::dispatcher::{resolve_caller, unix_connection_handler};
 use sysknife_daemon::policy::PolicyTable;
 use sysknife_daemon::state::{DaemonConfig, DaemonState};
 use sysknife_daemon::state_collector::RealCommandRunner;
@@ -241,11 +241,11 @@ async fn unix_accept_loop(
                     Ok((stream, _addr)) => {
                         match Arc::clone(&semaphore).try_acquire_owned() {
                             Ok(permit) => {
-                                let role = resolve_caller_role(&stream);
+                                let caller = resolve_caller(&stream);
                                 let state = state.clone();
                                 let runner = Arc::clone(&runner);
                                 tokio::spawn(async move {
-                                    unix_connection_handler(stream, state, runner, role).await;
+                                    unix_connection_handler(stream, state, runner, caller).await;
                                     drop(permit);
                                 });
                             }

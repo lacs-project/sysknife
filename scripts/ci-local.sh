@@ -140,8 +140,8 @@ run_cargo_doc() {
 run_rust_group() {
     printf '\n### rust\n'
     run_step 'rust: cargo fmt --all --check' cargo fmt --all --check
-    run_step 'rust: cargo clippy --workspace --all-features --locked -- -D warnings' \
-        cargo clippy --workspace --all-features --locked -- -D warnings
+    run_step 'rust: cargo clippy --workspace --all-features --all-targets --locked -- -D warnings' \
+        cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
 
     if [[ "$mode" == "full" ]]; then
         run_step 'rust: cargo doc (RUSTDOCFLAGS=-D warnings)' run_cargo_doc

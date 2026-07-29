@@ -91,8 +91,31 @@ const EVENT_DOMAIN: &[u8] = b"sysknife-audit-event-v1\x1f";
 /// Row encoding written before the caller-identity migration: no
 /// `caller_role`, no `event_tip`. Still verifiable — see [`ChainIdentity`].
 pub const CHAIN_VERSION_LEGACY: u32 = 1;
-/// Row encoding written by this binary: adds `caller_role` and `event_tip`.
-pub const CHAIN_VERSION_CURRENT: u32 = 2;
+/// Row encoding that added `caller_role` and `event_tip`.
+///
+/// This is a **stable literal, never an alias for the newest version**. The v2
+/// encoder signs this value, and `ChainRow::identity` dispatches stored rows
+/// against it. Point either at `CHAIN_VERSION_CURRENT` and the next encoding
+/// bump silently re-encodes every v2 row on disk, breaking audit logs while the
+/// unit suite stays green, because in-memory tests sign and verify under the
+/// same constant. `a_row_written_by_the_previous_release_still_verifies` is the
+/// golden vector that notices.
+pub const CHAIN_VERSION_V2: u32 = 2;
+/// Row encoding that added `caller_principal` on top of v2, so a row names the
+/// account that asked, not only its role class.
+///
+/// A stable literal for the same reason [`CHAIN_VERSION_V2`] is one: the v3
+/// encoder signs this value and `ChainRow::identity` dispatches stored v3 rows
+/// against it, so it must not move when a v4 encoding arrives.
+/// `a_v3_row_on_disk_still_verifies` is the golden vector that notices if it does.
+pub const CHAIN_VERSION_V3: u32 = 3;
+/// The encoding this binary *writes*. Always an alias for the newest versioned
+/// constant, never used to encode or dispatch a specific generation.
+///
+/// Kept distinct from the per-version literals because those two jobs pull in
+/// opposite directions: the writer must move with each new encoding, while every
+/// stored generation must keep being reproduced byte for byte forever.
+pub const CHAIN_VERSION_CURRENT: u32 = CHAIN_VERSION_V3;
 
 /// Loaded Ed25519 signing key + its identifier. Construct via
 /// [`AuditKey::load_or_generate`].
@@ -424,8 +447,9 @@ pub enum ChainIdentity<'a> {
     /// the approval-event chain tip at insert time.
     V2 {
         /// Role the daemon resolved for the connection that requested this
-        /// action (`SO_PEERCRED` for Unix sockets, token for vsock). Signing
-        /// it is what lets an auditor answer "who asked for this".
+        /// action (`SO_PEERCRED` for Unix sockets, token for vsock). Signing it
+        /// lets an auditor answer which privilege tier asked; naming the account
+        /// is v3's `caller_principal`.
         caller_role: &'a str,
         /// `chain_hash` of the last [`EventRow`] at insert time, or `""` when
         /// the event chain is empty. This is the cross-chain binding: because
@@ -434,6 +458,29 @@ pub enum ChainIdentity<'a> {
         /// approval events below it becomes detectable.
         event_tip: &'a str,
     },
+    /// `chain_version = 3`. Everything v2 binds, plus the individual account.
+    ///
+    /// v2 answers "an Admin did this". On a host with two members of
+    /// `sysknife-admin` their signed records were indistinguishable, so the
+    /// trail could not answer the first question an investigation asks. v3
+    /// signs a principal as well.
+    V3 {
+        /// As v2.
+        caller_role: &'a str,
+        /// As v2.
+        event_tip: &'a str,
+        /// Scheme-prefixed identity of the caller, produced by
+        /// [`crate::auth::CallerPrincipal`]: `uid:1000` for a Unix-socket peer
+        /// whose credentials the kernel attested, `token:vsock` for a vsock
+        /// connection authenticated by the pre-shared token, and
+        /// `none:unattributed` when the daemon could establish neither.
+        ///
+        /// The scheme is signed along with the value on purpose. An auditor must
+        /// be able to tell a kernel-attested account from a shared secret that
+        /// any holder could have presented, and a bare string would erase that
+        /// difference.
+        caller_principal: &'a str,
+    },
 }
 
 impl ChainIdentity<'_> {
@@ -441,7 +488,8 @@ impl ChainIdentity<'_> {
     pub fn version(&self) -> u32 {
         match self {
             Self::LegacyV1 => CHAIN_VERSION_LEGACY,
-            Self::V2 { .. } => CHAIN_VERSION_CURRENT,
+            Self::V2 { .. } => CHAIN_VERSION_V2,
+            Self::V3 { .. } => CHAIN_VERSION_V3,
         }
     }
 }
@@ -500,22 +548,41 @@ impl<'a> ChainContent<'a> {
         push_field(&mut buf, "approval_id", approval);
         push_field(&mut buf, "warnings_json", self.warnings_json);
         push_field(&mut buf, "created_at", self.created_at);
-        // v2 fields are *appended*, so a legacy row's bytes are unchanged and
-        // its signature still verifies. The `chain_version` tag leads the
-        // suffix so a future v3 can never alias a v2 message: the two differ
-        // in a signed field, not merely in field count.
-        if let ChainIdentity::V2 {
-            caller_role,
-            event_tip,
-        } = self.identity
-        {
-            push_field(
-                &mut buf,
-                "chain_version",
-                &CHAIN_VERSION_CURRENT.to_string(),
-            );
-            push_field(&mut buf, "caller_role", caller_role);
-            push_field(&mut buf, "event_tip", event_tip);
+        // Per-generation suffixes are *appended*, so a legacy row's bytes are
+        // unchanged and its signature still verifies. The `chain_version` tag
+        // leads each suffix, so no generation can alias another: two encodings
+        // differ in a signed field, not merely in field count.
+        //
+        // This is an exhaustive `match`, not a sequence of `if let`s, and that
+        // matters more than it looks. With `if let` chains, adding a variant and
+        // forgetting its arm compiles fine and silently encodes the new
+        // generation byte-identically to `LegacyV1` — signing an aliased message,
+        // which is exactly what the tag is supposed to prevent. As a `match`,
+        // the same omission is a compile error.
+        //
+        // Each arm spells its own fields out rather than sharing a helper. The
+        // duplication is deliberate: a frozen encoding must be able to stay
+        // frozen while a newer one changes.
+        match self.identity {
+            ChainIdentity::LegacyV1 => {}
+            ChainIdentity::V2 {
+                caller_role,
+                event_tip,
+            } => {
+                push_field(&mut buf, "chain_version", &CHAIN_VERSION_V2.to_string());
+                push_field(&mut buf, "caller_role", caller_role);
+                push_field(&mut buf, "event_tip", event_tip);
+            }
+            ChainIdentity::V3 {
+                caller_role,
+                event_tip,
+                caller_principal,
+            } => {
+                push_field(&mut buf, "chain_version", &CHAIN_VERSION_V3.to_string());
+                push_field(&mut buf, "caller_role", caller_role);
+                push_field(&mut buf, "event_tip", event_tip);
+                push_field(&mut buf, "caller_principal", caller_principal);
+            }
         }
         buf
     }
@@ -603,11 +670,15 @@ pub struct ChainRow {
     pub chain_hash: String,
     /// Which encoding this row was signed under. See [`ChainIdentity`].
     pub chain_version: u32,
-    /// `NULL` for legacy rows; required for `chain_version = 2`.
+    /// `NULL` for legacy rows; required for `chain_version` 2 and 3.
     pub caller_role: Option<String>,
-    /// `NULL` for legacy rows; required for `chain_version = 2`. May be the
+    /// `NULL` for legacy rows; required for `chain_version` 2 and 3. May be the
     /// empty string when the event chain was empty at insert time.
     pub event_tip: Option<String>,
+    /// `NULL` for rows written before the principal migration (v1 and v2);
+    /// required for `chain_version = 3`. Scheme-prefixed, see
+    /// [`ChainIdentity::V3`].
+    pub caller_principal: Option<String>,
 }
 
 /// Why a stored row's columns do not describe a verifiable encoding.
@@ -617,7 +688,9 @@ pub(crate) enum RowIdentityError {
     /// Genuinely unverifiable, not evidence of tampering — an older binary
     /// reading a newer chain lands here.
     UnknownVersion(u32),
-    /// The row claims `chain_version = 2` but is missing an identity column.
+    /// The row claims an identity encoding (2 or 3) but is missing one of its
+    /// columns. For v3 that includes a blank `caller_principal`, treated as
+    /// absent: a row naming nobody must not pass for one naming an account.
     /// No message can be reconstructed, and the shape is self-contradictory,
     /// so this counts as a detected break rather than an inability to check.
     MissingField(&'static str),
@@ -629,7 +702,7 @@ impl ChainRow {
     pub(crate) fn identity(&self) -> Result<ChainIdentity<'_>, RowIdentityError> {
         match self.chain_version {
             CHAIN_VERSION_LEGACY => Ok(ChainIdentity::LegacyV1),
-            CHAIN_VERSION_CURRENT => Ok(ChainIdentity::V2 {
+            CHAIN_VERSION_V2 => Ok(ChainIdentity::V2 {
                 caller_role: self
                     .caller_role
                     .as_deref()
@@ -638,6 +711,24 @@ impl ChainRow {
                     .event_tip
                     .as_deref()
                     .ok_or(RowIdentityError::MissingField("event_tip"))?,
+            }),
+            CHAIN_VERSION_V3 => Ok(ChainIdentity::V3 {
+                caller_role: self
+                    .caller_role
+                    .as_deref()
+                    .ok_or(RowIdentityError::MissingField("caller_role"))?,
+                event_tip: self
+                    .event_tip
+                    .as_deref()
+                    .ok_or(RowIdentityError::MissingField("event_tip"))?,
+                // An empty principal is treated as absent: a v3 row must name
+                // who asked, and "" names nobody. Accepting it would let a
+                // blank pass for an identity.
+                caller_principal: self
+                    .caller_principal
+                    .as_deref()
+                    .filter(|p| !p.is_empty())
+                    .ok_or(RowIdentityError::MissingField("caller_principal"))?,
             }),
             other => Err(RowIdentityError::UnknownVersion(other)),
         }
@@ -726,12 +817,31 @@ fn verify_rows(vk: &VerifyingKey, expect_key_id: Option<&str>, rows: &[ChainRow]
                 };
             }
             Err(RowIdentityError::MissingField(field)) => {
+                // Report the version the row itself declares. Formatting
+                // CHAIN_VERSION_CURRENT here sent an operator investigating a
+                // v2 row to the wrong encoding, and got worse every time the
+                // newest version moved.
+                let stored = match field {
+                    "caller_role" => row.caller_role.as_deref(),
+                    "event_tip" => row.event_tip.as_deref(),
+                    "caller_principal" => row.caller_principal.as_deref(),
+                    _ => None,
+                };
                 return VerifyOutcome::Broken {
                     rows_checked,
                     first_broken_seq: row.seq,
                     first_broken_transaction_id: row.transaction_id.clone(),
-                    expected: format!("chain_version={CHAIN_VERSION_CURRENT} row carrying {field}"),
-                    actual: format!("{field}=NULL"),
+                    expected: format!(
+                        "chain_version={} row carrying a non-empty {field}",
+                        row.chain_version
+                    ),
+                    // An empty column and an absent one send an operator to
+                    // different SQL, so they must not print the same way.
+                    actual: match stored {
+                        None => format!("{field}=NULL"),
+                        Some("") => format!("{field}='' (empty, not NULL)"),
+                        Some(other) => format!("{field}={other:?}"),
+                    },
                 };
             }
         };
@@ -1020,6 +1130,13 @@ pub struct AuditVerification {
     pub chain: VerifyOutcome,
     pub events: VerifyOutcome,
     pub binding: BindingOutcome,
+    /// How many verified rows record that the daemon could not name the caller.
+    ///
+    /// Counted separately because `Intact` alone would be true and misleading: a
+    /// host where every connection failed attribution produces a chain that
+    /// verifies perfectly and answers "who acted" with nobody. The verdict is
+    /// about tampering; this number is about how much the trail can tell you.
+    pub unattributed_rows: u64,
 }
 
 impl AuditVerification {
@@ -1044,6 +1161,18 @@ impl AuditVerification {
     }
 }
 
+/// Rows whose signed principal records an attribution failure.
+///
+/// Compares against the rendering of [`crate::auth::CallerPrincipal::Unattributed`]
+/// rather than a literal, so the two cannot drift.
+fn count_unattributed(tx_rows: &[ChainRow]) -> u64 {
+    let unattributed = crate::auth::CallerPrincipal::Unattributed.as_signed_str();
+    tx_rows
+        .iter()
+        .filter(|row| row.caller_principal.as_deref() == Some(unattributed.as_str()))
+        .count() as u64
+}
+
 /// Run all three checks with the daemon's key.
 pub fn verify_all(
     key: &AuditKey,
@@ -1054,6 +1183,7 @@ pub fn verify_all(
         chain: verify_chain(key, tx_rows),
         events: verify_event_chain(key, event_rows),
         binding: verify_event_binding(tx_rows, event_rows),
+        unattributed_rows: count_unattributed(tx_rows),
     }
 }
 
@@ -1067,6 +1197,7 @@ pub fn verify_all_with_pubkey(
         chain: verify_chain_with_pubkey(verifying_key_hex, tx_rows),
         events: verify_event_chain_with_pubkey(verifying_key_hex, event_rows),
         binding: verify_event_binding(tx_rows, event_rows),
+        unattributed_rows: count_unattributed(tx_rows),
     }
 }
 
@@ -1369,15 +1500,26 @@ mod tests {
     /// never hand-copies field-by-field and accidentally signs one thing while
     /// storing another.
     fn row_for(content: &ChainContent<'_>, prev: &str, chain_hash: String) -> ChainRow {
-        let (chain_version, caller_role, event_tip) = match content.identity {
-            ChainIdentity::LegacyV1 => (CHAIN_VERSION_LEGACY, None, None),
+        let (chain_version, caller_role, event_tip, caller_principal) = match content.identity {
+            ChainIdentity::LegacyV1 => (CHAIN_VERSION_LEGACY, None, None, None),
             ChainIdentity::V2 {
                 caller_role,
                 event_tip,
             } => (
-                CHAIN_VERSION_CURRENT,
+                CHAIN_VERSION_V2,
                 Some(caller_role.to_string()),
                 Some(event_tip.to_string()),
+                None,
+            ),
+            ChainIdentity::V3 {
+                caller_role,
+                event_tip,
+                caller_principal,
+            } => (
+                CHAIN_VERSION_V3,
+                Some(caller_role.to_string()),
+                Some(event_tip.to_string()),
+                Some(caller_principal.to_string()),
             ),
         };
         ChainRow {
@@ -1397,6 +1539,7 @@ mod tests {
             chain_version,
             caller_role,
             event_tip,
+            caller_principal,
         }
     }
 
@@ -1468,6 +1611,408 @@ mod tests {
             verify_chain(&key, &[row]),
             VerifyOutcome::Intact { rows_checked: 1 }
         );
+    }
+
+    // ── v3: the row names the account, not just the role ──────────────────
+
+    /// The point of the encoding: two callers who share a role must produce
+    /// distinguishable signed records. If the principal were unsigned, or merely
+    /// stored, this would pass while proving nothing.
+    #[test]
+    fn two_admins_are_distinguishable_in_the_signed_record() {
+        let key = fixed_key();
+        let mut alice = sample_content(1, "tx-alice");
+        alice.identity = ChainIdentity::V3 {
+            caller_role: "admin",
+            event_tip: "",
+            caller_principal: "uid:1000",
+        };
+        let mut bob = sample_content(1, "tx-alice");
+        bob.identity = ChainIdentity::V3 {
+            caller_role: "admin",
+            event_tip: "",
+            caller_principal: "uid:1001",
+        };
+
+        assert_ne!(
+            key.chain_hash(&alice, ""),
+            key.chain_hash(&bob, ""),
+            "identical rows differing only in principal must sign differently, \
+             otherwise the chain still cannot answer which account acted"
+        );
+    }
+
+    /// Rewriting the stored principal must break verification. A field that can
+    /// be edited after the fact records nothing an auditor can rely on.
+    #[test]
+    fn editing_the_stored_principal_breaks_the_row() {
+        let key = fixed_key();
+        let mut content = sample_content(1, "tx1");
+        content.identity = ChainIdentity::V3 {
+            caller_role: "admin",
+            event_tip: "",
+            caller_principal: "uid:1000",
+        };
+        let hash = key.chain_hash(&content, "");
+        let mut row = row_for(&content, "", hash);
+        row.caller_principal = Some("uid:0".to_string());
+
+        assert!(
+            matches!(verify_chain(&key, &[row]), VerifyOutcome::Broken { .. }),
+            "a principal swapped to root must not verify"
+        );
+    }
+
+    /// Downgrade is the other direction of the same attack: strip the principal
+    /// and claim the row was written under v2, hiding which account acted. The
+    /// v3 message signed a different byte string, so it cannot verify as v2.
+    #[test]
+    fn downgrading_a_v3_row_to_v2_to_hide_the_account_breaks_it() {
+        let key = fixed_key();
+        let mut content = sample_content(1, "tx1");
+        content.identity = ChainIdentity::V3 {
+            caller_role: "admin",
+            event_tip: "",
+            caller_principal: "uid:1000",
+        };
+        let hash = key.chain_hash(&content, "");
+        let mut row = row_for(&content, "", hash);
+        row.chain_version = CHAIN_VERSION_V2;
+        row.caller_principal = None;
+
+        assert!(
+            matches!(verify_chain(&key, &[row]), VerifyOutcome::Broken { .. }),
+            "a v3 row relabelled as v2 must not verify"
+        );
+    }
+
+    /// A v3 row with no principal is self-contradictory, and so is one whose
+    /// principal is blank: both claim an encoding that names an account while
+    /// naming none. Treated as a break, not as "cannot verify", because the row
+    /// contradicts itself rather than being written by a newer binary.
+    #[test]
+    fn a_v3_row_without_a_usable_principal_is_broken() {
+        let key = fixed_key();
+        let mut content = sample_content(1, "tx1");
+        content.identity = ChainIdentity::V3 {
+            caller_role: "admin",
+            event_tip: "",
+            caller_principal: "uid:1000",
+        };
+        let hash = key.chain_hash(&content, "");
+
+        for absent in [None, Some(String::new())] {
+            let mut row = row_for(&content, "", hash.clone());
+            row.caller_principal = absent.clone();
+            assert!(
+                matches!(verify_chain(&key, &[row]), VerifyOutcome::Broken { .. }),
+                "a v3 row with principal {absent:?} must be reported as broken"
+            );
+        }
+    }
+
+    /// A row *signed with* a blank principal must be rejected, and this is the
+    /// only test that can prove the guard exists.
+    ///
+    /// The sibling test that blanks a stored principal proves something weaker:
+    /// that row was signed with `uid:1000`, so it fails on signature mismatch
+    /// whether or not `identity()` filters empties. Here the signature is
+    /// perfectly valid for the blank principal, so the row verifies unless the
+    /// filter refuses it. Without the guard a daemon could sign rows that name
+    /// nobody and every one of them would report as intact.
+    #[test]
+    fn a_row_signed_with_a_blank_principal_is_rejected_even_though_it_signs() {
+        let key = fixed_key();
+        let mut content = sample_content(1, "tx-blank");
+        content.identity = ChainIdentity::V3 {
+            caller_role: "admin",
+            event_tip: "",
+            caller_principal: "",
+        };
+        let hash = key.chain_hash(&content, "");
+        // Derived from the very content that was signed, so every other field
+        // matches by construction. Building it by hand is how the first version
+        // of this test came to pass for the wrong reason: a mismatched seq made
+        // the row fail on signature, guard or no guard.
+        let row = row_for(&content, "", hash);
+        assert_eq!(
+            row.caller_principal.as_deref(),
+            Some(""),
+            "fixture must store the blank principal it signed"
+        );
+        assert_eq!(row.chain_version, CHAIN_VERSION_V3);
+        assert!(
+            matches!(verify_chain(&key, &[row]), VerifyOutcome::Broken { .. }),
+            "a v3 row naming nobody must be broken, not accepted"
+        );
+    }
+
+    /// An attribution failure is a legitimate, verifiable identity: the daemon
+    /// admits it could not name the caller, signs that admission, and the chain
+    /// stays intact. If this ever reports Broken, every honest row on a host
+    /// where `SO_PEERCRED` fails becomes a false tamper report.
+    #[test]
+    fn a_row_recording_an_attribution_failure_verifies() {
+        let key = fixed_key();
+        let principal = crate::auth::CallerPrincipal::Unattributed.as_signed_str();
+        let mut content = sample_content(1, "tx-unattributed");
+        content.identity = ChainIdentity::V3 {
+            caller_role: "observer",
+            event_tip: "",
+            caller_principal: &principal,
+        };
+        let hash = key.chain_hash(&content, "");
+        let row = row_for(&content, "", hash);
+
+        assert_eq!(
+            verify_chain(&key, &[row]),
+            VerifyOutcome::Intact { rows_checked: 1 }
+        );
+    }
+
+    /// The realistic database after two upgrades: legacy rows, v2 rows, then v3
+    /// rows, all in one chain. Every generation has to keep verifying, which is
+    /// the whole reason the encoding is selected per row.
+    #[test]
+    fn a_chain_spanning_all_three_encodings_verifies() {
+        let key = fixed_key();
+        let mut rows = Vec::new();
+        let mut prev = String::new();
+        for (i, identity) in [
+            ChainIdentity::LegacyV1,
+            ChainIdentity::V2 {
+                caller_role: "dev",
+                event_tip: "",
+            },
+            ChainIdentity::V3 {
+                caller_role: "admin",
+                event_tip: "",
+                caller_principal: "uid:1000",
+            },
+            ChainIdentity::V3 {
+                caller_role: "admin",
+                event_tip: "",
+                caller_principal: "token:vsock",
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let txid = format!("tx{i}");
+            let mut content = sample_content((i + 1) as u64, &txid);
+            content.identity = identity;
+            let hash = key.chain_hash(&content, &prev);
+            rows.push(row_for(&content, &prev, hash.clone()));
+            prev = hash;
+        }
+
+        assert_eq!(
+            verify_chain(&key, &rows),
+            VerifyOutcome::Intact { rows_checked: 4 }
+        );
+    }
+
+    /// A row from a future encoding is "cannot verify", never "broken": an older
+    /// binary reading a newer chain has found no tampering, only work it cannot
+    /// reproduce. The message must say the supported range so the operator knows
+    /// the fix is a newer build.
+    #[test]
+    fn a_future_encoding_reports_cannot_verify_with_the_supported_range() {
+        let key = fixed_key();
+        let content = sample_content(1, "tx1");
+        let hash = key.chain_hash(&content, "");
+        let mut row = row_for(&content, "", hash);
+        row.chain_version = CHAIN_VERSION_CURRENT + 1;
+
+        match verify_chain(&key, &[row]) {
+            VerifyOutcome::CannotVerify { reason } => {
+                assert!(
+                    reason.contains(&format!("chain_version={}", CHAIN_VERSION_CURRENT + 1)),
+                    "name the version found, got: {reason}"
+                );
+                assert!(
+                    reason.contains(&CHAIN_VERSION_CURRENT.to_string()),
+                    "and the newest version understood, got: {reason}"
+                );
+            }
+            other => panic!("a future encoding must not be reported as tampering: {other:?}"),
+        }
+    }
+
+    /// A row encoded exactly as the v0.2.16 binary would have encoded it: the
+    /// content is synthetic, the hash is what that release's v2 encoder produced
+    /// over it. No in-memory test can prove this property, because every other
+    /// test in this module signs and verifies inside one process, so both halves
+    /// move together whenever a constant changes.
+    ///
+    /// Concretely, this catches the aliasing hazard the `ChainIdentity` docs warn
+    /// about: `identity()` dispatches stored `chain_version` values against
+    /// `CHAIN_VERSION_CURRENT`, and the v2 encoder used to *sign* that same
+    /// constant. Bump it for a new encoding and both the dispatch and the message
+    /// shift, so every v2 row on disk stops verifying while the whole unit suite
+    /// stays green. Only a golden vector notices.
+    #[test]
+    fn a_row_written_by_the_previous_release_still_verifies() {
+        const GOLDEN_V2_CHAIN_HASH: &str = "ba12cbe49a149387898bc30f1e8d409effa025ab8e440e6e72bedf060afc831e45d9be264d6b18b7e0ef2f2b3584dbc6953b535546cecbbdc3d7ac666cae4d0a";
+
+        let key = fixed_key();
+        let row = ChainRow {
+            seq: 7,
+            key_id: CURRENT_KEY_ID.to_string(),
+            transaction_id: "tx-golden".to_string(),
+            request_id: "req-golden".to_string(),
+            request_hash: "hash-golden".to_string(),
+            action_name: "AptInstall".to_string(),
+            risk_level: RiskLevel::Medium,
+            summary: "install ripgrep".to_string(),
+            approval_id: Some("appr-golden".to_string()),
+            warnings_json: "[]".to_string(),
+            created_at: "2026-07-29T00:00:00Z".to_string(),
+            prev_chain_hash: String::new(),
+            chain_hash: GOLDEN_V2_CHAIN_HASH.to_string(),
+            chain_version: 2,
+            caller_role: Some("admin".to_string()),
+            event_tip: Some("eventtip-golden".to_string()),
+            caller_principal: None,
+        };
+
+        assert_eq!(
+            verify_chain(&key, std::slice::from_ref(&row)),
+            VerifyOutcome::Intact { rows_checked: 1 },
+            "a v2 row on disk must verify under this binary; if this fails, the v2 \
+             encoding or its version dispatch changed and existing audit logs are unreadable"
+        );
+
+        // Without this half the frozen constant is decorative: a build that
+        // skipped signature checking entirely would still pass the assertion
+        // above. Flipping one nibble must be rejected.
+        let mut tampered = row;
+        let flipped = match GOLDEN_V2_CHAIN_HASH.strip_prefix('b') {
+            Some(rest) => format!("a{rest}"),
+            None => format!("b{}", &GOLDEN_V2_CHAIN_HASH[1..]),
+        };
+        tampered.chain_hash = flipped;
+        assert!(
+            matches!(
+                verify_chain(&key, &[tampered]),
+                VerifyOutcome::Broken { .. }
+            ),
+            "a golden row with one nibble changed must not verify"
+        );
+    }
+
+    /// The v1 encoding is still claimed verifiable, and until now was protected
+    /// only by tests that sign and verify in one process. Frozen here for the
+    /// same reason as v2.
+    #[test]
+    fn a_legacy_v1_row_on_disk_still_verifies() {
+        const GOLDEN_V1_CHAIN_HASH: &str = "ce8b47c15414e989e099303b826fcd9985360b794220cefbbf9689d25f31fe173283687feb6d1dd265ae5aca94c8bcfb87ce33ba8c954fafdad18a59cd97c702";
+
+        let row = ChainRow {
+            chain_version: 1,
+            caller_role: None,
+            event_tip: None,
+            caller_principal: None,
+            chain_hash: GOLDEN_V1_CHAIN_HASH.to_string(),
+            ..golden_row_shape()
+        };
+        assert_eq!(
+            verify_chain(&fixed_key(), &[row]),
+            VerifyOutcome::Intact { rows_checked: 1 }
+        );
+    }
+
+    /// And v3, frozen now while the encoder that produces it is the one under
+    /// review. When v4 arrives, v3 rows will be in exactly the position v2 rows
+    /// were in before this change, and this is the test that will notice.
+    #[test]
+    fn a_v3_row_on_disk_still_verifies() {
+        const GOLDEN_V3_CHAIN_HASH: &str = "3c0d05f6ccaf9e65ccb796d4ffe96eb31a2ea67e446217c5234af916dc959d0f2c0ee3d3e5b525aece791ee7d6507efb98dcdd79f0d74dde4273859aa9627d08";
+
+        let row = ChainRow {
+            chain_version: 3,
+            caller_role: Some("admin".to_string()),
+            event_tip: Some("eventtip-golden".to_string()),
+            caller_principal: Some("uid:1000".to_string()),
+            chain_hash: GOLDEN_V3_CHAIN_HASH.to_string(),
+            ..golden_row_shape()
+        };
+        assert_eq!(
+            verify_chain(&fixed_key(), &[row]),
+            VerifyOutcome::Intact { rows_checked: 1 }
+        );
+    }
+
+    /// The golden rows above all have an empty `prev_chain_hash`, an approval id,
+    /// and content with no bytes the escape table touches. This one has the
+    /// opposite of each: a non-empty predecessor, no approval id, and a summary
+    /// carrying a backslash, `0x1F`, `0x1E`, and a NUL. A refactor of the escape
+    /// table or of the `approval_id: None` mapping changes this hash and nothing
+    /// else in the suite.
+    #[test]
+    fn the_escape_table_and_absent_approval_encoding_are_frozen() {
+        const GOLDEN_V2_AWKWARD_CHAIN_HASH: &str = "e6face6fe2346fc0f6c5c1e5845255579c8f08738406b88b0a1f6dbdf8ff85090a4b80d95bd0927ef54b0a2c4810d52ebb4bbf76cb68c865a7748df26442aa05";
+
+        let key = fixed_key();
+        let content = ChainContent {
+            seq: 8,
+            approval_id: None,
+            summary: "back\\slash and \x1funit and \x1erecord and nul\0byte",
+            identity: ChainIdentity::V2 {
+                caller_role: "dev",
+                event_tip: "",
+            },
+            ..golden_content_shape()
+        };
+        assert_eq!(
+            key.chain_hash(&content, "ba12cbe4"),
+            GOLDEN_V2_AWKWARD_CHAIN_HASH,
+            "the canonical encoding of escapes, an absent approval id, or a \
+             non-empty prev_chain_hash changed"
+        );
+    }
+
+    /// Shared literal content for the golden vectors. Spelled out rather than
+    /// derived from `sample_content` so a future edit to that helper cannot move
+    /// what the frozen hashes describe.
+    fn golden_content_shape() -> ChainContent<'static> {
+        ChainContent {
+            seq: 7,
+            key_id: CURRENT_KEY_ID,
+            transaction_id: "tx-golden",
+            request_id: "req-golden",
+            request_hash: "hash-golden",
+            action_name: "AptInstall",
+            risk_level: RiskLevel::Medium,
+            summary: "install ripgrep",
+            approval_id: Some("appr-golden"),
+            warnings_json: "[]",
+            created_at: "2026-07-29T00:00:00Z",
+            identity: ChainIdentity::LegacyV1,
+        }
+    }
+
+    /// The stored-row twin of `golden_content_shape`.
+    fn golden_row_shape() -> ChainRow {
+        ChainRow {
+            seq: 7,
+            key_id: CURRENT_KEY_ID.to_string(),
+            transaction_id: "tx-golden".to_string(),
+            request_id: "req-golden".to_string(),
+            request_hash: "hash-golden".to_string(),
+            action_name: "AptInstall".to_string(),
+            risk_level: RiskLevel::Medium,
+            summary: "install ripgrep".to_string(),
+            approval_id: Some("appr-golden".to_string()),
+            warnings_json: "[]".to_string(),
+            created_at: "2026-07-29T00:00:00Z".to_string(),
+            prev_chain_hash: String::new(),
+            chain_hash: String::new(),
+            chain_version: 1,
+            caller_role: None,
+            event_tip: None,
+            caller_principal: None,
+        }
     }
 
     #[test]
@@ -1759,6 +2304,7 @@ mod tests {
             binding: BindingOutcome::Consistent {
                 bindings_checked: 0,
             },
+            unattributed_rows: 0,
         };
         assert_eq!(verification.exit_code(), 1);
     }
@@ -1772,6 +2318,7 @@ mod tests {
                 transaction_seq: 3,
                 event_tip: "abc".to_string(),
             },
+            unattributed_rows: 0,
         };
         assert_eq!(verification.exit_code(), 1);
     }
@@ -1784,6 +2331,7 @@ mod tests {
             binding: BindingOutcome::Consistent {
                 bindings_checked: 1,
             },
+            unattributed_rows: 0,
         };
         assert_eq!(verification.exit_code(), 0);
     }
@@ -1867,6 +2415,10 @@ mod tests {
 
         // Splice in a new row between seq=1 and seq=2 with a fabricated hash.
         let forged = ChainRow {
+            // Carries a principal on purpose: without one the row is rejected as
+            // self-contradictory *before* any signature is checked, and this test
+            // exists to prove the walk stops on a bad signature.
+            caller_principal: Some("uid:1000".to_string()),
             seq: 2,
             key_id: CURRENT_KEY_ID.to_string(),
             transaction_id: "tx-forged".to_string(),

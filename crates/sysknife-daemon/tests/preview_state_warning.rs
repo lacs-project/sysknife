@@ -44,7 +44,14 @@ async fn preview_warns_when_state_collection_fails() {
     let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(FailingHostnameRunner);
     let executor: Arc<dyn ActionExecutor> = Arc::new(RealActionExecutor);
     tokio::spawn(async move {
-        connection_handler_with_executor(server, state, runner, executor, CallerRole::Admin).await;
+        connection_handler_with_executor(
+            server,
+            state,
+            runner,
+            executor,
+            sysknife_daemon::auth::CallerAttribution::from_peer_uid(1000, CallerRole::Admin),
+        )
+        .await;
     });
     let mut framed = FramedStream::new(client);
 

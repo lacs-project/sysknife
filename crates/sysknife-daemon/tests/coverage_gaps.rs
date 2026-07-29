@@ -63,7 +63,7 @@ async fn spawn_handler_with_role(state: DaemonState, role: CallerRole) -> Framed
     let runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(MockRunner);
     let executor: Arc<dyn ActionExecutor> = Arc::new(MockExecutor { exit_code: 0 });
     tokio::spawn(async move {
-        connection_handler_with_executor(server, state, runner, executor, role).await;
+        connection_handler_with_executor(server, state, runner, executor, uid_caller(role)).await;
     });
     FramedStream::new(client)
 }
@@ -97,6 +97,7 @@ fn make_transaction(action: &str) -> NewTransaction {
         summary: format!("Test {action}"),
         warnings: vec![],
         caller_role: CallerRole::Dev,
+        caller_principal: sysknife_daemon::auth::CallerPrincipal::Uid(1000),
     }
 }
 
@@ -120,6 +121,7 @@ fn list_transactions_limit_is_capped_at_100() {
                 summary: format!("tx {i}"),
                 warnings: vec![],
                 caller_role: CallerRole::Dev,
+                caller_principal: sysknife_daemon::auth::CallerPrincipal::Uid(1000),
             })
             .expect("record tx");
     }
@@ -192,6 +194,7 @@ async fn list_job_history_returns_recorded_transactions() {
             summary: "Stage system update".into(),
             warnings: vec![],
             caller_role: CallerRole::Dev,
+            caller_principal: sysknife_daemon::auth::CallerPrincipal::Uid(1000),
         })
         .await
         .expect("record tx");
@@ -414,4 +417,9 @@ fn cleanup_stale_queued_does_not_clobber_running_rows() {
         .map(|r| r.status);
     assert_eq!(queued_status, Some(JobState::Canceled));
     assert_eq!(promoted_status, Some(JobState::Running));
+}
+
+/// A caller attributed to a uid, as a Unix-socket connection would be.
+fn uid_caller(role: sysknife_types::CallerRole) -> sysknife_daemon::auth::CallerAttribution {
+    sysknife_daemon::auth::CallerAttribution::from_peer_uid(1000, role)
 }

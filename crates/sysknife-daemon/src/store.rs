@@ -398,6 +398,7 @@ pub use postgres::PostgresStore;
 mod tests {
     use super::*;
     use crate::audit_chain::AuditKey;
+    use crate::auth::CallerPrincipal;
     use crate::transactions::NewTransaction;
     use sysknife_types::{CallerRole, RiskLevel};
     use tempfile::tempdir;
@@ -416,6 +417,7 @@ mod tests {
             summary: "Upgrade the system".to_string(),
             warnings: vec![],
             caller_role: CallerRole::Dev,
+            caller_principal: CallerPrincipal::Uid(1000),
         }
     }
 

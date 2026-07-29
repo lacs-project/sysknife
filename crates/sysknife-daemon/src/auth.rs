@@ -61,6 +61,132 @@ pub fn denial_message(action: &str, caller: CallerRole, required: CallerRole) ->
 }
 
 // ---------------------------------------------------------------------------
+// Caller principal
+// ---------------------------------------------------------------------------
+
+/// Who asked, as opposed to what they were allowed to do.
+///
+/// [`CallerRole`] answers "was this permitted"; two members of
+/// `sysknife-admin` share a role and are indistinguishable by it. The principal
+/// answers "which account", and is signed into the audit chain
+/// ([`crate::audit_chain::ChainIdentity::V3`]) so the trail can name the account
+/// rather than the class.
+///
+/// An account is not a person: a uid survives `su`, shared logins, and reuse
+/// after a user is deleted. See the attribution-strength limit in `SECURITY.md`.
+///
+/// Every rendering is `scheme:value`, and the scheme is signed along with the
+/// value on purpose, because the strength of the evidence differs. `uid:1000`
+/// was attested by the kernel through `SO_PEERCRED`. `token:vsock` means a
+/// pre-shared secret was presented, and any holder of that file could have
+/// presented it. `none:unattributed` means the daemon could establish neither.
+/// A bare string would erase those distinctions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallerPrincipal {
+    /// A Unix-socket peer whose uid the kernel supplied at `connect()`.
+    Uid(u32),
+    /// A vsock connection authenticated by the pre-shared token. No uid exists
+    /// on that path: the peer is in another kernel.
+    VsockToken,
+    /// The daemon could not establish an account for this connection, either
+    /// because `SO_PEERCRED` failed, or because it returned no usable pid, or
+    /// because the peer is not representable in this daemon's namespaces (the
+    /// kernel then reports the overflow uid, which names `nobody` rather than
+    /// the caller).
+    ///
+    /// The connection is still handled, at `Observer` (the pre-existing
+    /// fallback), and the row records that attribution failed instead of
+    /// inventing a uid. A signed lie about who acted would be worse than a
+    /// signed admission of ignorance.
+    Unattributed,
+}
+
+impl CallerPrincipal {
+    /// Evidence class of this principal. Signed as the part before the colon.
+    ///
+    /// Split out from [`Self::as_signed_str`] so a new variant cannot be added
+    /// without declaring which class it belongs to, and so
+    /// `every_principal_renders_as_a_known_scheme` can walk the whole set.
+    pub fn scheme(&self) -> &'static str {
+        match self {
+            Self::Uid(_) => "uid",
+            Self::VsockToken => "token",
+            Self::Unattributed => "none",
+        }
+    }
+
+    /// The scheme-specific part, signed after the colon.
+    fn value(&self) -> std::borrow::Cow<'static, str> {
+        match self {
+            Self::Uid(uid) => std::borrow::Cow::Owned(uid.to_string()),
+            Self::VsockToken => std::borrow::Cow::Borrowed("vsock"),
+            Self::Unattributed => std::borrow::Cow::Borrowed("unattributed"),
+        }
+    }
+
+    /// The exact string signed into the chain and stored in `caller_principal`.
+    ///
+    /// Never empty for any variant, which matters: `ChainRow::identity` treats an
+    /// empty principal on a `chain_version = 3` row as a missing one and reports
+    /// the row broken. A variant that rendered empty would turn every honest row
+    /// on an affected host into a false tamper report.
+    pub fn as_signed_str(&self) -> String {
+        format!("{}:{}", self.scheme(), self.value())
+    }
+}
+
+/// Role plus principal for one connection, resolved by the daemon and never
+/// taken from the request body.
+///
+/// Fields are private and the constructors are per transport, so the pairings
+/// that matter cannot be built by accident. In particular
+/// [`Self::unattributed`] hardcodes `Observer`: an attribution failure must never
+/// carry a privileged role, because that combination signs the worst possible
+/// record — a claim that an Admin acted, naming nobody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallerAttribution {
+    /// Authorization input. Decides what the connection may call.
+    role: CallerRole,
+    /// Audit-only. Never an authorization input: a principal must not be able to
+    /// widen what a role permits.
+    principal: CallerPrincipal,
+}
+
+impl CallerAttribution {
+    /// A Unix-socket peer, attributed to the uid `SO_PEERCRED` reported.
+    pub fn from_peer_uid(uid: u32, role: CallerRole) -> Self {
+        Self {
+            role,
+            principal: CallerPrincipal::Uid(uid),
+        }
+    }
+
+    /// A vsock peer that presented the pre-shared token.
+    pub fn from_vsock_token(role: CallerRole) -> Self {
+        Self {
+            role,
+            principal: CallerPrincipal::VsockToken,
+        }
+    }
+
+    /// A connection the daemon could not attribute. Always `Observer`.
+    pub fn unattributed() -> Self {
+        Self {
+            role: CallerRole::Observer,
+            principal: CallerPrincipal::Unattributed,
+        }
+    }
+
+    pub fn role(&self) -> CallerRole {
+        self.role
+    }
+
+    pub fn principal(&self) -> CallerPrincipal {
+        self.principal
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Token authentication (vsock connections)
 // ---------------------------------------------------------------------------
 
@@ -489,5 +615,110 @@ mod tests {
         with_role_env(Some("  admin\n"), || {
             assert_eq!(token_role(), CallerRole::Admin)
         });
+    }
+    // ── Principal rendering ───────────────────────────────────────────────
+
+    /// Walks every variant through an exhaustive match, so adding one without
+    /// deciding how it renders is a compile error rather than a silent new
+    /// string in the audit chain.
+    ///
+    /// The empty check is the load-bearing one. `ChainRow::identity` treats an
+    /// empty `caller_principal` on a v3 row as missing and reports the row
+    /// *broken*, so a variant that rendered empty would turn every honest row on
+    /// an affected host into a false tamper report. That is a worse outcome than
+    /// the attribution failure it would be describing.
+    #[test]
+    fn every_principal_renders_as_a_non_empty_known_scheme() {
+        const SCHEMES: [&str; 3] = ["uid", "token", "none"];
+
+        for principal in [
+            CallerPrincipal::Uid(0),
+            CallerPrincipal::Uid(1000),
+            CallerPrincipal::Uid(u32::MAX),
+            CallerPrincipal::VsockToken,
+            CallerPrincipal::Unattributed,
+        ] {
+            // Exhaustive on purpose: a new variant must be added here too.
+            let expected_scheme = match principal {
+                CallerPrincipal::Uid(_) => "uid",
+                CallerPrincipal::VsockToken => "token",
+                CallerPrincipal::Unattributed => "none",
+            };
+
+            let signed = principal.as_signed_str();
+            assert!(
+                !signed.is_empty(),
+                "{principal:?} renders empty, which a v3 row reports as tampering"
+            );
+            assert_eq!(principal.scheme(), expected_scheme);
+            let (scheme, value) = signed
+                .split_once(':')
+                .unwrap_or_else(|| panic!("{principal:?} rendered {signed:?} with no scheme"));
+            assert_eq!(scheme, expected_scheme);
+            assert!(
+                !value.is_empty(),
+                "{principal:?} rendered {signed:?} with an empty value"
+            );
+            assert!(SCHEMES.contains(&scheme), "unknown scheme in {signed:?}");
+        }
+    }
+
+    /// Exact renderings, frozen. These strings are signed into audit rows, so
+    /// changing one silently re-encodes every future row and makes chains written
+    /// by two builds disagree about who acted.
+    #[test]
+    fn principal_renderings_are_frozen() {
+        assert_eq!(CallerPrincipal::Uid(0).as_signed_str(), "uid:0");
+        assert_eq!(CallerPrincipal::Uid(1000).as_signed_str(), "uid:1000");
+        assert_eq!(
+            CallerPrincipal::Uid(u32::MAX).as_signed_str(),
+            "uid:4294967295"
+        );
+        assert_eq!(CallerPrincipal::VsockToken.as_signed_str(), "token:vsock");
+        assert_eq!(
+            CallerPrincipal::Unattributed.as_signed_str(),
+            "none:unattributed"
+        );
+    }
+
+    /// No scheme may prefix another, or a stored principal could be read as
+    /// belonging to a different evidence class than the one that signed it.
+    #[test]
+    fn no_scheme_is_a_prefix_of_another() {
+        let schemes = ["uid", "token", "none"];
+        for a in schemes {
+            for b in schemes {
+                if a != b {
+                    assert!(
+                        !a.starts_with(b) && !b.starts_with(a),
+                        "scheme {a:?} and {b:?} are prefix-ambiguous"
+                    );
+                }
+            }
+        }
+    }
+
+    // ── Attribution pairing ───────────────────────────────────────────────
+
+    /// The pairing that must never exist: a privileged role with no account.
+    /// `unattributed()` hardcodes Observer, and the private fields mean no call
+    /// site can assemble the other combination.
+    #[test]
+    fn an_unattributed_caller_is_never_privileged() {
+        let caller = CallerAttribution::unattributed();
+        assert_eq!(caller.role(), CallerRole::Observer);
+        assert_eq!(caller.principal(), CallerPrincipal::Unattributed);
+    }
+
+    #[test]
+    fn transport_constructors_pick_the_matching_evidence_class() {
+        assert_eq!(
+            CallerAttribution::from_peer_uid(4242, CallerRole::Admin).principal(),
+            CallerPrincipal::Uid(4242)
+        );
+        assert_eq!(
+            CallerAttribution::from_vsock_token(CallerRole::Dev).principal(),
+            CallerPrincipal::VsockToken
+        );
     }
 }

@@ -152,7 +152,11 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-features --locked -- -D warnings
+        # --all-targets so #[cfg(test)] code is linted too. Without it a
+        # duplicated #[test] attribute (which silently drops the test it was
+        # meant for) and dead test helpers both pass CI: rustc emits warnings
+        # that this job never compiles.
+        run: cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
 
       - name: Doc check (broken intra-doc links)
         env:

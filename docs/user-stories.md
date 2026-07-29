@@ -290,7 +290,7 @@ forget" model — the LLM never sees what the commands produced.
    `sudo usermod -aG docker ci-runner`.
 
 5. Transaction logged to SQLite with both action names, params,
-   caller role, and timestamps.
+   caller role and principal, and timestamps.
 
 **What works well:** The role-based authorization
 (`crates/sysknife-daemon/src/policy.rs:24`) ensures the caller has
