@@ -8,6 +8,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [0.3.0] — unreleased
+
+The signed audit chain now records **which account** acted, not only which role.
+Schema version 3, with a real migration and no rewrite of existing rows.
+
+### Added
+
+- **`chain_version = 3` signs a caller principal.** A row bound to a
+  `CallerRole` could not separate two members of `sysknife-admin`, so the trail
+  answered "an Admin did this" and stopped one question short of where an
+  investigation starts. Rows now also sign `caller_principal`, resolved by the
+  daemon from the same `SO_PEERCRED` read that yields the role and never taken
+  from the request body. Three forms, with the scheme signed alongside the value
+  because the evidence differs in strength: `uid:<n>` attested by the kernel,
+  `token:vsock` for a pre-shared secret that proves possession of a file rather
+  than an account, and `none:unattributed` when the daemon could establish
+  neither.
+- **The principal reaches the SIEM.** Forwarded RFC 5424 events carry a
+  `principal` structured-data field, taken from the signed row rather than from
+  connection state, so an external monitor sees what the chain committed to.
+- **`sysknife audit verify` reports `unattributed_rows`.** A chain of rows that
+  name nobody verifies as intact, which is true and incomplete; the count is now
+  reported next to the verdict, in `--json`, and on the `sysknife_audit_verify`
+  MCP tool.
+- Golden on-disk vectors for all three encodings, plus one row exercising the
+  escape table, an absent approval id and a non-empty predecessor hash. These
+  are the only tests that can notice an encoding drifting, because every other
+  test signs and verifies in one process.
+
+### Changed
+
+- **Existing audit logs keep verifying.** v1, v2 and v3 rows coexist in one
+  chain and each is re-encoded exactly as it was signed. Migration 3 adds a
+  nullable column in both backends and backfills nothing: writing a principal
+  into a row signed without one would change its message and report the chain as
+  broken.
+- `CallerAttribution` replaces a bare `CallerRole` through the dispatcher, with
+  private fields and per-transport constructors, so an attribution failure can
+  no longer be paired with a privileged role.
+- CI lints test targets (`cargo clippy --all-targets`). Without it a duplicated
+  `#[test]` attribute, which silently drops the test it was meant for, passed
+  every check.
+
+### Fixed
+
+- **A version-aliasing hazard that would have broken every existing audit log.**
+  The v2 encoder signed `CHAIN_VERSION_CURRENT` and version dispatch compared
+  against the same constant, so the next encoding bump would have re-encoded
+  every stored v2 row and reported healthy chains as unverifiable — while the
+  unit suite stayed green, because in-memory tests sign and verify under one
+  constant. Each generation now signs and dispatches on its own stable literal,
+  and the stored `chain_version` is derived from the identity that was signed.
+- **A peer outside the daemon's namespaces was signed as a real account.** The
+  kernel substitutes the overflow uid (`nobody`) rather than failing when a
+  peer's uid is not mappable, and reports pid 0 when the pid is not
+  representable. Both were recorded as kernel-attested accounts; both now record
+  an attribution failure.
+- The missing-field break message named the newest encoding rather than the one
+  the row declares, and reported an empty column as `NULL`.
+
 ## [0.2.16] — 2026-07-28
 
 A whole-repository review pass (four independent read-only reviewers, one per

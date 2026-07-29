@@ -83,6 +83,14 @@ pub struct AuditEvent {
     pub chain_hash: String,
     pub key_id: String,
     pub caller_role: Option<String>,
+    /// Which account the daemon attributed the call to, taken from the signed
+    /// row rather than from the connection state, so the SIEM sees what the chain
+    /// says. `None` only for rows written before the principal existed.
+    ///
+    /// Without this the whole point of the signed principal stops at the local
+    /// database: a SOC watching this stream would still see only "an Admin did
+    /// this", and could not see an attribution failure at all.
+    pub caller_principal: Option<String>,
     pub final_status: Option<String>,
 }
 
@@ -306,6 +314,7 @@ pub fn format_rfc5424(event: &AuditEvent, facility: u8) -> String {
          risk=\"{}\" \
          approval=\"{}\" \
          role=\"{}\" \
+         principal=\"{}\" \
          chain_hash=\"{}\" \
          key_id=\"{}\"{terminal_status_param}]",
         event.seq,
@@ -314,6 +323,7 @@ pub fn format_rfc5424(event: &AuditEvent, facility: u8) -> String {
         risk,
         sd_escape(event.approval_id.as_deref().unwrap_or("")),
         sd_escape(event.caller_role.as_deref().unwrap_or("")),
+        sd_escape(event.caller_principal.as_deref().unwrap_or("")),
         sd_escape(&event.chain_hash),
         sd_escape(&event.key_id),
     );
@@ -401,6 +411,7 @@ mod tests {
             chain_hash: "deadbeef".to_string(),
             key_id: "v1".to_string(),
             caller_role: Some("Dev".to_string()),
+            caller_principal: Some("uid:1000".to_string()),
             final_status: None,
         }
     }

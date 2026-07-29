@@ -37,7 +37,7 @@ use uuid::Uuid;
 
 use crate::audit_chain::{
     AuditEventKind, AuditKey, AuditVerification, ChainContent, ChainIdentity, ChainRow,
-    EventContent, EventRow, VerifyOutcome, CHAIN_VERSION_CURRENT, CURRENT_KEY_ID,
+    EventContent, EventRow, VerifyOutcome, CURRENT_KEY_ID,
 };
 use crate::audit_watermark::emit_chain_tip_watermark;
 use crate::store::AuditStore;
@@ -929,6 +929,13 @@ async fn insert_transaction(
     let caller_role = transaction.caller_role.as_str();
     let caller_principal = transaction.caller_principal.as_signed_str();
 
+    // As in the SQLite path: derive the stored version from the identity that was
+    // signed, so the column cannot disagree with the message.
+    let identity = ChainIdentity::V3 {
+        caller_role,
+        event_tip: &event_tip,
+        caller_principal: &caller_principal,
+    };
     let chain_hash = key.chain_hash(
         &ChainContent {
             seq,
@@ -942,11 +949,7 @@ async fn insert_transaction(
             approval_id: approval_id.as_deref(),
             warnings_json: &warnings_json,
             created_at: &created_at,
-            identity: ChainIdentity::V3 {
-                caller_role,
-                event_tip: &event_tip,
-                caller_principal: &caller_principal,
-            },
+            identity,
         },
         &prev_chain_hash,
     );
@@ -973,7 +976,7 @@ async fn insert_transaction(
     .bind(&key_id)
     .bind(&chain_hash)
     .bind(&prev_chain_hash)
-    .bind(i64::from(CHAIN_VERSION_CURRENT))
+    .bind(i64::from(identity.version()))
     .bind(caller_role)
     .bind(&event_tip)
     .bind(&caller_principal)

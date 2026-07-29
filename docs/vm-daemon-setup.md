@@ -96,7 +96,7 @@ ssh -fN \
 
 Authorization is **not** carried by the tunnel. The daemon reads the connecting
 peer's credentials with `SO_PEERCRED` and resolves that peer's group membership
-(`resolve_caller_role` in `crates/sysknife-daemon/src/dispatcher.rs`). Over a
+(`resolve_caller` in `crates/sysknife-daemon/src/dispatcher.rs`). Over a
 forwarded socket the connecting peer is the `sshd` process on the remote side,
 running as the SSH user, so:
 

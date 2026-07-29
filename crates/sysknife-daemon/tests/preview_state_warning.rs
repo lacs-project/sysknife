@@ -49,10 +49,7 @@ async fn preview_warns_when_state_collection_fails() {
             state,
             runner,
             executor,
-            sysknife_daemon::auth::CallerAttribution {
-                role: CallerRole::Admin,
-                principal: sysknife_daemon::auth::CallerPrincipal::Uid(1000),
-            },
+            sysknife_daemon::auth::CallerAttribution::from_peer_uid(1000, CallerRole::Admin),
         )
         .await;
     });

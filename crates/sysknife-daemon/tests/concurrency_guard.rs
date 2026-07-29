@@ -403,8 +403,5 @@ fn exclusive_resource_is_derived_from_the_action_argv() {
 
 /// A caller attributed to a uid, as a Unix-socket connection would be.
 fn uid_caller(role: sysknife_types::CallerRole) -> sysknife_daemon::auth::CallerAttribution {
-    sysknife_daemon::auth::CallerAttribution {
-        role,
-        principal: sysknife_daemon::auth::CallerPrincipal::Uid(1000),
-    }
+    sysknife_daemon::auth::CallerAttribution::from_peer_uid(1000, role)
 }

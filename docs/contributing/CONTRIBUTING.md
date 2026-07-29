@@ -252,7 +252,7 @@ extra reviewer scrutiny:
 | Action allowlist | `crates/sysknife-brain/src/planning_tools/propose_plan.rs` (`KNOWN_ACTIONS`) | Adding a name here makes it proposable by the LLM |
 | Role policy | `crates/sysknife-daemon/src/policy.rs` (`min_role_for_action`) | Governs which groups can execute which actions |
 | Approval / replay | `crates/sysknife-daemon/src/transactions.rs` | Hash freshness and TOCTOU protection |
-| Caller auth | `crates/sysknife-daemon/src/dispatcher.rs` (`resolve_caller_role`) | SO_PEERCRED group-to-role mapping |
+| Caller auth | `crates/sysknife-daemon/src/dispatcher.rs` (`resolve_caller`) | SO_PEERCRED uid + group-to-role mapping |
 | Audit log | `crates/sysknife-brain/src/audit.rs`, `crates/sysknife-brain/src/journal.rs` | Safety fence record and journald forwarding |
 
 When adding a new action to `KNOWN_ACTIONS`, you must also:

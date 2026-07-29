@@ -12,7 +12,7 @@
 //! - Unix role is derived from the peer process's Linux group membership
 //!   via `SO_PEERCRED` + `/proc/{pid}/status` + `/etc/group`, with the peer
 //!   pinned by a pidfd (`SO_PEERPIDFD`, Linux 6.5+) to guard the supplementary
-//!   group read against PID reuse (see `resolve_caller_role`). The shell never
+//!   group read against PID reuse (see `resolve_caller`). The shell never
 //!   supplies its own role.
 //! - Vsock role is derived from a pre-shared token validated against a file;
 //!   the token is generated at setup time and distributed out-of-band.
@@ -182,7 +182,7 @@ fn redact_argv(action_name: &str, params: &Value, args: &[String]) -> Vec<String
 }
 
 use crate::{
-    auth::{highest_role_from_groups, CallerAttribution, CallerPrincipal},
+    auth::{highest_role_from_groups, CallerAttribution},
     executor::{build_action_spec, rollback_spec_for, ActionExecutor},
     preview::preview_action,
     state::DaemonState,
@@ -477,7 +477,8 @@ fn pidfd_peer_still_live(pidfd: &OwnedFd) -> bool {
     std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
-/// Resolve the caller's `CallerRole` from the peer process's group membership.
+/// Resolve who is calling: the role that decides what they may do, and the
+/// principal that records which account did it.
 ///
 /// Uses `SO_PEERCRED` (via `peer_cred()`) to obtain the peer PID and primary
 /// GID, reads `/proc/{pid}/status` for the supplementary GIDs, and resolves
@@ -503,16 +504,17 @@ pub fn resolve_caller(stream: &UnixStream) -> CallerAttribution {
     let (pid, primary_gid, uid) = match stream.peer_cred() {
         Ok(cred) => {
             let pid = match cred.pid() {
-                Some(p) if p >= 0 => p as u32,
+                // Strictly positive: the kernel writes 0 when the peer's pid is
+                // not representable in this daemon's pid namespace, and 0 is
+                // never a real peer. Accepting it read as a successful
+                // attribution of a process that cannot be named.
+                Some(p) if p > 0 => p as u32,
                 _ => {
                     eprintln!(
                         "[sysknife-daemon] WARNING: peer_cred() returned no usable pid; \
                          defaulting to Observer and recording the caller as unattributed"
                     );
-                    return CallerAttribution {
-                        role: CallerRole::Observer,
-                        principal: CallerPrincipal::Unattributed,
-                    };
+                    return CallerAttribution::unattributed();
                 }
             };
             (pid, cred.gid(), cred.uid())
@@ -522,10 +524,7 @@ pub fn resolve_caller(stream: &UnixStream) -> CallerAttribution {
                 "[sysknife-daemon] WARNING: peer_cred() failed: {e}; defaulting to Observer \
                  and recording the caller as unattributed"
             );
-            return CallerAttribution {
-                role: CallerRole::Observer,
-                principal: CallerPrincipal::Unattributed,
-            };
+            return CallerAttribution::unattributed();
         }
     };
 
@@ -569,10 +568,45 @@ pub fn resolve_caller(stream: &UnixStream) -> CallerAttribution {
     // The uid comes from the same SO_PEERCRED read as the gid, captured by the
     // kernel at connect(), so it is race-free in a way the supplementary group
     // set read from /proc is not.
-    CallerAttribution {
-        role: highest_role_from_groups(groups),
-        principal: CallerPrincipal::Uid(uid),
+    //
+    // It is not always a real account, though. The kernel translates `struct
+    // ucred` into the *reader's* namespaces, and when the peer's uid is not
+    // mappable it substitutes the overflow uid (`/proc/sys/kernel/overflowuid`,
+    // 65534 / `nobody` by default) rather than failing. A socket bind-mounted
+    // into a container reaches this path. Signing `uid:65534` there would make a
+    // positive claim that the `nobody` account acted, when the truth is that the
+    // kernel could not name the peer — exactly the false attribution
+    // `CallerPrincipal::Unattributed` exists to avoid.
+    if uid == overflow_uid() {
+        eprintln!(
+            "[sysknife-daemon] WARNING: SO_PEERCRED reported the overflow uid ({uid}) for pid \
+             {pid}; the peer is not representable in this daemon's user namespace. Recording \
+             the caller as unattributed rather than as uid:{uid}."
+        );
+        return CallerAttribution::unattributed();
     }
+
+    CallerAttribution::from_peer_uid(uid, highest_role_from_groups(groups))
+}
+
+/// The uid the kernel substitutes when a peer's uid cannot be mapped into this
+/// process's user namespace.
+///
+/// Read once from `/proc/sys/kernel/overflowuid`, falling back to the kernel's
+/// compile-time default. The fallback is not a "just in case" branch: on a host
+/// where procfs is not mounted the value is still 65534, and treating an
+/// unreadable sysctl as "no overflow uid exists" would re-open the false
+/// attribution this guards against.
+fn overflow_uid() -> u32 {
+    /// Kernel default from `include/linux/highuid.h`.
+    const DEFAULT_OVERFLOW_UID: u32 = 65534;
+    static CACHED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::fs::read_to_string("/proc/sys/kernel/overflowuid")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u32>().ok())
+            .unwrap_or(DEFAULT_OVERFLOW_UID)
+    })
 }
 
 /// Read `/etc/group` once and return a `HashMap<gid, group_name>`.
@@ -700,7 +734,7 @@ async fn authorize_for_transaction(
 ) -> Result<bool, HandlerError> {
     match state.audit.get(transaction_id).await {
         Ok(Some(transaction)) => {
-            if authorize_action(&state.policy, &caller.role, &transaction.action_name) {
+            if authorize_action(&state.policy, &caller.role(), &transaction.action_name) {
                 Ok(true)
             } else {
                 send_error(
@@ -709,7 +743,7 @@ async fn authorize_for_transaction(
                     "authorization_failure",
                     authorization_failure_message(
                         &state.policy,
-                        &caller.role,
+                        &caller.role(),
                         &transaction.action_name,
                     ),
                 )
@@ -904,13 +938,10 @@ pub async fn vsock_connection_handler_with_executor<S>(
 
     let token_path = crate::auth::default_token_path();
     let caller = match authenticate_vsock_token(&mut framed, &token_path).await {
-        Some(role) => CallerAttribution {
-            role,
-            // A pre-shared token proves possession of a file, not the identity
-            // of a person. Recording it as such keeps the chain honest: any
-            // holder of that token could have made this call.
-            principal: CallerPrincipal::VsockToken,
-        },
+        // A pre-shared token proves possession of a file, not the identity of a
+        // person. Recording it as such keeps the chain honest: any holder of
+        // that token could have made this call.
+        Some(role) => CallerAttribution::from_vsock_token(role),
         None => {
             eprintln!("[sysknife-daemon] vsock auth failed; closing connection");
             return;
@@ -1324,12 +1355,12 @@ async fn handle_approval_details(
             .await;
         }
     };
-    if !authorize_action(&state.policy, &caller.role, &transaction.action_name) {
+    if !authorize_action(&state.policy, &caller.role(), &transaction.action_name) {
         return send_error(
             framed,
             request_id,
             "authorization_failure",
-            authorization_failure_message(&state.policy, &caller.role, &transaction.action_name),
+            authorization_failure_message(&state.policy, &caller.role(), &transaction.action_name),
         )
         .await;
     }
@@ -1756,12 +1787,12 @@ async fn handle_describe(
         )
         .await;
     }
-    if !authorize_action(&state.policy, &caller.role, action_name) {
+    if !authorize_action(&state.policy, &caller.role(), action_name) {
         return send_error(
             framed,
             request_id,
             "authorization_failure",
-            authorization_failure_message(&state.policy, &caller.role, action_name),
+            authorization_failure_message(&state.policy, &caller.role(), action_name),
         )
         .await;
     }
@@ -1846,12 +1877,12 @@ async fn handle_preview(
         }
     };
 
-    if !authorize_action(&state.policy, &caller.role, action_name) {
+    if !authorize_action(&state.policy, &caller.role(), action_name) {
         return send_error(
             framed,
             request_id,
             "authorization_failure",
-            authorization_failure_message(&state.policy, &caller.role, action_name),
+            authorization_failure_message(&state.policy, &caller.role(), action_name),
         )
         .await;
     }
@@ -1906,7 +1937,7 @@ async fn handle_preview(
         action_name: action_name.to_string(),
         request_id: request_id.to_string(),
         params: params.clone(),
-        caller_role: caller.role,
+        caller_role: caller.role(),
         request_hash: sysknife_types::RequestHash::new(request_hash.to_string()),
     };
 
@@ -1935,8 +1966,8 @@ async fn handle_preview(
         // Both resolved by the daemon from the connection, never read from the
         // request body. The role says what was permitted; the principal says
         // which account asked, which is the question an audit starts with.
-        caller_role: caller.role,
-        caller_principal: caller.principal,
+        caller_role: caller.role(),
+        caller_principal: caller.principal(),
     };
 
     let recorded = match state.audit.record_previewed(new_tx, preview.clone()).await {
@@ -1956,7 +1987,7 @@ async fn handle_preview(
     // response — if the forwarder queue is full or its task is gone, the
     // event is dropped (with a counter + WARN). The local hash-chained log
     // is always written first; the SIEM receives a copy.
-    forward_audit_event(state, &recorded.transaction.transaction_id, &caller.role);
+    forward_audit_event(state, &recorded.transaction.transaction_id, &caller.role());
 
     send_response(
         framed,
@@ -1997,6 +2028,9 @@ fn forward_audit_event(state: &DaemonState, transaction_id: &str, caller: &Calle
                     chain_hash: row.chain_hash,
                     key_id: row.key_id,
                     caller_role: Some(caller_label),
+                    // From the row, not the connection: the SIEM should see the
+                    // account the chain committed to.
+                    caller_principal: row.caller_principal,
                     final_status: None,
                 });
             }
@@ -2054,6 +2088,7 @@ fn forward_status_change_event(
                     chain_hash: row.chain_hash,
                     key_id: row.key_id,
                     caller_role: Some(caller_label),
+                    caller_principal: row.caller_principal,
                     final_status: Some(final_status_label),
                 });
             }
@@ -2160,12 +2195,12 @@ async fn handle_execute(
         }
     };
 
-    if !authorize_action(&state.policy, &caller.role, action_name) {
+    if !authorize_action(&state.policy, &caller.role(), action_name) {
         return send_error(
             framed,
             request_id,
             "authorization_failure",
-            authorization_failure_message(&state.policy, &caller.role, action_name),
+            authorization_failure_message(&state.policy, &caller.role(), action_name),
         )
         .await;
     }
@@ -2511,7 +2546,7 @@ async fn handle_execute(
             // terminal outcome of the action, not just the preview. Best-effort
             // and fire-and-forget — the local hash-chained log is the durable
             // record.
-            forward_status_change_event(state, transaction_id, &caller.role, final_status);
+            forward_status_change_event(state, transaction_id, &caller.role(), final_status);
         }
         Err(e) => {
             eprintln!(
@@ -2692,13 +2727,17 @@ async fn send_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::CallerPrincipal;
 
     /// A uid-attributed caller, the shape a Unix-socket connection produces.
     fn uid_caller(role: CallerRole) -> CallerAttribution {
-        CallerAttribution {
-            role,
-            principal: CallerPrincipal::Uid(1000),
-        }
+        uid_caller_with(1000, role)
+    }
+
+    /// A uid-attributed caller with an explicit uid, for tests that need to tell
+    /// one account from another.
+    fn uid_caller_with(uid: u32, role: CallerRole) -> CallerAttribution {
+        CallerAttribution::from_peer_uid(uid, role)
     }
     use crate::{
         state::{DaemonConfig, DaemonState},
@@ -2718,7 +2757,7 @@ mod tests {
         // On kernels with SO_PEERPIDFD the pinned peer is this very test process,
         // which is obviously still alive, so the liveness check must return true.
         // On older kernels peer_pidfd returns None and there is nothing to assert
-        // (the fallback path is exercised by resolve_caller_role below).
+        // (the fallback path is exercised by `resolve_caller` below).
         if let Some(fd) = peer_pidfd(&a) {
             assert!(
                 pidfd_peer_still_live(&fd),
@@ -2737,12 +2776,12 @@ mod tests {
         let caller = resolve_caller(&a);
 
         assert_eq!(
-            caller.principal,
+            caller.principal(),
             CallerPrincipal::Uid(unsafe { libc::geteuid() }),
             "a Unix-socket caller must be attributed to the peer uid SO_PEERCRED reports"
         );
         assert_eq!(
-            caller.principal.as_signed_str(),
+            caller.principal().as_signed_str(),
             format!("uid:{}", unsafe { libc::geteuid() }),
             "and the signed form must carry the uid scheme"
         );
@@ -2764,7 +2803,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_caller_matches_the_peers_actual_groups() {
-        // This used to call `resolve_caller_role` and discard the result,
+        // An earlier version discarded the resolved value and asserted only that nothing panicked,
         // asserting only "no panic" — it would have passed just as happily if
         // the function returned Boot for everyone.
         //
@@ -2774,7 +2813,7 @@ mod tests {
         // /proc/<pid>/status → /etc/group → role — instead of only its absence
         // of panics.
         let (a, _b) = UnixStream::pair().unwrap();
-        let role = resolve_caller(&a).role;
+        let role = resolve_caller(&a).role();
 
         let gid_map = read_gid_map();
         let expected =
@@ -2791,7 +2830,7 @@ mod tests {
         // The direction that actually matters for safety: privilege must come
         // from group membership, never from the mere act of connecting.
         let (a, _b) = UnixStream::pair().unwrap();
-        let role = resolve_caller(&a).role;
+        let role = resolve_caller(&a).role();
 
         let gid_map = read_gid_map();
         let groups = groups_for_pid(std::process::id(), &gid_map);
@@ -3091,10 +3130,7 @@ mod tests {
                 server,
                 state,
                 runner(),
-                crate::auth::CallerAttribution {
-                    role: CallerRole::Observer,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
+                uid_caller_with(1000, CallerRole::Observer),
             )
             .await;
         });
@@ -3162,10 +3198,7 @@ mod tests {
                 server,
                 state,
                 runner(),
-                crate::auth::CallerAttribution {
-                    role: CallerRole::Observer,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
+                uid_caller_with(1000, CallerRole::Observer),
             )
             .await;
         });
@@ -3205,10 +3238,7 @@ mod tests {
                 server,
                 state,
                 runner(),
-                crate::auth::CallerAttribution {
-                    role: CallerRole::Observer,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
+                uid_caller_with(1000, CallerRole::Observer),
             )
             .await;
         });
@@ -3268,10 +3298,7 @@ mod tests {
                 server,
                 state,
                 runner(),
-                crate::auth::CallerAttribution {
-                    role: CallerRole::Observer,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
+                uid_caller_with(1000, CallerRole::Observer),
             )
             .await;
         });
@@ -3343,10 +3370,7 @@ mod tests {
                 server,
                 state,
                 runner(),
-                crate::auth::CallerAttribution {
-                    role: CallerRole::Observer,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
+                uid_caller_with(1000, CallerRole::Observer),
             )
             .await;
         });
@@ -3379,10 +3403,7 @@ mod tests {
                 server,
                 handler_state,
                 runner(),
-                crate::auth::CallerAttribution {
-                    role: CallerRole::Observer,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
+                uid_caller_with(1000, CallerRole::Observer),
             )
             .await;
         });
@@ -3440,10 +3461,7 @@ mod tests {
                 server,
                 handler_state,
                 runner(),
-                crate::auth::CallerAttribution {
-                    role: CallerRole::Observer,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
+                uid_caller_with(1000, CallerRole::Observer),
             )
             .await;
         });
@@ -3514,10 +3532,7 @@ mod tests {
                 server,
                 handler_state,
                 runner(),
-                crate::auth::CallerAttribution {
-                    role: CallerRole::Observer,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
+                uid_caller_with(1000, CallerRole::Observer),
             )
             .await;
         });
@@ -3577,10 +3592,7 @@ mod tests {
                 server,
                 handler_state,
                 runner(),
-                crate::auth::CallerAttribution {
-                    role: CallerRole::Observer,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
+                uid_caller_with(1000, CallerRole::Observer),
             )
             .await;
         });
@@ -3618,18 +3630,20 @@ mod tests {
         requests: Vec<Value>,
         want_responses: usize,
     ) -> Vec<Value> {
+        exchange_as(state, uid_caller_with(1000, role), requests, want_responses).await
+    }
+
+    /// `exchange` with the caller spelled out, for tests that assert on which
+    /// account the daemon recorded.
+    async fn exchange_as(
+        state: DaemonState,
+        caller: CallerAttribution,
+        requests: Vec<Value>,
+        want_responses: usize,
+    ) -> Vec<Value> {
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         tokio::spawn(async move {
-            unix_connection_handler(
-                server,
-                state,
-                runner(),
-                crate::auth::CallerAttribution {
-                    role: role,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
-            )
-            .await;
+            unix_connection_handler(server, state, runner(), caller).await;
         });
 
         let mut framed = FramedStream::new(client);
@@ -3671,6 +3685,47 @@ mod tests {
     // ------------------------------------------------------------------
     // preview
     // ------------------------------------------------------------------
+
+    /// The account the connection was attributed to must reach the stored row.
+    ///
+    /// Everything else about the principal is tested in isolation: the resolver,
+    /// the renderings, the encoder, the store. None of that notices if
+    /// `handle_preview` passes a default instead of the connection's own caller,
+    /// because the value would still be a well-formed principal that verifies.
+    /// This is the test that fails for a hardcoded one.
+    #[tokio::test]
+    async fn the_recorded_principal_is_the_one_the_connection_was_attributed_to() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let audit = std::sync::Arc::clone(&state.audit);
+
+        let resps = exchange_as(
+            state,
+            uid_caller_with(4242, CallerRole::Observer),
+            vec![json!({
+                "type": "preview",
+                "request_id": "r-principal",
+                "action_name": "GetSystemState",
+                "params": {}
+            })],
+            1,
+        )
+        .await;
+
+        let transaction_id = resps[0]["transaction_id"].as_str().unwrap();
+        let row = audit
+            .fetch_chain_row(transaction_id)
+            .await
+            .expect("fetch the row just written")
+            .expect("preview records a transaction");
+
+        assert_eq!(
+            row.caller_principal.as_deref(),
+            Some("uid:4242"),
+            "the row must name the account resolved for this connection, not a default"
+        );
+        assert_eq!(row.chain_version, crate::audit_chain::CHAIN_VERSION_CURRENT);
+    }
 
     #[tokio::test]
     async fn preview_returns_hash_and_transaction_id() {
@@ -3783,10 +3838,7 @@ mod tests {
                 server,
                 handler_state,
                 runner(),
-                crate::auth::CallerAttribution {
-                    role: CallerRole::Admin,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
+                uid_caller_with(1000, CallerRole::Admin),
             )
             .await;
         });
@@ -4128,10 +4180,7 @@ mod tests {
                 server,
                 handler_state,
                 runner(),
-                crate::auth::CallerAttribution {
-                    role: CallerRole::Observer,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
+                uid_caller_with(1000, CallerRole::Observer),
             )
             .await;
         });
@@ -4189,10 +4238,7 @@ mod tests {
                 server,
                 handler_state,
                 runner(),
-                crate::auth::CallerAttribution {
-                    role: CallerRole::Observer,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
+                uid_caller_with(1000, CallerRole::Observer),
             )
             .await;
         });
@@ -4247,10 +4293,7 @@ mod tests {
                 server,
                 handler_state,
                 runner(),
-                crate::auth::CallerAttribution {
-                    role: CallerRole::Admin,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
+                uid_caller_with(1000, CallerRole::Admin),
             )
             .await;
         });
@@ -4310,10 +4353,7 @@ mod tests {
                 server,
                 state,
                 runner(),
-                crate::auth::CallerAttribution {
-                    role: CallerRole::Observer,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
+                uid_caller_with(1000, CallerRole::Observer),
             )
             .await;
         });
@@ -4527,10 +4567,7 @@ mod tests {
                 server,
                 state,
                 runner(),
-                crate::auth::CallerAttribution {
-                    role: CallerRole::Observer,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
+                uid_caller_with(1000, CallerRole::Observer),
             )
             .await;
         });
@@ -4621,10 +4658,7 @@ mod tests {
                     ps,
                     state,
                     runner(),
-                    crate::auth::CallerAttribution {
-                        role: CallerRole::Observer,
-                        principal: crate::auth::CallerPrincipal::Uid(1000),
-                    },
+                    uid_caller_with(1000, CallerRole::Observer),
                 )
                 .await;
             });
@@ -4660,10 +4694,7 @@ mod tests {
                     s,
                     state,
                     runner(),
-                    crate::auth::CallerAttribution {
-                        role: CallerRole::Observer,
-                        principal: crate::auth::CallerPrincipal::Uid(1000),
-                    },
+                    uid_caller_with(1000, CallerRole::Observer),
                 )
                 .await;
             });
@@ -4771,10 +4802,7 @@ mod tests {
                 server,
                 state,
                 runner(),
-                crate::auth::CallerAttribution {
-                    role: CallerRole::Observer,
-                    principal: crate::auth::CallerPrincipal::Uid(1000),
-                },
+                uid_caller_with(1000, CallerRole::Observer),
             )
             .await;
         });
@@ -5079,10 +5107,7 @@ mod tests {
                         state,
                         runner(),
                         executor(),
-                        CallerAttribution {
-                            role: r,
-                            principal: CallerPrincipal::VsockToken,
-                        },
+                        CallerAttribution::from_vsock_token(r),
                     )
                     .await;
                 }

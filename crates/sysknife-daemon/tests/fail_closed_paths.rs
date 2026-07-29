@@ -185,8 +185,5 @@ async fn preview_never_reaches_the_executor() {
 
 /// A caller attributed to a uid, as a Unix-socket connection would be.
 fn uid_caller(role: sysknife_types::CallerRole) -> sysknife_daemon::auth::CallerAttribution {
-    sysknife_daemon::auth::CallerAttribution {
-        role,
-        principal: sysknife_daemon::auth::CallerPrincipal::Uid(1000),
-    }
+    sysknife_daemon::auth::CallerAttribution::from_peer_uid(1000, role)
 }

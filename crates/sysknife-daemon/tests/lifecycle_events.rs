@@ -49,10 +49,7 @@ async fn spawn_handler(state: DaemonState) -> FramedStream<UnixStream> {
             state,
             runner,
             executor,
-            sysknife_daemon::auth::CallerAttribution {
-                role: CallerRole::Admin,
-                principal: sysknife_daemon::auth::CallerPrincipal::Uid(1000),
-            },
+            sysknife_daemon::auth::CallerAttribution::from_peer_uid(1000, CallerRole::Admin),
         )
         .await;
     });
@@ -71,10 +68,7 @@ async fn spawn_handler_with_executor(
             state,
             runner,
             executor,
-            sysknife_daemon::auth::CallerAttribution {
-                role: CallerRole::Admin,
-                principal: sysknife_daemon::auth::CallerPrincipal::Uid(1000),
-            },
+            sysknife_daemon::auth::CallerAttribution::from_peer_uid(1000, CallerRole::Admin),
         )
         .await;
     });
@@ -382,12 +376,4 @@ async fn rollback_execution_includes_lifecycle_events() {
             .any(|l| l.contains("attempting automatic rollback")),
         "should have rollback attempt event; got: {lines:?}"
     );
-}
-
-/// A caller attributed to a uid, as a Unix-socket connection would be.
-fn uid_caller(role: sysknife_types::CallerRole) -> sysknife_daemon::auth::CallerAttribution {
-    sysknife_daemon::auth::CallerAttribution {
-        role,
-        principal: sysknife_daemon::auth::CallerPrincipal::Uid(1000),
-    }
 }

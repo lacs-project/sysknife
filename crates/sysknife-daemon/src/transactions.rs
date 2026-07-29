@@ -1,6 +1,6 @@
 use crate::audit_chain::{
     self, AuditEventKind, AuditKey, ChainContent, ChainIdentity, ChainRow, EventContent, EventRow,
-    VerifyOutcome, CHAIN_VERSION_CURRENT, CURRENT_KEY_ID,
+    VerifyOutcome, CURRENT_KEY_ID,
 };
 use crate::audit_watermark::emit_chain_tip_watermark;
 use crate::auth::CallerPrincipal;
@@ -75,10 +75,10 @@ pub struct NewTransaction {
     pub warnings: Vec<String>,
     /// Role the daemon resolved for the connection that asked for this action.
     ///
-    /// Chain-hashed at INSERT alongside `summary`. Before this field existed
-    /// the signed record could say what was authorised but not *who asked*,
-    /// which is the first question any audit of a privileged action starts
-    /// with. Not caller-supplied over the wire: the dispatcher passes the role
+    /// Chain-hashed at INSERT alongside `summary`. Before this field existed the
+    /// signed record could say what was authorised but not which privilege tier
+    /// asked; which *account* asked is `caller_principal` below. Not
+    /// caller-supplied over the wire: the dispatcher passes the role
     /// it resolved from `SO_PEERCRED` (or the vsock token), never a value from
     /// the request body.
     pub caller_role: CallerRole,
@@ -1117,6 +1117,14 @@ impl TransactionStore {
         let event_tip = Self::event_chain_tip(conn)?.unwrap_or_default();
         let caller_role = transaction.caller_role.as_str();
         let caller_principal = transaction.caller_principal.as_signed_str();
+        // Build the identity once and derive the stored version from it, so the
+        // chain_version column is provably the version whose message was signed.
+        // A constant here let the two drift the moment a new encoding landed.
+        let identity = ChainIdentity::V3 {
+            caller_role,
+            event_tip: &event_tip,
+            caller_principal: &caller_principal,
+        };
         let chain_hash = key.chain_hash(
             &ChainContent {
                 seq,
@@ -1130,11 +1138,7 @@ impl TransactionStore {
                 approval_id: approval_id.as_deref(),
                 warnings_json: &warnings_json,
                 created_at: &created_at,
-                identity: ChainIdentity::V3 {
-                    caller_role,
-                    event_tip: &event_tip,
-                    caller_principal: &caller_principal,
-                },
+                identity,
             },
             &prev_chain_hash,
         );
@@ -1187,7 +1191,7 @@ impl TransactionStore {
                 key_id,
                 chain_hash,
                 prev_chain_hash,
-                CHAIN_VERSION_CURRENT as i64,
+                identity.version() as i64,
                 caller_role,
                 event_tip,
                 caller_principal,
@@ -1257,6 +1261,7 @@ fn deserialize_field<T: DeserializeOwned>(value: &str) -> Result<T, serde_json::
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audit_chain::CHAIN_VERSION_CURRENT;
     use crate::audit_chain::CHAIN_VERSION_LEGACY;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::tempdir;
@@ -1333,6 +1338,135 @@ mod tests {
         )
         .unwrap();
         transaction_id.to_string()
+    }
+
+    /// A database at schema version 2 holding one v2 row: the shape every host
+    /// running v0.2.13 through v0.2.16 has on disk right now.
+    ///
+    /// Built by replaying `SQLITE_MIGRATIONS[0..=1]` rather than hardcoded DDL,
+    /// so editing those migrations cannot leave this fixture describing a schema
+    /// that never existed.
+    fn v2_database(path: &Path, key: &AuditKey) -> String {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (
+                 version INTEGER PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+        for migration in &SQLITE_MIGRATIONS[0..=1] {
+            conn.execute_batch(migration.sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)",
+                params![migration.version, migration.name],
+            )
+            .unwrap();
+        }
+
+        let transaction_id = "tx-v2";
+        let created_at = "2026-07-01T12:00:00.000Z";
+        let chain_hash = key.chain_hash(
+            &ChainContent {
+                seq: 1,
+                key_id: CURRENT_KEY_ID,
+                transaction_id,
+                request_id: "req-v2",
+                request_hash: "hash-v2",
+                action_name: "UpdateSystem",
+                risk_level: RiskLevel::High,
+                summary: "Upgrade the system",
+                approval_id: None,
+                warnings_json: "[]",
+                created_at,
+                identity: ChainIdentity::V2 {
+                    caller_role: "admin",
+                    event_tip: "",
+                },
+            },
+            "",
+        );
+        conn.execute(
+            "INSERT INTO transactions (
+                transaction_id, request_id, request_hash, action_name, risk_level,
+                status, approval_id, summary, warnings_json, created_at,
+                seq, key_id, chain_hash, prev_chain_hash,
+                chain_version, caller_role, event_tip
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, 1, ?10, ?11, '', 2, 'admin', '')",
+            params![
+                transaction_id,
+                "req-v2",
+                "hash-v2",
+                "UpdateSystem",
+                serialize_field(&RiskLevel::High).unwrap(),
+                serialize_field(&JobState::Queued).unwrap(),
+                "Upgrade the system",
+                "[]",
+                created_at,
+                CURRENT_KEY_ID,
+                chain_hash,
+            ],
+        )
+        .unwrap();
+        transaction_id.to_string()
+    }
+
+    /// The upgrade every deployed host actually performs: v2 on disk, then v3
+    /// rows appended by the new daemon, in one chain.
+    ///
+    /// The v1 fixture already covers the older jump, but nothing covered this
+    /// one, and it is the only one with installed users. If migration 3 ever
+    /// backfilled a principal, or the v2 dispatch drifted, this is where a real
+    /// operator's audit log would start reporting as tampered.
+    #[test]
+    fn a_v2_database_keeps_verifying_and_accepts_v3_rows() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("tx.db");
+        let key = AuditKey::from_bytes(vec![0x42; 32]);
+        let old_transaction = v2_database(&db_path, &key);
+
+        let store = test_store(&db_path);
+
+        let version: i64 = store
+            .connection()
+            .unwrap()
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, 3, "opening a v2 database must apply migration 3");
+
+        let rows = store.fetch_chain_rows().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].transaction_id, old_transaction);
+        assert_eq!(rows[0].chain_version, audit_chain::CHAIN_VERSION_V2);
+        assert_eq!(
+            rows[0].caller_principal, None,
+            "migration 3 must not invent a principal for a row signed without one"
+        );
+        assert!(matches!(
+            store.verify_audit_chain(&key).unwrap(),
+            audit_chain::VerifyOutcome::Intact { rows_checked: 1 }
+        ));
+
+        // Append under the new encoding and re-verify the mixed chain.
+        let mut fresh = queued_transaction();
+        fresh.caller_principal = CallerPrincipal::Uid(4242);
+        store.record(fresh).unwrap();
+
+        let rows = store.fetch_chain_rows().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].chain_version, audit_chain::CHAIN_VERSION_CURRENT);
+        assert_eq!(rows[1].caller_principal.as_deref(), Some("uid:4242"));
+        assert_eq!(
+            rows[1].prev_chain_hash, rows[0].chain_hash,
+            "the v3 row must chain onto the v2 row, not start a new chain"
+        );
+        assert!(matches!(
+            store.verify_audit_chain(&key).unwrap(),
+            audit_chain::VerifyOutcome::Intact { rows_checked: 2 }
+        ));
     }
 
     #[test]
@@ -1543,7 +1677,6 @@ mod tests {
 
     // ── Audit chain integration tests ────────────────────────────────────
 
-    #[test]
     /// The store must persist the principal the dispatcher resolved, under the
     /// v3 tag, or the chain claims an encoding whose evidence is missing. Reads
     /// the columns directly rather than through the verifier, so a mismatch
@@ -1581,6 +1714,7 @@ mod tests {
         ));
     }
 
+    #[test]
     fn record_writes_audit_chain_columns() {
         let dir = tempdir().unwrap();
         let store = test_store(dir.path().join("tx.db"));
@@ -1655,7 +1789,10 @@ mod tests {
                         summary: format!("worker {w} record {r}"),
                         warnings: vec![],
                         caller_role: CallerRole::Dev,
-                        caller_principal: CallerPrincipal::Uid(1000),
+                        // Distinct per worker: with every row claiming the same
+                        // account, the chain could attribute a row to the wrong
+                        // caller under contention and still verify.
+                        caller_principal: CallerPrincipal::Uid(3000 + w as u32),
                     };
                     store
                         .record(tx)
@@ -1678,6 +1815,34 @@ mod tests {
                 );
             }
             other => panic!("chain must be Intact under concurrent writes; got {other:?}"),
+        }
+
+        // (a2) every row must still name the worker that wrote it. The summary
+        // carries the worker id independently of the principal, so a row whose
+        // principal drifted onto another worker's insert is detectable.
+        {
+            let conn = store.connection().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT summary, caller_principal FROM transactions")
+                .unwrap();
+            let pairs: Vec<(String, Option<String>)> = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+            assert_eq!(pairs.len(), TOTAL);
+            for (summary, principal) in pairs {
+                let worker: u32 = summary
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|w| w.parse().ok())
+                    .unwrap_or_else(|| panic!("unexpected summary {summary:?}"));
+                assert_eq!(
+                    principal.as_deref(),
+                    Some(format!("uid:{}", 3000 + worker).as_str()),
+                    "row {summary:?} was attributed to the wrong account"
+                );
+            }
         }
 
         // (b) seq must be a contiguous run 1..=TOTAL with no gaps and no duplicates.
