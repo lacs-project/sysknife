@@ -10,12 +10,14 @@ artefacts.
 
 ## Phase 8: Multi-distro
 
-Tracked in the v0.4.0 milestone. Ubuntu is the supported target today
-(20.04 and later, see [docs/distro-support.md](docs/distro-support.md)); the
-items below widen that.
+Tracked in the v0.4.0 milestone. Ubuntu is the primary target today (20.04 and
+later) because that is where the users are; Fedora Atomic 41+ is eligible and its
+rpm-ostree action families work, it just needs a fresh validation run. See
+[docs/distro-support.md](docs/distro-support.md).
 
 - Ubuntu 22.04 full action parity (65/65 stories)
 - Ubuntu 26.04 full action parity (65/65 stories)
+- record a current Fedora Silverblue 44 full VM run
 - dnf action family (Fedora Workstation non-atomic)
 - pacman action family (Arch/Manjaro)
 

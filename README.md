@@ -24,7 +24,7 @@
   <strong>Distros</strong>&nbsp;
   <img src="https://img.shields.io/badge/Ubuntu%2020.04%2B-supported-2f855a?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu 20.04 and later supported">
   <img src="https://img.shields.io/badge/Ubuntu%2024.04-VM%20validated-2f855a?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu 24.04 VM validated">
-  <img src="https://img.shields.io/badge/Fedora%20Atomic-legacy%2C%20unsupported-6b7280?style=flat-square&logo=fedora&logoColor=white" alt="Fedora Atomic legacy and unsupported">
+  <img src="https://img.shields.io/badge/Fedora%20Atomic%2041%2B-eligible%2C%20unvalidated-b7791f?style=flat-square&logo=fedora&logoColor=white" alt="Fedora Atomic 41 and later eligible but not VM validated">
 </p>
 
 <p align="center">
