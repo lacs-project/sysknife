@@ -8,6 +8,7 @@
 
 - [Quick Start](quickstart.md)
 - [MCP Server](mcp.md)
+- [Registry and Directory Listings](mcp-registry.md)
 - [CLI Reference](cli.md)
 - [Configure Your LLM](configuration.md)
 - [Distro Support](distro-support.md)

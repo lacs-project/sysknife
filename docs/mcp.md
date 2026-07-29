@@ -16,6 +16,12 @@ audit-logged path.
 > Run `npx sysknife-setup` — it detects which AI clients you have installed and
 > writes the correct config files for each one automatically.
 
+> **Found SysKnife on a directory page listing zero tools?** That is expected,
+> not a fault. The MCP server is the unprivileged half of SysKnife and needs a
+> privileged daemon on a real host to have any tools to offer, which a directory's
+> build sandbox cannot provide. See
+> [Registry and Directory Listings](mcp-registry.md#sandboxed-directories-and-the-empty-tool-list).
+
 ---
 
 ## Tools
