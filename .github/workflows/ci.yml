@@ -53,6 +53,9 @@ jobs:
       - name: Check MCP Registry manifest coherence
         run: bash tests/release/registry-manifest.test.sh
 
+      - name: Check Smithery manifest coherence
+        run: bash tests/release/smithery-manifest.test.sh
+
       - name: Check release rehearsal contract
         run: bash tests/release/release-rehearsal.test.sh
 

@@ -131,7 +131,7 @@ separate submission. Verified by walking each flow on 2026-07-29:
 | **PulseMCP** | No submission form exists for servers. Choosing "MCP Server" on `pulsemcp.com/submit` returns instructions only: they ingest the official registry daily and process weekly. The URL field on that page belongs to the *MCP Client* branch. Email `hello@pulsemcp.com` only if a week has passed since the registry publish without a listing. |
 | **mcpservers.org** | Web form: server name, one-sentence description, link, category, contact email. Free tier with a review pass; a paid tier only buys queue position. |
 | **Glama** | Browser-only build spec at `glama.ai/mcp/servers/lacs-project/sysknife/admin/dockerfile`. Keep the `mcp-proxy --` prefix in the CMD arguments: that wrapper is how Glama exposes a stdio server. |
-| **Smithery** | Needs a `smithery.yaml` in the repository declaring a stdio `commandFunction`, alongside the existing `glama.json`. |
+| **Smithery** | `smithery.yaml` is in the repository root, declaring the **stdio** form: their CLI spawns `sysknife mcp-server` on the user's own machine, where a daemon can actually exist. Their two *hosted* runtimes (`typescript`, `container`) require Streamable HTTP and would run a daemonless sandbox, so they are the wrong shape here, and `tests/release/smithery-manifest.test.sh` fails the build if someone switches to one. The user still needs the `sysknife` binary installed first; Smithery spawns it, it does not install it. |
 | **mcp.so, LobeHub** | Separate submissions; both reject automated fetches, so use a real browser. |
 
 ## Sandboxed directories and the empty tool list

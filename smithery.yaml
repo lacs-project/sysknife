@@ -1,0 +1,37 @@
+# Smithery manifest: https://smithery.ai/docs
+#
+# stdio on purpose, not one of Smithery's hosted runtimes.
+#
+# `sysknife mcp-server` is the unprivileged half of SysKnife. It plans, previews
+# and forwards; it cannot change anything. Every mutation travels over a local
+# unix socket to sysknife-daemon, which holds the privileged policy. A hosted
+# container has no daemon and no host worth administering, so it would boot and
+# report zero tools. Spawning the server on the user's own machine is the only
+# shape that yields a working server.
+#
+# Prerequisite for the user: the `sysknife` binary must already be installed and
+# on PATH (`npx sysknife-setup` is the shortest route, `cargo install
+# sysknife-cli` the other). Smithery spawns the binary; it does not install it.
+#
+# See docs/mcp-registry.md for why directory listings show an empty tool list,
+# and tests/release/smithery-manifest.test.sh for the guard that keeps the
+# command below in step with the CLI.
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      socket:
+        type: string
+        description: >-
+          Where the privileged daemon listens: a unix:// path, a vsock:// target,
+          or a bare path. Leave empty to use wherever the daemon bound, which is
+          correct for a default install.
+    required: []
+  commandFunction: |-
+    (config) => ({
+      command: 'sysknife',
+      args: ['mcp-server'],
+      env: config.socket ? { SYSKNIFE_SOCKET: config.socket } : {}
+    })
+  exampleConfig: {}
