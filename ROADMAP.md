@@ -132,7 +132,9 @@ Tracked in the v0.4.0 milestone.
   actions (`get_disk_usage`, `list_services`, `get_authorized_keys`, …) as
   individual MCP tools so Claude Desktop can read live system state in-context;
   mutating actions remain plan-only to preserve the approval gate
-- publish `sysknife-brain` and `sysknife-types` to crates.io
+- ~~publish `sysknife-brain` and `sysknife-types` to crates.io~~ — done; every
+  workspace crate (`sysknife-cli`, `-core`, `-daemon`, `-types`, `-brain`,
+  `-proto`) publishes from `release.yml` on each `v*` tag
 - Telegram interface (`sysknife-bot`) — approve plans from your phone via
   inline buttons; the viral mechanic
 
