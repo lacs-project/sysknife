@@ -21,8 +21,12 @@
 /// [`ParseError::FileTooLarge`].
 pub const MAX_OS_RELEASE_BYTES: usize = 10 * 1024;
 
-/// Oldest Fedora Atomic release still eligible. Legacy: Fedora is no longer a
-/// supported target, but existing installs keep working.
+/// Oldest Fedora Atomic release SysKnife acts on.
+///
+/// Fedora Atomic is a real target: the rpm-ostree, Flatpak and toolbox action
+/// families are implemented and mutations are allowed from 41 onward. It is
+/// simply not where the effort goes, because Ubuntu has far more users, so it
+/// carries no current live-VM validation run. See `docs/distro-support.md`.
 pub const OLDEST_ELIGIBLE_FEDORA_ATOMIC: u32 = 41;
 
 /// Oldest Ubuntu major version SysKnife acts on (20 → 20.04).
@@ -222,9 +226,10 @@ impl DistroId {
     ///   Ubuntu is the supported platform, so eligibility must not depend on
     ///   the LTS cadence — the apt, snap, ufw and netplan tooling every action
     ///   drives is present across those releases.
-    /// - Fedora Atomic variants 41+ (Silverblue, Kinoite, and siblings) remain
-    ///   eligible from earlier releases, but are no longer a supported target;
-    ///   see `docs/distro-support.md`.
+    /// - Fedora Atomic variants 41+ (Silverblue, Kinoite, and siblings) are
+    ///   eligible too. The rpm-ostree action families work; the difference from
+    ///   Ubuntu is validation effort, not support, because Ubuntu has far more
+    ///   users. See `docs/distro-support.md`.
     ///
     /// # Eligibility is not validation coverage
     ///

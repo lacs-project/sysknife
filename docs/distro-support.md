@@ -1,9 +1,11 @@
 # Distro support matrix
 
-**Ubuntu is the supported platform: every release from 20.04 onward, LTS and
-interim alike.** Fedora Atomic support predates that decision. Its code is still
-present and still works, but it is no longer a supported target and is not
-validated — treat it as legacy.
+**Ubuntu is the primary platform: every release from 20.04 onward, LTS and
+interim alike.** That is a focus decision, not a judgement about other families:
+Ubuntu simply has far more users. Fedora Atomic remains a real target. Its
+rpm-ostree, Flatpak and toolbox action families are implemented and mutations are
+allowed from Fedora Atomic 41 onward; what it lacks is a current live-VM
+validation run, which is why it sits at a lower evidence tier below.
 
 SysKnife reports operating-system support by evidence, not by family name
 alone. Recognition in `/etc/os-release` means the planner can select the right
@@ -18,7 +20,7 @@ the bug this section now documents:
 - **Eligibility** — will the daemon act on this host at all? That is
   `DistroId::is_supported()` in `crates/sysknife-core/src/distro.rs`, and the
   daemon refuses every *mutating* action when it is false. It is true for all
-  Ubuntu releases from 20.04 up.
+  Ubuntu releases from 20.04 up, and for Fedora Atomic 41 and later.
 - **Validation tier** — has the full story suite been run on that release?
   That is the table below, and it will always be narrower than eligibility.
 
@@ -47,8 +49,8 @@ apt and a read-only root, so the Debian-family action set cannot apply.
 | **Ubuntu 22.04 LTS** | Ubuntu/apt family | VM bootstrap and smoke tests | **Smoke-tested** |
 | **Ubuntu 26.04 LTS** | Ubuntu/apt family | VM bootstrap, smoke tests, and sudo-rs sudoers verification (26.04 ships sudo-rs 0.2.x; `visudo -cf` parses the SysKnife sudoers and every grant — including the trailing-`*` wildcard grants — is honoured) | **Smoke-tested** |
 | **Every other Ubuntu 20.04+ release** (20.04, 20.10, 21.x, 23.x, 25.x, 26.10, …) | Ubuntu/apt family | Eligible by release family; no per-release VM run | **Smoke-tested** |
-| **Fedora Silverblue 44** | rpm-ostree, Flatpak, toolbox, firewalld, systemd, containers | Harness and fixture coverage; no current live-VM run | **Experimental** (legacy, unsupported target) |
-| **Other Fedora Atomic 41+ variants** | rpm-ostree family | Detection and shared action tests | **Experimental** (legacy, unsupported target) |
+| **Fedora Silverblue 44** | rpm-ostree, Flatpak, toolbox, firewalld, systemd, containers | Harness and fixture coverage; no current live-VM run | **Experimental** (eligible, awaiting a fresh VM run) |
+| **Other Fedora Atomic 41+ variants** | rpm-ostree family | Detection and shared action tests | **Experimental** (eligible, awaiting a fresh VM run) |
 | **Fedora Workstation / Server** | `dnf` family incomplete | Detection tests only | **Experimental** |
 
 The deterministic workspace baseline is 1,534 Rust tests plus 72 frontend
