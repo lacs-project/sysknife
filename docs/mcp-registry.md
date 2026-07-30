@@ -96,17 +96,17 @@ registry-ready. To publish the listing:
    ```sh
    brew install mcp-publisher   # or download from the registry's GitHub Releases
    ```
-3. **Authenticate as the `lacs-project` org** — pick one:
-   - Local, interactive (one-time device-flow login in a browser):
-     ```sh
-     mcp-publisher login github
-     ```
-   - CI, headless (no stored secret), inside a GitHub Actions job with
-     `permissions: id-token: write` (the `./` reflects the binary downloaded
-     into the job's working directory rather than a PATH install):
-     ```sh
-     ./mcp-publisher login github-oidc
-     ```
+3. **Authenticate as the `lacs-project` org.** In practice there is one option,
+   not two: see [Authentication: namespace comes from the
+   identity](#authentication-namespace-comes-from-the-identity) below. Inside a
+   GitHub Actions job with `permissions: id-token: write` (the `./` reflects the
+   binary downloaded into the job's working directory rather than a PATH install):
+   ```sh
+   ./mcp-publisher login github-oidc
+   ```
+   The `publish-registry` job in `.github/workflows/release.yml` does this on every
+   tag, and `.github/workflows/publish-mcp.yml` can be dispatched by hand for a
+   retry or a backfill.
 4. **Validate and publish** (from the repo root):
    ```sh
    mcp-publisher validate   # checks server.json against the live registry
@@ -119,6 +119,34 @@ registry-ready. To publish the listing:
    curl "https://registry.modelcontextprotocol.io/v0/servers?search=sysknife"
    ```
    The `count` in the response metadata goes from `0` to `1`.
+
+## Authentication: namespace comes from the identity
+
+`server.json` publishes `io.github.lacs-project/sysknife`, and the registry mints
+publishing permissions from whoever authenticated, not from what the manifest
+asks for. That distinction is the whole reason this cannot be done from a laptop.
+
+`mcp-publisher login github` authenticates the **user**. The registry token it
+returns carries a single permission:
+
+```json
+{"action": "publish", "resource": "io.github.vladimirrott/*"}
+```
+
+so `publish` fails with `403 Forbidden ... You have permission to publish:
+io.github.vladimirrott/*. Attempting to publish: io.github.lacs-project/sysknife`.
+Making org membership public does not fix it, and neither does being an org admin:
+the device-flow OAuth grant does not carry `read:org`, so the registry never sees
+the membership at all. Verified 2026-07-30 on two consecutive fresh logins with
+membership already public.
+
+`mcp-publisher login github-oidc` authenticates the **repository**. The namespace
+is derived from the repository owner, so it matches `server.json` by construction,
+and the credential is `permissions: id-token: write` rather than a stored secret.
+
+The practical consequence: a release published from a laptop can reach crates.io,
+npm and GitHub Releases but *cannot* reach the MCP Registry. Publish the registry
+listing from Actions.
 
 ## Downstream propagation
 

@@ -286,6 +286,19 @@ jobs:
             "dist/sysknife-${VERSION}-linux-x86_64.spdx.json" \
             "dist/sysknife-${VERSION}-linux-aarch64.spdx.json"
 
+  publish-registry:
+    name: Publish to the MCP Registry
+    # After crates.io on purpose: the registry validator fetches the published
+    # crate's rendered README to confirm the `mcp-name:` ownership marker, so it
+    # cannot succeed before that version exists on crates.io.
+    needs: [preflight, publish-crates]
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/publish-mcp.yml
+    with:
+      ref: ${{ github.ref }}
+
   post-release-checklist:
     name: File the manual post-release steps
     # Only after publication actually succeeded: a checklist for a release that
@@ -331,29 +344,11 @@ jobs:
           version_no_v="${VERSION#v}"
 
           cat > body.md <<EOF
-          \`${VERSION}\` is published to npm, crates.io, and GitHub Releases. Two
-          directory listings still point at the previous version, and neither can be
-          updated from CI.
+          \`${VERSION}\` is published to npm, crates.io, GitHub Releases and the
+          official MCP Registry. One directory listing still points at the previous
+          version and cannot be updated from CI.
 
-          ### 1. Official MCP Registry
-
-          \`server.json\` already names \`sysknife-cli@${version_no_v}\`. The validator reads
-          the **published** crate's rendered README for the \`mcp-name:\` marker, so this
-          step only works now that crates.io has the version.
-
-          \`\`\`sh
-          mcp-publisher login github   # device code, cannot run unattended
-          mcp-publisher publish        # from the repository root
-          \`\`\`
-
-          Verify:
-
-          \`\`\`sh
-          curl -sS "https://registry.modelcontextprotocol.io/v0/servers?search=sysknife" \\
-            | grep -o '"version":"${version_no_v}"'
-          \`\`\`
-
-          ### 2. Glama build spec
+          ### Glama build spec
 
           Browser-only: <https://glama.ai/mcp/servers/lacs-project/sysknife/admin/dockerfile>
 
@@ -372,7 +367,11 @@ jobs:
           ### Notes
 
           - Checksum above is read from this release's \`sha256sums-linux-x86_64.txt\`, not hand-copied.
-          - Neither step blocks users installing \`${VERSION}\`; they affect discovery only.
+          - This does not block users installing \`${VERSION}\`; it affects discovery only.
+          - The MCP Registry publish is no longer manual: the \`publish-registry\` job
+            authenticates with GitHub Actions OIDC, which is what makes the
+            \`io.github.lacs-project/*\` namespace available. A device-code login from a
+            laptop only ever gets the personal namespace and is rejected with 403.
           - Close this issue once both are done.
           EOF
 
