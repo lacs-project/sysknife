@@ -1243,7 +1243,7 @@ fn standing(row: &ChainRow) -> RowStanding {
 ///
 /// Fields are private and [`Self::of`] is the only constructor that reads rows, so
 /// a census cannot state totals that contradict the rows it describes.
-/// [`Self::from_counts_for_tests`] is the one other way to build one, and it is
+/// `from_counts_for_tests` is the one other way to build one, and it is
 /// not for production. That is not hypothetical tidiness: in 0.3.0 the MCP report
 /// built its own all-zero attribution count on the `cannot_verify` path, where a
 /// real count had already been computed, and the MCP tool and `audit verify
@@ -1307,7 +1307,7 @@ impl AttributionCensus {
 
     /// Rows censused.
     ///
-    /// The four [`RowStanding`] outcomes partition the rows, and [`Self::of`]
+    /// The four row outcomes partition the rows, and [`Self::of`]
     /// increments exactly one bucket per row, so this equals their sum. State the
     /// partition rather than the arithmetic: a fifth bucket keeps the partition
     /// true, and any sum written out by hand somewhere else would not survive it.
