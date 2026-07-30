@@ -1137,10 +1137,14 @@ pub struct AuditVerification {
     /// verifies perfectly and answers "who acted" with nobody. The verdict is
     /// about tampering; this census is about how much the trail can tell you.
     ///
-    /// `None` when no rows were read, so no census was taken. Deliberately not a
-    /// census of zero rows: "nothing is known about attribution" and "the chain
-    /// holds no rows" are different claims, and a zero that means the first reads
-    /// as the second, which is the exact confusion this census exists to end.
+    /// `None` when the store could not be read at all, so no census was taken: a
+    /// missing database, an unopenable one, an absent key. A readable but empty
+    /// store is `Some`, with every count zero.
+    ///
+    /// Deliberately not a census of zero rows for the unreadable case: "nothing
+    /// is known about attribution" and "the chain holds no rows" are different
+    /// claims, and a zero that means the first reads as the second, which is the
+    /// exact confusion this census exists to end.
     pub attribution: Option<AttributionCensus>,
 }
 
@@ -1159,36 +1163,38 @@ enum RowStanding {
     /// principal field, or a v3 row with a blank column, which also verifies as
     /// `Broken` once the walk reaches it.
     NotRecorded,
-    /// A value no signature vouches for. Either the column is populated on an
-    /// encoding that does not sign it, or the value is one this binary cannot
-    /// read as `scheme:value`, or the row declares a future encoding whose
-    /// signed fields are unknown here. Nothing in SysKnife writes any of those,
-    /// so their presence is evidence of an out-of-band write or of a newer
-    /// daemon, never evidence of who acted.
+    /// Nothing here that a signature vouches for. Three sources: the column is
+    /// populated on an encoding that does not sign it, or the value is one this
+    /// binary cannot read back as something the daemon could have written, or the
+    /// row declares an encoding this build does not know, in which case the
+    /// principal may be absent or held somewhere this build cannot see.
+    ///
+    /// This build never writes any of those, so the first two are evidence of an
+    /// out-of-band write and the third of a newer daemon. None of them is evidence
+    /// of who acted.
     Unattested,
 }
 
 /// Which encoding, if any, signs the `caller_principal` column, and therefore
 /// whether the column may be believed.
 ///
-/// This is the load-bearing check in the census. `ChainContent::message` pushes
-/// `caller_principal` into the signed bytes **only** in the v3 arm, so on a v1 or
-/// v2 row that column is unsigned free space: anyone with write access to the
-/// table can set it to `uid:0` and the chain still verifies `Intact`, because
+/// This is the load-bearing check in the census. [`ChainContent::canonical_bytes`]
+/// pushes `caller_principal` into the signed bytes **only** in the v3 arm, so on a
+/// v1 or v2 row that column is unsigned free space: anyone with write access to
+/// the table can set it to `uid:0` and the chain still verifies `Intact`, because
 /// there is no signature over it to break. Bucketing by the column instead of by
 /// the encoding would let a plain `UPDATE` manufacture attribution, which is a
 /// worse failure than the one this census was written to fix. Losing attribution
 /// is a gap; inventing it is a lie.
 fn standing(row: &ChainRow) -> RowStanding {
-    // Trimmed before classifying, and empty treated as absent exactly as
-    // `ChainRow::identity` reads it. The schema stores `''` as well as `NULL`,
-    // and `verify_chain` prints the two differently on purpose, so both are
-    // reachable on real data.
-    let stored = row
-        .caller_principal
-        .as_deref()
-        .map(str::trim)
-        .filter(|p| !p.is_empty());
+    // Empty treated as absent, and nothing trimmed, so this agrees with
+    // `ChainRow::identity` exactly: it filters on `is_empty` and no more. An
+    // earlier version trimmed first, which sent a whitespace-only v3 principal
+    // into "written before the column existed" -- a row that in fact verifies
+    // Intact and is an anomaly worth investigating. The schema stores `''` as
+    // well as `NULL`, and `verify_chain` prints those two differently on purpose,
+    // so both are reachable on real data.
+    let stored = row.caller_principal.as_deref().filter(|p| !p.is_empty());
     match row.chain_version {
         CHAIN_VERSION_LEGACY | CHAIN_VERSION_V2 => match stored {
             None => RowStanding::NotRecorded,
@@ -1202,9 +1208,11 @@ fn standing(row: &ChainRow) -> RowStanding {
                 crate::auth::PrincipalClaim::Unrecognized => RowStanding::Unattested,
             },
         },
-        // A future encoding. `verify_rows` already reports `CannotVerify` for
-        // this row, and the census must not claim an account either: this binary
-        // cannot say which fields that encoding signs.
+        // An encoding this binary does not know, which is any value outside 1..=3:
+        // a newer daemon's, or a corrupt column. `verify_rows` already reports
+        // `CannotVerify` for such a row, and the census must not claim an account
+        // either, because this binary cannot say which fields that encoding signs
+        // -- including whether it signs this column at all.
         _ => RowStanding::Unattested,
     }
 }
@@ -1213,10 +1221,13 @@ fn standing(row: &ChainRow) -> RowStanding {
 ///
 /// Counted over all rows, not only the ones that verified, so a chain that
 /// breaks at row 5 still reports what the remaining rows *claim* about who
-/// acted. Those claims are only as good as the verdict beside them: on anything
-/// other than `Intact`, treat every count here as unproven, and note that the
-/// sum can exceed `rows_checked` for that reason. [`Self::rows`] exists so a
-/// reader can see that gap instead of inferring it.
+/// acted. Those claims are only as good as the chain verdict beside them: unless
+/// it is `Intact`, treat every count here as unproven, and note that
+/// [`Self::rows`] can then exceed the verdict's `rows_checked`. A row past the
+/// break may be perfectly authentic -- a deleted or reordered row breaks the link
+/// while leaving every later signature valid -- so the surplus is the part of the
+/// trail this command cannot vouch for, not proof of forgery. [`Self::rows`]
+/// exists so a reader can see that gap instead of inferring it.
 ///
 /// One counter is not enough, because a row can name no account for reasons with
 /// different remedies. `none:unattributed` says the daemon tried and failed on a
@@ -1230,12 +1241,13 @@ fn standing(row: &ChainRow) -> RowStanding {
 /// "unattributed" count of `0` over a chain of pre-v3 rows reads as "every
 /// action is attributed" when in fact none of them is.
 ///
-/// Fields are private and [`Self::of`] is the only real constructor, so a census
-/// cannot state totals that contradict the rows it describes. That is not
-/// hypothetical tidiness: the first version of this change let the MCP report
-/// build its own all-zero census on a path where a real one had already been
-/// computed, and the two surfaces then published different numbers for one
-/// database.
+/// Fields are private and [`Self::of`] is the only constructor that reads rows, so
+/// a census cannot state totals that contradict the rows it describes.
+/// [`Self::from_counts_for_tests`] is the one other way to build one, and it is
+/// not for production. That is not hypothetical tidiness: in 0.3.0 the MCP report
+/// built its own all-zero attribution count on the `cannot_verify` path, where a
+/// real count had already been computed, and the MCP tool and `audit verify
+/// --json` then published different numbers for one database.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttributionCensus {
     named: u64,
@@ -1293,7 +1305,12 @@ impl AttributionCensus {
         self.unattested
     }
 
-    /// Rows censused. Equal to the sum of the four buckets, by construction.
+    /// Rows censused.
+    ///
+    /// The four [`RowStanding`] outcomes partition the rows, and [`Self::of`]
+    /// increments exactly one bucket per row, so this equals their sum. State the
+    /// partition rather than the arithmetic: a fifth bucket keeps the partition
+    /// true, and any sum written out by hand somewhere else would not survive it.
     pub fn rows(&self) -> u64 {
         self.rows
     }
@@ -1301,31 +1318,45 @@ impl AttributionCensus {
     /// Rows that name no account, for any reason. What an operator asking "can
     /// this trail tell me who acted" has to subtract.
     ///
-    /// Subtraction rather than addition on purpose: a fifth bucket cannot make
-    /// this number silently stale.
+    /// Subtraction rather than addition on purpose: a fifth *non-naming* bucket
+    /// cannot make this number stale, whereas summing the reasons would need
+    /// editing here too. A future bucket that does name an account would have to
+    /// be added to `named` instead, which is why `named` is the one counter this
+    /// subtracts.
     pub fn unnamed(&self) -> u64 {
         self.rows - self.named
     }
 
     /// Build a census from counts, for rendering tests only.
     ///
-    /// Named so that a production use is obvious in review. [`Self::of`] is the
-    /// real constructor. This exists because the CLI renderers live in another
-    /// crate, where `cfg(test)` does not reach, and making them build signed
-    /// `ChainRow` fixtures to assert on one line of prose would buy no safety.
-    #[doc(hidden)]
+    /// Behind the `test-support` feature rather than merely `#[doc(hidden)]`, which
+    /// hides a function from documentation but not from callers. The CLI renderers
+    /// live in another crate, where `cfg(test)` does not reach, and making them
+    /// build signed `ChainRow` fixtures to assert on one line of prose would buy no
+    /// safety; enabling the feature only as a dev-dependency keeps the door shut
+    /// for production builds. [`Self::of`] is the constructor that reads rows.
+    ///
+    /// Panics if the counts overflow `u64`, rather than wrapping into a census
+    /// whose `rows` is smaller than its buckets and whose [`Self::unnamed`] would
+    /// then underflow.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn from_counts_for_tests(
         named: u64,
         attribution_failed: u64,
         not_recorded: u64,
         unattested: u64,
     ) -> Self {
+        let rows = named
+            .checked_add(attribution_failed)
+            .and_then(|n| n.checked_add(not_recorded))
+            .and_then(|n| n.checked_add(unattested))
+            .expect("census counts must not overflow u64");
         Self {
             named,
             attribution_failed,
             not_recorded,
             unattested,
-            rows: named + attribution_failed + not_recorded + unattested,
+            rows,
         }
     }
 }
@@ -2074,8 +2105,8 @@ mod tests {
 
     /// The forgery this census must not enable.
     ///
-    /// `ChainContent::message` signs `caller_principal` only in the v3 arm, so on
-    /// a v1 or v2 row the column is unsigned free space. Anyone with write access
+    /// `ChainContent::canonical_bytes` signs `caller_principal` only in the v3
+    /// arm, so on a v1 or v2 row the column is unsigned free space. Anyone with write access
     /// to the table can set it, and no signature breaks. If the census bucketed
     /// by the column rather than by the encoding, a single `UPDATE` would turn
     /// "none of these rows names an account" into "every row names root", with an
@@ -2160,7 +2191,21 @@ mod tests {
     #[test]
     fn a_principal_this_binary_cannot_read_is_counted_as_unattested_not_as_an_account() {
         let key = fixed_key();
-        for forged in ["garbage", "uid:", "none:overflow", "  ", "UID:1000"] {
+        for forged in [
+            "garbage",
+            "uid:",
+            "none:overflow",
+            // Whitespace is signed content like any other, so this row verifies
+            // Intact. It still names nobody, and it belongs in the bucket that
+            // asks for an investigation rather than the one that explains
+            // pre-0.3.0 history: nothing in SysKnife writes it.
+            "  ",
+            "UID:1000",
+            // A known scheme with a value the daemon could not have rendered.
+            "uid:notanumber",
+            "uid:1000:extra",
+            "token:not-vsock",
+        ] {
             let mut content = sample_content(1, "tx-forged");
             content.identity = ChainIdentity::V3 {
                 caller_role: "admin",
@@ -2181,6 +2226,18 @@ mod tests {
                 census.unnamed(),
                 1,
                 "{forged:?} must be counted among the rows naming nobody"
+            );
+            assert_eq!(
+                census.unattested(),
+                1,
+                "{forged:?} is signed content the daemon never writes, so it is a \
+                 finding to investigate, not history to explain away"
+            );
+            assert_eq!(
+                census.not_recorded(),
+                0,
+                "{forged:?} is present, so it must not be reported as a row that \
+                 predates the column"
             );
         }
     }

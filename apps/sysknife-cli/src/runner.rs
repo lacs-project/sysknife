@@ -838,9 +838,9 @@ fn cannot_verify_all(reason: String) -> AuditVerification {
         binding: BindingOutcome::Consistent {
             bindings_checked: 0,
         },
-        // Nothing was read, so no census was taken. `None`, not a census of
-        // zero rows: an unreadable database and a fully attributed one must not
-        // render or serialize the same way.
+        // The store or the key could not be opened, so no census was taken.
+        // `None`, not a census of zero rows: a database nobody could read and an
+        // empty one that read fine must not serialize the same way.
         attribution: None,
     }
 }
@@ -936,14 +936,31 @@ pub(crate) async fn verify_postgres(
     }
 }
 
+/// What the chain verdict says about the standing of the attribution counts.
+///
+/// The three cases need different words, and collapsing them is how the notes
+/// came to print "authentic and verified" under a `CANNOT VERIFY` verdict.
+/// `Broken` is not the same as `CannotVerify` either: a break is evidence of
+/// tampering somewhere, while an unknown encoding or a rotated key means this
+/// build could not check, which is not a finding about the rows at all.
+enum CountStanding {
+    /// The chain verified end to end, so the counts are findings.
+    Proven,
+    /// A break was detected. Rows before it verified; rows after it were not
+    /// checked by this walk, and the census cannot tell the two apart.
+    BreakDetected,
+    /// Nothing could be checked: an unknown `chain_version`, a `key_id` mismatch
+    /// after key rotation, unusable `--pubkey` hex.
+    NotChecked,
+}
+
 /// Say what the trail can and cannot tell an operator about who acted.
 ///
-/// `verified` is whether the chain verdict came back `Intact`, and it decides the
-/// standing of every count below. Without it the notes asserted that rows were
-/// "authentic and verified" underneath a `BROKEN` or `CANNOT VERIFY` verdict,
-/// which is the one sentence this command must never print: the rows after a
-/// break were written by whoever broke the chain, and on a `cannot_verify` result
-/// nothing was checked at all.
+/// `standing` decides the wording of the two notes that describe what the rows
+/// are; the unattested WARNING is about mechanism and does not use it. Without it
+/// the notes asserted rows were "authentic and verified" underneath a `BROKEN` or
+/// `CANNOT VERIFY` verdict, which is the one sentence this command must never
+/// print.
 ///
 /// One unconditional summary line, then a note per reason, because the reasons
 /// have different remedies. An operator who reads only the summary still learns
@@ -953,16 +970,20 @@ pub(crate) async fn verify_postgres(
 fn emit_attribution(
     log: &Logger,
     census: &sysknife_daemon::audit_chain::AttributionCensus,
-    verified: bool,
+    standing_of: CountStanding,
 ) {
     if census.rows() == 0 {
         return;
     }
 
-    let standing = if verified {
-        "authentic and verified"
-    } else {
-        "read but NOT verified"
+    let standing = match standing_of {
+        CountStanding::Proven => "authentic and verified",
+        // Not "unverified": some of them may have verified, and this renderer
+        // holds aggregate counts, so it cannot say which. What it can say without
+        // overreaching is that the chain did not verify to the end.
+        CountStanding::BreakDetected | CountStanding::NotChecked => {
+            "read, on a chain that did not verify to the end"
+        }
     };
 
     log.println(&format!(
@@ -971,12 +992,20 @@ fn emit_attribution(
         census.rows(),
         census.unnamed(),
     ));
-    if !verified {
-        log.println(
-            "  These counts describe what the rows claim, not what was proven. The verdict \
-             above is not `intact`, so more rows were counted than were checked, and any row \
-             after a break was written by whoever broke the chain.",
-        );
+    match standing_of {
+        CountStanding::Proven => {}
+        CountStanding::BreakDetected => log.println(
+            "  These counts describe what the rows claim, not what was proven. A break was \
+             detected above, so rows past it were not checked by this walk. Some of them may \
+             be perfectly authentic -- deleting or reordering a row breaks the link while \
+             leaving every later signature valid -- and some may be an attacker's. This \
+             command cannot tell you which, only that it did not vouch for them.",
+        ),
+        CountStanding::NotChecked => log.println(
+            "  These counts describe what the rows claim, not what was proven: the verdict \
+             above says this build could not check the chain at all. That is a statement \
+             about this binary or this key, not a finding about the rows.",
+        ),
     }
 
     if census.attribution_failed() > 0 {
@@ -1011,12 +1040,16 @@ fn emit_attribution(
     // itself the finding.
     if census.unattested() > 0 {
         log.println(&format!(
-            "WARNING: {} row(s) carry a caller principal that no signature vouches for: \
-             either the column is populated on an encoding that does not sign it \
+            "WARNING: {} row(s) have no caller principal that any signature vouches for. \
+             Three causes: the column is populated on an encoding that does not sign it \
              (chain_version 1 and 2 leave it out of the signed message, so it can be \
-             written out of band without breaking anything), or the value is not one this \
-             build can read, or the row declares a newer encoding. SysKnife never writes \
-             any of those. Treat these rows as naming nobody and find out what wrote them.",
+             written out of band without breaking anything); or the value is not one this \
+             build can read back as something the daemon could have written; or the row \
+             declares an encoding this build does not know, in which case its principal may \
+             be absent or kept somewhere this build cannot see. The first two are \
+             out-of-band writes to investigate. The third means a newer SysKnife wrote \
+             these rows, and the fix is to verify with a build at least that new. Either \
+             way these rows name nobody here.",
             census.unattested(),
         ));
     }
@@ -1105,11 +1138,16 @@ fn emit_verification(
     // comes first: an Intact verdict for the wrong host misleads more than an
     // unanchored one does.
     if let Some(census) = census {
-        emit_attribution(
-            log,
-            &census,
-            matches!(verification.chain, VerifyOutcome::Intact { .. }),
-        );
+        // Keyed off the transaction chain's own verdict, never off the aggregate
+        // status: that one is the worst of three checks, so a broken *approval
+        // event* chain would otherwise mark a fully verified attribution trail as
+        // unproven.
+        let standing = match &verification.chain {
+            VerifyOutcome::Intact { .. } => CountStanding::Proven,
+            VerifyOutcome::Broken { .. } => CountStanding::BreakDetected,
+            VerifyOutcome::CannotVerify { .. } => CountStanding::NotChecked,
+        };
+        emit_attribution(log, &census, standing);
     }
     if let Some(caveat) = remote_daemon_caveat_from_env() {
         log.println(&caveat);
@@ -1838,7 +1876,7 @@ mod tests {
                 "nothing was verified, so the notes must not say so, got: {text}"
             );
             assert!(
-                text.contains("read but NOT verified"),
+                text.contains("did not verify to the end"),
                 "and they must say what the rows actually are, got: {text}"
             );
             assert!(
@@ -1872,7 +1910,7 @@ mod tests {
 
         assert!(
             text.contains(
-                "WARNING: 2 row(s) carry a caller principal that no signature vouches for"
+                "WARNING: 2 row(s) have no caller principal that any signature vouches for"
             ),
             "an unsigned principal must be surfaced as a finding, got: {text}"
         );

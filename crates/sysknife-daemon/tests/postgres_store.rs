@@ -462,7 +462,7 @@ async fn postgres_checkpoint_sink_round_trips_and_detects_truncation() {
 /// Postgres, in its own schema so it cannot race the other destructive tests.
 ///
 /// Every other census test builds `ChainRow`s in memory, which cannot notice the
-/// SQL half going wrong. Migration 4 adds `caller_principal` with
+/// SQL half going wrong. Migration 3 adds `caller_principal` with
 /// `ADD COLUMN IF NOT EXISTS`, so rows written before it read back as `NULL`, and
 /// a mapping that turned that `NULL` into `""` — or a `SELECT` that dropped the
 /// column — would move every legacy row from "names nobody" into "names an
@@ -529,7 +529,7 @@ async fn attribution_census_over_a_real_postgres_round_trip() {
         .await
         .expect("record second transaction");
 
-    // A row as migration 4 leaves one that predates the column: principal NULL,
+    // A row as migration 3 leaves one that predates the column: principal NULL,
     // and still on the encoding that signed no principal.
     sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(format!(
         "UPDATE {SCHEMA}.transactions SET chain_version = 2, caller_principal = NULL \

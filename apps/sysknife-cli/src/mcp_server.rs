@@ -316,25 +316,43 @@ pub struct AuditVerifyReport {
     /// Backend label: a filesystem path for SQLite, the literal `"postgres"`
     /// for Postgres deployments.
     pub backend: String,
+    /// The transaction chain's own verdict: `"intact"`, `"broken"` or
+    /// `"cannot_verify"`.
+    ///
+    /// Reported separately because `status` is the worst of three checks, so a
+    /// broken *approval-event* chain sets `status` to `"broken"` while this stays
+    /// `"intact"`. Read this one, not `status`, to decide whether the attribution
+    /// counts below are findings or claims: without it an agent had no way to
+    /// recover the chain verdict and would discard sound attribution.
+    pub chain_status: String,
     /// How many rows were censused for attribution: every row read, whether or
     /// not it verified.
     ///
-    /// `null` when no census was taken because no rows were read. All the counts
-    /// below are `null` in that case too, so an unreadable store never reads as a
-    /// store where nothing was found. On a `broken` or `cannot_verify` status this
-    /// exceeds `rows_checked`, and the difference is the part of the trail that
-    /// was counted but not proven.
-    pub rows_censused: Option<u64>,
-    /// How many rows name an account (`uid:` or `token:`).
+    /// `null` when the store could not be read at all, along with every count
+    /// below, so a database nobody could open never reads as one where nothing was
+    /// found. A readable but empty store reports `0`.
     ///
-    /// Only trustworthy when `status` is `intact`. On a broken chain the rows
-    /// after the break were written by whoever broke it, and their principals are
-    /// claims, not findings.
+    /// When `chain_status` is not `"intact"` this can exceed `rows_checked`, and
+    /// the difference is the part of the trail that was counted but not proven.
+    pub rows_censused: Option<u64>,
+    /// How many rows have a signed principal naming an account: a non-empty value
+    /// under the `uid` or `token` scheme, which this build could read back as
+    /// something the daemon itself could have written.
+    ///
+    /// Only a finding when `chain_status` is `"intact"`. Past a detected break the
+    /// walk stopped checking, so those rows' principals are claims: some may be
+    /// authentic, since deleting or reordering a row breaks the link while leaving
+    /// later signatures valid, and this tool cannot say which.
     pub attributed_rows: Option<u64>,
     /// How many rows record that the daemon could not name the caller.
     ///
-    /// `status: "intact"` with a non-zero count here means the chain is sound and
-    /// the attribution is not: report both, never the first alone.
+    /// `chain_status: "intact"` with a non-zero count here means the chain is sound
+    /// and the attribution is not: report both, never the first alone.
+    ///
+    /// Since 0.4.0 this counts only rows whose `chain_version = 3` principal is
+    /// signed as `none:unattributed`. 0.3.0 matched the column on any encoding,
+    /// which meant an unsigned column could land here; such rows are now
+    /// `rows_unattested`.
     pub unattributed_rows: Option<u64>,
     /// How many rows carry no principal the signature covers, normally because
     /// they were signed before the column existed.
@@ -344,10 +362,14 @@ pub struct AuditVerifyReport {
     /// have different remedies: this one cannot be fixed, since backfilling a
     /// principal would rewrite the bytes the signature covers.
     pub rows_without_principal: Option<u64>,
-    /// How many rows carry a principal no signature vouches for: populated on an
-    /// encoding that does not sign it, unreadable by this build, or from a newer
-    /// encoding. SysKnife writes none of these, so a non-zero value is a finding
-    /// to investigate, not a limitation to explain.
+    /// How many rows have no principal any signature vouches for: the column is
+    /// populated on an encoding that does not sign it, or holds a value this build
+    /// cannot read back as one the daemon could have written, or the row declares
+    /// an encoding this build does not know.
+    ///
+    /// This build writes none of those. The first two are out-of-band writes to
+    /// investigate; the third means a newer SysKnife wrote the rows and the fix is
+    /// to verify with a build at least that new.
     pub rows_unattested: Option<u64>,
     /// How many rows name no account, for any reason. The complement of
     /// `attributed_rows` over `rows_censused`, provided so a reader does not have
@@ -1025,6 +1047,7 @@ fn outcome_to_report(
     // sat in `verification`, and the MCP tool then published different numbers
     // than `sysknife audit verify --json` did for the same database.
     let attribution = verification.attribution;
+    let chain_status = outcome_label(&verification.chain).to_string();
     let events_checked = match &verification.events {
         VerifyOutcome::Intact { rows_checked } | VerifyOutcome::Broken { rows_checked, .. } => {
             *rows_checked
@@ -1055,6 +1078,7 @@ fn outcome_to_report(
             events_checked,
             approval_events_status,
             binding_status,
+            chain_status: chain_status.clone(),
             rows_censused: attribution.map(|c| c.rows()),
             attributed_rows: attribution.map(|c| c.named()),
             unattributed_rows: attribution.map(|c| c.attribution_failed()),
@@ -1081,6 +1105,7 @@ fn outcome_to_report(
             events_checked,
             approval_events_status,
             binding_status,
+            chain_status: chain_status.clone(),
             rows_censused: attribution.map(|c| c.rows()),
             attributed_rows: attribution.map(|c| c.named()),
             unattributed_rows: attribution.map(|c| c.attribution_failed()),
@@ -1098,6 +1123,7 @@ fn outcome_to_report(
             // from a newer encoding, or a key_id mismatch after key rotation, is
             // enough. Dropping the census here republished the very defect this
             // release fixes, on the surface an agent reads without a human.
+            r.chain_status = chain_status;
             r.rows_censused = attribution.map(|c| c.rows());
             r.attributed_rows = attribution.map(|c| c.named());
             r.unattributed_rows = attribution.map(|c| c.attribution_failed());
@@ -1144,6 +1170,9 @@ fn cannot_verify_report(backend: String, reason: String) -> AuditVerifyReport {
         events_checked: 0,
         approval_events_status: "cannot_verify".to_string(),
         binding_status: "consistent".to_string(),
+        // The chain verdict for a report built before any row was read. Callers
+        // that reach this constructor overwrite it when they know better.
+        chain_status: "cannot_verify".to_string(),
         // Null, not zero. This constructor also serves the paths where the store
         // or the key could not be opened, and there "no row named an account" is
         // not a fact anyone established.
@@ -1295,6 +1324,10 @@ mod tests {
 
         assert_eq!(report.status, "cannot_verify");
         assert_eq!(
+            report.chain_status, "cannot_verify",
+            "the chain's own verdict must be recoverable, not only the aggregate"
+        );
+        assert_eq!(
             report.attributed_rows,
             Some(5),
             "the census survived the read, so the report must not invent zeros"
@@ -1302,6 +1335,48 @@ mod tests {
         assert_eq!(report.unattributed_rows, Some(2));
         assert_eq!(report.rows_without_principal, Some(9));
         assert_eq!(report.rows_censused, Some(16));
+    }
+
+    /// `status` is the worst of three checks, so a broken approval-event chain
+    /// makes it `"broken"` while the transaction chain is intact. An agent reading
+    /// only `status` would treat sound attribution as unproven, so the chain's own
+    /// verdict has to be recoverable from the report.
+    #[test]
+    fn a_broken_event_chain_does_not_make_the_transaction_chain_look_broken() {
+        use sysknife_daemon::audit_chain::{
+            AttributionCensus, AuditVerification, BindingOutcome, VerifyOutcome,
+        };
+        let report = outcome_to_report(
+            AuditVerification {
+                chain: VerifyOutcome::Intact { rows_checked: 3 },
+                events: VerifyOutcome::Broken {
+                    rows_checked: 0,
+                    first_broken_seq: 1,
+                    first_broken_transaction_id: "ev1".to_string(),
+                    expected: "x".to_string(),
+                    actual: "y".to_string(),
+                },
+                binding: BindingOutcome::Consistent {
+                    bindings_checked: 0,
+                },
+                attribution: Some(AttributionCensus::from_counts_for_tests(3, 0, 0, 0)),
+            },
+            "/tmp/store.sqlite".to_string(),
+        );
+
+        assert_eq!(
+            report.status, "broken",
+            "the headline must still reflect the worst of the three checks"
+        );
+        assert_eq!(
+            report.chain_status, "intact",
+            "while the transaction chain's own verdict stays recoverable"
+        );
+        assert_eq!(report.attributed_rows, Some(3));
+        assert_eq!(
+            report.rows_censused, report.attributed_rows,
+            "nothing was counted that was not also checked here"
+        );
     }
 
     /// The other `cannot_verify` shape: nothing was read at all, so every count is

@@ -40,6 +40,10 @@ tokio-vsock = "0.7.2"
 [dev-dependencies]
 # `test-support` unlocks `Plan::assume_authorized` for tests only.
 sysknife-brain = { path = "../../crates/sysknife-brain", version = "0.4.0", features = ["test-support"] }
+# and `AttributionCensus::from_counts_for_tests`, so the verify renderers can be
+# tested without building signed chain rows. Dev-only: production builds of this
+# bin do not compile dev-dependencies, so the constructor stays unreachable there.
+sysknife-daemon = { path = "../../crates/sysknife-daemon", version = "0.4.0", features = ["test-support"] }
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"

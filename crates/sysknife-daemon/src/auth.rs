@@ -134,46 +134,63 @@ impl CallerPrincipal {
         format!("{}:{}", self.scheme(), self.value())
     }
 
+    /// What this principal claims about who acted.
+    ///
+    /// Exhaustive on `self`, so a new variant cannot be added without deciding
+    /// here whether it names an account. [`Self::classify`] answers for a stored
+    /// string by rebuilding the variant and then asking this.
+    pub fn claim(&self) -> PrincipalClaim {
+        match self {
+            Self::Uid(_) | Self::VsockToken => PrincipalClaim::Account,
+            Self::Unattributed => PrincipalClaim::AttributionFailed,
+        }
+    }
+
+    /// Rebuild the principal a stored `caller_principal` string was rendered
+    /// from, if any variant could have rendered exactly that string.
+    ///
+    /// The round-trip check is the whole point: a candidate is accepted only when
+    /// `as_signed_str` reproduces the input byte for byte, so `uid:007`,
+    /// `uid:1000:extra`, `uid:notanumber` and `token:not-vsock` are all refused.
+    /// Without it "starts with a known scheme" would pass for "names an account",
+    /// and the census would credit values this daemon cannot produce.
+    ///
+    /// A scheme belonging to no variant reads as `None`, which
+    /// [`Self::classify`] turns into [`PrincipalClaim::Unrecognized`]. That is the
+    /// safe default, and it is also a maintenance obligation: a new variant with a
+    /// new scheme must be added to the `candidate` chain below and to the
+    /// round-trip tests, or rows the daemon signs will be reported as unattested.
+    fn from_signed(stored: &str) -> Option<Self> {
+        let (scheme, value) = stored.split_once(':')?;
+        let candidate = if scheme == Self::Uid(0).scheme() {
+            Self::Uid(value.parse::<u32>().ok()?)
+        } else if scheme == Self::VsockToken.scheme() {
+            Self::VsockToken
+        } else if scheme == Self::Unattributed.scheme() {
+            Self::Unattributed
+        } else {
+            return None;
+        };
+        (candidate.as_signed_str() == stored).then_some(candidate)
+    }
+
     /// Read a stored `caller_principal` back into what it claims about who acted.
     ///
     /// Deliberately the inverse of [`Self::as_signed_str`] and kept beside it, so
     /// the writer and the reader of this column cannot drift apart.
     ///
-    /// This is not a parse into `Self`, and that is the point: it classifies
-    /// strings this daemon may never have written. The census reads a database
-    /// column rather than a live connection, so it meets rows that were tampered
-    /// with, and rows signed by a newer daemon using a scheme this binary does
-    /// not know. Both must come back as [`PrincipalClaim::Unrecognized`] instead
-    /// of being credited as an account: a report that turns an unreadable
-    /// principal into "someone was named" is the failure mode worth designing
-    /// against.
-    ///
-    /// Every comparison goes through [`Self::scheme`], so adding a variant
-    /// changes this function's behaviour through that one match rather than
-    /// through a literal repeated here.
+    /// This is not a parse into `Self` for the caller's use, and that is the
+    /// point: it classifies strings this daemon may never have written. The census
+    /// reads a database column rather than a live connection, so it meets rows
+    /// that were tampered with, and rows signed by a newer daemon using a scheme
+    /// this binary does not know. Both must come back as
+    /// [`PrincipalClaim::Unrecognized`] instead of being credited as an account: a
+    /// report that turns an unreadable principal into "someone was named" is the
+    /// failure mode worth designing against.
     pub fn classify(stored: &str) -> PrincipalClaim {
-        let Some((scheme, value)) = stored.split_once(':') else {
-            return PrincipalClaim::Unrecognized;
-        };
-        // A scheme with no value names nobody: `uid:` is not an account.
-        if value.is_empty() {
-            return PrincipalClaim::Unrecognized;
-        }
-        if scheme == Self::Unattributed.scheme() {
-            // The `none` scheme exists to say attribution failed, so no value
-            // under it names an account. Only the exact rendering this daemon
-            // signs is the admission; any other `none:*` is a value this binary
-            // cannot interpret, and guessing would be the whole bug.
-            return if stored == Self::Unattributed.as_signed_str() {
-                PrincipalClaim::AttributionFailed
-            } else {
-                PrincipalClaim::Unrecognized
-            };
-        }
-        if scheme == Self::Uid(0).scheme() || scheme == Self::VsockToken.scheme() {
-            PrincipalClaim::Account
-        } else {
-            PrincipalClaim::Unrecognized
+        match Self::from_signed(stored) {
+            Some(principal) => principal.claim(),
+            None => PrincipalClaim::Unrecognized,
         }
     }
 }
@@ -702,14 +719,10 @@ mod tests {
             CallerPrincipal::VsockToken,
             CallerPrincipal::Unattributed,
         ] {
-            let expected = match principal {
-                CallerPrincipal::Uid(_) | CallerPrincipal::VsockToken => PrincipalClaim::Account,
-                CallerPrincipal::Unattributed => PrincipalClaim::AttributionFailed,
-            };
             assert_eq!(
                 CallerPrincipal::classify(&principal.as_signed_str()),
-                expected,
-                "{principal:?} must read back as {expected:?}"
+                principal.claim(),
+                "{principal:?} must read back as the class it declares"
             );
         }
     }
@@ -731,6 +744,20 @@ mod tests {
             "none:overflow",
             "fingerprint:ab12",
             ":1000",
+            // A scheme this daemon knows carrying a value it cannot render.
+            // Without the round-trip check in `from_signed`, every one of these
+            // passed for an account: matching the scheme alone was enough.
+            "uid:notanumber",
+            "uid:1000:extra",
+            "uid:007",
+            "uid:-1",
+            "uid: 1000",
+            "uid:1000 ",
+            "uid:0\n",
+            "uid:99999999999999999999",
+            "token:not-vsock",
+            "token:vsock:extra",
+            "UID:1000",
         ] {
             assert_eq!(
                 CallerPrincipal::classify(stored),

@@ -10,6 +10,12 @@ readme = "README.md"
 keywords = ["linux", "sysadmin", "daemon", "security"]
 categories = ["command-line-utilities", "os::linux-apis"]
 
+[features]
+# Unlocks `AttributionCensus::from_counts_for_tests` for the CLI's rendering
+# tests. Off by default so a census cannot be conjured in production code, which
+# is the invariant the type's private fields exist to protect.
+test-support = []
+
 [dependencies]
 sysknife-core = { path = "../sysknife-core", version = "0.4.0" }
 sysknife-types = { path = "../sysknife-types", version = "0.4.0" }
