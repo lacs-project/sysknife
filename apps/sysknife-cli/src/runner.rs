@@ -838,8 +838,10 @@ fn cannot_verify_all(reason: String) -> AuditVerification {
         binding: BindingOutcome::Consistent {
             bindings_checked: 0,
         },
-        // Nothing was read, so nothing is known about attribution either.
-        attribution: sysknife_daemon::audit_chain::AttributionCensus::default(),
+        // Nothing was read, so no census was taken. `None`, not a census of
+        // zero rows: an unreadable database and a fully attributed one must not
+        // render or serialize the same way.
+        attribution: None,
     }
 }
 
@@ -934,6 +936,92 @@ pub(crate) async fn verify_postgres(
     }
 }
 
+/// Say what the trail can and cannot tell an operator about who acted.
+///
+/// `verified` is whether the chain verdict came back `Intact`, and it decides the
+/// standing of every count below. Without it the notes asserted that rows were
+/// "authentic and verified" underneath a `BROKEN` or `CANNOT VERIFY` verdict,
+/// which is the one sentence this command must never print: the rows after a
+/// break were written by whoever broke the chain, and on a `cannot_verify` result
+/// nothing was checked at all.
+///
+/// One unconditional summary line, then a note per reason, because the reasons
+/// have different remedies. An operator who reads only the summary still learns
+/// the denominator; an operator acting on a note learns which of "chase
+/// SO_PEERCRED", "nothing can be done" and "investigate an out-of-band write"
+/// applies.
+fn emit_attribution(
+    log: &Logger,
+    census: &sysknife_daemon::audit_chain::AttributionCensus,
+    verified: bool,
+) {
+    if census.rows() == 0 {
+        return;
+    }
+
+    let standing = if verified {
+        "authentic and verified"
+    } else {
+        "read but NOT verified"
+    };
+
+    log.println(&format!(
+        "ATTRIBUTION: {} of {} row(s) name an account; {} name nobody.",
+        census.named(),
+        census.rows(),
+        census.unnamed(),
+    ));
+    if !verified {
+        log.println(
+            "  These counts describe what the rows claim, not what was proven. The verdict \
+             above is not `intact`, so more rows were counted than were checked, and any row \
+             after a break was written by whoever broke the chain.",
+        );
+    }
+
+    if census.attribution_failed() > 0 {
+        log.println(&format!(
+            "NOTE: {} row(s) record that the daemon could not name the caller \
+             (principal `{}`). Those actions are {standing}, but the trail cannot say \
+             which account took them. This happens when SO_PEERCRED yields no usable \
+             peer, or when the peer is not representable in the daemon's namespaces; \
+             see the daemon log for the connections concerned.",
+            census.attribution_failed(),
+            sysknife_daemon::auth::CallerPrincipal::Unattributed.as_signed_str(),
+        ));
+    }
+    // Kept separate from the note above on purpose. Both say "this row names
+    // nobody", but only one of them describes something an operator can act on:
+    // an attribution failure is a live configuration problem, while a row older
+    // than the column is settled history. Merging them into one count was the
+    // original defect: zero attribution failures over a pre-0.3.0 database read
+    // as full attribution.
+    if census.not_recorded() > 0 {
+        log.println(&format!(
+            "NOTE: {} row(s) carry no caller principal the signature covers, normally \
+             because they were written before the chain signed one (chain_version 1 and 2, \
+             so before 0.3.0). They are {standing}, and they name nobody. That cannot be \
+             repaired: writing a principal into an existing row would change the bytes its \
+             signature covers, so the trail keeps the gap instead of hiding it.",
+            census.not_recorded(),
+        ));
+    }
+    // The only note that asks for an investigation rather than explaining a
+    // limit. Nothing in SysKnife writes these values, so one of them existing is
+    // itself the finding.
+    if census.unattested() > 0 {
+        log.println(&format!(
+            "WARNING: {} row(s) carry a caller principal that no signature vouches for: \
+             either the column is populated on an encoding that does not sign it \
+             (chain_version 1 and 2 leave it out of the signed message, so it can be \
+             written out of band without breaking anything), or the value is not one this \
+             build can read, or the row declares a newer encoding. SysKnife never writes \
+             any of those. Treat these rows as naming nobody and find out what wrote them.",
+            census.unattested(),
+        ));
+    }
+}
+
 /// Render all three checks. The transaction chain stays the headline line so
 /// existing output and exit codes are unchanged for a clean chain; the other
 /// two are reported underneath and can independently fail the command.
@@ -944,6 +1032,8 @@ fn emit_verification(
     backend_label: &str,
 ) {
     use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
+
+    let census = verification.attribution;
 
     if args.json {
         let payload = json!({
@@ -957,9 +1047,16 @@ fn emit_verification(
                 json!({"configured": false, "caveat": anchor_caveat(false)})
             },
             "daemon_socket_caveat": remote_daemon_caveat_from_env(),
-            "unattributed_rows": verification.attribution.unattributed,
-            "rows_without_principal": verification.attribution.no_principal,
-            "attributed_rows": verification.attribution.attributed,
+            // Null rather than zero when no census was taken. A machine reader
+            // that alerts on low attribution must be able to tell "no rows were
+            // read" from "no row named an account"; a zero for both is the
+            // confusion this release exists to remove.
+            "rows_censused": census.map(|c| c.rows()),
+            "attributed_rows": census.map(|c| c.named()),
+            "unattributed_rows": census.map(|c| c.attribution_failed()),
+            "rows_without_principal": census.map(|c| c.not_recorded()),
+            "rows_unattested": census.map(|c| c.unattested()),
+            "rows_naming_no_account": census.map(|c| c.unnamed()),
             "binding": match &verification.binding {
                 BindingOutcome::Consistent { bindings_checked } => json!({
                     "status": "consistent",
@@ -1007,33 +1104,12 @@ fn emit_verification(
     // what an operator reads as "the audit log is fine". Which machine was read
     // comes first: an Intact verdict for the wrong host misleads more than an
     // unanchored one does.
-    if verification.attribution.unattributed > 0 {
-        log.println(&format!(
-            "NOTE: {} row(s) record that the daemon could not name the caller \
-             (principal `{}`). Those actions are authentic and verified, but the trail \
-             cannot say which account took them. This happens when SO_PEERCRED yields no \
-             usable peer, or when the peer is not representable in the daemon's \
-             namespaces; see the daemon log for the connections concerned.",
-            verification.attribution.unattributed,
-            sysknife_daemon::auth::CallerPrincipal::Unattributed.as_signed_str(),
-        ));
-    }
-    // Kept separate from the note above on purpose. Both say "this row names
-    // nobody", but only one of them describes something an operator can act on:
-    // an attribution failure is a live configuration problem, while a row older
-    // than the column is settled history. Merging them into one count was the
-    // original defect: zero attribution failures over a pre-0.3.0 database read
-    // as full attribution.
-    if verification.attribution.no_principal > 0 {
-        log.println(&format!(
-            "NOTE: {} row(s) carry no caller principal at all, because they were written \
-             before the chain signed one (chain_version 1 and 2, so before 0.3.0). They are \
-             authentic and verified, and they name nobody. This cannot be repaired: writing \
-             a principal into an existing row would change the bytes its signature covers, \
-             so the trail keeps the gap instead of hiding it. {} row(s) in this chain do \
-             name an account.",
-            verification.attribution.no_principal, verification.attribution.attributed,
-        ));
+    if let Some(census) = census {
+        emit_attribution(
+            log,
+            &census,
+            matches!(verification.chain, VerifyOutcome::Intact { .. }),
+        );
     }
     if let Some(caveat) = remote_daemon_caveat_from_env() {
         log.println(&caveat);
@@ -1612,8 +1688,14 @@ mod tests {
     /// Render `audit verify` output into a string by teeing the logger to a file.
     /// The alternative, capturing stdout, is not reliable under a parallel test
     /// runner because the handle is process-wide.
-    fn rendered_verification(
-        attribution: sysknife_daemon::audit_chain::AttributionCensus,
+    ///
+    /// The verdict is a parameter, not a constant. Hardcoding `Intact` here is
+    /// what let two releases' worth of notes claim rows were "authentic and
+    /// verified" under a `BROKEN` verdict: every test ran in the one state where
+    /// the claim happened to be true.
+    fn rendered(
+        chain: sysknife_daemon::audit_chain::VerifyOutcome,
+        attribution: Option<sysknife_daemon::audit_chain::AttributionCensus>,
         json: bool,
     ) -> String {
         use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
@@ -1621,7 +1703,7 @@ mod tests {
         let path = dir.path().join("verify.log");
         let log = Logger::new(Some(&path)).expect("logger");
         let verification = AuditVerification {
-            chain: VerifyOutcome::Intact { rows_checked: 9 },
+            chain,
             events: VerifyOutcome::Intact { rows_checked: 0 },
             binding: BindingOutcome::Consistent {
                 bindings_checked: 0,
@@ -1637,80 +1719,246 @@ mod tests {
         std::fs::read_to_string(&path).expect("logger wrote the rendered output")
     }
 
+    /// Counts named `n` with counts `(named, attribution_failed, not_recorded,
+    /// unattested)`, over an `Intact` chain of that many rows.
+    fn intact_with(
+        named: u64,
+        attribution_failed: u64,
+        not_recorded: u64,
+        unattested: u64,
+    ) -> String {
+        use sysknife_daemon::audit_chain::{AttributionCensus, VerifyOutcome};
+        let census = AttributionCensus::from_counts_for_tests(
+            named,
+            attribution_failed,
+            not_recorded,
+            unattested,
+        );
+        rendered(
+            VerifyOutcome::Intact {
+                rows_checked: census.rows(),
+            },
+            Some(census),
+            false,
+        )
+    }
+
     /// The reason a row names nobody decides what an operator does next, so the
     /// two reasons cannot share one line. An attribution failure points at
-    /// `SO_PEERCRED` on a live host; a row that predates the column is history
-    /// and cannot be fixed, because backfilling it would rewrite signed bytes.
+    /// `SO_PEERCRED` on a live host; a row that predates the column is history and
+    /// cannot be fixed, because backfilling it would rewrite signed bytes.
+    ///
+    /// Each count is asserted next to its own phrase. Asserting a bare `"2
+    /// row(s)"` passed even with the format arguments swapped, because the other
+    /// half of the same sentence also prints a count.
     #[test]
-    fn rows_predating_the_principal_column_get_their_own_note() {
-        use sysknife_daemon::audit_chain::AttributionCensus;
-        let text = rendered_verification(
-            AttributionCensus {
-                attributed: 7,
-                unattributed: 0,
-                no_principal: 2,
-            },
-            false,
-        );
+    fn each_reason_a_row_names_nobody_gets_its_own_note_with_its_own_count() {
+        let text = intact_with(4, 3, 2, 0);
 
         assert!(
-            text.contains("OK: 9 row(s) verified"),
-            "the verdict stays the headline, got: {text}"
+            text.contains("ATTRIBUTION: 4 of 9 row(s) name an account; 5 name nobody."),
+            "the summary must give the operator the denominator, got: {text}"
         );
         assert!(
-            text.contains("2 row(s)"),
-            "the note must count the rows concerned, got: {text}"
+            text.contains("NOTE: 3 row(s) record that the daemon could not name the caller"),
+            "the attribution-failure count must sit with its own phrase, got: {text}"
         );
         assert!(
-            text.to_lowercase().contains("before"),
-            "and say the rows predate the column, got: {text}"
+            text.contains("SO_PEERCRED"),
+            "and point at the live cause, got: {text}"
         );
         assert!(
-            !text.contains("SO_PEERCRED"),
-            "this is not an attribution failure, so it must not blame SO_PEERCRED: {text}"
+            text.contains("NOTE: 2 row(s) carry no caller principal the signature covers"),
+            "the pre-v3 count must sit with its own phrase, got: {text}"
+        );
+        assert!(
+            text.contains("cannot be repaired"),
+            "and say the gap is permanent, got: {text}"
         );
     }
 
-    /// A clean, fully attributed chain must stay quiet. A note printed on every
-    /// run is a note operators learn to skip, which would waste the one signal
-    /// that says the trail cannot name who acted.
+    /// The `none:unattributed` note is rendered from the principal the daemon
+    /// actually signs, never a literal, so the text cannot drift from the value it
+    /// tells the operator to search for.
+    #[test]
+    fn the_attribution_failure_note_names_the_principal_the_daemon_signs() {
+        let text = intact_with(0, 2, 0, 0);
+        let principal = sysknife_daemon::auth::CallerPrincipal::Unattributed.as_signed_str();
+        assert!(
+            text.contains(&principal),
+            "the note must quote `{principal}` so it can be grepped for, got: {text}"
+        );
+    }
+
+    /// A clean, fully attributed chain must not print a note. A note on every run
+    /// is a note operators learn to skip, which would waste the one signal that
+    /// says the trail cannot name who acted.
     #[test]
     fn a_fully_attributed_chain_prints_no_attribution_note() {
-        use sysknife_daemon::audit_chain::AttributionCensus;
-        let text = rendered_verification(
-            AttributionCensus {
-                attributed: 9,
-                unattributed: 0,
-                no_principal: 0,
-            },
-            false,
+        let text = intact_with(9, 0, 0, 0);
+
+        assert!(
+            text.contains("ATTRIBUTION: 9 of 9 row(s) name an account; 0 name nobody."),
+            "the summary still prints, so the operator sees the denominator: {text}"
         );
         // Scoped to the attribution notes: the unconfigured-anchor caveat is a
         // different concern and prints here regardless.
         assert!(
-            !text.contains("name the caller") && !text.contains("no caller principal"),
+            !text.contains("name the caller")
+                && !text.contains("no caller principal")
+                && !text.contains("no signature vouches for"),
             "nothing to warn about on a fully attributed chain, got: {text}"
         );
     }
 
-    /// The JSON report carries both counts under stable keys, because the whole
-    /// point of splitting them is that a machine reader can tell the two apart.
+    /// The defect this whole review pass turned up: the notes used to assert that
+    /// rows were "authentic and verified" whatever the verdict said. Printed under
+    /// `CANNOT VERIFY` that is a straight falsehood, and it is the sentence an
+    /// operator would rely on.
     #[test]
-    fn the_json_report_carries_both_attribution_counts() {
-        use sysknife_daemon::audit_chain::AttributionCensus;
-        let text = rendered_verification(
-            AttributionCensus {
-                attributed: 6,
-                unattributed: 1,
-                no_principal: 2,
+    fn an_unverified_chain_never_calls_its_rows_verified() {
+        use sysknife_daemon::audit_chain::{AttributionCensus, VerifyOutcome};
+        let census = AttributionCensus::from_counts_for_tests(4, 1, 2, 0);
+
+        for chain in [
+            VerifyOutcome::CannotVerify {
+                reason: "invalid public key hex".to_string(),
             },
+            VerifyOutcome::Broken {
+                rows_checked: 1,
+                first_broken_seq: 2,
+                first_broken_transaction_id: "tx2".to_string(),
+                expected: "x".to_string(),
+                actual: "y".to_string(),
+            },
+        ] {
+            let text = rendered(chain.clone(), Some(census), false);
+            assert!(
+                !text.contains("authentic and verified"),
+                "nothing was verified, so the notes must not say so, got: {text}"
+            );
+            assert!(
+                text.contains("read but NOT verified"),
+                "and they must say what the rows actually are, got: {text}"
+            );
+            assert!(
+                text.contains("not what was proven"),
+                "the counts must be marked as claims, got: {text}"
+            );
+        }
+    }
+
+    /// An `Intact` verdict is the only state in which the counts are findings
+    /// rather than claims, so it is the only state that may say so.
+    #[test]
+    fn an_intact_chain_calls_its_rows_verified() {
+        let text = intact_with(0, 1, 1, 0);
+        assert!(
+            text.contains("authentic and verified"),
+            "an intact chain's rows are verified and the note should say it: {text}"
+        );
+        assert!(
+            !text.contains("not what was proven"),
+            "and nothing here is a mere claim, got: {text}"
+        );
+    }
+
+    /// A principal no signature covers is the one attribution finding that asks
+    /// for an investigation, so it prints as a WARNING and explains the mechanism:
+    /// on v1 and v2 rows that column is outside the signed message.
+    #[test]
+    fn an_unattested_principal_is_reported_as_something_to_investigate() {
+        let text = intact_with(1, 0, 0, 2);
+
+        assert!(
+            text.contains(
+                "WARNING: 2 row(s) carry a caller principal that no signature vouches for"
+            ),
+            "an unsigned principal must be surfaced as a finding, got: {text}"
+        );
+        assert!(
+            text.contains("out of band"),
+            "and name the mechanism, got: {text}"
+        );
+        assert!(
+            text.contains("ATTRIBUTION: 1 of 3 row(s) name an account"),
+            "while the summary counts them among the rows naming nobody, got: {text}"
+        );
+    }
+
+    /// Nothing read means nothing known. Rendering a census of zero rows would put
+    /// "0 of 0 row(s) name an account" under a `CANNOT VERIFY` verdict, which
+    /// reads as a fact about the database.
+    #[test]
+    fn a_verification_that_read_nothing_says_nothing_about_attribution() {
+        use sysknife_daemon::audit_chain::VerifyOutcome;
+        let text = rendered(
+            VerifyOutcome::CannotVerify {
+                reason: "audit database not found".to_string(),
+            },
+            None,
+            false,
+        );
+        assert!(
+            !text.contains("ATTRIBUTION:"),
+            "no census was taken, so no attribution line may be printed: {text}"
+        );
+    }
+
+    /// The JSON report carries every count under a stable key, because the whole
+    /// point of splitting them is that a machine reader can tell them apart.
+    /// Distinct values throughout, so any permutation of the keys fails.
+    #[test]
+    fn the_json_report_carries_every_attribution_count() {
+        use sysknife_daemon::audit_chain::{AttributionCensus, VerifyOutcome};
+        let census = AttributionCensus::from_counts_for_tests(6, 1, 2, 3);
+        let text = rendered(
+            VerifyOutcome::Intact { rows_checked: 12 },
+            Some(census),
             true,
         );
+
         let parsed: serde_json::Value =
             serde_json::from_str(&text).expect("--json must emit one JSON document");
+        assert_eq!(parsed["attributed_rows"], 6);
         assert_eq!(parsed["unattributed_rows"], 1);
         assert_eq!(parsed["rows_without_principal"], 2);
-        assert_eq!(parsed["attributed_rows"], 6);
+        assert_eq!(parsed["rows_unattested"], 3);
+        assert_eq!(parsed["rows_naming_no_account"], 6);
+        assert_eq!(parsed["rows_censused"], 12);
+    }
+
+    /// `null`, not `0`, when no census was taken. An agent that alerts on a low
+    /// attribution ratio must not read an unreadable database as a database where
+    /// nothing was found: that is the same confusion as the counter this release
+    /// replaced, one level up.
+    #[test]
+    fn the_json_report_distinguishes_no_census_from_a_census_of_nothing() {
+        use sysknife_daemon::audit_chain::VerifyOutcome;
+        let text = rendered(
+            VerifyOutcome::CannotVerify {
+                reason: "audit database not found".to_string(),
+            },
+            None,
+            true,
+        );
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).expect("--json must emit one JSON document");
+        for key in [
+            "attributed_rows",
+            "unattributed_rows",
+            "rows_without_principal",
+            "rows_unattested",
+            "rows_naming_no_account",
+            "rows_censused",
+        ] {
+            assert!(
+                parsed[key].is_null(),
+                "{key} must be null when no rows were read, got: {}",
+                parsed[key]
+            );
+        }
     }
 
     // -----------------------------------------------------------------------

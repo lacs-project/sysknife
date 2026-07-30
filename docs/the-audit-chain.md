@@ -89,19 +89,50 @@ A chain full of `none:unattributed` rows still verifies as intact, and that is
 honest but incomplete, so `sysknife audit verify` reports the counts separately.
 Intact is a statement about tampering, not about how much the trail can tell you.
 
-Two different things make a row name nobody, and they are counted apart because
-their remedies differ:
+Several different things make a row name nobody, and they are counted apart
+because their remedies differ:
 
 | Count | Meaning | What to do |
 |---|---|---|
-| `attributed_rows` | The row names an account: `uid:<n>` or `token:vsock`. | Nothing. |
+| `attributed_rows` | The row's **signed** principal names an account: `uid:<n>` or `token:vsock`. | Nothing, but see the uid caveats above, and remember `token:vsock` proves possession of a file rather than an account. |
 | `unattributed_rows` | The row signs `none:unattributed`: the daemon tried to attribute the connection and failed. | Live problem. Check the daemon log for the connections concerned, and whether `SO_PEERCRED` can work on that host. |
-| `rows_without_principal` | The row carries no principal column at all, because it was signed under `chain_version` 1 or 2, before 0.3.0. | Nothing can be done. Backfilling a principal would change the bytes the signature covers, so the gap is kept rather than hidden. |
+| `rows_without_principal` | No principal that the signature covers, normally a row written under `chain_version` 1 or 2, before 0.3.0. | Nothing can be done. Backfilling a principal would change the bytes the signature covers, so the gap is kept rather than hidden. |
+| `rows_unattested` | A principal no signature vouches for. | **Investigate.** SysKnife never writes one; see below. |
+| `rows_naming_no_account` | The sum of the three rows above: everything that cannot name an account. | Provided so nobody has to add three numbers and risk missing one. |
+| `rows_censused` | Rows counted, which is every row read, verified or not. | Compare with `rows_checked`: a gap means part of the trail was counted but not proven. |
 
-All three appear in `--json` and on the `sysknife_audit_verify` MCP tool. The
-split matters on an upgraded database: `unattributed_rows: 0` over a chain of
-pre-0.3.0 rows would otherwise read as "every action is attributed" when in fact
-none of them is.
+All of them appear in `--json` and on the `sysknife_audit_verify` MCP tool, and
+all are `null`, never `0`, when no rows were read. The split matters on an
+upgraded database: `unattributed_rows: 0` over a chain of pre-0.3.0 rows would
+otherwise read as "every action is attributed" when in fact none of them is.
+
+### Why `rows_unattested` exists, and why the census reads the encoding
+
+`caller_principal` enters the signed message **only** under `chain_version = 3`.
+On a v1 or v2 row the column is unsigned free space: someone with write access to
+the table can set it to `uid:0` and the chain still verifies as `Intact`, because
+there is no signature over that column to break. So the census buckets by the
+encoding that signed the row, not by whatever the column happens to hold. A
+populated principal on an encoding that does not sign it is counted as
+`rows_unattested` and never as an account.
+
+The same bucket catches a value this build cannot read as `scheme:value`, and a
+row declaring a newer `chain_version` whose signed fields are unknown here.
+Nothing in SysKnife writes any of them, so a non-zero count is a finding.
+
+### The counts are only as good as the verdict beside them
+
+Verification stops at the first broken row; the census describes every row read.
+On a `broken` or `cannot_verify` result the two therefore disagree by design, and
+the rows after a break are the ones an attacker had access to. `sysknife audit
+verify` marks this in words rather than leaving it to be inferred, and the JSON
+carries `rows_censused` next to `rows_checked` so the gap is visible:
+
+```
+BROKEN: chain intact for first 4 row(s); row seq=5 ... does not chain.
+ATTRIBUTION: 96 of 100 row(s) name an account; 4 name nobody.
+  These counts describe what the rows claim, not what was proven. ...
+```
 
 What a uid does *not* prove: shared logins, `su` into a service account, and uid
 reuse after a user is deleted all weaken it. It identifies an account, not a

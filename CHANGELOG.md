@@ -10,32 +10,59 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [0.4.0] — 2026-07-30
 
-`sysknife audit verify` now says **why** a row names no account, instead of
-collapsing two different reasons into one count.
+`sysknife audit verify` now says **why** a row names no account, and refuses to
+credit an account it cannot prove.
+
+### Security
+
+- **An unsigned column can no longer manufacture attribution.**
+  `caller_principal` enters the signed message only under `chain_version = 3`, so
+  on a v1 or v2 row that column is unsigned free space. Anyone able to write to
+  the transaction table could set it to `uid:0`, and the chain would still verify
+  as `Intact`, because no signature covers it. The census therefore buckets rows
+  by the encoding that signed them, not by what the column holds, and reports a
+  principal no signature vouches for as `rows_unattested` rather than as an
+  account. Losing attribution is a gap; inventing it is a lie, and the report now
+  refuses the second even where that means saying less. The same bucket catches a
+  value this build cannot read as `scheme:value` and a row from a newer encoding.
+- **Attribution counts are marked as claims unless the chain verified.**
+  Verification stops at the first broken row while the census spans every row
+  read, so on a `broken` or `cannot_verify` verdict the rows counted include any
+  the attacker wrote. The text says so, and `rows_censused` is published next to
+  `rows_checked` so the gap is measurable instead of inferred. Previously the
+  notes stated that rows were "authentic and verified" under every verdict,
+  including `CANNOT VERIFY`, where nothing had been checked at all.
 
 ### Changed
 
 - **The attribution report is a census, not a single number.** 0.3.0 reported
   `unattributed_rows`, counting only rows whose signed principal is
   `none:unattributed`. A database upgraded from an earlier release is full of v1
-  and v2 rows that carry no principal column at all, and those were counted
-  nowhere: `unattributed_rows: 0` over such a chain read as "every action is
-  attributed" when in fact none of them was. `--json` and the
-  `sysknife_audit_verify` MCP tool now report `attributed_rows`,
-  `unattributed_rows` and `rows_without_principal`, and the human-readable
-  output prints a second note for the third case. The distinction is
-  operational: an attribution failure is a live `SO_PEERCRED` problem to chase,
-  while a row older than the column cannot be repaired at all, because writing a
-  principal into it would change the bytes its signature covers.
+  and v2 rows that carry no principal at all, and those were counted nowhere:
+  `unattributed_rows: 0` over such a chain read as "every action is attributed"
+  when in fact none of them was. `--json` and the `sysknife_audit_verify` MCP
+  tool now report `rows_censused`, `attributed_rows`, `unattributed_rows`,
+  `rows_without_principal`, `rows_unattested` and `rows_naming_no_account`, and
+  the human-readable output prints one summary line plus a note per reason. The
+  distinction is operational: an attribution failure is a live `SO_PEERCRED`
+  problem to chase, a row older than the column cannot be repaired at all, and an
+  unattested principal is something to investigate.
+- **Every attribution field is nullable, and `null` means "not measured".** When
+  no rows were read — an unopenable store, a missing key — the counts are `null`
+  rather than `0`, so a database nobody could read cannot be mistaken for one
+  where nothing was found. The MCP tool previously discarded a census that had
+  already been computed on the `cannot_verify` path and published zeros, so it
+  disagreed with `sysknife audit verify --json` about the same database.
 - **Library API.** `AuditVerification::unattributed_rows: u64` is replaced by
-  `AuditVerification::attribution: AttributionCensus`. The census counts a
-  present-but-empty principal column as naming nobody, matching how
-  `ChainRow::identity` already reads it, so a blank can never be tallied as an
-  account that acted.
+  `AuditVerification::attribution: Option<AttributionCensus>`. The census has
+  private fields and one real constructor, `AttributionCensus::of`, so a census
+  cannot state totals that contradict the rows it describes. `CallerPrincipal`
+  gains `classify`, the inverse of `as_signed_str`, so the writer and the reader
+  of that column cannot drift apart.
 
 The chain format is unchanged. No row is rewritten, every 0.2.x and 0.3.0 row
-verifies exactly as before, and the `unattributed_rows` JSON key keeps its
-meaning.
+verifies exactly as before, and `unattributed_rows` still counts exactly the rows
+whose signed principal is `none:unattributed`.
 
 ## [0.3.0] — 2026-07-29
 
