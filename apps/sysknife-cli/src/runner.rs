@@ -839,7 +839,7 @@ fn cannot_verify_all(reason: String) -> AuditVerification {
             bindings_checked: 0,
         },
         // Nothing was read, so nothing is known about attribution either.
-        unattributed_rows: 0,
+        attribution: sysknife_daemon::audit_chain::AttributionCensus::default(),
     }
 }
 
@@ -957,7 +957,9 @@ fn emit_verification(
                 json!({"configured": false, "caveat": anchor_caveat(false)})
             },
             "daemon_socket_caveat": remote_daemon_caveat_from_env(),
-            "unattributed_rows": verification.unattributed_rows,
+            "unattributed_rows": verification.attribution.unattributed,
+            "rows_without_principal": verification.attribution.no_principal,
+            "attributed_rows": verification.attribution.attributed,
             "binding": match &verification.binding {
                 BindingOutcome::Consistent { bindings_checked } => json!({
                     "status": "consistent",
@@ -1005,15 +1007,32 @@ fn emit_verification(
     // what an operator reads as "the audit log is fine". Which machine was read
     // comes first: an Intact verdict for the wrong host misleads more than an
     // unanchored one does.
-    if verification.unattributed_rows > 0 {
+    if verification.attribution.unattributed > 0 {
         log.println(&format!(
             "NOTE: {} row(s) record that the daemon could not name the caller \
              (principal `{}`). Those actions are authentic and verified, but the trail \
              cannot say which account took them. This happens when SO_PEERCRED yields no \
              usable peer, or when the peer is not representable in the daemon's \
              namespaces; see the daemon log for the connections concerned.",
-            verification.unattributed_rows,
+            verification.attribution.unattributed,
             sysknife_daemon::auth::CallerPrincipal::Unattributed.as_signed_str(),
+        ));
+    }
+    // Kept separate from the note above on purpose. Both say "this row names
+    // nobody", but only one of them describes something an operator can act on:
+    // an attribution failure is a live configuration problem, while a row older
+    // than the column is settled history. Merging them into one count was the
+    // original defect: zero attribution failures over a pre-0.3.0 database read
+    // as full attribution.
+    if verification.attribution.no_principal > 0 {
+        log.println(&format!(
+            "NOTE: {} row(s) carry no caller principal at all, because they were written \
+             before the chain signed one (chain_version 1 and 2, so before 0.3.0). They are \
+             authentic and verified, and they name nobody. This cannot be repaired: writing \
+             a principal into an existing row would change the bytes its signature covers, \
+             so the trail keeps the gap instead of hiding it. {} row(s) in this chain do \
+             name an account.",
+            verification.attribution.no_principal, verification.attribution.attributed,
         ));
     }
     if let Some(caveat) = remote_daemon_caveat_from_env() {
@@ -1585,6 +1604,114 @@ async fn prompt_exact(msg: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // What the verifier says about attribution
+    // -----------------------------------------------------------------------
+
+    /// Render `audit verify` output into a string by teeing the logger to a file.
+    /// The alternative, capturing stdout, is not reliable under a parallel test
+    /// runner because the handle is process-wide.
+    fn rendered_verification(
+        attribution: sysknife_daemon::audit_chain::AttributionCensus,
+        json: bool,
+    ) -> String {
+        use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("verify.log");
+        let log = Logger::new(Some(&path)).expect("logger");
+        let verification = AuditVerification {
+            chain: VerifyOutcome::Intact { rows_checked: 9 },
+            events: VerifyOutcome::Intact { rows_checked: 0 },
+            binding: BindingOutcome::Consistent {
+                bindings_checked: 0,
+            },
+            attribution,
+        };
+        emit_verification(
+            &crate::cli::AuditVerifyArgs { json, pubkey: None },
+            &log,
+            &verification,
+            "/tmp/test.db",
+        );
+        std::fs::read_to_string(&path).expect("logger wrote the rendered output")
+    }
+
+    /// The reason a row names nobody decides what an operator does next, so the
+    /// two reasons cannot share one line. An attribution failure points at
+    /// `SO_PEERCRED` on a live host; a row that predates the column is history
+    /// and cannot be fixed, because backfilling it would rewrite signed bytes.
+    #[test]
+    fn rows_predating_the_principal_column_get_their_own_note() {
+        use sysknife_daemon::audit_chain::AttributionCensus;
+        let text = rendered_verification(
+            AttributionCensus {
+                attributed: 7,
+                unattributed: 0,
+                no_principal: 2,
+            },
+            false,
+        );
+
+        assert!(
+            text.contains("OK: 9 row(s) verified"),
+            "the verdict stays the headline, got: {text}"
+        );
+        assert!(
+            text.contains("2 row(s)"),
+            "the note must count the rows concerned, got: {text}"
+        );
+        assert!(
+            text.to_lowercase().contains("before"),
+            "and say the rows predate the column, got: {text}"
+        );
+        assert!(
+            !text.contains("SO_PEERCRED"),
+            "this is not an attribution failure, so it must not blame SO_PEERCRED: {text}"
+        );
+    }
+
+    /// A clean, fully attributed chain must stay quiet. A note printed on every
+    /// run is a note operators learn to skip, which would waste the one signal
+    /// that says the trail cannot name who acted.
+    #[test]
+    fn a_fully_attributed_chain_prints_no_attribution_note() {
+        use sysknife_daemon::audit_chain::AttributionCensus;
+        let text = rendered_verification(
+            AttributionCensus {
+                attributed: 9,
+                unattributed: 0,
+                no_principal: 0,
+            },
+            false,
+        );
+        // Scoped to the attribution notes: the unconfigured-anchor caveat is a
+        // different concern and prints here regardless.
+        assert!(
+            !text.contains("name the caller") && !text.contains("no caller principal"),
+            "nothing to warn about on a fully attributed chain, got: {text}"
+        );
+    }
+
+    /// The JSON report carries both counts under stable keys, because the whole
+    /// point of splitting them is that a machine reader can tell the two apart.
+    #[test]
+    fn the_json_report_carries_both_attribution_counts() {
+        use sysknife_daemon::audit_chain::AttributionCensus;
+        let text = rendered_verification(
+            AttributionCensus {
+                attributed: 6,
+                unattributed: 1,
+                no_principal: 2,
+            },
+            true,
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).expect("--json must emit one JSON document");
+        assert_eq!(parsed["unattributed_rows"], 1);
+        assert_eq!(parsed["rows_without_principal"], 2);
+        assert_eq!(parsed["attributed_rows"], 6);
+    }
 
     // -----------------------------------------------------------------------
     // Which machine's chain was verified

@@ -1130,13 +1130,53 @@ pub struct AuditVerification {
     pub chain: VerifyOutcome,
     pub events: VerifyOutcome,
     pub binding: BindingOutcome,
-    /// How many verified rows record that the daemon could not name the caller.
+    /// How many verified rows can name the account that acted, and why the rest
+    /// cannot.
     ///
     /// Counted separately because `Intact` alone would be true and misleading: a
     /// host where every connection failed attribution produces a chain that
     /// verifies perfectly and answers "who acted" with nobody. The verdict is
-    /// about tampering; this number is about how much the trail can tell you.
-    pub unattributed_rows: u64,
+    /// about tampering; this census is about how much the trail can tell you.
+    pub attribution: AttributionCensus,
+}
+
+/// Attribution census over every transaction row read.
+///
+/// Counted over all rows, not only the ones that verified, so a chain that
+/// breaks at row 5 still reports what the remaining rows claim about who acted.
+///
+/// One counter is not enough, because a row can name no account for two
+/// different reasons with two different remedies. `none:unattributed` says the
+/// daemon tried and failed on a host that could have attributed the call, which
+/// is a configuration problem to chase in the daemon log. A v1 or v2 row says
+/// the encoding had no principal field when the row was signed, which is
+/// history and cannot be fixed: backfilling it would rewrite the bytes the
+/// signature covers.
+///
+/// Splitting them keeps the report honest on an upgraded database. A single
+/// "unattributed" count of `0` over a chain of pre-v3 rows reads as "every
+/// action is attributed" when in fact none of them is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AttributionCensus {
+    /// Rows naming an account: a principal with a scheme and a value, so
+    /// `uid:1000` or `token:vsock`.
+    pub attributed: u64,
+    /// Rows whose signed principal is `none:unattributed`: the daemon tried to
+    /// attribute the connection and could not.
+    pub unattributed: u64,
+    /// Rows with no principal recorded at all. Normally a v1 or v2 row, written
+    /// before the column existed. A v3 row with a blank column also lands here
+    /// rather than in [`Self::attributed`], because a blank names nobody; such a
+    /// row additionally verifies as `Broken`, so the count and the verdict agree.
+    pub no_principal: u64,
+}
+
+impl AttributionCensus {
+    /// Rows that name no account, for either reason. What an operator asking
+    /// "can this trail tell me who acted" has to subtract.
+    pub fn unnamed(&self) -> u64 {
+        self.unattributed + self.no_principal
+    }
 }
 
 impl AuditVerification {
@@ -1161,16 +1201,26 @@ impl AuditVerification {
     }
 }
 
-/// Rows whose signed principal records an attribution failure.
+/// Classify every transaction row by what its signed principal can name.
 ///
 /// Compares against the rendering of [`crate::auth::CallerPrincipal::Unattributed`]
-/// rather than a literal, so the two cannot drift.
-fn count_unattributed(tx_rows: &[ChainRow]) -> u64 {
+/// rather than a literal, so the two cannot drift. Rows are bucketed by the
+/// stored principal, not by `chain_version`, because the column is what the
+/// signature covers and what an operator would query.
+fn census(tx_rows: &[ChainRow]) -> AttributionCensus {
     let unattributed = crate::auth::CallerPrincipal::Unattributed.as_signed_str();
-    tx_rows
-        .iter()
-        .filter(|row| row.caller_principal.as_deref() == Some(unattributed.as_str()))
-        .count() as u64
+    let mut census = AttributionCensus::default();
+    for row in tx_rows {
+        // Empty counts as absent, exactly as `ChainRow::identity` reads it. The
+        // schema allows `''` as well as `NULL`, so without the filter a blank
+        // column would be tallied as an account that acted.
+        match row.caller_principal.as_deref().filter(|p| !p.is_empty()) {
+            Some(p) if p == unattributed => census.unattributed += 1,
+            Some(_) => census.attributed += 1,
+            None => census.no_principal += 1,
+        }
+    }
+    census
 }
 
 /// Run all three checks with the daemon's key.
@@ -1183,7 +1233,7 @@ pub fn verify_all(
         chain: verify_chain(key, tx_rows),
         events: verify_event_chain(key, event_rows),
         binding: verify_event_binding(tx_rows, event_rows),
-        unattributed_rows: count_unattributed(tx_rows),
+        attribution: census(tx_rows),
     }
 }
 
@@ -1197,7 +1247,7 @@ pub fn verify_all_with_pubkey(
         chain: verify_chain_with_pubkey(verifying_key_hex, tx_rows),
         events: verify_event_chain_with_pubkey(verifying_key_hex, event_rows),
         binding: verify_event_binding(tx_rows, event_rows),
-        unattributed_rows: count_unattributed(tx_rows),
+        attribution: census(tx_rows),
     }
 }
 
@@ -1812,6 +1862,136 @@ mod tests {
         );
     }
 
+    /// The census has to distinguish *why* a row names no account, because the
+    /// two reasons have different remedies: a `none:unattributed` row means
+    /// `SO_PEERCRED` failed on a host that could have attributed it, while a v1
+    /// or v2 row means the encoding had no principal field at the time it was
+    /// signed. Reporting only the first understates an upgraded database.
+    #[test]
+    fn the_census_separates_attribution_failures_from_encodings_without_the_field() {
+        let key = fixed_key();
+        let unattributed = crate::auth::CallerPrincipal::Unattributed.as_signed_str();
+        let mut rows = Vec::new();
+        let mut prev = String::new();
+        for (i, identity) in [
+            ChainIdentity::LegacyV1,
+            ChainIdentity::V2 {
+                caller_role: "dev",
+                event_tip: "",
+            },
+            ChainIdentity::V3 {
+                caller_role: "admin",
+                event_tip: "",
+                caller_principal: "uid:1000",
+            },
+            ChainIdentity::V3 {
+                caller_role: "admin",
+                event_tip: "",
+                caller_principal: "token:vsock",
+            },
+            ChainIdentity::V3 {
+                caller_role: "observer",
+                event_tip: "",
+                caller_principal: &unattributed,
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let txid = format!("tx{i}");
+            let mut content = sample_content((i + 1) as u64, &txid);
+            content.identity = identity;
+            let hash = key.chain_hash(&content, &prev);
+            rows.push(row_for(&content, &prev, hash.clone()));
+            prev = hash;
+        }
+
+        let census = verify_all(&key, &rows, &[]).attribution;
+        assert_eq!(
+            census,
+            AttributionCensus {
+                attributed: 2,
+                unattributed: 1,
+                no_principal: 2,
+            }
+        );
+        assert_eq!(
+            census.unnamed(),
+            3,
+            "three of the five rows cannot name an account, by either reason"
+        );
+    }
+
+    /// A principal column that is present but empty must not be tallied as an
+    /// account. The schema allows `''` as well as `NULL`, and `identity()`
+    /// already reads the two the same way, so the census has to agree with it:
+    /// counting a blank as attributed would credit an account that never acted.
+    #[test]
+    fn a_blank_principal_column_is_counted_as_naming_nobody() {
+        let key = fixed_key();
+        let mut content = sample_content(1, "tx-blank-census");
+        content.identity = ChainIdentity::V3 {
+            caller_role: "admin",
+            event_tip: "",
+            caller_principal: "",
+        };
+        let hash = key.chain_hash(&content, "");
+        let row = row_for(&content, "", hash);
+        assert_eq!(row.caller_principal.as_deref(), Some(""));
+
+        let verification = verify_all(&key, &[row], &[]);
+        assert_eq!(
+            verification.attribution,
+            AttributionCensus {
+                attributed: 0,
+                unattributed: 0,
+                no_principal: 1,
+            }
+        );
+        assert!(
+            matches!(verification.chain, VerifyOutcome::Broken { .. }),
+            "and the row is still reported as broken, so census and verdict agree"
+        );
+    }
+
+    /// The case that made the single counter misleading: a database written
+    /// entirely before the principal field existed reports zero attribution
+    /// failures, which reads as "everything is attributed". Every row in it names
+    /// nobody, so `unnamed` must account for all of them.
+    #[test]
+    fn a_chain_predating_the_principal_field_reports_no_row_as_attributed() {
+        let key = fixed_key();
+        let mut rows = Vec::new();
+        let mut prev = String::new();
+        for (i, identity) in [
+            ChainIdentity::LegacyV1,
+            ChainIdentity::V2 {
+                caller_role: "dev",
+                event_tip: "",
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let txid = format!("old{i}");
+            let mut content = sample_content((i + 1) as u64, &txid);
+            content.identity = identity;
+            let hash = key.chain_hash(&content, &prev);
+            rows.push(row_for(&content, &prev, hash.clone()));
+            prev = hash;
+        }
+
+        let verification = verify_all(&key, &rows, &[]);
+        assert_eq!(
+            verification.chain,
+            VerifyOutcome::Intact { rows_checked: 2 },
+            "legacy rows must keep verifying; the census is not a verdict"
+        );
+        assert_eq!(verification.attribution.unattributed, 0);
+        assert_eq!(verification.attribution.attributed, 0);
+        assert_eq!(verification.attribution.unnamed(), 2);
+    }
+
     /// A row from a future encoding is "cannot verify", never "broken": an older
     /// binary reading a newer chain has found no tampering, only work it cannot
     /// reproduce. The message must say the supported range so the operator knows
@@ -2304,7 +2484,7 @@ mod tests {
             binding: BindingOutcome::Consistent {
                 bindings_checked: 0,
             },
-            unattributed_rows: 0,
+            attribution: AttributionCensus::default(),
         };
         assert_eq!(verification.exit_code(), 1);
     }
@@ -2318,7 +2498,7 @@ mod tests {
                 transaction_seq: 3,
                 event_tip: "abc".to_string(),
             },
-            unattributed_rows: 0,
+            attribution: AttributionCensus::default(),
         };
         assert_eq!(verification.exit_code(), 1);
     }
@@ -2331,7 +2511,7 @@ mod tests {
             binding: BindingOutcome::Consistent {
                 bindings_checked: 1,
             },
-            unattributed_rows: 0,
+            attribution: AttributionCensus::default(),
         };
         assert_eq!(verification.exit_code(), 0);
     }

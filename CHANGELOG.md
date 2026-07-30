@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [0.4.0] — 2026-07-30
+
+`sysknife audit verify` now says **why** a row names no account, instead of
+collapsing two different reasons into one count.
+
+### Changed
+
+- **The attribution report is a census, not a single number.** 0.3.0 reported
+  `unattributed_rows`, counting only rows whose signed principal is
+  `none:unattributed`. A database upgraded from an earlier release is full of v1
+  and v2 rows that carry no principal column at all, and those were counted
+  nowhere: `unattributed_rows: 0` over such a chain read as "every action is
+  attributed" when in fact none of them was. `--json` and the
+  `sysknife_audit_verify` MCP tool now report `attributed_rows`,
+  `unattributed_rows` and `rows_without_principal`, and the human-readable
+  output prints a second note for the third case. The distinction is
+  operational: an attribution failure is a live `SO_PEERCRED` problem to chase,
+  while a row older than the column cannot be repaired at all, because writing a
+  principal into it would change the bytes its signature covers.
+- **Library API.** `AuditVerification::unattributed_rows: u64` is replaced by
+  `AuditVerification::attribution: AttributionCensus`. The census counts a
+  present-but-empty principal column as naming nobody, matching how
+  `ChainRow::identity` already reads it, so a blank can never be tallied as an
+  account that acted.
+
+The chain format is unchanged. No row is rewritten, every 0.2.x and 0.3.0 row
+verifies exactly as before, and the `unattributed_rows` JSON key keeps its
+meaning.
+
 ## [0.3.0] — 2026-07-29
 
 The signed audit chain now records **which account** acted, not only which role.

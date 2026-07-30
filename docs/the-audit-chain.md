@@ -86,9 +86,22 @@ beats inventing a uid, because a signed lie about who acted is worse than a
 signed admission of ignorance.
 
 A chain full of `none:unattributed` rows still verifies as intact, and that is
-honest but incomplete, so `sysknife audit verify` reports the count separately
-(`unattributed_rows` in `--json` and on the `sysknife_audit_verify` tool). Intact
-is a statement about tampering, not about how much the trail can tell you.
+honest but incomplete, so `sysknife audit verify` reports the counts separately.
+Intact is a statement about tampering, not about how much the trail can tell you.
+
+Two different things make a row name nobody, and they are counted apart because
+their remedies differ:
+
+| Count | Meaning | What to do |
+|---|---|---|
+| `attributed_rows` | The row names an account: `uid:<n>` or `token:vsock`. | Nothing. |
+| `unattributed_rows` | The row signs `none:unattributed`: the daemon tried to attribute the connection and failed. | Live problem. Check the daemon log for the connections concerned, and whether `SO_PEERCRED` can work on that host. |
+| `rows_without_principal` | The row carries no principal column at all, because it was signed under `chain_version` 1 or 2, before 0.3.0. | Nothing can be done. Backfilling a principal would change the bytes the signature covers, so the gap is kept rather than hidden. |
+
+All three appear in `--json` and on the `sysknife_audit_verify` MCP tool. The
+split matters on an upgraded database: `unattributed_rows: 0` over a chain of
+pre-0.3.0 rows would otherwise read as "every action is attributed" when in fact
+none of them is.
 
 What a uid does *not* prove: shared logins, `su` into a service account, and uid
 reuse after a user is deleted all weaken it. It identifies an account, not a

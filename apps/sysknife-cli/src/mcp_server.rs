@@ -316,11 +316,22 @@ pub struct AuditVerifyReport {
     /// Backend label: a filesystem path for SQLite, the literal `"postgres"`
     /// for Postgres deployments.
     pub backend: String,
-    /// How many verified rows record that the daemon could not name the caller.
+    /// How many rows record that the daemon could not name the caller.
     ///
     /// `status: "intact"` with a non-zero count here means the chain is sound and
     /// the attribution is not: report both, never the first alone.
     pub unattributed_rows: u64,
+    /// How many rows carry no principal at all, normally because they were
+    /// signed before the column existed.
+    ///
+    /// Reported next to `unattributed_rows` because zero attribution failures
+    /// over a pre-v3 database would otherwise read as full attribution. The two
+    /// have different remedies: this one cannot be fixed, since backfilling a
+    /// principal would rewrite the bytes the signature covers.
+    pub rows_without_principal: u64,
+    /// How many rows name an account (`uid:` or `token:`). The complement of the
+    /// two counts above, over the rows that were checked.
+    pub attributed_rows: u64,
     /// Set when `SYSKNIFE_SOCKET` names a daemon that may not live on this
     /// machine, because verification reads a local store while every other tool
     /// travels over that socket. `None` for the local-daemon case.
@@ -987,7 +998,7 @@ fn outcome_to_report(
 ) -> AuditVerifyReport {
     use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
 
-    let unattributed_rows = verification.unattributed_rows;
+    let attribution = verification.attribution;
     let events_checked = match &verification.events {
         VerifyOutcome::Intact { rows_checked } | VerifyOutcome::Broken { rows_checked, .. } => {
             *rows_checked
@@ -1018,7 +1029,9 @@ fn outcome_to_report(
             events_checked,
             approval_events_status,
             binding_status,
-            unattributed_rows,
+            unattributed_rows: attribution.unattributed,
+            rows_without_principal: attribution.no_principal,
+            attributed_rows: attribution.attributed,
             daemon_socket_caveat: None,
         },
         VerifyOutcome::Broken {
@@ -1039,7 +1052,9 @@ fn outcome_to_report(
             events_checked,
             approval_events_status,
             binding_status,
-            unattributed_rows,
+            unattributed_rows: attribution.unattributed,
+            rows_without_principal: attribution.no_principal,
+            attributed_rows: attribution.attributed,
             daemon_socket_caveat: None,
         },
         VerifyOutcome::CannotVerify { reason } => {
@@ -1088,6 +1103,8 @@ fn cannot_verify_report(backend: String, reason: String) -> AuditVerifyReport {
         approval_events_status: "cannot_verify".to_string(),
         binding_status: "consistent".to_string(),
         unattributed_rows: 0,
+        rows_without_principal: 0,
+        attributed_rows: 0,
         daemon_socket_caveat: None,
     }
 }
