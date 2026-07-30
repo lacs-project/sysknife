@@ -457,3 +457,112 @@ async fn postgres_checkpoint_sink_round_trips_and_detects_truncation() {
     .await
     .expect("drop isolated schema");
 }
+
+/// The attribution census over rows that made a real round trip through
+/// Postgres, in its own schema so it cannot race the other destructive tests.
+///
+/// Every other census test builds `ChainRow`s in memory, which cannot notice the
+/// SQL half going wrong. Migration 3 adds `caller_principal` with
+/// `ADD COLUMN IF NOT EXISTS`, so rows written before it read back as `NULL`, and
+/// a mapping that turned that `NULL` into `""` — or a `SELECT` that dropped the
+/// column — would move every legacy row from "names nobody" into "names an
+/// account". That is the misreport the census exists to prevent, and on the
+/// Postgres path nothing else would catch it.
+#[tokio::test]
+async fn attribution_census_over_a_real_postgres_round_trip() {
+    use sysknife_daemon::audit_chain::AttributionCensus;
+
+    const SCHEMA: &str = "attribution_census_test";
+
+    let Some(url) = test_url() else {
+        eprintln!("SYSKNIFE_TEST_POSTGRES_URL is unset; live Postgres contract not requested");
+        return;
+    };
+    assert!(
+        url.contains("sysknife_test"),
+        "refusing destructive integration test against a non-test database"
+    );
+
+    let options = PgConnectOptions::from_str(&url).expect("parse test database URL");
+    let admin = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .expect("connect for schema setup");
+    for statement in [
+        format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE"),
+        format!("CREATE SCHEMA {SCHEMA}"),
+    ] {
+        sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(statement))
+            .execute(&admin)
+            .await
+            .expect("prepare isolated schema");
+    }
+    let separator = if url.contains('?') { "&" } else { "?" };
+    let scoped_url = format!("{url}{separator}options=-csearch_path%3D{SCHEMA}");
+
+    let key_dir = tempfile::tempdir().expect("create audit-key directory");
+    let key = Arc::new(
+        AuditKey::load_or_generate(&key_dir.path().join("audit-key"))
+            .expect("generate test audit key"),
+    );
+    let store = PostgresStore::connect(
+        &PostgresConfig {
+            url: scoped_url,
+            ..PostgresConfig::default()
+        },
+        Arc::clone(&key),
+    )
+    .await
+    .expect("connect and migrate isolated schema");
+
+    // Two rows the daemon signed, each naming an account.
+    store
+        .record_previewed(new_transaction(), preview())
+        .await
+        .expect("record first transaction");
+    let mut second = new_transaction();
+    second.request_id = "postgres-census-second".to_string();
+    second.caller_principal = sysknife_daemon::auth::CallerPrincipal::VsockToken;
+    store
+        .record_previewed(second, preview())
+        .await
+        .expect("record second transaction");
+
+    // A row as migration 3 leaves one that predates the column: principal NULL,
+    // and still on the encoding that signed no principal.
+    sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(format!(
+        "UPDATE {SCHEMA}.transactions SET chain_version = 2, caller_principal = NULL \
+         WHERE request_id = 'postgres-census-second'"
+    )))
+    .execute(&admin)
+    .await
+    .expect("age one row back onto the v2 encoding");
+
+    let rows = store.fetch_chain_rows().await.expect("fetch chain rows");
+    assert_eq!(rows.len(), 2, "isolated schema holds exactly our rows");
+
+    let census = AttributionCensus::of(&rows);
+    assert_eq!(census.rows(), 2);
+    assert_eq!(
+        census.named(),
+        1,
+        "only the row still on the v3 encoding names an account"
+    );
+    assert_eq!(
+        census.not_recorded(),
+        1,
+        "a NULL principal read back from Postgres must count as naming nobody, \
+         never as an empty-string account"
+    );
+    assert_eq!(census.attribution_failed(), 0);
+    assert_eq!(census.unattested(), 0);
+    assert_eq!(census.unnamed(), 1);
+
+    sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(format!(
+        "DROP SCHEMA {SCHEMA} CASCADE"
+    )))
+    .execute(&admin)
+    .await
+    .expect("drop isolated schema");
+}

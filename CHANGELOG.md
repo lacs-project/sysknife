@@ -8,6 +8,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [0.4.0] — 2026-07-30
+
+`sysknife audit verify` now says **why** a row names no account, and refuses to
+credit an account it cannot prove.
+
+### Security
+
+- **An unsigned column can no longer manufacture attribution.**
+  `caller_principal` enters the signed message only under `chain_version = 3`, so
+  on a v1 or v2 row that column is unsigned free space. Anyone able to write to
+  the transaction table could set it to `uid:0`, and the chain would still verify
+  as `Intact`, because no signature covers it. The census therefore buckets rows
+  by the encoding that signed them, not by what the column holds, and reports a
+  principal no signature vouches for as `rows_unattested` rather than as an
+  account. Losing attribution is a gap; inventing it is a lie, and the report now
+  refuses the second even where that means saying less. The same bucket catches a
+  value this build cannot read back as one the daemon could have written, and a row
+  declaring an encoding this build does not know — the second of which means a
+  newer SysKnife wrote it, so the remedy there is a newer verifier, not an
+  incident.
+- **Attribution counts are marked as claims unless the chain verified.**
+  Verification stops at the first broken row while the census spans every row read,
+  so when the chain verdict is not `intact` the rows counted include any the
+  attacker wrote — and also, usually, authentic rows, since deleting or reordering
+  one breaks the link while leaving later signatures valid. The output says exactly
+  that instead of implying every surplus row is forged, and it distinguishes a
+  detected break from "this build could not check at all", which is a statement
+  about the binary or the key rather than a finding about the rows. The new
+  `rows_censused` count makes the gap against `rows_checked` measurable. Previously
+  the notes stated that rows were "authentic and verified" under every verdict,
+  including `CANNOT VERIFY`, where nothing had been checked.
+
+### Changed
+
+- **The attribution report is a census, not a single number.** 0.3.0 reported
+  `unattributed_rows`, matching the `caller_principal` column against
+  `none:unattributed` on any encoding. A database upgraded from an earlier release
+  is full of v1 and v2 rows that carry no principal at all, and those were counted
+  nowhere:
+  `unattributed_rows: 0` over such a chain read as "every action is attributed"
+  when in fact none of them was. `--json` and the `sysknife_audit_verify` MCP
+  tool now report `rows_censused`, `attributed_rows`, `unattributed_rows`,
+  `rows_without_principal`, `rows_unattested` and `rows_naming_no_account`, and
+  the human-readable output prints one summary line plus a note per reason. The
+  distinction is operational: an attribution failure is a live `SO_PEERCRED`
+  problem to chase, a row older than the column cannot be repaired at all, and an
+  unattested principal is something to investigate.
+- **`unattributed_rows` narrowed, on purpose.** It now counts only rows whose
+  `chain_version = 3` principal is *signed* as `none:unattributed`. The same string
+  sitting in the column of a v1 or v2 row is no longer counted there, because
+  nothing signed it; those rows report as `rows_unattested`. Anyone alerting on
+  this field should know the population changed even though the name did not.
+- **`sysknife_audit_verify` reports `chain_status`.** The top-level `status` is the
+  worst of three checks, so a broken approval-event chain turned it `broken` while
+  the transaction chain was intact, and an agent had no way to recover the chain's
+  own verdict — which is the one that decides whether the attribution counts are
+  findings or claims.
+- **Every attribution field is nullable, and `null` means "not measured".** When
+  no rows were read — an unopenable store, a missing key — the counts are `null`
+  rather than `0`, so a database nobody could read cannot be mistaken for one
+  where nothing was found. The MCP tool previously discarded a census that had
+  already been computed on the `cannot_verify` path and published zeros, so it
+  disagreed with `sysknife audit verify --json` about the same database.
+- **Library API.** `AuditVerification::unattributed_rows: u64` is replaced by
+  `AuditVerification::attribution: Option<AttributionCensus>`. The census has
+  private fields and one constructor that reads rows, `AttributionCensus::of`, so a
+  census cannot state totals that contradict the rows it describes;
+  `from_counts_for_tests` exists for renderer tests and is gated behind the new
+  `test-support` feature rather than merely hidden from docs. `CallerPrincipal`
+  gains `claim` and `classify`, the inverse of `as_signed_str`: `classify` accepts a
+  stored string only when the principal it rebuilds renders back to exactly those
+  bytes, so `uid:007`, `uid:1000:extra`, `uid:notanumber` and `token:not-vsock` are
+  refused rather than credited as accounts.
+
+The chain format is unchanged: no row is rewritten, nothing is backfilled, and
+every 0.2.x and 0.3.0 row verifies exactly as before. What changed is what the
+report says about those rows.
+
 ## [0.3.0] — 2026-07-29
 
 The signed audit chain now records **which account** acted, not only which role.

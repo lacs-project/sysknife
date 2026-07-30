@@ -1467,6 +1467,25 @@ mod tests {
             store.verify_audit_chain(&key).unwrap(),
             audit_chain::VerifyOutcome::Intact { rows_checked: 2 }
         ));
+
+        // The census, taken over rows that made a real round trip through SQLite
+        // rather than hand-built fixtures. This is the only place that can catch
+        // the SQL side going wrong: a `SELECT` that dropped `caller_principal`, or
+        // a mapping that coerced `NULL` to `""`, would move every legacy row out
+        // of "names nobody" and into "names an account", restoring the exact
+        // misreport this census exists to prevent, with every in-memory test
+        // still green.
+        let census = audit_chain::AttributionCensus::of(&rows);
+        assert_eq!(census.rows(), 2);
+        assert_eq!(census.named(), 1, "only the v3 row names uid:4242");
+        assert_eq!(
+            census.not_recorded(),
+            1,
+            "the v2 row's encoding never signed a principal"
+        );
+        assert_eq!(census.attribution_failed(), 0);
+        assert_eq!(census.unattested(), 0);
+        assert_eq!(census.unnamed(), 1);
     }
 
     #[test]

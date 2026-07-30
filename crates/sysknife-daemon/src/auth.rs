@@ -133,6 +133,86 @@ impl CallerPrincipal {
     pub fn as_signed_str(&self) -> String {
         format!("{}:{}", self.scheme(), self.value())
     }
+
+    /// What this principal claims about who acted.
+    ///
+    /// Exhaustive on `self`, so a new variant cannot be added without deciding
+    /// here whether it names an account. [`Self::classify`] answers for a stored
+    /// string by rebuilding the variant and then asking this.
+    pub fn claim(&self) -> PrincipalClaim {
+        match self {
+            Self::Uid(_) | Self::VsockToken => PrincipalClaim::Account,
+            Self::Unattributed => PrincipalClaim::AttributionFailed,
+        }
+    }
+
+    /// Rebuild the principal a stored `caller_principal` string was rendered
+    /// from, if any variant could have rendered exactly that string.
+    ///
+    /// The round-trip check is the whole point: a candidate is accepted only when
+    /// `as_signed_str` reproduces the input byte for byte, so `uid:007`,
+    /// `uid:1000:extra`, `uid:notanumber` and `token:not-vsock` are all refused.
+    /// Without it "starts with a known scheme" would pass for "names an account",
+    /// and the census would credit values this daemon cannot produce.
+    ///
+    /// A scheme belonging to no variant reads as `None`, which
+    /// [`Self::classify`] turns into [`PrincipalClaim::Unrecognized`]. That is the
+    /// safe default, and it is also a maintenance obligation: a new variant with a
+    /// new scheme must be added to the `candidate` chain below and to the
+    /// round-trip tests, or rows the daemon signs will be reported as unattested.
+    fn from_signed(stored: &str) -> Option<Self> {
+        let (scheme, value) = stored.split_once(':')?;
+        let candidate = if scheme == Self::Uid(0).scheme() {
+            Self::Uid(value.parse::<u32>().ok()?)
+        } else if scheme == Self::VsockToken.scheme() {
+            Self::VsockToken
+        } else if scheme == Self::Unattributed.scheme() {
+            Self::Unattributed
+        } else {
+            return None;
+        };
+        (candidate.as_signed_str() == stored).then_some(candidate)
+    }
+
+    /// Read a stored `caller_principal` back into what it claims about who acted.
+    ///
+    /// Deliberately the inverse of [`Self::as_signed_str`] and kept beside it, so
+    /// the writer and the reader of this column cannot drift apart.
+    ///
+    /// This is not a parse into `Self` for the caller's use, and that is the
+    /// point: it classifies strings this daemon may never have written. The census
+    /// reads a database column rather than a live connection, so it meets rows
+    /// that were tampered with, and rows signed by a newer daemon using a scheme
+    /// this binary does not know. Both must come back as
+    /// [`PrincipalClaim::Unrecognized`] instead of being credited as an account: a
+    /// report that turns an unreadable principal into "someone was named" is the
+    /// failure mode worth designing against.
+    pub fn classify(stored: &str) -> PrincipalClaim {
+        match Self::from_signed(stored) {
+            Some(principal) => principal.claim(),
+            None => PrincipalClaim::Unrecognized,
+        }
+    }
+}
+
+/// What a stored `caller_principal` string claims about who acted.
+///
+/// Three outcomes rather than a `bool`, because "names an account", "says it
+/// could not name one", and "cannot be read at all" call for three different
+/// lines in an audit report. Collapsing the last two would report a corrupt or
+/// future-encoded principal as an honest attribution failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrincipalClaim {
+    /// A known scheme with a non-empty value: `uid:1000`, `token:vsock`.
+    ///
+    /// Names an account, which is not the same as naming a person. See the
+    /// caveats in `SECURITY.md`: a uid is only as strong as account hygiene,
+    /// and `token:vsock` proves possession of a file.
+    Account,
+    /// Exactly the string the daemon signs when attribution failed.
+    AttributionFailed,
+    /// Anything else. Not an account, and not a recognised admission either.
+    Unrecognized,
 }
 
 /// Role plus principal for one connection, resolved by the daemon and never
@@ -627,6 +707,66 @@ mod tests {
     /// *broken*, so a variant that rendered empty would turn every honest row on
     /// an affected host into a false tamper report. That is a worse outcome than
     /// the attribution failure it would be describing.
+    /// Round-trip: everything the daemon can sign must classify back to the
+    /// class it belongs to. The match is exhaustive so a new variant cannot be
+    /// added without deciding, here, whether it names an account.
+    #[test]
+    fn every_principal_the_daemon_signs_classifies_back_to_its_own_class() {
+        for principal in [
+            CallerPrincipal::Uid(0),
+            CallerPrincipal::Uid(1000),
+            CallerPrincipal::Uid(u32::MAX),
+            CallerPrincipal::VsockToken,
+            CallerPrincipal::Unattributed,
+        ] {
+            assert_eq!(
+                CallerPrincipal::classify(&principal.as_signed_str()),
+                principal.claim(),
+                "{principal:?} must read back as the class it declares"
+            );
+        }
+    }
+
+    /// The strings a tampered column or a newer daemon can hold. None of them
+    /// names an account, and the one that matters most is `none:` with an
+    /// unfamiliar value: guessing that it is an attribution failure would let a
+    /// future scheme be reported as something this binary actually understood.
+    #[test]
+    fn a_principal_this_binary_cannot_read_is_never_credited_as_an_account() {
+        for stored in [
+            "",
+            " ",
+            "uid",
+            "uid:",
+            "token:",
+            "none:",
+            "garbage",
+            "none:overflow",
+            "fingerprint:ab12",
+            ":1000",
+            // A scheme this daemon knows carrying a value it cannot render.
+            // Without the round-trip check in `from_signed`, every one of these
+            // passed for an account: matching the scheme alone was enough.
+            "uid:notanumber",
+            "uid:1000:extra",
+            "uid:007",
+            "uid:-1",
+            "uid: 1000",
+            "uid:1000 ",
+            "uid:0\n",
+            "uid:99999999999999999999",
+            "token:not-vsock",
+            "token:vsock:extra",
+            "UID:1000",
+        ] {
+            assert_eq!(
+                CallerPrincipal::classify(stored),
+                PrincipalClaim::Unrecognized,
+                "{stored:?} must not be read as naming an account"
+            );
+        }
+    }
+
     #[test]
     fn every_principal_renders_as_a_non_empty_known_scheme() {
         const SCHEMES: [&str; 3] = ["uid", "token", "none"];

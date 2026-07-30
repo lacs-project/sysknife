@@ -316,11 +316,65 @@ pub struct AuditVerifyReport {
     /// Backend label: a filesystem path for SQLite, the literal `"postgres"`
     /// for Postgres deployments.
     pub backend: String,
-    /// How many verified rows record that the daemon could not name the caller.
+    /// The transaction chain's own verdict: `"intact"`, `"broken"` or
+    /// `"cannot_verify"`.
     ///
-    /// `status: "intact"` with a non-zero count here means the chain is sound and
-    /// the attribution is not: report both, never the first alone.
-    pub unattributed_rows: u64,
+    /// Reported separately because `status` is the worst of three checks, so a
+    /// broken *approval-event* chain sets `status` to `"broken"` while this stays
+    /// `"intact"`. Read this one, not `status`, to decide whether the attribution
+    /// counts below are findings or claims: without it an agent had no way to
+    /// recover the chain verdict and would discard sound attribution.
+    pub chain_status: String,
+    /// How many rows were censused for attribution: every row read, whether or
+    /// not it verified.
+    ///
+    /// `null` when the store could not be read at all, along with every count
+    /// below, so a database nobody could open never reads as one where nothing was
+    /// found. A readable but empty store reports `0`.
+    ///
+    /// When `chain_status` is not `"intact"` this can exceed `rows_checked`, and
+    /// the difference is the part of the trail that was counted but not proven.
+    pub rows_censused: Option<u64>,
+    /// How many rows have a signed principal naming an account: a non-empty value
+    /// under the `uid` or `token` scheme, which this build could read back as
+    /// something the daemon itself could have written.
+    ///
+    /// Only a finding when `chain_status` is `"intact"`. Past a detected break the
+    /// walk stopped checking, so those rows' principals are claims: some may be
+    /// authentic, since deleting or reordering a row breaks the link while leaving
+    /// later signatures valid, and this tool cannot say which.
+    pub attributed_rows: Option<u64>,
+    /// How many rows record that the daemon could not name the caller.
+    ///
+    /// `chain_status: "intact"` with a non-zero count here means the chain is sound
+    /// and the attribution is not: report both, never the first alone.
+    ///
+    /// Since 0.4.0 this counts only rows whose `chain_version = 3` principal is
+    /// signed as `none:unattributed`. 0.3.0 matched the column on any encoding,
+    /// which meant an unsigned column could land here; such rows are now
+    /// `rows_unattested`.
+    pub unattributed_rows: Option<u64>,
+    /// How many rows carry no principal the signature covers, normally because
+    /// they were signed before the column existed.
+    ///
+    /// Reported next to `unattributed_rows` because zero attribution failures
+    /// over a pre-v3 database would otherwise read as full attribution. The two
+    /// have different remedies: this one cannot be fixed, since backfilling a
+    /// principal would rewrite the bytes the signature covers.
+    pub rows_without_principal: Option<u64>,
+    /// How many rows have no principal any signature vouches for: the column is
+    /// populated on an encoding that does not sign it, or holds a value this build
+    /// cannot read back as one the daemon could have written, or the row declares
+    /// an encoding this build does not know.
+    ///
+    /// This build writes none of those. The first two are out-of-band writes to
+    /// investigate; the third means a newer SysKnife wrote the rows and the fix is
+    /// to verify with a build at least that new.
+    pub rows_unattested: Option<u64>,
+    /// How many rows name no account, for any reason. The complement of
+    /// `attributed_rows` over `rows_censused`, provided so a reader does not have
+    /// to add the three reasons and risk missing one.
+    pub rows_naming_no_account: Option<u64>,
     /// Set when `SYSKNIFE_SOCKET` names a daemon that may not live on this
     /// machine, because verification reads a local store while every other tool
     /// travels over that socket. `None` for the local-daemon case.
@@ -987,7 +1041,13 @@ fn outcome_to_report(
 ) -> AuditVerifyReport {
     use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
 
-    let unattributed_rows = verification.unattributed_rows;
+    // One helper for both report arms and for the `CannotVerify` arm below, so
+    // the census can only reach the report one way. The first version of this
+    // change let `cannot_verify_report` invent its own zeros while a real census
+    // sat in `verification`, and the MCP tool then published different numbers
+    // than `sysknife audit verify --json` did for the same database.
+    let attribution = verification.attribution;
+    let chain_status = outcome_label(&verification.chain).to_string();
     let events_checked = match &verification.events {
         VerifyOutcome::Intact { rows_checked } | VerifyOutcome::Broken { rows_checked, .. } => {
             *rows_checked
@@ -1018,7 +1078,13 @@ fn outcome_to_report(
             events_checked,
             approval_events_status,
             binding_status,
-            unattributed_rows,
+            chain_status: chain_status.clone(),
+            rows_censused: attribution.map(|c| c.rows()),
+            attributed_rows: attribution.map(|c| c.named()),
+            unattributed_rows: attribution.map(|c| c.attribution_failed()),
+            rows_without_principal: attribution.map(|c| c.not_recorded()),
+            rows_unattested: attribution.map(|c| c.unattested()),
+            rows_naming_no_account: attribution.map(|c| c.unnamed()),
             daemon_socket_caveat: None,
         },
         VerifyOutcome::Broken {
@@ -1039,7 +1105,13 @@ fn outcome_to_report(
             events_checked,
             approval_events_status,
             binding_status,
-            unattributed_rows,
+            chain_status: chain_status.clone(),
+            rows_censused: attribution.map(|c| c.rows()),
+            attributed_rows: attribution.map(|c| c.named()),
+            unattributed_rows: attribution.map(|c| c.attribution_failed()),
+            rows_without_principal: attribution.map(|c| c.not_recorded()),
+            rows_unattested: attribution.map(|c| c.unattested()),
+            rows_naming_no_account: attribution.map(|c| c.unnamed()),
             daemon_socket_caveat: None,
         },
         VerifyOutcome::CannotVerify { reason } => {
@@ -1047,6 +1119,17 @@ fn outcome_to_report(
             r.events_checked = events_checked;
             r.approval_events_status = approval_events_status;
             r.binding_status = binding_status;
+            // Rows can be read and censused and still fail to verify: one row
+            // from a newer encoding, or a key_id mismatch after key rotation, is
+            // enough. Dropping the census here republished the very defect this
+            // release fixes, on the surface an agent reads without a human.
+            r.chain_status = chain_status;
+            r.rows_censused = attribution.map(|c| c.rows());
+            r.attributed_rows = attribution.map(|c| c.named());
+            r.unattributed_rows = attribution.map(|c| c.attribution_failed());
+            r.rows_without_principal = attribution.map(|c| c.not_recorded());
+            r.rows_unattested = attribution.map(|c| c.unattested());
+            r.rows_naming_no_account = attribution.map(|c| c.unnamed());
             r
         }
     };
@@ -1087,7 +1170,18 @@ fn cannot_verify_report(backend: String, reason: String) -> AuditVerifyReport {
         events_checked: 0,
         approval_events_status: "cannot_verify".to_string(),
         binding_status: "consistent".to_string(),
-        unattributed_rows: 0,
+        // The chain verdict for a report built before any row was read. Callers
+        // that reach this constructor overwrite it when they know better.
+        chain_status: "cannot_verify".to_string(),
+        // Null, not zero. This constructor also serves the paths where the store
+        // or the key could not be opened, and there "no row named an account" is
+        // not a fact anyone established.
+        rows_censused: None,
+        attributed_rows: None,
+        unattributed_rows: None,
+        rows_without_principal: None,
+        rows_unattested: None,
+        rows_naming_no_account: None,
         daemon_socket_caveat: None,
     }
 }
@@ -1157,6 +1251,147 @@ mod tests {
             None,
         );
         assert!(report.daemon_socket_caveat.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // What the agent-facing report says about attribution
+    // -----------------------------------------------------------------------
+
+    fn verification_with(
+        chain: sysknife_daemon::audit_chain::VerifyOutcome,
+        attribution: Option<sysknife_daemon::audit_chain::AttributionCensus>,
+    ) -> sysknife_daemon::audit_chain::AuditVerification {
+        use sysknife_daemon::audit_chain::{AuditVerification, BindingOutcome, VerifyOutcome};
+        AuditVerification {
+            chain,
+            events: VerifyOutcome::Intact { rows_checked: 0 },
+            binding: BindingOutcome::Consistent {
+                bindings_checked: 0,
+            },
+            attribution,
+        }
+    }
+
+    /// Every count has to reach the agent-facing report, with distinct values so
+    /// no permutation of the six fields can satisfy this. Both the `Intact` and
+    /// `Broken` arms are separate struct literals repeating the field list, so a
+    /// fix applied to one arm only is otherwise invisible.
+    #[test]
+    fn the_report_carries_every_attribution_count_on_both_verdicts() {
+        use sysknife_daemon::audit_chain::{AttributionCensus, VerifyOutcome};
+        let census = AttributionCensus::from_counts_for_tests(6, 1, 2, 3);
+
+        for chain in [
+            VerifyOutcome::Intact { rows_checked: 12 },
+            VerifyOutcome::Broken {
+                rows_checked: 4,
+                first_broken_seq: 5,
+                first_broken_transaction_id: "tx5".to_string(),
+                expected: "x".to_string(),
+                actual: "y".to_string(),
+            },
+        ] {
+            let report = outcome_to_report(
+                verification_with(chain.clone(), Some(census)),
+                "/tmp/store.sqlite".to_string(),
+            );
+            assert_eq!(report.attributed_rows, Some(6), "chain: {chain:?}");
+            assert_eq!(report.unattributed_rows, Some(1), "chain: {chain:?}");
+            assert_eq!(report.rows_without_principal, Some(2), "chain: {chain:?}");
+            assert_eq!(report.rows_unattested, Some(3), "chain: {chain:?}");
+            assert_eq!(report.rows_naming_no_account, Some(6), "chain: {chain:?}");
+            assert_eq!(report.rows_censused, Some(12), "chain: {chain:?}");
+        }
+    }
+
+    /// Rows can be read and censused and still fail to verify: one row from a
+    /// newer encoding is enough, as is a `key_id` mismatch after key rotation.
+    /// This arm used to drop the census and publish zeros, so the MCP tool told an
+    /// agent `attributed_rows: 0` over a fully attributed database while
+    /// `sysknife audit verify --json` told a human the truth for the same store.
+    #[test]
+    fn a_cannot_verify_report_keeps_the_census_it_was_given() {
+        use sysknife_daemon::audit_chain::{AttributionCensus, VerifyOutcome};
+        let report = outcome_to_report(
+            verification_with(
+                VerifyOutcome::CannotVerify {
+                    reason: "row seq=9 declares chain_version=4".to_string(),
+                },
+                Some(AttributionCensus::from_counts_for_tests(5, 2, 9, 0)),
+            ),
+            "/tmp/store.sqlite".to_string(),
+        );
+
+        assert_eq!(report.status, "cannot_verify");
+        assert_eq!(
+            report.chain_status, "cannot_verify",
+            "the chain's own verdict must be recoverable, not only the aggregate"
+        );
+        assert_eq!(
+            report.attributed_rows,
+            Some(5),
+            "the census survived the read, so the report must not invent zeros"
+        );
+        assert_eq!(report.unattributed_rows, Some(2));
+        assert_eq!(report.rows_without_principal, Some(9));
+        assert_eq!(report.rows_censused, Some(16));
+    }
+
+    /// `status` is the worst of three checks, so a broken approval-event chain
+    /// makes it `"broken"` while the transaction chain is intact. An agent reading
+    /// only `status` would treat sound attribution as unproven, so the chain's own
+    /// verdict has to be recoverable from the report.
+    #[test]
+    fn a_broken_event_chain_does_not_make_the_transaction_chain_look_broken() {
+        use sysknife_daemon::audit_chain::{
+            AttributionCensus, AuditVerification, BindingOutcome, VerifyOutcome,
+        };
+        let report = outcome_to_report(
+            AuditVerification {
+                chain: VerifyOutcome::Intact { rows_checked: 3 },
+                events: VerifyOutcome::Broken {
+                    rows_checked: 0,
+                    first_broken_seq: 1,
+                    first_broken_transaction_id: "ev1".to_string(),
+                    expected: "x".to_string(),
+                    actual: "y".to_string(),
+                },
+                binding: BindingOutcome::Consistent {
+                    bindings_checked: 0,
+                },
+                attribution: Some(AttributionCensus::from_counts_for_tests(3, 0, 0, 0)),
+            },
+            "/tmp/store.sqlite".to_string(),
+        );
+
+        assert_eq!(
+            report.status, "broken",
+            "the headline must still reflect the worst of the three checks"
+        );
+        assert_eq!(
+            report.chain_status, "intact",
+            "while the transaction chain's own verdict stays recoverable"
+        );
+        assert_eq!(report.attributed_rows, Some(3));
+        assert_eq!(
+            report.rows_censused, report.attributed_rows,
+            "nothing was counted that was not also checked here"
+        );
+    }
+
+    /// The other `cannot_verify` shape: nothing was read at all, so every count is
+    /// `null`. An agent alerting on attribution must be able to tell "no data" from
+    /// "no account named", which a `0` here would hide.
+    #[test]
+    fn a_report_for_a_store_that_was_never_read_nulls_every_count() {
+        let report = cannot_verify_report("/tmp/store.sqlite".into(), "no key".into());
+
+        assert!(report.attributed_rows.is_none());
+        assert!(report.unattributed_rows.is_none());
+        assert!(report.rows_without_principal.is_none());
+        assert!(report.rows_unattested.is_none());
+        assert!(report.rows_naming_no_account.is_none());
+        assert!(report.rows_censused.is_none());
     }
 
     // -----------------------------------------------------------------------

@@ -1130,13 +1130,235 @@ pub struct AuditVerification {
     pub chain: VerifyOutcome,
     pub events: VerifyOutcome,
     pub binding: BindingOutcome,
-    /// How many verified rows record that the daemon could not name the caller.
+    /// How many rows can name the account that acted, and why the rest cannot.
     ///
-    /// Counted separately because `Intact` alone would be true and misleading: a
+    /// Reported separately because `Intact` alone would be true and misleading: a
     /// host where every connection failed attribution produces a chain that
     /// verifies perfectly and answers "who acted" with nobody. The verdict is
-    /// about tampering; this number is about how much the trail can tell you.
-    pub unattributed_rows: u64,
+    /// about tampering; this census is about how much the trail can tell you.
+    ///
+    /// `None` when the store could not be read at all, so no census was taken: a
+    /// missing database, an unopenable one, an absent key. A readable but empty
+    /// store is `Some`, with every count zero.
+    ///
+    /// Deliberately not a census of zero rows for the unreadable case: "nothing
+    /// is known about attribution" and "the chain holds no rows" are different
+    /// claims, and a zero that means the first reads as the second, which is the
+    /// exact confusion this census exists to end.
+    pub attribution: Option<AttributionCensus>,
+}
+
+/// What one row's principal column can attest, given the encoding that signed it.
+///
+/// Four outcomes, because the remedies differ and an audit report that collapses
+/// them tells the operator to do the wrong thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowStanding {
+    /// A `chain_version = 3` row whose signed principal names an account.
+    NamesAccount,
+    /// A `chain_version = 3` row signing `none:unattributed`: the daemon tried
+    /// to attribute the connection and could not.
+    AttributionFailed,
+    /// Nothing the signature covers. A v1 or v2 row, whose encoding had no
+    /// principal field, or a v3 row with a blank column, which also verifies as
+    /// `Broken` once the walk reaches it.
+    NotRecorded,
+    /// Nothing here that a signature vouches for. Three sources: the column is
+    /// populated on an encoding that does not sign it, or the value is one this
+    /// binary cannot read back as something the daemon could have written, or the
+    /// row declares an encoding this build does not know, in which case the
+    /// principal may be absent or held somewhere this build cannot see.
+    ///
+    /// This build never writes any of those, so the first two are evidence of an
+    /// out-of-band write and the third of a newer daemon. None of them is evidence
+    /// of who acted.
+    Unattested,
+}
+
+/// Which encoding, if any, signs the `caller_principal` column, and therefore
+/// whether the column may be believed.
+///
+/// This is the load-bearing check in the census. [`ChainContent::canonical_bytes`]
+/// pushes `caller_principal` into the signed bytes **only** in the v3 arm, so on a
+/// v1 or v2 row that column is unsigned free space: anyone with write access to
+/// the table can set it to `uid:0` and the chain still verifies `Intact`, because
+/// there is no signature over it to break. Bucketing by the column instead of by
+/// the encoding would let a plain `UPDATE` manufacture attribution, which is a
+/// worse failure than the one this census was written to fix. Losing attribution
+/// is a gap; inventing it is a lie.
+fn standing(row: &ChainRow) -> RowStanding {
+    // Empty treated as absent, and nothing trimmed, so this agrees with
+    // `ChainRow::identity` exactly: it filters on `is_empty` and no more. An
+    // earlier version trimmed first, which sent a whitespace-only v3 principal
+    // into "written before the column existed" -- a row that in fact verifies
+    // Intact and is an anomaly worth investigating. The schema stores `''` as
+    // well as `NULL`, and `verify_chain` prints those two differently on purpose,
+    // so both are reachable on real data.
+    let stored = row.caller_principal.as_deref().filter(|p| !p.is_empty());
+    match row.chain_version {
+        CHAIN_VERSION_LEGACY | CHAIN_VERSION_V2 => match stored {
+            None => RowStanding::NotRecorded,
+            Some(_) => RowStanding::Unattested,
+        },
+        CHAIN_VERSION_V3 => match stored {
+            None => RowStanding::NotRecorded,
+            Some(p) => match crate::auth::CallerPrincipal::classify(p) {
+                crate::auth::PrincipalClaim::Account => RowStanding::NamesAccount,
+                crate::auth::PrincipalClaim::AttributionFailed => RowStanding::AttributionFailed,
+                crate::auth::PrincipalClaim::Unrecognized => RowStanding::Unattested,
+            },
+        },
+        // An encoding this binary does not know, which is any value outside 1..=3:
+        // a newer daemon's, or a corrupt column. `verify_rows` already reports
+        // `CannotVerify` for such a row, and the census must not claim an account
+        // either, because this binary cannot say which fields that encoding signs
+        // -- including whether it signs this column at all.
+        _ => RowStanding::Unattested,
+    }
+}
+
+/// Attribution census over every transaction row read.
+///
+/// Counted over all rows, not only the ones that verified, so a chain that
+/// breaks at row 5 still reports what the remaining rows *claim* about who
+/// acted. Those claims are only as good as the chain verdict beside them: unless
+/// it is `Intact`, treat every count here as unproven, and note that
+/// [`Self::rows`] can then exceed the verdict's `rows_checked`. A row past the
+/// break may be perfectly authentic -- a deleted or reordered row breaks the link
+/// while leaving every later signature valid -- so the surplus is the part of the
+/// trail this command cannot vouch for, not proof of forgery. [`Self::rows`]
+/// exists so a reader can see that gap instead of inferring it.
+///
+/// One counter is not enough, because a row can name no account for reasons with
+/// different remedies. `none:unattributed` says the daemon tried and failed on a
+/// host that could have attributed the call, which is a configuration problem to
+/// chase in the daemon log. A v1 or v2 row says the encoding had no principal
+/// field when the row was signed, which is history and cannot be repaired:
+/// backfilling it would rewrite the bytes the signature covers. An unattested
+/// value says something wrote to the column that should not have.
+///
+/// Splitting them keeps the report honest on an upgraded database. A single
+/// "unattributed" count of `0` over a chain of pre-v3 rows reads as "every
+/// action is attributed" when in fact none of them is.
+///
+/// Fields are private and [`Self::of`] is the only constructor that reads rows, so
+/// a census cannot state totals that contradict the rows it describes.
+/// `from_counts_for_tests` is the one other way to build one, and it is
+/// not for production. That is not hypothetical tidiness: in 0.3.0 the MCP report
+/// built its own all-zero attribution count on the `cannot_verify` path, where a
+/// real count had already been computed, and the MCP tool and `audit verify
+/// --json` then published different numbers for one database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttributionCensus {
+    named: u64,
+    attribution_failed: u64,
+    not_recorded: u64,
+    unattested: u64,
+    rows: u64,
+}
+
+impl AttributionCensus {
+    /// Count the rows. The only way to obtain a census of real data.
+    pub fn of(tx_rows: &[ChainRow]) -> Self {
+        let mut census = Self {
+            named: 0,
+            attribution_failed: 0,
+            not_recorded: 0,
+            unattested: 0,
+            rows: tx_rows.len() as u64,
+        };
+        for row in tx_rows {
+            match standing(row) {
+                RowStanding::NamesAccount => census.named += 1,
+                RowStanding::AttributionFailed => census.attribution_failed += 1,
+                RowStanding::NotRecorded => census.not_recorded += 1,
+                RowStanding::Unattested => census.unattested += 1,
+            }
+        }
+        census
+    }
+
+    /// Rows whose signed principal names an account (`uid:` or `token:`).
+    ///
+    /// Names an *account*, which is not a person: see `SECURITY.md` on shared
+    /// logins, `su`, uid reuse, and on `token:vsock` proving possession of a
+    /// file.
+    pub fn named(&self) -> u64 {
+        self.named
+    }
+
+    /// Rows signing `none:unattributed`, the daemon's admission that it could
+    /// not name the caller.
+    pub fn attribution_failed(&self) -> u64 {
+        self.attribution_failed
+    }
+
+    /// Rows with no principal the signature covers, normally written before the
+    /// column existed.
+    pub fn not_recorded(&self) -> u64 {
+        self.not_recorded
+    }
+
+    /// Rows carrying a principal no signature vouches for. Non-zero means
+    /// investigate: nothing in SysKnife writes such a value.
+    pub fn unattested(&self) -> u64 {
+        self.unattested
+    }
+
+    /// Rows censused.
+    ///
+    /// The four row outcomes partition the rows, and [`Self::of`]
+    /// increments exactly one bucket per row, so this equals their sum. State the
+    /// partition rather than the arithmetic: a fifth bucket keeps the partition
+    /// true, and any sum written out by hand somewhere else would not survive it.
+    pub fn rows(&self) -> u64 {
+        self.rows
+    }
+
+    /// Rows that name no account, for any reason. What an operator asking "can
+    /// this trail tell me who acted" has to subtract.
+    ///
+    /// Subtraction rather than addition on purpose: a fifth *non-naming* bucket
+    /// cannot make this number stale, whereas summing the reasons would need
+    /// editing here too. A future bucket that does name an account would have to
+    /// be added to `named` instead, which is why `named` is the one counter this
+    /// subtracts.
+    pub fn unnamed(&self) -> u64 {
+        self.rows - self.named
+    }
+
+    /// Build a census from counts, for rendering tests only.
+    ///
+    /// Behind the `test-support` feature rather than merely `#[doc(hidden)]`, which
+    /// hides a function from documentation but not from callers. The CLI renderers
+    /// live in another crate, where `cfg(test)` does not reach, and making them
+    /// build signed `ChainRow` fixtures to assert on one line of prose would buy no
+    /// safety; enabling the feature only as a dev-dependency keeps the door shut
+    /// for production builds. [`Self::of`] is the constructor that reads rows.
+    ///
+    /// Panics if the counts overflow `u64`, rather than wrapping into a census
+    /// whose `rows` is smaller than its buckets and whose [`Self::unnamed`] would
+    /// then underflow.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_counts_for_tests(
+        named: u64,
+        attribution_failed: u64,
+        not_recorded: u64,
+        unattested: u64,
+    ) -> Self {
+        let rows = named
+            .checked_add(attribution_failed)
+            .and_then(|n| n.checked_add(not_recorded))
+            .and_then(|n| n.checked_add(unattested))
+            .expect("census counts must not overflow u64");
+        Self {
+            named,
+            attribution_failed,
+            not_recorded,
+            unattested,
+            rows,
+        }
+    }
 }
 
 impl AuditVerification {
@@ -1161,18 +1383,6 @@ impl AuditVerification {
     }
 }
 
-/// Rows whose signed principal records an attribution failure.
-///
-/// Compares against the rendering of [`crate::auth::CallerPrincipal::Unattributed`]
-/// rather than a literal, so the two cannot drift.
-fn count_unattributed(tx_rows: &[ChainRow]) -> u64 {
-    let unattributed = crate::auth::CallerPrincipal::Unattributed.as_signed_str();
-    tx_rows
-        .iter()
-        .filter(|row| row.caller_principal.as_deref() == Some(unattributed.as_str()))
-        .count() as u64
-}
-
 /// Run all three checks with the daemon's key.
 pub fn verify_all(
     key: &AuditKey,
@@ -1183,7 +1393,7 @@ pub fn verify_all(
         chain: verify_chain(key, tx_rows),
         events: verify_event_chain(key, event_rows),
         binding: verify_event_binding(tx_rows, event_rows),
-        unattributed_rows: count_unattributed(tx_rows),
+        attribution: Some(AttributionCensus::of(tx_rows)),
     }
 }
 
@@ -1197,7 +1407,7 @@ pub fn verify_all_with_pubkey(
         chain: verify_chain_with_pubkey(verifying_key_hex, tx_rows),
         events: verify_event_chain_with_pubkey(verifying_key_hex, event_rows),
         binding: verify_event_binding(tx_rows, event_rows),
-        unattributed_rows: count_unattributed(tx_rows),
+        attribution: Some(AttributionCensus::of(tx_rows)),
     }
 }
 
@@ -1812,6 +2022,369 @@ mod tests {
         );
     }
 
+    /// Build a chain from a list of identities, signing each row properly, so no
+    /// test signs one thing and stores another.
+    fn chain_of(key: &AuditKey, identities: Vec<ChainIdentity<'_>>) -> Vec<ChainRow> {
+        let mut rows = Vec::new();
+        let mut prev = String::new();
+        for (i, identity) in identities.into_iter().enumerate() {
+            let txid = format!("tx{i}");
+            let mut content = sample_content((i + 1) as u64, &txid);
+            content.identity = identity;
+            let hash = key.chain_hash(&content, &prev);
+            rows.push(row_for(&content, &prev, hash.clone()));
+            prev = hash;
+        }
+        rows
+    }
+
+    /// The census has to distinguish *why* a row names no account, because the
+    /// reasons have different remedies: a `none:unattributed` row means
+    /// `SO_PEERCRED` failed on a host that could have attributed it, while a v1
+    /// or v2 row means the encoding had no principal field at the time it was
+    /// signed. Reporting only the first understates an upgraded database.
+    ///
+    /// Every bucket gets a distinct count, so no permutation of the four can
+    /// satisfy this assertion. The first version used 2/1/2 and still passed with
+    /// the `named` and `not_recorded` arms swapped.
+    #[test]
+    fn the_census_separates_attribution_failures_from_encodings_without_the_field() {
+        let key = fixed_key();
+        let unattributed = crate::auth::CallerPrincipal::Unattributed.as_signed_str();
+        let rows = chain_of(
+            &key,
+            vec![
+                ChainIdentity::LegacyV1,
+                ChainIdentity::V2 {
+                    caller_role: "dev",
+                    event_tip: "",
+                },
+                ChainIdentity::V3 {
+                    caller_role: "admin",
+                    event_tip: "",
+                    caller_principal: "uid:1000",
+                },
+                ChainIdentity::V3 {
+                    caller_role: "admin",
+                    event_tip: "",
+                    caller_principal: "uid:1001",
+                },
+                ChainIdentity::V3 {
+                    caller_role: "admin",
+                    event_tip: "",
+                    caller_principal: "token:vsock",
+                },
+                ChainIdentity::V3 {
+                    caller_role: "observer",
+                    event_tip: "",
+                    caller_principal: &unattributed,
+                },
+            ],
+        );
+
+        let verification = verify_all(&key, &rows, &[]);
+        assert_eq!(
+            verification.chain,
+            VerifyOutcome::Intact { rows_checked: 6 },
+            "every encoding must keep verifying; the census is not a verdict"
+        );
+        let census = verification
+            .attribution
+            .expect("rows were read, so a census was taken");
+        assert_eq!(census.named(), 3);
+        assert_eq!(census.attribution_failed(), 1);
+        assert_eq!(census.not_recorded(), 2);
+        assert_eq!(census.unattested(), 0);
+        assert_eq!(census.rows(), 6);
+        assert_eq!(
+            census.unnamed(),
+            3,
+            "three of the six rows cannot name an account, by either reason"
+        );
+    }
+
+    /// The forgery this census must not enable.
+    ///
+    /// `ChainContent::canonical_bytes` signs `caller_principal` only in the v3
+    /// arm, so on a v1 or v2 row the column is unsigned free space. Anyone with write access
+    /// to the table can set it, and no signature breaks. If the census bucketed
+    /// by the column rather than by the encoding, a single `UPDATE` would turn
+    /// "none of these rows names an account" into "every row names root", with an
+    /// `Intact` verdict beside it. Losing attribution is a gap; inventing it is a
+    /// lie, and this is the test that keeps the lie unavailable.
+    #[test]
+    fn a_principal_written_into_an_encoding_that_does_not_sign_it_is_never_an_account() {
+        let key = fixed_key();
+        let mut rows = chain_of(
+            &key,
+            vec![
+                ChainIdentity::LegacyV1,
+                ChainIdentity::V2 {
+                    caller_role: "dev",
+                    event_tip: "",
+                },
+            ],
+        );
+        // The out-of-band write. Not signed by either encoding, so the chain is
+        // expected to stay Intact: the signature cannot see this.
+        rows[0].caller_principal = Some("uid:0".to_string());
+        rows[1].caller_principal = Some("uid:0".to_string());
+
+        let verification = verify_all(&key, &rows, &[]);
+        assert_eq!(
+            verification.chain,
+            VerifyOutcome::Intact { rows_checked: 2 },
+            "no signature covers that column on v1/v2, so tampering with it is \
+             invisible to verification -- which is exactly why the census must \
+             not believe it"
+        );
+        let census = verification.attribution.expect("rows were read");
+        assert_eq!(
+            census.named(),
+            0,
+            "an unsigned column must never be credited as an account"
+        );
+        assert_eq!(
+            census.unattested(),
+            2,
+            "and it must be reported as unattested, because nothing in SysKnife \
+             writes that column on those encodings"
+        );
+        assert_eq!(census.unnamed(), 2);
+    }
+
+    /// A principal column that is present but empty must not be tallied as an
+    /// account. The schema allows `''` as well as `NULL`, and `identity()`
+    /// already reads the two the same way, so the census has to agree with it.
+    #[test]
+    fn a_blank_principal_column_is_counted_as_naming_nobody() {
+        let key = fixed_key();
+        let mut content = sample_content(1, "tx-blank-census");
+        content.identity = ChainIdentity::V3 {
+            caller_role: "admin",
+            event_tip: "",
+            caller_principal: "",
+        };
+        let hash = key.chain_hash(&content, "");
+        let row = row_for(&content, "", hash);
+        assert_eq!(row.caller_principal.as_deref(), Some(""));
+
+        let verification = verify_all(&key, &[row], &[]);
+        let census = verification.attribution.expect("a row was read");
+        assert_eq!(census.named(), 0);
+        assert_eq!(census.not_recorded(), 1);
+        assert_eq!(census.rows(), 1);
+        assert!(
+            matches!(verification.chain, VerifyOutcome::Broken { .. }),
+            "and the row is still reported as broken once the walk reaches it, \
+             so census and verdict agree"
+        );
+    }
+
+    /// Values that look like a principal but name nobody. None of these can be
+    /// written by the daemon (`CallerPrincipal::as_signed_str` always renders
+    /// `scheme:value` with a non-empty value), so each one is evidence of an
+    /// out-of-band write. Counting them as accounts would be this commit's own
+    /// defect one level down: `none:overflow` in particular is a plausible future
+    /// spelling of a *failure*, and crediting it as an account would invert its
+    /// meaning.
+    #[test]
+    fn a_principal_this_binary_cannot_read_is_counted_as_unattested_not_as_an_account() {
+        let key = fixed_key();
+        for forged in [
+            "garbage",
+            "uid:",
+            "none:overflow",
+            // Whitespace is signed content like any other, so this row verifies
+            // Intact. It still names nobody, and it belongs in the bucket that
+            // asks for an investigation rather than the one that explains
+            // pre-0.3.0 history: nothing in SysKnife writes it.
+            "  ",
+            "UID:1000",
+            // A known scheme with a value the daemon could not have rendered.
+            "uid:notanumber",
+            "uid:1000:extra",
+            "token:not-vsock",
+        ] {
+            let mut content = sample_content(1, "tx-forged");
+            content.identity = ChainIdentity::V3 {
+                caller_role: "admin",
+                event_tip: "",
+                caller_principal: forged,
+            };
+            let hash = key.chain_hash(&content, "");
+            let row = row_for(&content, "", hash);
+            let census = verify_all(&key, &[row], &[])
+                .attribution
+                .expect("a row was read");
+            assert_eq!(
+                census.named(),
+                0,
+                "{forged:?} names no account and must not be counted as one"
+            );
+            assert_eq!(
+                census.unnamed(),
+                1,
+                "{forged:?} must be counted among the rows naming nobody"
+            );
+            assert_eq!(
+                census.unattested(),
+                1,
+                "{forged:?} is signed content the daemon never writes, so it is a \
+                 finding to investigate, not history to explain away"
+            );
+            assert_eq!(
+                census.not_recorded(),
+                0,
+                "{forged:?} is present, so it must not be reported as a row that \
+                 predates the column"
+            );
+        }
+    }
+
+    /// The case that made the single counter misleading: a database written
+    /// entirely before the principal column existed reports zero attribution
+    /// failures, which reads as "everything is attributed". Every row in it names
+    /// nobody, so `unnamed` must account for all of them.
+    #[test]
+    fn a_chain_predating_the_principal_field_reports_no_row_as_attributed() {
+        let key = fixed_key();
+        let rows = chain_of(
+            &key,
+            vec![
+                ChainIdentity::LegacyV1,
+                ChainIdentity::V2 {
+                    caller_role: "dev",
+                    event_tip: "",
+                },
+            ],
+        );
+
+        let verification = verify_all(&key, &rows, &[]);
+        assert_eq!(
+            verification.chain,
+            VerifyOutcome::Intact { rows_checked: 2 },
+            "legacy rows must keep verifying; the census is not a verdict"
+        );
+        let census = verification.attribution.expect("rows were read");
+        assert_eq!(census.attribution_failed(), 0);
+        assert_eq!(census.named(), 0);
+        assert_eq!(census.not_recorded(), 2);
+        assert_eq!(census.unnamed(), 2);
+    }
+
+    /// The census spans every row read, while verification stops at the first
+    /// break. That is deliberate, and it is also the reason the counts are claims
+    /// rather than findings: on a broken chain the rows after the break were
+    /// written by whoever broke it. `rows()` is what lets a reader see the gap
+    /// between what was counted and what was checked.
+    #[test]
+    fn a_broken_chain_censuses_more_rows_than_it_verified() {
+        let key = fixed_key();
+        let mut rows = chain_of(
+            &key,
+            vec![
+                ChainIdentity::V3 {
+                    caller_role: "admin",
+                    event_tip: "",
+                    caller_principal: "uid:1000",
+                },
+                ChainIdentity::V3 {
+                    caller_role: "admin",
+                    event_tip: "",
+                    caller_principal: "uid:1000",
+                },
+                ChainIdentity::V3 {
+                    caller_role: "admin",
+                    event_tip: "",
+                    caller_principal: "uid:1000",
+                },
+            ],
+        );
+        rows[1].summary = "tampered".to_string();
+
+        let verification = verify_all(&key, &rows, &[]);
+        let rows_checked = match verification.chain {
+            VerifyOutcome::Broken { rows_checked, .. } => rows_checked,
+            ref other => panic!("expected a detected tamper, got {other:?}"),
+        };
+        let census = verification.attribution.expect("rows were read");
+        assert_eq!(rows_checked, 1, "the walk stops at the first broken row");
+        assert_eq!(
+            census.rows(),
+            3,
+            "while the census still describes every row read"
+        );
+        assert!(
+            census.rows() > rows_checked,
+            "the report must be able to show that more was counted than checked"
+        );
+    }
+
+    /// The auditor path takes the same census as the keyholder path. It is the
+    /// one an external reviewer runs, so a census wired only into `verify_all`
+    /// would leave exactly that audience with nothing.
+    #[test]
+    fn the_pubkey_only_path_takes_the_same_census() {
+        let key = fixed_key();
+        let unattributed = crate::auth::CallerPrincipal::Unattributed.as_signed_str();
+        let rows = chain_of(
+            &key,
+            vec![
+                ChainIdentity::V3 {
+                    caller_role: "admin",
+                    event_tip: "",
+                    caller_principal: "uid:1000",
+                },
+                ChainIdentity::V3 {
+                    caller_role: "observer",
+                    event_tip: "",
+                    caller_principal: &unattributed,
+                },
+            ],
+        );
+
+        let with_key = verify_all(&key, &rows, &[]).attribution;
+        let with_pubkey = verify_all_with_pubkey(&key.verifying_key_hex(), &rows, &[]).attribution;
+        assert_eq!(
+            with_key, with_pubkey,
+            "the auditor must see the same attribution numbers as the keyholder"
+        );
+        let census = with_pubkey.expect("rows were read");
+        assert_eq!(census.named(), 1);
+        assert_eq!(census.attribution_failed(), 1);
+    }
+
+    /// Attribution must not move the exit code. `Intact` is a statement about
+    /// tampering, and `SECURITY.md` leans on that separation: a host where every
+    /// connection failed attribution still has an untampered chain, and turning
+    /// that into a non-zero exit would train operators to ignore the real signal.
+    #[test]
+    fn a_chain_that_names_nobody_still_exits_zero() {
+        let key = fixed_key();
+        let unattributed = crate::auth::CallerPrincipal::Unattributed.as_signed_str();
+        let rows = chain_of(
+            &key,
+            vec![
+                ChainIdentity::LegacyV1,
+                ChainIdentity::V3 {
+                    caller_role: "observer",
+                    event_tip: "",
+                    caller_principal: &unattributed,
+                },
+            ],
+        );
+
+        let verification = verify_all(&key, &rows, &[]);
+        let census = verification.attribution.expect("rows were read");
+        assert_eq!(census.unnamed(), 2, "not one row names an account");
+        assert_eq!(
+            verification.exit_code(),
+            0,
+            "yet nothing was tampered with, so the command must succeed"
+        );
+    }
+
     /// A row from a future encoding is "cannot verify", never "broken": an older
     /// binary reading a newer chain has found no tampering, only work it cannot
     /// reproduce. The message must say the supported range so the operator knows
@@ -2304,7 +2877,7 @@ mod tests {
             binding: BindingOutcome::Consistent {
                 bindings_checked: 0,
             },
-            unattributed_rows: 0,
+            attribution: None,
         };
         assert_eq!(verification.exit_code(), 1);
     }
@@ -2318,7 +2891,7 @@ mod tests {
                 transaction_seq: 3,
                 event_tip: "abc".to_string(),
             },
-            unattributed_rows: 0,
+            attribution: None,
         };
         assert_eq!(verification.exit_code(), 1);
     }
@@ -2331,7 +2904,7 @@ mod tests {
             binding: BindingOutcome::Consistent {
                 bindings_checked: 1,
             },
-            unattributed_rows: 0,
+            attribution: None,
         };
         assert_eq!(verification.exit_code(), 0);
     }

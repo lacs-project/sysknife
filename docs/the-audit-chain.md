@@ -86,9 +86,75 @@ beats inventing a uid, because a signed lie about who acted is worse than a
 signed admission of ignorance.
 
 A chain full of `none:unattributed` rows still verifies as intact, and that is
-honest but incomplete, so `sysknife audit verify` reports the count separately
-(`unattributed_rows` in `--json` and on the `sysknife_audit_verify` tool). Intact
-is a statement about tampering, not about how much the trail can tell you.
+honest but incomplete, so `sysknife audit verify` reports the counts separately.
+Intact is a statement about tampering, not about how much the trail can tell you.
+
+Several different things make a row name nobody, and they are counted apart
+because their remedies differ:
+
+| Count | Meaning | What to do |
+|---|---|---|
+| `attributed_rows` | The row's **signed** principal names an account: a non-empty value under the `uid` or `token` scheme that this build can read back as one the daemon could have written. | Nothing, but see the uid caveats above, and remember `token:vsock` proves possession of a file rather than an account. |
+| `unattributed_rows` | The row signs `none:unattributed`: the daemon tried to attribute the connection and failed. | Live problem. Check the daemon log for the connections concerned, and whether `SO_PEERCRED` can work on that host. |
+| `rows_without_principal` | No principal that the signature covers, normally a row written under `chain_version` 1 or 2, before 0.3.0. | Nothing can be done. Backfilling a principal would change the bytes the signature covers, so the gap is kept rather than hidden. |
+| `rows_unattested` | No principal that any signature vouches for. | **Investigate**, unless the cause is a newer encoding; see below. |
+| `rows_naming_no_account` | Everything that cannot name an account, that is `rows_censused` minus `attributed_rows`. | Provided so nobody has to add the reasons up and risk missing one. |
+| `rows_censused` | Rows counted, which is every row read, verified or not. | Compare with `rows_checked`: a gap means part of the trail was counted but not proven. |
+
+All of them appear in `--json` and on the `sysknife_audit_verify` MCP tool. They
+are `null`, never `0`, when the store could not be read at all: a missing
+database, an unopenable one, an absent key. A store that opens and holds no rows
+reports `0`, which is a different fact and now looks different. The split matters
+on an upgraded database: `unattributed_rows: 0` over a chain of pre-0.3.0 rows
+would otherwise read as "every action is attributed" when in fact none of them
+is.
+
+### Why `rows_unattested` exists, and why the census reads the encoding
+
+`caller_principal` enters the signed message **only** under `chain_version = 3`.
+On a v1 or v2 row the column is unsigned free space: someone with write access to
+the table can set it to `uid:0` and the chain still verifies as `Intact`, because
+there is no signature over that column to break. So the census buckets by the
+encoding that signed the row, not by whatever the column happens to hold. A
+populated principal on an encoding that does not sign it is counted as
+`rows_unattested` and never as an account.
+
+The same bucket catches a value this build cannot read back as one the daemon
+could have written (`uid:notanumber`, `uid:1000:extra`, `token:not-vsock`), and a
+row declaring a `chain_version` this build does not know, whose signed fields are
+unknown here.
+
+This build writes none of them, so the first two are out-of-band writes to
+investigate. The third is different: a *newer* SysKnife does write rows this build
+cannot read, so the remedy there is to verify with a build at least that new
+rather than to open an incident.
+
+### The counts are only as good as the verdict beside them
+
+Verification stops at the first broken row; the census describes every row read.
+When the chain verdict is not `intact` the two can therefore disagree, and the
+surplus is the part of the trail this command did not vouch for. That is not the
+same as proof of forgery: deleting or reordering a row breaks the link while
+leaving every later signature valid, so some rows past a break are usually
+authentic, and an aggregate count cannot say which. `sysknife audit verify` says
+so in words rather than leaving it to be inferred:
+
+```
+BROKEN: chain intact for first 4 row(s); row seq=5 (transaction …) does not chain.
+  expected: valid ed25519 signature
+  actual:   9f2c…
+ATTRIBUTION: 96 of 100 row(s) name an account; 4 name nobody.
+  These counts describe what the rows claim, not what was proven. A break was
+  detected above, so rows past it were not checked by this walk. …
+```
+
+The machine-readable side publishes `rows_censused` so the gap is measurable:
+compare it with `rows_checked`, which the CLI `--json` nests under `chain` and the
+`sysknife_audit_verify` tool reports as a sibling field. Read the chain's own
+verdict, not the top-level `status`, when deciding whether the counts are
+findings: `status` is the worst of three checks, so a broken approval-event chain
+turns it `broken` while the transaction chain and its attribution are intact. The
+MCP report carries `chain_status` for exactly that reason.
 
 What a uid does *not* prove: shared logins, `su` into a service account, and uid
 reuse after a user is deleted all weaken it. It identifies an account, not a
