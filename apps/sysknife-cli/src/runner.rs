@@ -99,11 +99,11 @@ fn anchor_configured() -> bool {
 /// used. An unparseable value yields no caveat: `resolve_socket_target` already
 /// exits with a clear message before verification runs.
 pub(crate) fn remote_daemon_caveat_from_env() -> Option<String> {
+    let (raw, source, target) = configured_socket_target()?;
     // `SYSKNIFE_SOCKET` is a deliberate client-side override, so any value there
-    // — unix or vsock — carries the wrong-machine caveat, as before.
-    if let Ok(raw) = std::env::var("SYSKNIFE_SOCKET") {
-        let target = crate::client::SocketTarget::try_from_str(&raw).ok()?;
-        return remote_daemon_caveat(Some((&raw, "SYSKNIFE_SOCKET")), &target);
+    // — unix or vsock — carries the wrong-machine caveat.
+    if source == "SYSKNIFE_SOCKET" {
+        return remote_daemon_caveat(Some((&raw, source)), &target);
     }
     // `SYSKNIFE_LISTEN_URI` is not, on its own, a remoteness signal: the packaged
     // daemon unit sets it to the *local* socket, and `config.toml`'s `[daemon]
@@ -113,14 +113,13 @@ pub(crate) fn remote_daemon_caveat_from_env() -> Option<String> {
     // against. A vsock target is the one unambiguous case: the daemon is in
     // another kernel, so warn for that and stay quiet for unix.
     //
-    // A unix socket *forwarded* through `config.toml` is therefore still a false
+    // A unix socket *forwarded* through `config.toml` is therefore a false
     // negative here; distinguishing it from a local config socket needs the
-    // daemon's own machine identity, tracked in issue #146.
-    if let Ok(raw) = std::env::var("SYSKNIFE_LISTEN_URI") {
-        let target = crate::client::SocketTarget::try_from_str(&raw).ok()?;
-        if matches!(target, crate::client::SocketTarget::Vsock { .. }) {
-            return remote_daemon_caveat(Some((&raw, "SYSKNIFE_LISTEN_URI")), &target);
-        }
+    // daemon's own machine identity (issue #146), which is why
+    // `resolve_daemon_socket_caveat` prefers the machine-id comparison and only
+    // falls back to this heuristic.
+    if matches!(target, SocketTarget::Vsock { .. }) {
+        return remote_daemon_caveat(Some((&raw, source)), &target);
     }
     None
 }
@@ -143,14 +142,11 @@ pub(crate) fn remote_daemon_caveat_from_env() -> Option<String> {
 /// `socket_env` is the raw `SYSKNIFE_SOCKET` value, or `None` when unset. Unset
 /// means the local default, which is the common case and stays quiet: a caveat
 /// printed on every run is a caveat nobody reads.
-fn remote_daemon_caveat(
-    socket_env: Option<(&str, &str)>,
-    target: &crate::client::SocketTarget,
-) -> Option<String> {
+fn remote_daemon_caveat(socket_env: Option<(&str, &str)>, target: &SocketTarget) -> Option<String> {
     let (raw, source) = socket_env?;
 
     #[cfg(target_os = "linux")]
-    if matches!(target, crate::client::SocketTarget::Vsock { .. }) {
+    if matches!(target, SocketTarget::Vsock { .. }) {
         return Some(format!(
             "NOTE: {source} is {raw}, so the daemon runs in a VM while this \
              verification read a store on this machine. The chain lives where the daemon \
@@ -194,13 +190,13 @@ enum SocketOrigin {
 /// set-but-unparseable `SYSKNIFE_SOCKET` short-circuits to `None` (it is never
 /// silently skipped in favor of `SYSKNIFE_LISTEN_URI`, which the client would
 /// not dial).
-fn configured_socket_target() -> Option<(String, &'static str, crate::client::SocketTarget)> {
+fn configured_socket_target() -> Option<(String, &'static str, SocketTarget)> {
     if let Ok(raw) = std::env::var("SYSKNIFE_SOCKET") {
-        let target = crate::client::SocketTarget::try_from_str(&raw).ok()?;
+        let target = SocketTarget::try_from_str(&raw).ok()?;
         return Some((raw, "SYSKNIFE_SOCKET", target));
     }
     if let Ok(raw) = std::env::var("SYSKNIFE_LISTEN_URI") {
-        if let Ok(target) = crate::client::SocketTarget::try_from_str(&raw) {
+        if let Ok(target) = SocketTarget::try_from_str(&raw) {
             return Some((raw, "SYSKNIFE_LISTEN_URI", target));
         }
     }
@@ -216,7 +212,7 @@ fn socket_origin_from(
     daemon_hash: Option<&str>,
     raw: &str,
     source: &str,
-    target: &crate::client::SocketTarget,
+    target: &SocketTarget,
 ) -> SocketOrigin {
     match (local_hash, daemon_hash) {
         (Some(l), Some(d)) if l != d => SocketOrigin::Remote(
@@ -240,11 +236,11 @@ fn daemon_socket_origin() -> SocketOrigin {
     let Some((raw, source, target)) = configured_socket_target() else {
         return SocketOrigin::Unknown;
     };
-    if source != "SYSKNIFE_LISTEN_URI" || !matches!(target, crate::client::SocketTarget::Unix(_)) {
+    if source != "SYSKNIFE_LISTEN_URI" || !matches!(target, SocketTarget::Unix(_)) {
         return SocketOrigin::Unknown;
     }
     let local = sysknife_daemon::state_collector::machine_id_hash();
-    let daemon = crate::client::DaemonClient::new(target.clone()).machine_id_hash();
+    let daemon = DaemonClient::new(target.clone()).machine_id_hash();
     socket_origin_from(local.as_deref(), daemon.as_deref(), &raw, source, &target)
 }
 
@@ -2127,7 +2123,7 @@ mod tests {
     fn a_forwarded_socket_makes_the_verifier_name_the_machine_it_read() {
         let caveat = remote_daemon_caveat(
             Some(("/tmp/sysknife-web01.sock", "SYSKNIFE_SOCKET")),
-            &crate::client::SocketTarget::Unix("/tmp/sysknife-web01.sock".into()),
+            &SocketTarget::Unix("/tmp/sysknife-web01.sock".into()),
         )
         .expect("an explicitly configured socket must produce a caveat");
 
@@ -2148,7 +2144,7 @@ mod tests {
     fn a_vsock_daemon_caveat_says_the_chain_lives_in_the_vm() {
         let caveat = remote_daemon_caveat(
             Some(("vsock://3:9734", "SYSKNIFE_SOCKET")),
-            &crate::client::SocketTarget::Vsock { cid: 3, port: 9734 },
+            &SocketTarget::Vsock { cid: 3, port: 9734 },
         )
         .expect("a vsock target is always another host");
 
@@ -2261,8 +2257,8 @@ mod tests {
         );
     }
 
-    fn unix_target() -> crate::client::SocketTarget {
-        crate::client::SocketTarget::Unix("/run/sysknife/daemon.sock".into())
+    fn unix_target() -> SocketTarget {
+        SocketTarget::Unix("/run/sysknife/daemon.sock".into())
     }
 
     #[test]
@@ -2424,7 +2420,7 @@ mod tests {
         assert!(
             remote_daemon_caveat(
                 None,
-                &crate::client::SocketTarget::Unix("/run/sysknife/daemon.sock".into())
+                &SocketTarget::Unix("/run/sysknife/daemon.sock".into())
             )
             .is_none(),
             "an unset SYSKNIFE_SOCKET is the local daemon; stay quiet"
@@ -2994,7 +2990,7 @@ mod tests {
         unsafe { std::env::remove_var("SYSKNIFE_LISTEN_URI") };
         assert_eq!(
             t,
-            crate::client::SocketTarget::Unix(PathBuf::from("/run/user/4242/sysknife/daemon.sock"))
+            SocketTarget::Unix(PathBuf::from("/run/user/4242/sysknife/daemon.sock"))
         );
     }
 
@@ -3004,10 +3000,7 @@ mod tests {
         unsafe { std::env::set_var("SYSKNIFE_SOCKET", "unix:///tmp/custom.sock") };
         let t = resolve_socket_target();
         unsafe { std::env::remove_var("SYSKNIFE_SOCKET") };
-        assert_eq!(
-            t,
-            crate::client::SocketTarget::Unix(PathBuf::from("/tmp/custom.sock"))
-        );
+        assert_eq!(t, SocketTarget::Unix(PathBuf::from("/tmp/custom.sock")));
     }
 
     #[cfg(target_os = "linux")]
@@ -3017,7 +3010,7 @@ mod tests {
         unsafe { std::env::set_var("SYSKNIFE_SOCKET", "vsock://3:7777") };
         let t = resolve_socket_target();
         unsafe { std::env::remove_var("SYSKNIFE_SOCKET") };
-        assert_eq!(t, crate::client::SocketTarget::Vsock { cid: 3, port: 7777 });
+        assert_eq!(t, SocketTarget::Vsock { cid: 3, port: 7777 });
     }
 
     // ── the approval gate `run_intent` actually runs ──────────────────────
