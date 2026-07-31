@@ -62,8 +62,18 @@ fn redirect_spec_path(
         ..
     } = spec.mechanism
     {
-        // Strip 'sudo sh' → 'sh' so tests don't require elevated privileges.
-        if *program == "sudo" && args.first().map(String::as_str) == Some("sh") {
+        // The production form is `sudo runuser -u <user> -- sh -c <script> ...`,
+        // which runs the write as the target user (the symlink-escalation fix).
+        // Strip the `sudo runuser -u <user> --` prefix down to the inner `sh`
+        // so the test can run it unprivileged as the current user.
+        if *program == "sudo"
+            && args.first().map(String::as_str) == Some("runuser")
+            && args.get(3).map(String::as_str) == Some("--")
+        {
+            *program = "sh";
+            args.drain(0..5); // runuser -u <user> -- sh  → leaves -c <script> ...
+        } else if *program == "sudo" && args.first().map(String::as_str) == Some("sh") {
+            // Older direct form, kept so this helper survives either shape.
             *program = "sh";
             args.remove(0);
         }
@@ -308,4 +318,35 @@ async fn remove_authorized_key_is_noop_when_key_absent() {
         content.contains(OTHER_KEY),
         "unrelated key must not be affected by no-op remove: {content:?}"
     );
+}
+
+/// Both key edits must run as the target user, never as root. Running the write
+/// as root let a symlink planted at the user's `~/.ssh/authorized_keys` redirect
+/// a root append into any file on the system; dropping to the user confines the
+/// write to what that user can already touch. This pins the privilege drop so a
+/// refactor cannot quietly restore the root write.
+#[test]
+fn key_edits_drop_to_the_target_user() {
+    for spec in [
+        ssh::add_authorized_key(USERNAME, TEST_KEY),
+        ssh::remove_authorized_key(USERNAME, TEST_KEY),
+    ] {
+        let ActionMechanism::Command { program, args } = &spec.mechanism else {
+            panic!("expected a Command mechanism");
+        };
+        assert_eq!(*program, "sudo", "{}", spec.action_name);
+        assert_eq!(
+            &args[0..4],
+            &["runuser", "-u", USERNAME, "--"],
+            "{} must run as {USERNAME}, not root; got {args:?}",
+            spec.action_name
+        );
+        // The daemon itself must never be the one that writes as root: the only
+        // privileged step is dropping to the user.
+        assert!(
+            !args.iter().any(|a| a == "-lc" || a.contains("chown")),
+            "{} must not re-elevate; got {args:?}",
+            spec.action_name
+        );
+    }
 }

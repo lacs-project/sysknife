@@ -153,6 +153,46 @@ pub fn validated_unit_name(s: &str, param: &'static str) -> Result<String, Execu
     Ok(s.to_string())
 }
 
+/// Units that hand out a root shell when activated. Matched case-insensitively
+/// against the unit name with any `.service`/`.target` suffix stripped, so both
+/// `debug-shell` and `debug-shell.service` are caught.
+///
+/// `debug-shell` is an unauthenticated root shell on tty9; `emergency` and
+/// `rescue` drop to a root maintenance shell. Bringing any of them up is an
+/// Admin-or-above act, but the generic service actions are Medium-risk (Dev), so
+/// the name has to be refused rather than relying on the risk tier.
+/// `runlevel1` is a stock systemd alias of `rescue.target` on both Debian and
+/// Fedora, so it must be denied too or `StartService runlevel1.target` reaches
+/// the same root maintenance shell. A name-based denylist cannot catch every
+/// alias a site might add; the residual risk is documented in issue #144, and
+/// the operator note there recommends masking these units outright.
+const ROOT_SHELL_UNITS: &[&str] = &["debug-shell", "emergency", "rescue", "runlevel1"];
+
+/// Validate a unit name that an action will **activate** (start, restart, enable,
+/// unmask), refusing units that would yield a root shell.
+///
+/// Layered on [`validated_unit_name`]: same syntax rules, plus the denylist. The
+/// safe verbs (stop, mask, status, logs) keep using `validated_unit_name` — the
+/// risk is in bringing a unit up, not in reading or stopping it.
+pub fn validated_activatable_unit(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    let unit = validated_unit_name(s, param)?;
+    // Lowercase first: systemd unit names are case-insensitive, so `.SERVICE`
+    // must strip like `.service`. Strip every unit-type suffix, not just
+    // service/target, so a `rescue.socket`-style spelling cannot slip past the
+    // denylist by wearing a different type.
+    let lower = unit.to_ascii_lowercase();
+    let bare = [
+        ".service", ".target", ".socket", ".mount", ".path", ".slice", ".scope",
+    ]
+    .iter()
+    .find_map(|suffix| lower.strip_suffix(suffix))
+    .unwrap_or(&lower);
+    if ROOT_SHELL_UNITS.contains(&bare) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(unit)
+}
+
 /// Validate a hostname per RFC 1123: `[a-zA-Z0-9.-]`, 1-253 chars, labels 1-63
 /// chars, must not start with `-`.
 ///
@@ -801,6 +841,40 @@ pub fn validated_syslog_host(s: &str, param: &'static str) -> Result<String, Exe
     Ok(s.to_string())
 }
 
+/// Validate a package name used as an **install or remove target**, where a
+/// filesystem path would make the package manager operate on a local file.
+///
+/// `apt-get install /tmp/x.deb` and `rpm-ostree install /tmp/x.rpm` both install
+/// a caller-supplied file and run its maintainer scripts as root, so a Dev-role
+/// caller who can drop a file would get root through a Medium-risk action. The
+/// generic [`validated_safe_arg`] allows `/`, `.`, and a `.deb`/`.rpm` suffix,
+/// which is exactly what makes a local file. This validator refuses all three:
+///
+/// - no `/` anywhere (blocks `/abs`, `./rel`, and apt's `pkg/suite` selector,
+///   which is dropped deliberately for safety),
+/// - no leading `-` (option injection) or `.` (relative path),
+/// - no `.deb`/`.rpm` suffix (apt treats a bare `foo.deb` in the cwd as a file),
+/// - no `*`/`?` (an install is never a glob),
+/// - charset `[A-Za-z0-9+._:=~^-]`, which covers `name`, `name=version`,
+///   `name:arch`, and rpm epoch/version punctuation.
+pub fn validated_install_package(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    let first_ok = s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
+    let charset_ok = s.chars().all(|c| {
+        c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '_' | ':' | '=' | '~' | '^' | '-')
+    });
+    if s.is_empty()
+        || s.len() > MAX_APT_PACKAGE_LEN
+        || !first_ok
+        || !charset_ok
+        || s.contains('/')
+        || s.ends_with(".deb")
+        || s.ends_with(".rpm")
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(s.to_string())
+}
+
 /// Validate an apt package-name glob (`[A-Za-z0-9.+*?_:-]`, 1..=128).
 pub fn validated_apt_package(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     // A leading `-` would land in flag position when the value is passed as a
@@ -973,6 +1047,89 @@ pub fn validated_email(s: &str, param: &'static str) -> Result<String, ExecutorE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activatable_unit_rejects_root_shell_units() {
+        // Starting or enabling these hands an unauthenticated root shell to
+        // anyone at the console. A Dev-role caller must not be able to activate
+        // them through the generic Medium-risk service actions.
+        for evil in [
+            "debug-shell.service",
+            "debug-shell",
+            "DEBUG-SHELL.SERVICE",
+            "emergency.service",
+            "emergency",
+            "rescue.service",
+            "rescue.target",
+        ] {
+            assert!(
+                validated_activatable_unit(evil, "unit").is_err(),
+                "{evil:?} must not be activatable"
+            );
+        }
+    }
+
+    #[test]
+    fn activatable_unit_accepts_ordinary_services() {
+        for ok in [
+            "nginx.service",
+            "sshd.service",
+            "podman.socket",
+            "my-app@1.service",
+        ] {
+            assert!(
+                validated_activatable_unit(ok, "unit").is_ok(),
+                "{ok:?} is an ordinary unit and must be activatable"
+            );
+        }
+        // The denylist rides on top of the syntax check: garbage is still
+        // rejected for the same reason `validated_unit_name` rejects it.
+        assert!(validated_activatable_unit("-x.service", "unit").is_err());
+    }
+
+    #[test]
+    fn install_package_rejects_local_file_paths() {
+        // A package name that installs a local file runs that file's maintainer
+        // scripts as root. `apt-get install /tmp/x.deb` and
+        // `rpm-ostree install /tmp/x.rpm` both do this, so a Dev-role caller who
+        // can drop a file gets root. The generic safe-arg validator allowed `/`;
+        // this one must not.
+        for evil in [
+            "/tmp/evil.deb",
+            "./evil.deb",
+            "../evil.rpm",
+            "/home/attacker/x.rpm",
+            "evil.deb", // apt treats a bare *.deb in cwd as a local file too
+            "evil.rpm",
+            "nginx/bookworm", // suite pinning uses `/`; dropped for safety
+            "-oAPT::foo=bar", // option injection
+            "pkg;rm -rf /",   // shell metacharacter, though args are not shelled
+        ] {
+            assert!(
+                validated_install_package(evil, "package").is_err(),
+                "{evil:?} must be rejected as an install target"
+            );
+        }
+    }
+
+    #[test]
+    fn install_package_accepts_real_names() {
+        for ok in [
+            "nginx",
+            "python3-pip",
+            "lib32-glibc",
+            "gcc-c++",
+            "nginx=1.24.0-1",
+            "nginx:amd64",
+            "container-selinux",
+            "2:openssl", // rpm epoch-ish
+        ] {
+            assert!(
+                validated_install_package(ok, "package").is_ok(),
+                "{ok:?} is a legitimate package spec and must be accepted"
+            );
+        }
+    }
 
     #[test]
     fn audit_path_and_perms() {

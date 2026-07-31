@@ -10,6 +10,43 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Security
+
+Hardening from a defensive red-team pass. Each fix has an issue and a test.
+
+- **A Dev-role caller can no longer install an attacker-controlled local package as root.**
+  ([#143](https://github.com/lacs-project/sysknife/issues/143)) `apt-get install /tmp/x.deb`
+  and `rpm-ostree install /tmp/x.rpm` install a local file and run its maintainer
+  scripts as root, and the install actions are Medium-risk (Dev). The package
+  validator was the generic safe-arg, which allowed `/`; a strict
+  `validated_install_package` now rejects paths, `.deb`/`.rpm` suffixes and globs.
+- **A Dev-role caller can no longer activate a root-shell unit.**
+  ([#144](https://github.com/lacs-project/sysknife/issues/144)) Starting or enabling
+  `debug-shell`/`emergency`/`rescue` yields a root shell; the activation verbs now
+  refuse those units.
+- **AddAuthorizedKey no longer follows a symlink as root.**
+  ([#145](https://github.com/lacs-project/sysknife/issues/145)) The write runs as the
+  target user via `runuser`, so a planted `~/.ssh/authorized_keys` symlink cannot
+  redirect a root append into another account's files.
+- **`audit verify` warns about a forwarded socket configured via config.toml.**
+  ([#146](https://github.com/lacs-project/sysknife/issues/146)) The wrong-machine caveat
+  read only `SYSKNIFE_SOCKET`; it now resolves the socket the way the client dials
+  it, so a `SYSKNIFE_LISTEN_URI` forward no longer verifies an unrelated local chain
+  silently.
+- **The MCP-registry publish workflow refuses an unmerged ref.**
+  ([#147](https://github.com/lacs-project/sysknife/issues/147)) `workflow_dispatch`
+  accepted an arbitrary ref under the trusted OIDC identity; it now refuses any
+  commit not reachable from the default branch and runs the manifest-coherence gate
+  before publishing.
+- **The swap-file helper no longer follows a symlink as root.**
+  ([#148](https://github.com/lacs-project/sysknife/issues/148)) `sysknife-mount-edit`
+  creates the file with `O_EXCL|O_NOFOLLOW` instead of an `os.path.exists` check that
+  a dangling symlink defeated.
+
+Deferred, tracked: TLS downgrade on unverified Postgres URLs (#149), vsock
+partial-frame DoS (#150), unbound AptAutoremove approval (#151), vsock bearer-token
+replay (#152).
+
 ### Fixed
 
 - **The action timeout now contains the whole process tree, and reports honestly

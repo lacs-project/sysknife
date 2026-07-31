@@ -57,7 +57,36 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           ref: ${{ inputs.ref || github.ref }}
+          # Full history so the reachability guard below can check ancestry.
+          fetch-depth: 0
           persist-credentials: false
+
+      # This job publishes under the trusted repository's own OIDC identity, so
+      # it must never publish a commit that has not been merged. `workflow_dispatch`
+      # accepts an arbitrary `ref`, which without this guard would let a
+      # maintainer be tricked into publishing an attacker's `server.json` from a
+      # pull-request ref. Refuse anything not reachable from the default branch;
+      # tags and main are reachable, unmerged PR refs are not.
+      - name: Refuse a ref that is not merged to the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$DEFAULT_BRANCH"
+          if ! git merge-base --is-ancestor HEAD "origin/${DEFAULT_BRANCH}"; then
+            head="$(git rev-parse HEAD)"
+            echo "::error::refusing to publish ${head}: not reachable from" \
+                 "${DEFAULT_BRANCH}. Only merged commits may be published."
+            exit 1
+          fi
+          echo "commit $(git rev-parse --short HEAD) is reachable from ${DEFAULT_BRANCH}"
+
+      # Second, independent gate: the manifest must name this repository's own
+      # CLI crate at the checked-out version. Because the reachability guard above
+      # already proved the tree is merged, this test is trustworthy even though it
+      # lives in the checked-out tree.
+      - name: Manifest coherence gate
+        run: bash tests/release/registry-manifest.test.sh
 
       - name: Read the version being published
         id: manifest

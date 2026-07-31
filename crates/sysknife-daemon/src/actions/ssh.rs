@@ -56,18 +56,39 @@ pub fn get_authorized_keys(username: &str) -> ActionSpec {
 const ADD_KEY_SCRIPT: &str =
     "key=$1; path=$2; grep -Fxq -- \"$key\" \"$path\" 2>/dev/null || printf '%s\\n' \"$key\" >> \"$path\"";
 
-pub fn add_authorized_key(username: &str, public_key: &str) -> ActionSpec {
+/// `sudo runuser -u <username> -- sh -c <script> sh <key> <path>`.
+///
+/// The write runs **as the target user**, not as root. This is the fix for the
+/// symlink-follow escalation: the daemon runs as root only long enough to drop
+/// to `<username>`, so `>> "$path"` following a symlink the attacker planted at
+/// `~/.ssh/authorized_keys` can only reach files that user can already write.
+/// A link to `/etc/passwd` or another account's file fails with `EACCES` instead
+/// of letting root append there. It also keeps the file owned by the user, which
+/// is what `authorized_keys` must be, without a `chown` dance.
+///
+/// The `runuser -u <user> -- <argv>` form bypasses the shell for the outer
+/// command, exactly as `flatpak_as` documents, so `<username>` cannot act as a
+/// flag or a shell metacharacter. The inner `sh -c <script>` still takes the key
+/// and path as positional `$1`/`$2`, never interpolated.
+fn keys_edit_as_user(
+    action_name: &'static str,
+    username: &str,
+    script: &str,
+    public_key: &str,
+) -> ActionSpec {
     let keys_path = format!("/home/{username}/.ssh/authorized_keys");
-    // sudo is required because the daemon runs as the sysknife system user, which has
-    // no write permission to user home directories (files are 600 owned by the target user).
     ActionSpec {
-        action_name: "AddAuthorizedKey",
+        action_name,
         mechanism: ActionMechanism::Command {
             program: "sudo",
             args: vec![
+                "runuser".to_string(),
+                "-u".to_string(),
+                username.to_string(),
+                "--".to_string(),
                 "sh".to_string(),
                 "-c".to_string(),
-                ADD_KEY_SCRIPT.to_string(),
+                script.to_string(),
                 "sh".to_string(),
                 public_key.to_string(),
                 keys_path,
@@ -77,6 +98,10 @@ pub fn add_authorized_key(username: &str, public_key: &str) -> ActionSpec {
         reboot_required: false,
         rollback_available: false,
     }
+}
+
+pub fn add_authorized_key(username: &str, public_key: &str) -> ActionSpec {
+    keys_edit_as_user("AddAuthorizedKey", username, ADD_KEY_SCRIPT, public_key)
 }
 
 /// Shell body for `RemoveAuthorizedKey`.
@@ -108,26 +133,14 @@ if [ $rc -gt 1 ]; then rm -f \"$tmp\"; exit $rc; fi; \
 cat \"$tmp\" > \"$path\"; rm -f \"$tmp\"";
 
 pub fn remove_authorized_key(username: &str, public_key: &str) -> ActionSpec {
-    let keys_path = format!("/home/{username}/.ssh/authorized_keys");
-    // sudo is required for the same reason as add_authorized_key.
-    ActionSpec {
-        action_name: "RemoveAuthorizedKey",
-        mechanism: ActionMechanism::Command {
-            program: "sudo",
-            args: vec![
-                "sh".to_string(),
-                "-c".to_string(),
-                REMOVE_KEY_SCRIPT.to_string(),
-                "sh".to_string(),
-                public_key.to_string(),
-                keys_path,
-            ],
-        },
-        // Revoking an authorized key is access-control + lockout-capable (remove
-        // the wrong/only key and you lose SSH access) and cannot be rolled back
-        // → High, symmetric with AddAuthorizedKey.
-        risk_level: RiskLevel::High,
-        reboot_required: false,
-        rollback_available: false,
-    }
+    // Runs as the target user, same as the add path: the `cat "$tmp" > "$path"`
+    // must not follow a planted symlink out of the user's own home either.
+    // Revoking a key is lockout-capable and cannot be rolled back, so High,
+    // symmetric with AddAuthorizedKey.
+    keys_edit_as_user(
+        "RemoveAuthorizedKey",
+        username,
+        REMOVE_KEY_SCRIPT,
+        public_key,
+    )
 }

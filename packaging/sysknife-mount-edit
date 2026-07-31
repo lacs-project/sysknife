@@ -177,26 +177,58 @@ def op_addswap(args) -> None:
         die(f"invalid swap file path {path!r}")
     if args.size_mb < 1 or args.size_mb > 1_048_576:  # cap at 1 TiB
         die("size-mb out of range")
-    if os.path.exists(path):
+    # Create the file atomically, refusing to follow a symlink. `os.path.exists`
+    # follows symlinks, so a *dangling* symlink read as absent, and the root `dd`
+    # below then followed it to create an attacker-chosen file (e.g.
+    # `/tmp/swapfile -> /etc/nologin`). O_EXCL|O_NOFOLLOW makes the create fail if
+    # the path exists at all or is a symlink, which closes both the dangling-link
+    # and the ordinary-clobber cases in one syscall, with no TOCTOU window.
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        # O_EXCL raises this for a symlink too (dangling or not), which is the
+        # attack we are refusing, as well as an ordinary pre-existing file.
         die(f"{path} already exists")
-    # Allocate with real zeros via dd — a swap file must NOT be sparse
-    # (`swapon` refuses files "with holes"), which rules out truncate/fallocate.
-    alloc = subprocess.run(
-        [DD, "if=/dev/zero", f"of={path}", "bs=1M", f"count={args.size_mb}"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
+    except OSError as exc:
+        die(f"cannot create swap file {path!r}: {exc}")
+    # Keep the fd and write through it, never re-opening by path. Re-opening
+    # (even with dd conv=nocreat) leaves a window in which a local user who owns
+    # the directory could unlink our file and drop a symlink in its place, and
+    # root's write would then follow it. Writing to /proc/self/fd/<fd> targets the
+    # exact inode we created, with no second name resolution.
+    alloc = None
+    try:
+        # Real zeros via dd — a swap file must NOT be sparse (`swapon` refuses
+        # files "with holes"), which rules out truncate/fallocate. conv=notrunc
+        # because the fd already points at our 0-byte file; conv=nocreat because
+        # the target already exists.
+        # `pass_fds` keeps `fd` open across the fork so dd's own
+        # `/proc/self/fd/<fd>` resolves to the inode we created. Without it,
+        # `close_fds` (the default) would shut the fd and dd would fail.
+        alloc = subprocess.run(
+            [
+                DD,
+                "if=/dev/zero",
+                f"of=/proc/self/fd/{fd}",
+                "conv=nocreat,notrunc",
+                "bs=1M",
+                f"count={args.size_mb}",
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            pass_fds=(fd,),
+        )
+    finally:
+        os.close(fd)
     if alloc.returncode != 0:
         try:
             os.unlink(path)
         except OSError:
             pass
         die(f"dd failed: {alloc.stderr.decode(errors='replace').strip()}")
-    try:
-        os.chmod(path, 0o600)
-    except OSError as exc:
-        die(f"cannot chmod swap file: {exc}")
+    # No chmod: the file was created 0600 via O_CREAT, so re-opening it by path
+    # here would only reintroduce a symlink-follow window for no gain.
     for cmd in ([MKSWAP, path], [SWAPON, path]):
         r = subprocess.run(cmd, check=False, stderr=subprocess.PIPE)
         if r.returncode != 0:

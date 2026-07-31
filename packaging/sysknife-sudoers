@@ -94,10 +94,6 @@ sysknife ALL=(root) NOPASSWD: /usr/sbin/lvcreate
 
 # Shell for the few multi-step root operations with no argv-only equivalent:
 #   - ConfigureFirewall (network.rs): `firewall-cmd --permanent … && firewall-cmd --reload`
-#   - AddAuthorizedKey / RemoveAuthorizedKey (ssh.rs): grep-guarded append /
-#     fixed-string (`grep -Fxv`) delete against a user's authorized_keys file
-#     (0600, owned by the target user). Both pass the key and path as positional
-#     arguments to `sh -c`, so no caller value is parsed as shell syntax.
 #
 # SECURITY NOTE — this is the widest grant in this file, and it means sudoers is NOT the
 # security boundary. `sudo sh -c '<script>'` has no argument constraint, so the sysknife
@@ -116,6 +112,10 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/sh
 #   - Rootless Podman / Toolbox / Distrobox (containers.rs, toolbox.rs):
 #     `runuser -l <user> -c '<cmd>'` — needs a login context for XDG_RUNTIME_DIR and the
 #     sub-UID/GID ranges rootless containers require.
+#   - AddAuthorizedKey / RemoveAuthorizedKey (ssh.rs): `runuser -u <user> -- sh -c
+#     '<script>' sh <key> <path>` runs the authorized_keys edit AS the target user, so a
+#     symlink planted at ~/.ssh/authorized_keys cannot redirect a root write into another
+#     account's files. The key and path are positional `$1`/`$2`, never interpolated.
 # Without this grant every user-scoped Flatpak/container/toolbox action fails
 # non-interactively (sudo would prompt for a password the daemon cannot supply). The
 # `-c` form is arbitrary-command and, like `sh` above, cannot be narrowed in sudoers; it

@@ -5,12 +5,13 @@ use crate::actions::{
     release_upgrade, resolvectl, services, snap, ssh, sudoers, sysctl, system_info, toolbox,
     ubuntu_pro, ufw, users,
     validate::{
-        validated_apparmor_profile, validated_apt_package, validated_apt_pin_expr,
-        validated_apt_pin_name, validated_audit_path, validated_audit_perms, validated_cpu_quota,
-        validated_domain, validated_email, validated_fstype, validated_group,
-        validated_group_not_critical, validated_hostname, validated_journal_grep,
-        validated_journal_priority, validated_journal_time, validated_locale, validated_log_path,
-        validated_lvm_name, validated_lvm_size, validated_memory_limit, validated_mount_device,
+        validated_activatable_unit, validated_apparmor_profile, validated_apt_package,
+        validated_apt_pin_expr, validated_apt_pin_name, validated_audit_path,
+        validated_audit_perms, validated_cpu_quota, validated_domain, validated_email,
+        validated_fstype, validated_group, validated_group_not_critical, validated_hostname,
+        validated_install_package, validated_journal_grep, validated_journal_priority,
+        validated_journal_time, validated_locale, validated_log_path, validated_lvm_name,
+        validated_lvm_size, validated_memory_limit, validated_mount_device,
         validated_mount_options, validated_mount_point, validated_port_or_service,
         validated_ppa_name, validated_pro_service, validated_safe_arg, validated_sudo_commands,
         validated_sudoers_name, validated_swap_path, validated_sysctl_key, validated_sysctl_value,
@@ -573,7 +574,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             let pkgs = str_array_or_empty(params, "packages")?;
             let validated: Vec<String> = pkgs
                 .iter()
-                .map(|p| validated_safe_arg(p, "packages"))
+                .map(|p| validated_install_package(p, "packages"))
                 .collect::<Result<_, _>>()?;
             let refs: Vec<&str> = validated.iter().map(String::as_str).collect();
             Ok(layering::install_packages(&refs))
@@ -582,26 +583,26 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             let pkgs = str_array_or_empty(params, "packages")?;
             let validated: Vec<String> = pkgs
                 .iter()
-                .map(|p| validated_safe_arg(p, "packages"))
+                .map(|p| validated_install_package(p, "packages"))
                 .collect::<Result<_, _>>()?;
             let refs: Vec<&str> = validated.iter().map(String::as_str).collect();
             Ok(layering::remove_packages(&refs))
         }
         "AddLayeredPackage" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_install_package(require_str(params, "package")?, "package")?;
             Ok(layering::add_layered_package(&package))
         }
         "RemoveLayeredPackage" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_install_package(require_str(params, "package")?, "package")?;
             Ok(layering::remove_layered_package(&package))
         }
         "ReplaceLayeredPackage" => {
-            let old = validated_safe_arg(require_str(params, "old")?, "old")?;
-            let new = validated_safe_arg(require_str(params, "new")?, "new")?;
+            let old = validated_install_package(require_str(params, "old")?, "old")?;
+            let new = validated_install_package(require_str(params, "new")?, "new")?;
             Ok(layering::replace_layered_package(&old, &new))
         }
         "RemoveBasePackage" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_install_package(require_str(params, "package")?, "package")?;
             Ok(layering::remove_base_package(&package))
         }
         "GetPendingUpdates" => Ok(layering::get_pending_updates()),
@@ -625,7 +626,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         // ── Services ─────────────────────────────────────────────────────
         "ListServices" => Ok(services::list_services()),
         "StartService" => {
-            let unit = validated_unit_name(require_str(params, "unit")?, "unit")?;
+            let unit = validated_activatable_unit(require_str(params, "unit")?, "unit")?;
             Ok(services::start_service(&unit))
         }
         "StopService" => {
@@ -633,22 +634,26 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             Ok(services::stop_service(&unit))
         }
         "RestartService" => {
-            let unit = validated_unit_name(require_str(params, "unit")?, "unit")?;
+            let unit = validated_activatable_unit(require_str(params, "unit")?, "unit")?;
             Ok(services::restart_service(&unit))
         }
         "SetServiceEnabled" => {
-            let unit = validated_unit_name(require_str(params, "unit")?, "unit")?;
-            Ok(services::set_service_enabled(
-                &unit,
-                require_bool(params, "enabled")?,
-            ))
+            let enabled = require_bool(params, "enabled")?;
+            // Enabling brings the unit up at boot, so it must clear the root-shell
+            // denylist; disabling one is a mitigation and stays allowed.
+            let unit = if enabled {
+                validated_activatable_unit(require_str(params, "unit")?, "unit")?
+            } else {
+                validated_unit_name(require_str(params, "unit")?, "unit")?
+            };
+            Ok(services::set_service_enabled(&unit, enabled))
         }
         "MaskService" => {
             let unit = validated_unit_name(require_str(params, "unit")?, "unit")?;
             Ok(services::mask_service(&unit))
         }
         "UnmaskService" => {
-            let unit = validated_unit_name(require_str(params, "unit")?, "unit")?;
+            let unit = validated_activatable_unit(require_str(params, "unit")?, "unit")?;
             Ok(services::unmask_service(&unit))
         }
         "GetServiceLogs" => {
@@ -1255,24 +1260,24 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "AptUpdate" => Ok(apt::apt_update()),
         "AptUpgrade" => Ok(apt::apt_upgrade()),
         "AptInstall" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_install_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_install(&package))
         }
         "AptRemove" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_install_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_remove(&package))
         }
         "AptPurge" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_install_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_purge(&package))
         }
         "AptAutoremove" => Ok(apt::apt_autoremove()),
         "AptHold" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_install_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_hold(&package))
         }
         "AptUnhold" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_install_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_unhold(&package))
         }
         "AptSearch" => {
@@ -2735,6 +2740,114 @@ mod tests {
             validated_public_key(key),
             Err(ExecutorError::InvalidParam("public_key"))
         ));
+    }
+
+    /// The install/remove package actions must refuse a filesystem path, because
+    /// `apt-get install /tmp/x.deb` / `rpm-ostree install /tmp/x.rpm` install a
+    /// local file and run its scripts as root. `validate.rs` proves the validator
+    /// refuses paths; only this proves each action arm actually calls it. Table
+    /// driven so an arm added later that forgets the validator fails here, which
+    /// is exactly the regression that shipped `InstallPackages`/`RemovePackages`
+    /// on the generic safe-arg by mistake.
+    #[test]
+    fn package_actions_reject_a_local_file_target() {
+        let reject: &[(&str, serde_json::Value)] = &[
+            ("AptInstall", json!({"package": "/tmp/evil.deb"})),
+            ("AptRemove", json!({"package": "/tmp/evil.deb"})),
+            ("AptPurge", json!({"package": "./evil.deb"})),
+            ("AptHold", json!({"package": "/tmp/evil.deb"})),
+            ("AptUnhold", json!({"package": "/tmp/evil.deb"})),
+            ("AddLayeredPackage", json!({"package": "/tmp/evil.rpm"})),
+            ("RemoveLayeredPackage", json!({"package": "/tmp/evil.rpm"})),
+            ("RemoveBasePackage", json!({"package": "/tmp/evil.rpm"})),
+            (
+                "ReplaceLayeredPackage",
+                json!({"old": "/tmp/evil.rpm", "new": "nginx"}),
+            ),
+            (
+                "ReplaceLayeredPackage",
+                json!({"old": "nginx", "new": "/tmp/evil.rpm"}),
+            ),
+            ("InstallPackages", json!({"packages": ["/tmp/evil.rpm"]})),
+            ("RemovePackages", json!({"packages": ["/tmp/evil.rpm"]})),
+        ];
+        for (action, params) in reject {
+            assert!(
+                matches!(
+                    build_action_spec(action, params),
+                    Err(ExecutorError::InvalidParam(_))
+                ),
+                "{action} must refuse a local-file package target: {params}"
+            );
+        }
+        // Positive twin: real package specs must still build, or the test above
+        // would pass for a validator that rejects everything.
+        let accept: &[(&str, serde_json::Value)] = &[
+            ("AptInstall", json!({"package": "nginx"})),
+            ("AddLayeredPackage", json!({"package": "nginx=1.24.0-1"})),
+            (
+                "InstallPackages",
+                json!({"packages": ["nginx", "python3-pip"]}),
+            ),
+        ];
+        for (action, params) in accept {
+            assert!(
+                build_action_spec(action, params).is_ok(),
+                "{action} must accept a real package spec: {params}"
+            );
+        }
+    }
+
+    /// The activation verbs must refuse a root-shell unit through the reachable
+    /// action, and `SetServiceEnabled` must gate only on `enabled: true`. Mutation
+    /// testing showed reverting these call sites to the loose validator passed the
+    /// whole suite, so the denylist was pinned only at the validator, not here.
+    #[test]
+    fn activating_actions_refuse_a_root_shell_unit() {
+        for action in ["StartService", "RestartService", "UnmaskService"] {
+            for unit in [
+                "debug-shell.service",
+                "emergency.target",
+                "rescue.service",
+                "runlevel1.target",
+            ] {
+                assert!(
+                    matches!(
+                        build_action_spec(action, &json!({"unit": unit})),
+                        Err(ExecutorError::InvalidParam("unit"))
+                    ),
+                    "{action} must not activate {unit}"
+                );
+            }
+            assert!(
+                build_action_spec(action, &json!({"unit": "nginx.service"})).is_ok(),
+                "{action} must still activate an ordinary unit"
+            );
+        }
+        assert!(
+            build_action_spec(
+                "SetServiceEnabled",
+                &json!({"unit": "debug-shell.service", "enabled": true})
+            )
+            .is_err(),
+            "enabling a root-shell unit brings it up at boot and must be refused"
+        );
+        assert!(
+            build_action_spec(
+                "SetServiceEnabled",
+                &json!({"unit": "debug-shell.service", "enabled": false})
+            )
+            .is_ok(),
+            "disabling a root-shell unit is a mitigation and must stay reachable"
+        );
+        // The safe verbs must not have been tightened into the denylist, or an
+        // operator loses the ability to stop or mask a running root shell.
+        for action in ["StopService", "MaskService"] {
+            assert!(
+                build_action_spec(action, &json!({"unit": "debug-shell.service"})).is_ok(),
+                "{action} on debug-shell is a mitigation and must stay allowed"
+            );
+        }
     }
 
     #[test]
