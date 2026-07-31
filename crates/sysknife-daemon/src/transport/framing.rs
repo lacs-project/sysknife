@@ -51,16 +51,41 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> FramedStream<S> {
         if len > MAX_MESSAGE_BYTES {
             return Err(FramingError::MessageTooLarge(len));
         }
-        let mut body = vec![0u8; len];
-        self.inner.read_exact(&mut body).await?;
+        // Grow the buffer as bytes actually arrive rather than pre-allocating the
+        // full claimed length. A peer that announces a large body but withholds
+        // it (partial-frame DoS, #150) then pins only what it has actually sent,
+        // not the whole claim — so N stalled connections cannot hold
+        // N * MAX_MESSAGE_BYTES of memory while their pre-auth deadline runs.
+        // The initial reservation is bounded, and reads are chunked.
+        let mut body = Vec::with_capacity(len.min(INITIAL_BODY_CAPACITY));
+        let mut chunk = [0u8; READ_CHUNK_BYTES];
+        while body.len() < len {
+            let want = (len - body.len()).min(chunk.len());
+            let n = self.inner.read(&mut chunk[..want]).await?;
+            if n == 0 {
+                return Err(FramingError::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "connection closed before the full frame body arrived",
+                )));
+            }
+            body.extend_from_slice(&chunk[..n]);
+        }
         Ok(body)
     }
 }
 
+/// Upper bound on the buffer reserved up front for a frame body, regardless of
+/// the claimed length. A larger body grows the buffer incrementally as data
+/// arrives, so a withheld body never costs more than this.
+const INITIAL_BODY_CAPACITY: usize = 64 * 1024;
+
+/// Size of the stack read buffer used to stream a frame body.
+const READ_CHUNK_BYTES: usize = 64 * 1024;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::duplex;
+    use tokio::io::{duplex, AsyncWriteExt};
 
     /// Send `data` from one half of a duplex pair, receive from the other.
     async fn round_trip(data: &[u8]) -> Vec<u8> {
@@ -97,6 +122,50 @@ mod tests {
     async fn round_trip_json_payload() {
         let msg = br#"{"type":"preview","action_name":"GetSystemState"}"#;
         assert_eq!(round_trip(msg).await, msg);
+    }
+
+    #[tokio::test]
+    async fn a_body_arriving_in_many_small_chunks_is_reassembled() {
+        // Payload larger than one read chunk, delivered through a small duplex
+        // buffer so recv must loop over several reads and stitch them together.
+        let payload = vec![0xABu8; 3 * READ_CHUNK_BYTES + 123];
+        let (mut a, b) = duplex(4096);
+        let mut recvr = FramedStream::new(b);
+        let p2 = payload.clone();
+        let writer = tokio::spawn(async move {
+            a.write_all(&(p2.len() as u32).to_le_bytes()).await.unwrap();
+            a.write_all(&p2).await.unwrap();
+        });
+        let got = recvr.recv().await.expect("recv should reassemble the body");
+        writer.await.unwrap();
+        assert_eq!(got, payload);
+    }
+
+    #[tokio::test]
+    async fn a_withheld_body_after_a_large_length_claim_errors_without_buffering_the_claim() {
+        // Announce the maximum body size but send only a few bytes, then close.
+        // The old code allocated the full 4 MiB up front (vec![0u8; len]); the
+        // streaming reader must instead error out promptly on EOF (#150) — it
+        // neither hangs waiting for the withheld body nor returns a short body
+        // as if complete.
+        let (mut a, b) = duplex(1024);
+        let mut recvr = FramedStream::new(b);
+        let writer = tokio::spawn(async move {
+            a.write_all(&(MAX_MESSAGE_BYTES as u32).to_le_bytes())
+                .await
+                .unwrap();
+            a.write_all(b"partial").await.unwrap();
+            drop(a); // close -> EOF before the claimed body arrives
+        });
+        let err = recvr
+            .recv()
+            .await
+            .expect_err("a truncated body must error, not hang or succeed");
+        writer.await.unwrap();
+        match err {
+            FramingError::Io(e) => assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof),
+            other => panic!("expected UnexpectedEof, got {other}"),
+        }
     }
 
     #[tokio::test]
