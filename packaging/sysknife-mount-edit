@@ -76,6 +76,26 @@ def valid_mountpoint(mp: str) -> bool:
     )
 
 
+def assert_mountpoint_safe(mp: str) -> None:
+    """Refuse a mountpoint that is (or is reached through) a symlink, or whose
+    resolved target is a critical system path.
+
+    os.makedirs(exist_ok=True) and mount(8) both follow symlinks, so a
+    string-only check lets `/tmp/x -> /etc` mount an attacker share over /etc
+    (#155). Resolving every existing path component and re-checking the result
+    also closes the trailing-slash / double-slash denylist bypasses that reach
+    a critical path (e.g. `/etc/`, `//etc`). This runs BEFORE any filesystem
+    mutation; it is not a substitute for valid_mountpoint(), it follows it.
+    """
+    if os.path.islink(mp):
+        die(f"mountpoint {mp!r} is a symlink; refusing to follow it")
+    real = os.path.realpath(mp)
+    if real != os.path.normpath(mp):
+        die(f"mountpoint {mp!r} resolves through a symlink to {real!r}; refusing")
+    if not valid_mountpoint(real):
+        die(f"resolved mountpoint {real!r} is invalid or forbidden")
+
+
 def read_fstab() -> list:
     if not os.path.exists(FSTAB):
         return []
@@ -136,6 +156,9 @@ def op_mount(args) -> None:
     if not OPTIONS_RE.match(options):
         die(f"invalid options {options!r}")
     options = ensure_nofail(options)
+
+    # Resolve symlinks before makedirs/mount, both of which follow them.
+    assert_mountpoint_safe(args.mountpoint)
 
     try:
         os.makedirs(args.mountpoint, exist_ok=True)
