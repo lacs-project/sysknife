@@ -1059,6 +1059,17 @@ pub async fn connection_handler_with_executor<S>(
 /// The response sent back to the *client* stays a uniform generic rejection
 /// regardless of cause — these logs are server-side only and must never be
 /// used to build a client-observable auth oracle.
+///
+/// RESIDUAL RISK (#152): the token is a pre-shared **bearer** credential sent in
+/// the clear as this first frame. Anyone who can observe one legitimate vsock
+/// connection can read it and authenticate as the configured role, then mint a
+/// fresh approval receipt — the approval/claim layers stop replay of a captured
+/// request, not an attacker who holds the token. This is inherent to a bearer
+/// token over an unencrypted channel and cannot be closed here; the threat
+/// model, operator mitigations (isolate the vsock namespace, prefer forwarding
+/// the Unix socket over `ssh -L`), and the paths to fully close it (a
+/// nonce/HMAC challenge, or TLS/WireGuard under vsock) are documented in
+/// SECURITY.md under "vsock transport authentication".
 async fn authenticate_vsock_token(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     token_path: &std::path::Path,
