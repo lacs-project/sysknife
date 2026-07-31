@@ -837,6 +837,83 @@ pub fn compute_request_hash(action_name: &str, params: &Value) -> String {
     })
 }
 
+/// Key under which a previewed `AptAutoremove` records the exact set of packages
+/// `apt-get -s autoremove` would remove, so execute can bind to it (#151).
+const AUTOREMOVE_REMOVALS_KEY: &str = "autoremove_removals";
+
+/// Run `apt-get -s autoremove` and parse the set of packages it would remove.
+/// The simulate is read-only (no `sudo`), so it runs through the same
+/// `CommandRunner` the preview uses to collect state.
+async fn simulate_autoremove_set(
+    runner: &Arc<dyn CommandRunner + Send + Sync>,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let r = Arc::clone(runner);
+    match tokio::task::spawn_blocking(move || r.run("apt-get", &["-s", "autoremove"])).await {
+        Ok(Ok(out)) => Ok(crate::actions::apt::parse_autoremove_removals(&out)),
+        Ok(Err(e)) => Err(format!("apt-get -s autoremove failed: {e}")),
+        Err(e) => Err(format!("autoremove simulate task panicked: {e}")),
+    }
+}
+
+/// A warning if the autoremove set includes kernel, driver, or bootloader
+/// packages — the classes that make an unattended autoremove dangerous, so the
+/// operator sees them explicitly in the preview.
+fn autoremove_kernel_warning(set: &std::collections::BTreeSet<String>) -> Option<String> {
+    let flagged: Vec<&str> = set
+        .iter()
+        .map(String::as_str)
+        .filter(|n| {
+            let base = n.split(':').next().unwrap_or(n);
+            base.starts_with("linux-image")
+                || base.starts_with("linux-modules")
+                || base.starts_with("linux-headers")
+                || base.starts_with("grub")
+                || base.contains("nvidia")
+                || base.ends_with("-dkms")
+        })
+        .collect();
+    if flagged.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "autoremove would delete kernel/driver/bootloader packages: {}. Review carefully.",
+            flagged.join(", ")
+        ))
+    }
+}
+
+/// Confirm the live autoremove set still matches the set captured in the
+/// approved preview (#151). `apt-get autoremove -y` resolves its deletion set at
+/// run time, so without this the executed effect is unbound by the approval.
+/// Fails closed: a preview that never captured a set (the simulate failed then)
+/// cannot be executed.
+fn verify_autoremove_binding(
+    approved_proposed_change: &Value,
+    live: &std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    let Some(captured) = approved_proposed_change.get(AUTOREMOVE_REMOVALS_KEY) else {
+        return Err(
+            "the approved preview did not capture the autoremove deletion set; preview again"
+                .to_string(),
+        );
+    };
+    let approved: std::collections::BTreeSet<String> = serde_json::from_value(captured.clone())
+        .map_err(|_| {
+            "the approved preview's autoremove set is malformed; preview again".to_string()
+        })?;
+    if &approved == live {
+        return Ok(());
+    }
+    let added: Vec<&str> = live.difference(&approved).map(String::as_str).collect();
+    let removed: Vec<&str> = approved.difference(live).map(String::as_str).collect();
+    Err(format!(
+        "the set of packages autoremove would delete changed since you approved it \
+         (now also removes: [{}]; no longer removes: [{}]); preview again",
+        added.join(", "),
+        removed.join(", ")
+    ))
+}
+
 fn canonical_json(v: &Value) -> String {
     match v {
         Value::Object(map) => {
@@ -1170,6 +1247,7 @@ async fn dispatch_loop<S>(
                     framed,
                     &state,
                     Arc::clone(&executor),
+                    Arc::clone(&runner),
                     &caller,
                     request_id,
                     transaction_id,
@@ -1931,7 +2009,32 @@ async fn handle_preview(
     // this process. proposed_change DOES leave the process and must be
     // scrubbed.
     let redacted_params = redact_params(action_name, params);
-    let proposed_change = json!({ "action": action_name, "params": redacted_params });
+    let mut proposed_change = json!({ "action": action_name, "params": redacted_params });
+
+    // AptAutoremove resolves its deletion set at run time, so capture the exact
+    // set the operator is about to approve and bind execute to it (#151). The
+    // set is shown in the preview and re-checked before the real autoremove runs.
+    let mut autoremove_warning: Option<String> = None;
+    if action_name == "AptAutoremove" {
+        match simulate_autoremove_set(&runner).await {
+            Ok(set) => {
+                autoremove_warning = autoremove_kernel_warning(&set);
+                proposed_change[AUTOREMOVE_REMOVALS_KEY] =
+                    json!(set.iter().collect::<Vec<&String>>());
+            }
+            Err(e) => {
+                // Do NOT record a set: execute fails closed (verify_autoremove_binding
+                // refuses a preview with no captured set), so a simulate failure at
+                // preview cannot become an unbound autoremove at execute.
+                eprintln!("[sysknife-daemon] handle_preview: autoremove simulate failed: {e}");
+                autoremove_warning = Some(
+                    "Could not compute which packages autoremove would delete; approving this \
+                     preview will not let it run until a preview captures the set."
+                        .to_string(),
+                );
+            }
+        }
+    }
 
     let envelope = RequestEnvelope {
         action_name: action_name.to_string(),
@@ -1947,6 +2050,9 @@ async fn handle_preview(
     // action knows the "current state" backing this preview is missing.
     let state_unavailable = current_state.is_null();
     let mut preview = preview_action(&envelope, current_state, proposed_change);
+    if let Some(w) = autoremove_warning {
+        preview.warnings.push(w);
+    }
     if state_unavailable {
         preview.warnings.push(
             "System state could not be collected; this preview was generated without it. \
@@ -2179,6 +2285,7 @@ async fn handle_execute(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     state: &DaemonState,
     executor: Arc<dyn ActionExecutor>,
+    runner: Arc<dyn CommandRunner + Send + Sync>,
     caller: &CallerAttribution,
     request_id: &str,
     transaction_id: &TransactionId,
@@ -2393,6 +2500,60 @@ async fn handle_execute(
             "transaction is not approved for this receipt, expired, or already consumed",
         )
         .await;
+    }
+
+    // Bind AptAutoremove to the deletion set the operator approved (#151). The
+    // request hash covers only the (empty) params, so re-simulate now and refuse
+    // if the set apt would remove has drifted from what the approved preview
+    // captured. Placed AFTER the concurrency gate and claim (both of which can
+    // block — the gate can wait minutes on a long high-risk action) and just
+    // BEFORE `JobStarted`, so the verified answer is as close to execution as it
+    // can cleanly be reported (a drift here is still a plain error_response) and
+    // the gate wait is not part of the verified-to-executed window. This shrinks
+    // that window to request handling; it cannot eliminate it, because
+    // `apt-get autoremove -y` re-resolves the set itself at run time and cannot
+    // be pinned to a package list — see the residual note in the CHANGELOG.
+    if action_name == "AptAutoremove" {
+        let approved_preview = match state.audit.get_preview(transaction_id).await {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                release_exclusive_slots(state, &to_claim, &stored_hash).await;
+                return send_error(
+                    framed,
+                    request_id,
+                    "stale_approval",
+                    "no persisted preview for this transaction; preview before executing",
+                )
+                .await;
+            }
+            Err(e) => {
+                release_exclusive_slots(state, &to_claim, &stored_hash).await;
+                return send_error(
+                    framed,
+                    request_id,
+                    "transient_infrastructure_failure",
+                    format!("preview lookup failed: {e}"),
+                )
+                .await;
+            }
+        };
+        let live = match simulate_autoremove_set(&runner).await {
+            Ok(s) => s,
+            Err(e) => {
+                release_exclusive_slots(state, &to_claim, &stored_hash).await;
+                return send_error(
+                    framed,
+                    request_id,
+                    "execution_failure",
+                    format!("could not confirm the autoremove set before executing: {e}"),
+                )
+                .await;
+            }
+        };
+        if let Err(reason) = verify_autoremove_binding(&approved_preview.proposed_change, &live) {
+            release_exclusive_slots(state, &to_claim, &stored_hash).await;
+            return send_error(framed, request_id, "stale_approval", reason).await;
+        }
     }
 
     let job_id = Uuid::new_v4().to_string();
@@ -3218,6 +3379,450 @@ mod tests {
 
     fn runner() -> Arc<dyn CommandRunner + Send + Sync> {
         Arc::new(MockRunner)
+    }
+
+    fn str_set<const N: usize>(items: [&str; N]) -> std::collections::BTreeSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn autoremove_binding_accepts_the_same_set() {
+        let pc = json!({ AUTOREMOVE_REMOVALS_KEY: ["a", "b"] });
+        assert!(verify_autoremove_binding(&pc, &str_set(["a", "b"])).is_ok());
+    }
+
+    #[test]
+    fn autoremove_binding_rejects_a_newly_added_package() {
+        let pc = json!({ AUTOREMOVE_REMOVALS_KEY: ["a"] });
+        let err = verify_autoremove_binding(&pc, &str_set(["a", "linux-image-6.1"]))
+            .expect_err("a package apt would now remove but the operator did not approve");
+        assert!(err.contains("linux-image-6.1"), "{err}");
+    }
+
+    #[test]
+    fn autoremove_binding_rejects_a_no_longer_removed_package() {
+        let pc = json!({ AUTOREMOVE_REMOVALS_KEY: ["a", "b"] });
+        let err = verify_autoremove_binding(&pc, &str_set(["a"]))
+            .expect_err("the approved set no longer matches");
+        assert!(err.contains('b'), "{err}");
+    }
+
+    #[test]
+    fn autoremove_binding_refuses_a_preview_that_captured_no_set() {
+        // A preview whose simulate failed records no set; execute must fail closed.
+        let pc = json!({ "action": "AptAutoremove" });
+        assert!(verify_autoremove_binding(&pc, &str_set([])).is_err());
+    }
+
+    #[test]
+    fn autoremove_kernel_warning_flags_kernel_and_driver_packages() {
+        let set = str_set([
+            "linux-image-6.1",
+            "nvidia-driver-535",
+            "libfoo:amd64",
+            "vim",
+        ]);
+        let w = autoremove_kernel_warning(&set).expect("kernel/driver packages must warn");
+        assert!(
+            w.contains("linux-image-6.1") && w.contains("nvidia-driver-535"),
+            "{w}"
+        );
+        assert!(!w.contains("vim") && !w.contains("libfoo"), "{w}");
+    }
+
+    #[test]
+    fn autoremove_kernel_warning_is_silent_for_ordinary_packages() {
+        assert!(autoremove_kernel_warning(&str_set(["libfoo", "oldlib"])).is_none());
+    }
+
+    /// Returns a scripted `apt-get -s autoremove` result per call (preview first,
+    /// then execute), and "testhost" for hostname so state collection succeeds.
+    /// Panics on an unscripted extra call so a duplicate simulate cannot be
+    /// silently papered over, and shares its call counter so tests can assert the
+    /// exactly-once-per-phase invariant.
+    struct ScriptedAutoremoveRunner {
+        outputs: Vec<Result<String, String>>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl ScriptedAutoremoveRunner {
+        fn with_outputs(
+            outputs: Vec<Result<String, String>>,
+        ) -> (
+            Arc<dyn CommandRunner + Send + Sync>,
+            Arc<std::sync::atomic::AtomicUsize>,
+        ) {
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let runner = Arc::new(Self {
+                outputs,
+                calls: Arc::clone(&calls),
+            });
+            (runner, calls)
+        }
+        /// Convenience: every call returns the same stdout.
+        fn ok(
+            outputs: &[&str],
+        ) -> (
+            Arc<dyn CommandRunner + Send + Sync>,
+            Arc<std::sync::atomic::AtomicUsize>,
+        ) {
+            Self::with_outputs(outputs.iter().map(|s| Ok(s.to_string())).collect())
+        }
+    }
+    impl CommandRunner for ScriptedAutoremoveRunner {
+        fn run(&self, program: &str, args: &[&str]) -> Result<String, io::Error> {
+            if program == "hostname" {
+                return Ok("testhost\n".to_string());
+            }
+            if program == "apt-get" && args == ["-s", "autoremove"] {
+                let i = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let out = self.outputs.get(i).unwrap_or_else(|| {
+                    panic!(
+                        "ScriptedAutoremoveRunner: unexpected `apt-get -s autoremove` call #{i} \
+                         (only {} scripted)",
+                        self.outputs.len()
+                    )
+                });
+                return out.clone().map_err(io::Error::other);
+            }
+            Ok(String::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn preview_captures_the_autoremove_set_and_warns_on_kernel_packages() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (runner, _calls) =
+            ScriptedAutoremoveRunner::ok(&["Remv linux-image-6.1 [6.1]\nRemv libfoo [1]\n"]);
+        tokio::spawn(async move {
+            unix_connection_handler(
+                server,
+                state,
+                runner,
+                uid_caller_with(1000, CallerRole::Admin),
+            )
+            .await;
+        });
+
+        let mut framed = FramedStream::new(client);
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "preview",
+                    "request_id": "r1",
+                    "action_name": "AptAutoremove",
+                    "params": {}
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        assert_eq!(resp["type"], "preview_response", "{resp}");
+
+        let removals = resp["preview"]["proposed_change"][AUTOREMOVE_REMOVALS_KEY]
+            .as_array()
+            .expect("the preview must capture the autoremove deletion set");
+        let names: Vec<&str> = removals.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(
+            names.contains(&"linux-image-6.1") && names.contains(&"libfoo"),
+            "captured set wrong: {names:?}"
+        );
+        let warnings = resp["preview"]["warnings"].as_array().unwrap();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.as_str().unwrap().contains("linux-image-6.1")),
+            "the kernel-package warning must be present: {warnings:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_refuses_autoremove_when_the_deletion_set_drifted() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        // Preview sees {pkga, pkgb}; by execute pkgb is no longer removable -> drift.
+        let (runner, calls) =
+            ScriptedAutoremoveRunner::ok(&["Remv pkga [1]\nRemv pkgb [1]\n", "Remv pkga [1]\n"]);
+        let calls_probe = Arc::clone(&calls);
+        tokio::spawn(async move {
+            unix_connection_handler(
+                server,
+                state,
+                runner,
+                uid_caller_with(1000, CallerRole::Admin),
+            )
+            .await;
+        });
+
+        let mut framed = FramedStream::new(client);
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "preview",
+                    "request_id": "r1",
+                    "action_name": "AptAutoremove",
+                    "params": {}
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        assert_eq!(resp["type"], "preview_response", "{resp}");
+        let txid = resp["transaction_id"].as_str().unwrap().to_string();
+        let receipt = approve_preview(&mut framed, &txid).await;
+
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "execute",
+                    "request_id": "r2",
+                    "transaction_id": txid,
+                    "action_name": "AptAutoremove",
+                    "params": {},
+                    "approval_receipt": receipt
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let exec: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        // Refused before the executor runs — nothing is autoremoved.
+        assert_eq!(
+            exec["type"], "error_response",
+            "drift must be refused: {exec}"
+        );
+        assert_eq!(exec["category"], "stale_approval", "{exec}");
+        assert!(
+            exec["message"].as_str().unwrap().contains("changed since"),
+            "message should explain the drift: {exec}"
+        );
+        // Exactly one simulate at preview and one at execute — not more.
+        assert_eq!(
+            calls_probe.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "apt-get -s autoremove must run once per phase"
+        );
+    }
+
+    /// Records whether the real action executor was invoked. Lets the
+    /// unchanged-set test prove the Ok branch reaches execution without running
+    /// any real command, independent of the sandbox's sudo behavior.
+    #[derive(Default)]
+    struct RecordingExecutor {
+        called: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    #[async_trait::async_trait]
+    impl ActionExecutor for RecordingExecutor {
+        async fn execute(
+            &self,
+            _spec: &crate::actions::ActionSpec,
+        ) -> Result<crate::executor::ExecutionOutput, crate::executor::ExecutorError> {
+            unreachable!("dispatcher uses execute_with_progress")
+        }
+        async fn execute_with_progress(
+            &self,
+            _spec: &crate::actions::ActionSpec,
+            progress: tokio::sync::mpsc::UnboundedSender<String>,
+        ) -> Result<crate::executor::ExecutionOutput, crate::executor::ExecutorError> {
+            self.called
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = progress.send("executed".to_string());
+            Ok(crate::executor::ExecutionOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+            })
+        }
+    }
+
+    async fn preview_autoremove(framed: &mut FramedStream<tokio::net::UnixStream>) -> Value {
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "preview",
+                    "request_id": "r1",
+                    "action_name": "AptAutoremove",
+                    "params": {}
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        serde_json::from_slice(&framed.recv().await.unwrap()).unwrap()
+    }
+
+    async fn send_execute_autoremove(
+        framed: &mut FramedStream<tokio::net::UnixStream>,
+        txid: &str,
+        receipt: &str,
+    ) {
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "execute",
+                    "request_id": "r2",
+                    "transaction_id": txid,
+                    "action_name": "AptAutoremove",
+                    "params": {},
+                    "approval_receipt": receipt
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn execute_proceeds_when_the_autoremove_set_is_unchanged() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        // Same set at preview and execute -> no drift -> proceeds to the executor.
+        let (runner, _calls) =
+            ScriptedAutoremoveRunner::ok(&["Remv pkga [1]\n", "Remv pkga [1]\n"]);
+        let called = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let executor = Arc::new(RecordingExecutor {
+            called: Arc::clone(&called),
+        });
+        tokio::spawn(async move {
+            connection_handler_with_executor(
+                server,
+                state,
+                runner,
+                executor,
+                uid_caller_with(1000, CallerRole::Admin),
+            )
+            .await;
+        });
+
+        let mut framed = FramedStream::new(client);
+        let resp = preview_autoremove(&mut framed).await;
+        assert_eq!(resp["type"], "preview_response", "{resp}");
+        let txid = resp["transaction_id"].as_str().unwrap().to_string();
+        let receipt = approve_preview(&mut framed, &txid).await;
+        send_execute_autoremove(&mut framed, &txid, &receipt).await;
+
+        loop {
+            let r: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+            match r["type"].as_str().unwrap() {
+                "job_started" | "job_progress" => {}
+                "job_completed" => break,
+                other => panic!("an unchanged set must proceed, got {other}: {r}"),
+            }
+        }
+        assert_eq!(
+            called.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "executor must run exactly once when the set is unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_that_cannot_simulate_captures_no_set_and_execute_refuses() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        // Preview simulate fails -> no set captured. Execute's simulate succeeds
+        // but the missing captured set makes verify refuse (fail-closed).
+        let (runner, _calls) = ScriptedAutoremoveRunner::with_outputs(vec![
+            Err("apt database lock held".to_string()),
+            Ok("Remv pkga [1]\n".to_string()),
+        ]);
+        tokio::spawn(async move {
+            unix_connection_handler(
+                server,
+                state,
+                runner,
+                uid_caller_with(1000, CallerRole::Admin),
+            )
+            .await;
+        });
+
+        let mut framed = FramedStream::new(client);
+        let resp = preview_autoremove(&mut framed).await;
+        assert_eq!(resp["type"], "preview_response", "{resp}");
+        // No set captured, and the operator is warned.
+        assert!(
+            resp["preview"]["proposed_change"]
+                .get(AUTOREMOVE_REMOVALS_KEY)
+                .is_none(),
+            "a failed simulate must not capture a set: {resp}"
+        );
+        assert!(
+            resp["preview"]["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w.as_str().unwrap().contains("Could not compute")),
+            "the operator must be warned: {resp}"
+        );
+        let txid = resp["transaction_id"].as_str().unwrap().to_string();
+        let receipt = approve_preview(&mut framed, &txid).await;
+        send_execute_autoremove(&mut framed, &txid, &receipt).await;
+
+        let exec: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        assert_eq!(exec["type"], "error_response", "{exec}");
+        assert_eq!(exec["category"], "stale_approval", "{exec}");
+        assert!(
+            exec["message"]
+                .as_str()
+                .unwrap()
+                .contains("did not capture"),
+            "must refuse an uncaptured set: {exec}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_refuses_when_the_autoremove_re_simulate_fails() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        // Preview captures a set; the execute-time re-simulate fails -> refuse
+        // (execution_failure), never fall through to an unbound autoremove.
+        let (runner, _calls) = ScriptedAutoremoveRunner::with_outputs(vec![
+            Ok("Remv pkga [1]\n".to_string()),
+            Err("apt database lock held".to_string()),
+        ]);
+        tokio::spawn(async move {
+            unix_connection_handler(
+                server,
+                state,
+                runner,
+                uid_caller_with(1000, CallerRole::Admin),
+            )
+            .await;
+        });
+
+        let mut framed = FramedStream::new(client);
+        let resp = preview_autoremove(&mut framed).await;
+        assert_eq!(resp["type"], "preview_response", "{resp}");
+        let txid = resp["transaction_id"].as_str().unwrap().to_string();
+        let receipt = approve_preview(&mut framed, &txid).await;
+        send_execute_autoremove(&mut framed, &txid, &receipt).await;
+
+        let exec: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        assert_eq!(exec["type"], "error_response", "{exec}");
+        assert_eq!(exec["category"], "execution_failure", "{exec}");
+        assert!(
+            exec["message"]
+                .as_str()
+                .unwrap()
+                .contains("confirm the autoremove set"),
+            "{exec}"
+        );
+    }
+
+    #[test]
+    fn autoremove_binding_refuses_a_malformed_captured_set() {
+        // A present-but-wrong-shaped captured set must refuse, not default to allow.
+        let pc = json!({ AUTOREMOVE_REMOVALS_KEY: "not-an-array" });
+        let err = verify_autoremove_binding(&pc, &str_set(["a"]))
+            .expect_err("a malformed captured set must be refused");
+        assert!(err.contains("malformed"), "{err}");
     }
 
     async fn approve_preview(
@@ -4458,6 +5063,7 @@ mod tests {
             &mut broken_framed,
             &state,
             Arc::new(crate::executor::RealActionExecutor),
+            runner(),
             &uid_caller(CallerRole::Admin),
             "execute-disconnected",
             &typed_transaction_id,

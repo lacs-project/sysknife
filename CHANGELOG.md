@@ -12,6 +12,19 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Security
 
+- **`AptAutoremove` binds the deletion set the operator approved.**
+  ([#151](https://github.com/lacs-project/sysknife/issues/151)) The approval covered only
+  the action name and empty params, but `apt-get autoremove -y` resolves the deletion set
+  (which can include kernels and drivers) at run time, so the executed effect was unbound
+  by the approval and the request hash. The preview now runs `apt-get -s autoremove`, shows
+  the exact packages that would be removed (with a warning when they include
+  kernel/driver/bootloader packages), and execution re-simulates immediately before running
+  and refuses if the set has drifted since approval. This shrinks the unbound window from
+  the whole preview-to-approval period down to request handling; it cannot eliminate it,
+  because `apt-get autoremove -y` re-resolves the set itself at run time and cannot be pinned
+  to a package list, so an external `apt`/`unattended-upgrades` change in that brief window is
+  still possible (and out of SysKnife's control).
+
 - **The audit store refuses a Postgres connection that could leak its credential to a network attacker.**
   ([#149](https://github.com/lacs-project/sysknife/issues/149)) sqlx defaults to
   `sslmode=Prefer`, which silently downgrades to plaintext if the server declines TLS.
