@@ -88,23 +88,26 @@ unverifiable tag on a published release is worse than an unsigned one.
 
 ## Manual steps after publication
 
-Two directory listings cannot be updated from CI, so the release workflow files
-a checklist issue titled `Post-release manual steps for <tag>` and assigns it to
+One directory listing cannot be updated from CI, so the release workflow files a
+checklist issue titled `Post-release manual steps for <tag>` and assigns it to
 whoever pushed the tag. It carries the exact commands and the real checksum read
 from that release's `sha256sums-linux-x86_64.txt`.
 
-1. **Official MCP Registry.** `mcp-publisher login github` is a device-code flow
-   and cannot run unattended. The publish must also wait for crates.io to have
-   the version, because the validator reads the *published* crate's rendered
-   README for the `mcp-name:` marker.
-2. **Glama build spec.** The admin form is browser-only. Only the build steps
-   change per release, to the new binary URL and checksum. Leave the
-   `mcp-proxy --` prefix in the CMD arguments alone; that is how Glama exposes a
-   stdio server over HTTP.
+- **Glama build spec.** The admin form is browser-only. Only the build steps
+  change per release, to the new binary URL and checksum. Leave the
+  `mcp-proxy --` prefix in the CMD arguments alone; that is how Glama exposes a
+  stdio server over HTTP.
 
-Neither step blocks anyone installing the release. They affect discovery only, so
-they are not release blockers, which is exactly why they need a ticket rather
-than a line in a log nobody reads.
+This does not block anyone installing the release. It affects discovery only, so
+it is not a release blocker, which is exactly why it needs a ticket rather than a
+line in a log nobody reads.
+
+The **official MCP Registry** publish used to sit on that list and no longer
+does. The `publish-registry` job runs after `publish-crates` and authenticates
+with GitHub Actions OIDC. That ordering is required, because the registry
+validator reads the *published* crate's rendered README for the `mcp-name:`
+marker, and the OIDC identity is required for a different reason: see
+[the registry notes](mcp-registry.md#authentication-namespace-comes-from-the-identity).
 
 ## Registry details
 

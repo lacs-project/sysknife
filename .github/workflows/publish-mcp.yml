@@ -1,0 +1,144 @@
+# Publish server.json to the official MCP Registry.
+#
+# Why this exists as a workflow rather than a documented manual step: the
+# registry mints publishing permissions from the identity that authenticates.
+# `mcp-publisher login github` (device code) authenticates the *user*, and the
+# token it returns carries only that user's personal namespace,
+# `io.github.<user>/*`, because the OAuth grant does not include `read:org`.
+# Publishing `io.github.lacs-project/sysknife` from a laptop therefore fails with
+# 403 even for an org admin whose membership is public.
+#
+# GitHub Actions OIDC authenticates the *repository*, so the namespace is derived
+# from the repository owner and matches `server.json` by construction. It also
+# needs no secret: `id-token: write` is the whole credential.
+#
+# Ordering matters. The registry validator fetches the **published** crate's
+# rendered README and looks for the `mcp-name:` ownership marker, so this can only
+# succeed once crates.io serves the version named in `server.json`. The release
+# workflow therefore calls this after its crates.io job, and the manual entry
+# point exists for retries and for backfilling a version that was released before
+# this workflow did.
+name: publish-mcp
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref to publish from. Defaults to the calling ref.
+        type: string
+        required: false
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref (tag, branch or SHA) whose server.json to publish
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+# Never let two publishes of the same ref race: the registry takes the first and
+# rejects the second as a duplicate version, which reads like a real failure.
+concurrency:
+  group: publish-mcp-${{ inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to the MCP Registry
+    runs-on: ubuntu-latest
+    permissions:
+      # The only credential this workflow needs. Without it `login github-oidc`
+      # has no token to exchange.
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+
+      - name: Read the version being published
+        id: manifest
+        run: |
+          set -euo pipefail
+          version="$(jq -r .version server.json)"
+          name="$(jq -r .name server.json)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          printf 'publishing %s version %s\n' "$name" "$version"
+
+      # A version already in the registry cannot be replaced, and re-publishing
+      # returns an error that is indistinguishable from a real one at a glance.
+      # Checking first makes a re-run of this workflow a no-op instead of a red X.
+      - name: Skip if the registry already has this version
+        id: already
+        env:
+          # Through the environment, never interpolated into the script body: a
+          # `${{ }}` expression is pasted in before the shell ever sees it, so a
+          # value containing shell syntax would execute rather than compare.
+          SERVER_NAME: ${{ steps.manifest.outputs.name }}
+          SERVER_VERSION: ${{ steps.manifest.outputs.version }}
+        run: |
+          set -euo pipefail
+          present="$(curl -fsS \
+            "https://registry.modelcontextprotocol.io/v0/servers?search=sysknife" \
+            | jq -r --arg n "$SERVER_NAME" --arg v "$SERVER_VERSION" \
+              '[.servers[] | select((.server.name // .name) == $n and (.server.version // .version) == $v)] | length')"
+          if [ "$present" -gt 0 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::registry already serves $SERVER_VERSION; nothing to do"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install mcp-publisher
+        if: steps.already.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          arch="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
+          base="https://github.com/modelcontextprotocol/registry/releases/latest/download"
+          curl -fsSL "${base}/mcp-publisher_${os}_${arch}.tar.gz" | tar xz mcp-publisher
+          ./mcp-publisher --help >/dev/null
+
+      - name: Validate server.json
+        if: steps.already.outputs.skip == 'false'
+        run: ./mcp-publisher validate
+
+      - name: Authenticate with repository identity
+        if: steps.already.outputs.skip == 'false'
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish
+        if: steps.already.outputs.skip == 'false'
+        run: ./mcp-publisher publish
+
+      # Read the version back from the registry rather than trusting the exit
+      # code: a publish that reports success but leaves the old version latest
+      # would otherwise close out a release that never reached users.
+      - name: Verify the registry serves it
+        if: steps.already.outputs.skip == 'false'
+        env:
+          SERVER_NAME: ${{ steps.manifest.outputs.name }}
+          SERVER_VERSION: ${{ steps.manifest.outputs.version }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            latest="$(curl -fsS \
+              "https://registry.modelcontextprotocol.io/v0/servers?search=sysknife" \
+              | jq -r --arg n "$SERVER_NAME" \
+                '[.servers[]
+                  | select((.server.name // .name) == $n)
+                  | select(._meta["io.modelcontextprotocol.registry/official"].isLatest == true)
+                  | (.server.version // .version)] | first // "none"')"
+            if [ "$latest" = "$SERVER_VERSION" ]; then
+              printf 'registry latest is %s\n' "$latest"
+              exit 0
+            fi
+            printf 'attempt %s: registry latest is %s, waiting\n' "$attempt" "$latest"
+            sleep 10
+          done
+          echo "::error::registry did not report $SERVER_VERSION as latest"
+          exit 1
