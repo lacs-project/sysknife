@@ -447,3 +447,91 @@ async fn signal_killed_child_reports_exit_code_minus_one() {
         "a signal-terminated child must map to -1, not a normal exit code"
     );
 }
+
+/// Killing the direct child is not the same as stopping the action, and the
+/// test above cannot tell the two apart: it asserts only that `execute_spec`
+/// returns a timeout error, which is true of a daemon that gives up waiting
+/// while the work keeps running as root.
+///
+/// This is the assertion that distinguishes them. The script starts a marker
+/// process and then blocks, so the marker is a *grandchild* of the process the
+/// daemon spawned. Every privileged SysKnife action has this shape, because the
+/// daemon runs unprivileged and elevates through `sudo`, which forks.
+///
+/// It matters beyond a leaked process: a timeout marks the job `Failed`, and
+/// `attempt_rollback_if_needed` then runs `rpm-ostree rollback` against a
+/// transaction that is still in flight. See issue #140.
+///
+/// Matching is by exact argv read from `/proc`, never a substring search over
+/// full command lines, because that also matches the test harness itself.
+#[tokio::test]
+async fn execute_spec_stops_the_work_not_just_the_direct_child() {
+    const MARKER: &str = "31499";
+
+    fn marker_pids() -> Vec<i32> {
+        let mut found = Vec::new();
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return found;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(pid) = name.to_str().and_then(|s| s.parse::<i32>().ok()) else {
+                continue;
+            };
+            let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+                continue;
+            };
+            let argv: Vec<&[u8]> = raw.split(|b| *b == 0).filter(|s| !s.is_empty()).collect();
+            if argv == [b"sleep".as_slice(), MARKER.as_bytes()] {
+                found.push(pid);
+            }
+        }
+        found
+    }
+
+    assert!(
+        marker_pids().is_empty(),
+        "a previous run leaked the marker process; the assertion below would be meaningless"
+    );
+
+    std::env::set_var("SYSKNIFE_ACTION_TIMEOUT_SECS", "1");
+    let spec = ActionSpec {
+        action_name: "TimeoutGrandchildProbe",
+        mechanism: ActionMechanism::Command {
+            program: "sh",
+            // The marker outlives the shell unless the whole process group is
+            // signalled: `sh` is killed, `sleep` is not its business to reap.
+            args: vec!["-c".to_string(), format!("sleep {MARKER} & wait")],
+        },
+        risk_level: RiskLevel::Low,
+        reboot_required: false,
+        rollback_available: false,
+    };
+
+    let err = execute_spec(&spec)
+        .await
+        .expect_err("a child that outruns the timeout must fail, not hang");
+    assert!(
+        err.to_string().contains("timeout"),
+        "error must say the action timed out, got: {err}"
+    );
+
+    // Give the kill a moment to be delivered and the process to be reaped.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let survivors = marker_pids();
+    if !survivors.is_empty() {
+        for pid in &survivors {
+            // Do not leak into the rest of the suite, or into the developer's
+            // machine, just because the assertion is about to fail.
+            unsafe { libc::kill(*pid, libc::SIGKILL) };
+        }
+        panic!(
+            "the action outlived its own timeout: {} marker process(es) {:?} still running. \
+             The daemon reported failure and would now start an automatic rollback against \
+             work that never stopped.",
+            survivors.len(),
+            survivors
+        );
+    }
+}

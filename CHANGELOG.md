@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [Unreleased]
+
+### Fixed
+
+- **The action timeout now stops the action, not just the wait.** ([#140](https://github.com/lacs-project/sysknife/issues/140))
+  The daemon runs unprivileged and elevates through `sudo`, which forks, so
+  SIGKILL to the process it spawned left the privileged work running. The
+  deadline reported "killed" while `apt` or `rpm-ostree` carried on. Actions now
+  run in their own process group and the deadline signals the group, SIGTERM
+  then SIGKILL.
+- **A rollback is never started over an action that may still be running.**
+  A timeout marks the job failed, and a failed rollback-eligible action used to
+  trigger `rpm-ostree rollback` immediately. Combined with the bug above that
+  meant two package transactions on one host, one of them started because the
+  daemon wrongly believed the first had stopped. When the process group survives
+  SIGKILL the daemon now reports `ActionNotStopped` and skips the rollback,
+  because doing nothing is recoverable and doing both is not.
+- The timeout test asserted only that the call returned a timeout error, which
+  is true of a daemon that gives up waiting while the work continues. It now
+  asserts the spawned work is gone, matched by exact argv from `/proc`.
+
 ## [0.4.0] — 2026-07-30
 
 `sysknife audit verify` now says **why** a row names no account, and refuses to

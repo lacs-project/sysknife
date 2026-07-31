@@ -77,6 +77,26 @@ pub enum ExecutorError {
 
     #[error("io error: {0}")]
     Io(#[from] io::Error),
+
+    /// The action outran its deadline and could not be confirmed stopped.
+    ///
+    /// Separate from a plain timeout because the safe response differs. A
+    /// timeout that stopped the work leaves the host where it was, so an
+    /// automatic rollback is reasonable. This variant means privileged work may
+    /// still be running, and rolling back over it would put two package
+    /// transactions on the host at once. The caller must not treat it as a
+    /// quiet failure.
+    #[error(
+        "{program} exceeded the {timeout_secs}s action timeout and could not be \
+         confirmed stopped: process group {pgid} still has members. Automatic \
+         rollback was skipped because the original action may still be running; \
+         inspect the host before retrying"
+    )]
+    ActionNotStopped {
+        program: String,
+        pgid: i32,
+        timeout_secs: u64,
+    },
 }
 
 /// Output of a single executed action.
@@ -189,16 +209,103 @@ fn action_timeout() -> Duration {
     }
 }
 
-/// Kill a child that outran the deadline and reap it, so the timeout does not
+/// Signal every process in a group, or report why it could not be done.
+///
+/// `killpg` fails with `ESRCH` once the group is empty, which is the success
+/// condition here rather than an error.
+fn signal_group(pgid: i32, signal: i32) -> Result<(), io::Error> {
+    // SAFETY: `killpg` is async-signal-safe and takes no pointers. `pgid` is a
+    // real group id returned by the kernel for a child we spawned with
+    // `process_group(0)`, so this cannot address an unrelated group; in
+    // particular it is never 0, which would signal the daemon's own group.
+    let rc = unsafe { libc::killpg(pgid, signal) };
+    if rc == 0 {
+        return Ok(());
+    }
+    let err = io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(err)
+}
+
+/// Is anything left in the group? Signal 0 performs the permission and
+/// existence checks without delivering anything.
+fn group_is_alive(pgid: i32) -> bool {
+    // SAFETY: same contract as `signal_group`; signal 0 delivers nothing.
+    unsafe { libc::killpg(pgid, 0) == 0 }
+}
+
+/// How long a group gets to exit on SIGTERM before SIGKILL.
+///
+/// Short on purpose. The deadline has already passed, so this is the courtesy
+/// window for a package manager to unwind, not a second timeout.
+const GROUP_TERM_GRACE: Duration = Duration::from_secs(5);
+
+/// Stop an action that outran the deadline, and reap it so the timeout does not
 /// trade a hung task for a zombie.
+///
+/// Signals the child's whole **process group**, not its pid. The daemon runs
+/// unprivileged and elevates through `sudo`, which forks: killing the pid we
+/// spawned leaves the privileged work running, and the caller then acts on a
+/// "failed" job whose action is still in flight. That was issue #140.
+///
+/// SIGTERM first so a package manager can unwind, then SIGKILL. If the group is
+/// still populated afterwards the error says so, because the automatic-rollback
+/// decision downstream depends on whether the original action really stopped.
 async fn kill_and_reap(child: &mut tokio::process::Child, program: &str) -> ExecutorError {
-    let _ = child.start_kill();
-    let _ = child.wait().await;
     let secs = action_timeout().as_secs();
-    eprintln!("[sysknife-daemon] {program} exceeded the {secs}s action timeout; killed");
+    // `id()` returns None once the child has been reaped; with
+    // `process_group(0)` the group id equals the child's pid.
+    let pgid = child.id().map(|pid| pid as i32);
+
+    match pgid {
+        Some(pgid) => {
+            if let Err(err) = signal_group(pgid, libc::SIGTERM) {
+                eprintln!("[sysknife-daemon] SIGTERM to process group {pgid} failed: {err}");
+            }
+            let deadline = tokio::time::Instant::now() + GROUP_TERM_GRACE;
+            // Reap the direct child first: until it is reaped it stays a zombie
+            // and keeps the group alive, which would make the check below lie.
+            let _ = tokio::time::timeout_at(deadline, child.wait()).await;
+            while tokio::time::Instant::now() < deadline && group_is_alive(pgid) {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            if group_is_alive(pgid) {
+                if let Err(err) = signal_group(pgid, libc::SIGKILL) {
+                    eprintln!("[sysknife-daemon] SIGKILL to process group {pgid} failed: {err}");
+                }
+                // SIGKILL cannot be caught, but delivery and exit are not
+                // instantaneous, so give the kernel a moment before judging.
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            let _ = child.wait().await;
+            if group_is_alive(pgid) {
+                eprintln!(
+                    "[sysknife-daemon] {program} exceeded the {secs}s action timeout and \
+                     process group {pgid} survived SIGKILL"
+                );
+                return ExecutorError::ActionNotStopped {
+                    program: program.to_string(),
+                    pgid,
+                    timeout_secs: secs,
+                };
+            }
+            eprintln!(
+                "[sysknife-daemon] {program} exceeded the {secs}s action timeout; \
+                 process group {pgid} stopped"
+            );
+        }
+        None => {
+            // Already reaped, so there is no group left to address.
+            let _ = child.wait().await;
+            eprintln!("[sysknife-daemon] {program} exceeded the {secs}s action timeout; killed");
+        }
+    }
+
     ExecutorError::Io(io::Error::new(
         io::ErrorKind::TimedOut,
-        format!("{program} exceeded the {secs}s action timeout and was killed"),
+        format!("{program} exceeded the {secs}s action timeout and was stopped"),
     ))
 }
 
@@ -209,6 +316,11 @@ async fn execute_command_with_progress(
 ) -> Result<ExecutionOutput, ExecutorError> {
     let mut child = tokio::process::Command::new(program)
         .args(args)
+        // Its own process group, so the deadline can signal the whole tree
+        // rather than one pid. Without it the kill lands on `sudo`, which has
+        // already forked the privileged work, and the action outlives the
+        // timeout that claims to have stopped it. See issue #140.
+        .process_group(0)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1515,6 +1627,9 @@ pub async fn execute_spec(spec: &ActionSpec) -> Result<ExecutionOutput, Executor
             let mut child = tokio::process::Command::new(program)
                 .args(args)
                 .stdin(Stdio::null())
+                // Own process group: the deadline below must be able to stop the
+                // whole tree, not just the pid we spawned. See issue #140.
+                .process_group(0)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()?;
