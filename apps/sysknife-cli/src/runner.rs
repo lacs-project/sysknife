@@ -167,37 +167,50 @@ fn remote_daemon_caveat(
     ))
 }
 
-/// Whether the daemon the client is configured to reach is this machine or a
-/// different one — the question the env heuristic cannot answer for a forwarded
-/// unix socket (#146).
+/// The machine-id comparison verdict for `audit verify` (#146).
+///
+/// Only a *mismatch* is a reliable signal: two hosts with different
+/// `/etc/machine-id` are definitely different machines, so a forwarded socket to
+/// one of them warrants the wrong-machine caveat — which is what closes the gap.
+/// A *match* is deliberately NOT treated as proof of "this machine": cloned VM
+/// and container images routinely share one `/etc/machine-id`, so equal hashes
+/// can mean two distinct clones. The check therefore only ever ADDS a warning;
+/// it never suppresses one the transport heuristic would raise (a hash match
+/// falls through to `Unknown` → the heuristic, which keeps vsock-always-warns and
+/// the explicit-`SYSKNIFE_SOCKET` warning intact).
 #[derive(Debug, PartialEq, Eq)]
 enum SocketOrigin {
-    /// A different machine; carry this caveat.
+    /// The daemon's machine-id differs from this host's: a different machine.
     Remote(String),
-    /// Definitively this machine; suppress the caveat.
-    Local,
-    /// Could not determine (no socket configured, daemon unreachable, an older
-    /// daemon without the field, or /etc/machine-id unreadable). Fall back to the
-    /// env heuristic.
+    /// Inconclusive — daemon unreachable, an older daemon without the field,
+    /// `/etc/machine-id` unreadable, or hashes that MATCH (not proof of local,
+    /// because clones share a machine-id). Fall back to the env heuristic.
     Unknown,
 }
 
-/// The configured daemon socket: `SYSKNIFE_SOCKET` (an explicit override) wins,
-/// else `config.toml`/unit-provided `SYSKNIFE_LISTEN_URI`. Returns the raw value,
-/// which env var it came from, and the parsed target.
+/// The configured daemon socket the client would dial: `SYSKNIFE_SOCKET` (an
+/// explicit override) wins, else `config.toml`/unit-provided
+/// `SYSKNIFE_LISTEN_URI`. Matches `resolve_socket_target`'s precedence: a
+/// set-but-unparseable `SYSKNIFE_SOCKET` short-circuits to `None` (it is never
+/// silently skipped in favor of `SYSKNIFE_LISTEN_URI`, which the client would
+/// not dial).
 fn configured_socket_target() -> Option<(String, &'static str, crate::client::SocketTarget)> {
-    for source in ["SYSKNIFE_SOCKET", "SYSKNIFE_LISTEN_URI"] {
-        if let Ok(raw) = std::env::var(source) {
-            if let Ok(target) = crate::client::SocketTarget::try_from_str(&raw) {
-                return Some((raw, source, target));
-            }
+    if let Ok(raw) = std::env::var("SYSKNIFE_SOCKET") {
+        let target = crate::client::SocketTarget::try_from_str(&raw).ok()?;
+        return Some((raw, "SYSKNIFE_SOCKET", target));
+    }
+    if let Ok(raw) = std::env::var("SYSKNIFE_LISTEN_URI") {
+        if let Ok(target) = crate::client::SocketTarget::try_from_str(&raw) {
+            return Some((raw, "SYSKNIFE_LISTEN_URI", target));
         }
     }
     None
 }
 
 /// Pure decision: compare the daemon's reported machine-id hash to the local one.
-/// Split from the I/O so the verdict logic is deterministically testable.
+/// Split from the I/O so the verdict logic is deterministically testable. Only a
+/// definite mismatch yields `Remote`; everything else is `Unknown` (see the enum
+/// docs for why a match is not `Local`).
 fn socket_origin_from(
     local_hash: Option<&str>,
     daemon_hash: Option<&str>,
@@ -206,34 +219,42 @@ fn socket_origin_from(
     target: &crate::client::SocketTarget,
 ) -> SocketOrigin {
     match (local_hash, daemon_hash) {
-        (Some(l), Some(d)) if l == d => SocketOrigin::Local,
-        (Some(_), Some(_)) => match remote_daemon_caveat(Some((raw, source)), target) {
-            Some(caveat) => SocketOrigin::Remote(caveat),
-            None => SocketOrigin::Unknown,
-        },
+        (Some(l), Some(d)) if l != d => SocketOrigin::Remote(
+            // Given `Some(socket_env)`, remote_daemon_caveat always returns Some
+            // (it only returns None for an unset socket).
+            remote_daemon_caveat(Some((raw, source)), target)
+                .expect("a configured socket always yields a caveat message"),
+        ),
         _ => SocketOrigin::Unknown,
     }
 }
 
 /// Ask the configured daemon for its machine-id hash and compare it to this
-/// host's. Definitive when the daemon answers; otherwise `Unknown`.
+/// host's. `Remote` only on a definite mismatch; otherwise `Unknown`.
+///
+/// The query only runs for a unix socket configured via `SYSKNIFE_LISTEN_URI` —
+/// the one case the env heuristic is silent on. For an explicit `SYSKNIFE_SOCKET`
+/// or a vsock target the heuristic already warns, so a round-trip could not add
+/// anything and is skipped (keeping `audit verify` offline in those cases).
 fn daemon_socket_origin() -> SocketOrigin {
     let Some((raw, source, target)) = configured_socket_target() else {
         return SocketOrigin::Unknown;
     };
+    if source != "SYSKNIFE_LISTEN_URI" || !matches!(target, crate::client::SocketTarget::Unix(_)) {
+        return SocketOrigin::Unknown;
+    }
     let local = sysknife_daemon::state_collector::machine_id_hash();
     let daemon = crate::client::DaemonClient::new(target.clone()).machine_id_hash();
     socket_origin_from(local.as_deref(), daemon.as_deref(), &raw, source, &target)
 }
 
-/// The wrong-machine caveat for `audit verify`. Prefers the definitive
-/// machine-id comparison (which closes the forwarded-unix-socket gap #146); when
-/// that cannot run, falls back to the env-only heuristic so behavior is never
-/// worse than before.
+/// The wrong-machine caveat for `audit verify`. A definite machine-id mismatch
+/// adds the caveat (closing the forwarded-unix-socket gap #146); otherwise it
+/// falls back to the env-only heuristic, so behavior is never worse than before
+/// and the heuristic's vsock/explicit-override warnings are never suppressed.
 fn resolve_daemon_socket_caveat() -> Option<String> {
     match daemon_socket_origin() {
         SocketOrigin::Remote(caveat) => Some(caveat),
-        SocketOrigin::Local => None,
         SocketOrigin::Unknown => remote_daemon_caveat_from_env(),
     }
 }
@@ -2245,8 +2266,11 @@ mod tests {
     }
 
     #[test]
-    fn socket_origin_is_local_when_the_daemon_machine_id_matches() {
-        // Same hash -> the daemon is this machine -> suppress the caveat (#146).
+    fn socket_origin_is_unknown_when_hashes_match_because_clones_share_machine_id() {
+        // A hash match is NOT proof of "this machine": cloned VM/container images
+        // routinely share one /etc/machine-id, so equal hashes can be two distinct
+        // clones. A match must therefore fall through to the heuristic (Unknown),
+        // never suppress a warning it would otherwise raise (#146 review).
         assert_eq!(
             socket_origin_from(
                 Some("same-hash"),
@@ -2255,14 +2279,14 @@ mod tests {
                 "SYSKNIFE_LISTEN_URI",
                 &unix_target(),
             ),
-            SocketOrigin::Local
+            SocketOrigin::Unknown
         );
     }
 
     #[test]
     fn socket_origin_is_remote_when_a_forwarded_unix_socket_is_another_machine() {
         // The exact gap #146 closes: a unix socket via SYSKNIFE_LISTEN_URI whose
-        // daemon reports a different machine-id must now warn.
+        // daemon reports a DIFFERENT machine-id (the reliable direction) must warn.
         match socket_origin_from(
             Some("local-hash"),
             Some("remote-hash"),
@@ -2301,6 +2325,95 @@ mod tests {
                 &unix_target()
             ),
             SocketOrigin::Unknown
+        );
+    }
+
+    /// A one-shot mock daemon on a unix socket that answers `query_state` with a
+    /// `state_response` reporting the given machine-id hash, so the whole
+    /// query → compare → verdict chain can be driven end-to-end.
+    fn spawn_mock_daemon(
+        sock: std::path::PathBuf,
+        reported_hash: &str,
+    ) -> std::thread::JoinHandle<()> {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+        let listener = UnixListener::bind(&sock).expect("bind mock daemon");
+        let reported = reported_hash.to_string();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut lenb = [0u8; 4];
+                if stream.read_exact(&mut lenb).is_err() {
+                    return;
+                }
+                let len = u32::from_le_bytes(lenb) as usize;
+                let mut body = vec![0u8; len];
+                let _ = stream.read_exact(&mut body);
+                let resp = serde_json::json!({
+                    "type": "state_response",
+                    "request_id": "cli-machine-id",
+                    "state": {
+                        "host_name": "other", "deployment": "", "services": [], "flatpaks": [],
+                        "toolboxes": [], "layered_packages": [], "containers": [], "users": [],
+                        "machine_id_hash": reported
+                    }
+                });
+                let bytes = serde_json::to_vec(&resp).unwrap();
+                let _ = stream.write_all(&(bytes.len() as u32).to_le_bytes());
+                let _ = stream.write_all(&bytes);
+            }
+        })
+    }
+
+    // A hash that cannot equal this host's real /etc/machine-id hash.
+    const NOT_THIS_HOST: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    #[test]
+    fn daemon_socket_origin_warns_end_to_end_when_the_forwarded_daemon_is_another_machine() {
+        let _g = ENV_LOCK.lock().unwrap();
+        // The local side reads the real /etc/machine-id; skip where it is absent.
+        if sysknife_daemon::state_collector::machine_id_hash().is_none() {
+            return;
+        }
+        let sock = std::env::temp_dir().join(format!("sk146-wire-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&sock);
+        let server = spawn_mock_daemon(sock.clone(), NOT_THIS_HOST);
+        std::env::remove_var("SYSKNIFE_SOCKET");
+        std::env::set_var("SYSKNIFE_LISTEN_URI", format!("unix://{}", sock.display()));
+        let origin = daemon_socket_origin();
+        std::env::remove_var("SYSKNIFE_LISTEN_URI");
+        let _ = server.join();
+        let _ = std::fs::remove_file(&sock);
+        assert!(
+            matches!(origin, SocketOrigin::Remote(_)),
+            "a forwarded daemon reporting a different machine-id must warn, got {origin:?}"
+        );
+    }
+
+    #[test]
+    fn daemon_socket_origin_skips_the_query_for_an_explicit_socket_env() {
+        let _g = ENV_LOCK.lock().unwrap();
+        if sysknife_daemon::state_collector::machine_id_hash().is_none() {
+            return;
+        }
+        // Same mismatching mock daemon, but reached via SYSKNIFE_SOCKET: the
+        // heuristic already warns for that, so the query is skipped and the
+        // verdict is Unknown (NOT Remote), proving no round-trip is attempted.
+        let sock = std::env::temp_dir().join(format!("sk146-skip-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&sock);
+        let server = spawn_mock_daemon(sock.clone(), NOT_THIS_HOST);
+        std::env::set_var("SYSKNIFE_SOCKET", format!("unix://{}", sock.display()));
+        std::env::remove_var("SYSKNIFE_LISTEN_URI");
+        let origin = daemon_socket_origin();
+        std::env::remove_var("SYSKNIFE_SOCKET");
+        // The query was skipped, so nothing connected; unblock the mock's accept()
+        // with a throwaway connection so its thread exits, then clean up.
+        let _ = std::os::unix::net::UnixStream::connect(&sock);
+        let _ = server.join();
+        let _ = std::fs::remove_file(&sock);
+        assert_eq!(
+            origin,
+            SocketOrigin::Unknown,
+            "SYSKNIFE_SOCKET must skip the machine-id query and fall back to the heuristic"
         );
     }
 

@@ -480,6 +480,10 @@ impl DaemonClient {
         resp.get("state")?
             .get("machine_id_hash")?
             .as_str()
+            // Treat an empty string the same as absent, symmetric with the daemon
+            // side (which never emits Some("")), so a stray "" can never be read
+            // as a machine-id that matches anything.
+            .filter(|s| !s.is_empty())
             .map(String::from)
     }
 
@@ -1032,6 +1036,22 @@ mod tests {
     fn machine_id_hash_is_none_when_the_daemon_is_unreachable() {
         let client = DaemonClient::new(PathBuf::from("/tmp/sysknife-no-such-socket-mid146.sock"));
         assert_eq!(client.machine_id_hash(), None);
+    }
+
+    #[test]
+    fn machine_id_hash_treats_an_empty_string_as_absent() {
+        // A stray "" must never be read as a machine-id that could match anything.
+        let socket_path = temp_socket_path();
+        let handle = serve_sync(&socket_path, |mut stream| {
+            let raw = read_framed(&mut stream).unwrap();
+            let req: Value = serde_json::from_slice(&raw).unwrap();
+            let resp = state_response_with(Some(""), &req["request_id"]);
+            write_framed(&mut stream, &serde_json::to_vec(&resp).unwrap()).unwrap();
+        });
+        let got = DaemonClient::new(socket_path.clone()).machine_id_hash();
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+        assert_eq!(got, None);
     }
 
     // -----------------------------------------------------------------------

@@ -28,8 +28,12 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   `Intact` for a chain that has nothing to do with those actions. The env-only heuristic
   could not tell a forwarded unix socket from a local one. The daemon now reports a salted
   hash of its `/etc/machine-id` (never the raw id), and `audit verify` compares it to this
-  host's: a mismatch prints the wrong-machine caveat, a match stays quiet, and if the daemon
-  can't be reached it falls back to the previous heuristic (never worse than before).
+  host's. Only a **mismatch** is treated as decisive (different machine-id ⇒ different
+  machine ⇒ print the caveat); a **match** is inconclusive — cloned VM/container images share
+  one `/etc/machine-id` — so it falls back to the existing heuristic and never suppresses a
+  warning the heuristic would raise (vsock and explicit `SYSKNIFE_SOCKET` still always warn).
+  The query runs only for the unix-`SYSKNIFE_LISTEN_URI` case it can help, so `audit verify`
+  stays offline otherwise.
 
 - **`AptAutoremove` binds the deletion set the operator approved.**
   ([#151](https://github.com/lacs-project/sysknife/issues/151)) The approval covered only
