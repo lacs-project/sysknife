@@ -12,6 +12,15 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Security
 
+- **A stalled connection can no longer pin megabytes of memory with a false length header.**
+  ([#150](https://github.com/lacs-project/sysknife/issues/150)) `FramedStream::recv`
+  pre-allocated the full claimed body (`vec![0u8; len]`, up to 4 MiB) before reading a
+  single byte, so a peer that announced a large body and withheld it held that memory for
+  its whole pre-auth deadline — N such connections pinned N × 4 MiB. `recv` now streams the
+  body in bounded chunks, growing the buffer only as bytes actually arrive, so a withheld
+  body costs nothing. The pre-auth window itself remains bounded by the existing
+  `VSOCK_AUTH_FRAME_TIMEOUT_SECS`.
+
 - **`AptAutoremove` binds the deletion set the operator approved.**
   ([#151](https://github.com/lacs-project/sysknife/issues/151)) The approval covered only
   the action name and empty params, but `apt-get autoremove -y` resolves the deletion set

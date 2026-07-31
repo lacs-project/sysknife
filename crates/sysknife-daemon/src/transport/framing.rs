@@ -51,16 +51,130 @@ impl<S: AsyncReadExt + AsyncWriteExt + Unpin> FramedStream<S> {
         if len > MAX_MESSAGE_BYTES {
             return Err(FramingError::MessageTooLarge(len));
         }
-        let mut body = vec![0u8; len];
-        self.inner.read_exact(&mut body).await?;
+        // Grow the buffer as bytes actually arrive rather than pre-allocating the
+        // full claimed length. A peer that announces a large body but withholds
+        // it (partial-frame DoS, #150) then pins only what it has actually sent,
+        // not the whole claim — so N stalled connections cannot hold
+        // N * MAX_MESSAGE_BYTES of memory while their pre-auth deadline runs.
+        // The initial reservation is bounded, and reads are chunked.
+        let mut body = Vec::with_capacity(len.min(INITIAL_BODY_CAPACITY));
+        let mut chunk = [0u8; READ_CHUNK_BYTES];
+        while body.len() < len {
+            let want = (len - body.len()).min(chunk.len());
+            let n = self.inner.read(&mut chunk[..want]).await?;
+            if n == 0 {
+                return Err(FramingError::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "connection closed before the full frame body arrived",
+                )));
+            }
+            body.extend_from_slice(&chunk[..n]);
+        }
         Ok(body)
     }
 }
 
+/// Upper bound on the buffer reserved up front for a frame body, regardless of
+/// the claimed length. A larger body grows the buffer incrementally as data
+/// arrives, so a withheld body never costs more than this.
+const INITIAL_BODY_CAPACITY: usize = 64 * 1024;
+
+/// Size of the stack read buffer used to stream a frame body.
+const READ_CHUNK_BYTES: usize = 64 * 1024;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::duplex;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::task::{Context, Poll};
+    use tokio::io::{duplex, AsyncWriteExt, ReadBuf};
+
+    /// Wraps a reader and records the largest buffer size `recv` ever asks it to
+    /// fill in a single `poll_read`. This is what distinguishes the streaming
+    /// reader from the old `vec![0u8; len]; read_exact(&mut body)`: the old code
+    /// handed the whole claimed body to one `poll_read` (up to 4 MiB), the new
+    /// code never asks for more than `READ_CHUNK_BYTES` at a time.
+    struct RecordingReader<R> {
+        inner: R,
+        max_requested: Arc<AtomicUsize>,
+    }
+    impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for RecordingReader<R> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            self.max_requested
+                .fetch_max(buf.remaining(), Ordering::SeqCst);
+            Pin::new(&mut self.inner).poll_read(cx, buf)
+        }
+    }
+    // FramedStream's recv/send impl block requires AsyncWrite too; this half is
+    // only ever read in the test, so the writes just pass through.
+    impl<W: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for RecordingReader<W> {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.inner).poll_write(cx, buf)
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
+    #[tokio::test]
+    async fn recv_never_requests_more_than_one_chunk_per_read() {
+        // A body several chunks long, fully delivered. The streaming reader must
+        // never ask the underlying stream to fill more than READ_CHUNK_BYTES at
+        // once — that bound is what stops a large claimed length from pinning
+        // memory. Mutation guard: the old vec![0u8; len]; read_exact asked for the
+        // whole body in one poll_read, so this fails against it and passes only
+        // for the chunked reader.
+        let payload = vec![0x5Au8; 5 * READ_CHUNK_BYTES + 7];
+        let (mut a, b) = duplex(MAX_MESSAGE_BYTES + 8);
+        let max_requested = Arc::new(AtomicUsize::new(0));
+        let mut recvr = FramedStream::new(RecordingReader {
+            inner: b,
+            max_requested: Arc::clone(&max_requested),
+        });
+        let p2 = payload.clone();
+        let writer = tokio::spawn(async move {
+            a.write_all(&(p2.len() as u32).to_le_bytes()).await.unwrap();
+            a.write_all(&p2).await.unwrap();
+        });
+        let got = recvr.recv().await.expect("recv should reassemble the body");
+        writer.await.unwrap();
+        assert_eq!(got, payload);
+        let peak = max_requested.load(Ordering::SeqCst);
+        assert!(
+            peak <= READ_CHUNK_BYTES,
+            "recv asked to fill {peak} bytes in one read; must be <= {READ_CHUNK_BYTES}"
+        );
+    }
+
+    #[tokio::test]
+    async fn round_trip_a_full_max_size_body() {
+        // The largest legitimate message: exactly MAX_MESSAGE_BYTES (64 full
+        // chunks). Exercises the whole chunk loop and guards the len-boundary
+        // arithmetic on a real transfer, not just a claim.
+        let data = vec![0x9Cu8; MAX_MESSAGE_BYTES];
+        assert_eq!(round_trip(&data).await, data);
+    }
+
+    #[tokio::test]
+    async fn round_trip_a_body_of_exactly_one_chunk() {
+        // len == READ_CHUNK_BYTES: the last (only) iteration fills a whole chunk,
+        // the natural place for a `<=` vs `<` slip in the loop to surface.
+        let data = vec![0x3Fu8; READ_CHUNK_BYTES];
+        assert_eq!(round_trip(&data).await, data);
+    }
 
     /// Send `data` from one half of a duplex pair, receive from the other.
     async fn round_trip(data: &[u8]) -> Vec<u8> {
@@ -97,6 +211,50 @@ mod tests {
     async fn round_trip_json_payload() {
         let msg = br#"{"type":"preview","action_name":"GetSystemState"}"#;
         assert_eq!(round_trip(msg).await, msg);
+    }
+
+    #[tokio::test]
+    async fn a_body_arriving_in_many_small_chunks_is_reassembled() {
+        // Payload larger than one read chunk, delivered through a small duplex
+        // buffer so recv must loop over several reads and stitch them together.
+        let payload = vec![0xABu8; 3 * READ_CHUNK_BYTES + 123];
+        let (mut a, b) = duplex(4096);
+        let mut recvr = FramedStream::new(b);
+        let p2 = payload.clone();
+        let writer = tokio::spawn(async move {
+            a.write_all(&(p2.len() as u32).to_le_bytes()).await.unwrap();
+            a.write_all(&p2).await.unwrap();
+        });
+        let got = recvr.recv().await.expect("recv should reassemble the body");
+        writer.await.unwrap();
+        assert_eq!(got, payload);
+    }
+
+    #[tokio::test]
+    async fn a_withheld_body_after_a_large_length_claim_errors_promptly() {
+        // Announce the maximum body size but send only a few bytes, then close.
+        // The reader must error out on EOF rather than hang waiting for the
+        // withheld body or return a short body as if complete. (The bounded-memory
+        // property is proven separately by recv_never_requests_more_than_one_chunk_per_read;
+        // this test only guards the promptness/EOF behavior.)
+        let (mut a, b) = duplex(1024);
+        let mut recvr = FramedStream::new(b);
+        let writer = tokio::spawn(async move {
+            a.write_all(&(MAX_MESSAGE_BYTES as u32).to_le_bytes())
+                .await
+                .unwrap();
+            a.write_all(b"partial").await.unwrap();
+            drop(a); // close -> EOF before the claimed body arrives
+        });
+        let err = recvr
+            .recv()
+            .await
+            .expect_err("a truncated body must error, not hang or succeed");
+        writer.await.unwrap();
+        match err {
+            FramingError::Io(e) => assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof),
+            other => panic!("expected UnexpectedEof, got {other}"),
+        }
     }
 
     #[tokio::test]
