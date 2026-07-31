@@ -43,12 +43,7 @@ pub fn hash_machine_id(machine_id: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"sysknife-machine-id-v1\0");
     hasher.update(machine_id.as_bytes());
-    let bytes = hasher.finalize();
-    bytes.iter().fold(String::with_capacity(64), |mut s, b| {
-        use std::fmt::Write;
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    hex::encode(hasher.finalize())
 }
 
 #[derive(Debug, thiserror::Error)]
