@@ -270,6 +270,68 @@ fn signal_group(pgid: i32, signal: i32) -> Result<(), io::Error> {
 /// window for a package manager to unwind, not a second timeout.
 const GROUP_TERM_GRACE: Duration = Duration::from_secs(5);
 
+/// Whether this action's real work is an `rpm-ostree` transaction. Such work
+/// runs inside `rpm-ostreed`'s own cgroup (rpm-ostree is a thin D-Bus client),
+/// not this process group, so a group signal cannot reach it — it must be
+/// cancelled with `rpm-ostree cancel` instead (#142). `program` is usually
+/// `sudo`, so the real command is found in the arguments.
+fn is_rpm_ostree_action(program: &str, args: &[String]) -> bool {
+    let is_ostree = |s: &str| s == "rpm-ostree" || s.ends_with("/rpm-ostree");
+    is_ostree(program) || args.iter().any(|a| is_ostree(a))
+}
+
+/// The argv for a privileged, non-interactive signal to a whole process group:
+/// `sudo -n /usr/bin/kill -s <SIGNAL> -- -<pgid>`. Run as root, it reaches the
+/// root children a `sudo` action forked that the unprivileged daemon cannot
+/// signal itself. `-n` never prompts (the sysknife sudoers entry is NOPASSWD),
+/// `--` ends options so the negative pgid is unambiguously a group, not a flag.
+fn root_group_kill_argv(signal: &str, pgid: i32) -> Vec<String> {
+    vec![
+        "-n".to_string(),
+        "/usr/bin/kill".to_string(),
+        "-s".to_string(),
+        signal.to_string(),
+        "--".to_string(),
+        format!("-{pgid}"),
+    ]
+}
+
+/// Run a bounded, output-discarding `sudo` command for the privileged reaper.
+/// Best-effort: the caller re-probes the group to decide the outcome, so a
+/// failure here (no sudoers grant, sudo missing) just means the escalation did
+/// not help and the group is reported not-stopped.
+async fn run_sudo(args: Vec<String>) {
+    let fut = tokio::process::Command::new("sudo")
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = tokio::time::timeout(REAP_WAIT_CAP, fut).await;
+}
+
+/// Last-resort privileged reap for a group the daemon's own signals could not
+/// stop (its members run as root). Cancels an `rpm-ostree` transaction, or root
+/// TERM→KILLs the process group. This is the *termination* half of #140's
+/// detect-and-veto, so `ActionNotStopped` becomes a genuine last resort rather
+/// than the expected path for every sudo action.
+async fn privileged_reap(pgid: i32, program: &str, args: &[String]) {
+    if is_rpm_ostree_action(program, args) {
+        run_sudo(vec![
+            "-n".to_string(),
+            "/usr/bin/rpm-ostree".to_string(),
+            "cancel".to_string(),
+        ])
+        .await;
+        return;
+    }
+    run_sudo(root_group_kill_argv("TERM", pgid)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    if !probe_group(pgid).is_gone() {
+        run_sudo(root_group_kill_argv("KILL", pgid)).await;
+    }
+}
+
 /// Upper bound on any single `child.wait()` in the timeout path.
 ///
 /// The direct child of a `sudo` action runs as root and this daemon cannot
@@ -287,16 +349,20 @@ const REAP_WAIT_CAP: Duration = Duration::from_secs(2);
 /// pid alone leaves the privileged work running (issue #140). SIGTERM first so a
 /// package manager can unwind, then SIGKILL.
 ///
-/// The hard limit is what this can promise. An unprivileged daemon cannot kill a
-/// process running as root, which every `sudo` action's real work does, so for
-/// those the group persists as [`GroupState::AliveUnreachable`] no matter what
-/// is sent. This function does not pretend otherwise: when the group is not
-/// confirmed gone it returns [`ExecutorError::ActionNotStopped`], and the
-/// dispatcher then refuses the automatic rollback rather than starting a second
-/// privileged transaction over the first. Forcibly killing a root child needs a
-/// privileged reaper (a systemd scope, a sudoers-authorised kill); that is
-/// follow-up work, tracked in issue #142.
-async fn kill_and_reap(child: &mut tokio::process::Child, program: &str) -> ExecutorError {
+/// An unprivileged daemon cannot signal a process running as root, which every
+/// `sudo` action's real work does. When the group survives the daemon's own
+/// signals it therefore escalates to a privileged reaper ([`privileged_reap`]):
+/// a root kill of the group via the sudoers-authorised `/usr/bin/kill`, or an
+/// `rpm-ostree cancel` for a transaction that lives in another cgroup (#142).
+/// Only when even that cannot confirm the group gone does it return
+/// [`ExecutorError::ActionNotStopped`] — now a genuine last resort — and the
+/// dispatcher refuses the automatic rollback rather than starting a second
+/// privileged transaction over the first.
+async fn kill_and_reap(
+    child: &mut tokio::process::Child,
+    program: &str,
+    args: &[String],
+) -> ExecutorError {
     let secs = action_timeout().as_secs();
     let Some(pgid) = child.id().map(|pid| pid as i32) else {
         // Already reaped: the child exited between the deadline and here, so the
@@ -328,6 +394,20 @@ async fn kill_and_reap(child: &mut tokio::process::Child, program: &str) -> Exec
         if let Err(err) = signal_group(pgid, libc::SIGKILL) {
             eprintln!("[sysknife-daemon] SIGKILL to process group {pgid} failed: {err}");
         }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let _ = tokio::time::timeout(REAP_WAIT_CAP, child.wait()).await;
+    }
+
+    // The group survived the daemon's own signals: its members run as root (a
+    // `sudo` action's privileged child), which an unprivileged daemon cannot
+    // signal. Escalate to a privileged reaper — a root kill of the group, or an
+    // `rpm-ostree cancel` for a transaction that lives in another cgroup (#142).
+    if !probe_group(pgid).is_gone() {
+        eprintln!(
+            "[sysknife-daemon] {program} process group {pgid} survived the daemon's signals; \
+             escalating to a privileged reap"
+        );
+        privileged_reap(pgid, program, args).await;
         tokio::time::sleep(Duration::from_millis(200)).await;
         let _ = tokio::time::timeout(REAP_WAIT_CAP, child.wait()).await;
     }
@@ -403,7 +483,7 @@ async fn execute_command_with_progress(
         // emits one progress line an hour must still be cut off.
         let next = match tokio::time::timeout_at(deadline, lines.next_line()).await {
             Ok(result) => result.map_err(ExecutorError::Io)?,
-            Err(_) => return Err(kill_and_reap(&mut child, program).await),
+            Err(_) => return Err(kill_and_reap(&mut child, program, args).await),
         };
         let Some(line) = next else { break };
         if !line.is_empty() {
@@ -415,7 +495,7 @@ async fn execute_command_with_progress(
 
     let exit_status = match tokio::time::timeout_at(deadline, child.wait()).await {
         Ok(status) => status.map_err(ExecutorError::Io)?,
-        Err(_) => return Err(kill_and_reap(&mut child, program).await),
+        Err(_) => return Err(kill_and_reap(&mut child, program, args).await),
     };
     let stderr_bytes = stderr_task
         .await
@@ -1719,7 +1799,7 @@ pub async fn execute_spec(spec: &ActionSpec) -> Result<ExecutionOutput, Executor
 
             let status = match tokio::time::timeout(action_timeout(), child.wait()).await {
                 Ok(status) => status?,
-                Err(_) => return Err(kill_and_reap(&mut child, program).await),
+                Err(_) => return Err(kill_and_reap(&mut child, program, args).await),
             };
             let join =
                 |e| ExecutorError::Io(io::Error::other(format!("reader task panicked: {e}")));
@@ -2461,7 +2541,7 @@ mod tests {
             .spawn()
             .expect("spawn");
         let started = tokio::time::Instant::now();
-        let err = kill_and_reap(&mut child, "sh").await;
+        let err = kill_and_reap(&mut child, "sh", &[]).await;
         let elapsed = started.elapsed();
 
         assert!(
@@ -2472,6 +2552,46 @@ mod tests {
             elapsed < Duration::from_secs(GROUP_TERM_GRACE.as_secs() + 3),
             "must return promptly, took {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn root_group_kill_argv_targets_the_whole_group_non_interactively() {
+        // sudo -n /usr/bin/kill -s KILL -- -<pgid>: non-interactive (NOPASSWD),
+        // options terminated so the negative pgid is a group, not a flag.
+        assert_eq!(
+            root_group_kill_argv("KILL", 4242),
+            vec!["-n", "/usr/bin/kill", "-s", "KILL", "--", "-4242"]
+        );
+        assert_eq!(
+            root_group_kill_argv("TERM", 7)[3..].to_vec(),
+            vec!["TERM", "--", "-7"]
+        );
+    }
+
+    #[test]
+    fn is_rpm_ostree_action_detects_the_transaction_client_behind_sudo() {
+        let sudo = |a: &[&str]| {
+            is_rpm_ostree_action("sudo", &a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        };
+        // rpm-ostree runs behind sudo, absolute or bare, and directly.
+        assert!(sudo(&["/usr/bin/rpm-ostree", "upgrade"]));
+        assert!(sudo(&[
+            "rpm-ostree",
+            "rebase",
+            "fedora:fedora/40/x86_64/silverblue"
+        ]));
+        assert!(is_rpm_ostree_action("rpm-ostree", &["status".to_string()]));
+        // Package managers whose work IS in the process group must NOT be
+        // treated as rpm-ostree (they get the group kill, not `cancel`).
+        assert!(!sudo(&[
+            "env",
+            "DEBIAN_FRONTEND=noninteractive",
+            "apt-get",
+            "install",
+            "vim"
+        ]));
+        assert!(!sudo(&["/usr/bin/kill", "-s", "KILL", "--", "-1"]));
+        assert!(!is_rpm_ostree_action("sudo", &[]));
     }
 
     /// restored at its owning layer. Proves `RealActionExecutor` forwards each

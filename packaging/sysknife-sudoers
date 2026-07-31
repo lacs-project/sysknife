@@ -51,6 +51,9 @@ sysknife ALL=(root) NOPASSWD: /usr/sbin/groupdel
 # kill is not a shell-spawner (no GTFOBins escalation); the daemon validates
 # pid >= 2 and the signal name before invoking it. (LockUserAccount /
 # UnlockUserAccount reuse the /usr/sbin/usermod grant above — no new grant.)
+# Also backs the action-timeout reaper (#142): when a sudo action's root child
+# outlives the deadline, the daemon runs `sudo -n /usr/bin/kill -s <SIG> -- -<pgid>`
+# to signal that action's own process group as root — no new grant needed.
 sysknife ALL=(root) NOPASSWD: /usr/bin/kill
 
 # Service management — start, stop, restart, reload, enable, disable, mask, unmask,
