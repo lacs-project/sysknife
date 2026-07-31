@@ -16,9 +16,13 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   ([#155](https://github.com/lacs-project/sysknife/issues/155)) `op_mount` checked the
   literal mountpoint string, then `os.makedirs(exist_ok=True)` and `mount(8)` both
   followed symlinks, so `AddMount{mountpoint: '/tmp/x'}` with `/tmp/x -> /etc` mounted
-  the share over `/etc`. A new `assert_mountpoint_safe` resolves the path with
-  `realpath` and refuses a symlinked or critical-resolving mountpoint before any
-  filesystem mutation; it also closes the `/etc/` and `//etc` denylist bypasses.
+  the share over `/etc`. `assert_mountpoint_safe` now refuses a symlinked or
+  critical-resolving mountpoint (also closing the `/etc/` and `//etc` denylist
+  bypasses), and `op_mount` materializes the mountpoint with `O_DIRECTORY|O_NOFOLLOW`
+  and mounts onto `/proc/self/fd/<fd>` so a symlink swapped in after the check cannot
+  redirect the mount (the TOCTOU class `op_addswap` also closes). `op_unmount` gained
+  the same symlink refusal so a symlinked mountpoint cannot unmount an unrelated
+  critical filesystem.
 
 ## [0.5.0] — 2026-07-31
 
