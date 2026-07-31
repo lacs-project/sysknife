@@ -17,7 +17,7 @@
 //! No daemon socket, LLM, VM, or root privileges required — all deterministic.
 
 use sysknife_daemon::actions::{ActionMechanism, ActionSpec};
-use sysknife_daemon::executor::execute_spec;
+use sysknife_daemon::executor::{execute_spec, ActionExecutor, ExecutorError, RealActionExecutor};
 use sysknife_types::RiskLevel;
 use tempfile::tempdir;
 
@@ -445,5 +445,213 @@ async fn signal_killed_child_reports_exit_code_minus_one() {
     assert_eq!(
         out.exit_code, -1,
         "a signal-terminated child must map to -1, not a normal exit code"
+    );
+}
+
+/// Killing the direct child is not the same as stopping the action, and the
+/// test above cannot tell the two apart: it asserts only that `execute_spec`
+/// returns a timeout error, which is true of a daemon that gives up waiting
+/// while the work keeps running as root.
+///
+/// This is the assertion that distinguishes them. The script starts a marker
+/// process and then blocks, so the marker is a *grandchild* of the process the
+/// daemon spawned. Every privileged SysKnife action has this shape, because the
+/// daemon runs unprivileged and elevates through `sudo`, which forks.
+///
+/// It matters beyond a leaked process: a timeout marks the job `Failed`, and
+/// `attempt_rollback_if_needed` then runs `rpm-ostree rollback` against a
+/// transaction that is still in flight. See issue #140.
+///
+/// Matching is by exact argv read from `/proc`, never a substring search over
+/// full command lines, because that also matches the test harness itself.
+/// Every process whose argv is exactly `sleep <marker>`, by exact match read
+/// from `/proc`. Never a substring search over full command lines, which would
+/// also match the test harness. A distinct marker per test lets them run
+/// concurrently under nextest.
+fn marker_pids(marker: &str) -> Vec<i32> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+            continue;
+        };
+        let argv: Vec<&[u8]> = raw.split(|b| *b == 0).filter(|s| !s.is_empty()).collect();
+        if argv == [b"sleep".as_slice(), marker.as_bytes()] {
+            found.push(pid);
+        }
+    }
+    found
+}
+
+/// SIGKILL every marker process, so a failing assertion never leaks work into
+/// the rest of the suite or the developer's machine. Returns how many there
+/// were, for the assertion to report.
+fn reap_markers(marker: &str) -> Vec<i32> {
+    let survivors = marker_pids(marker);
+    for pid in &survivors {
+        unsafe { libc::kill(*pid, libc::SIGKILL) };
+    }
+    survivors
+}
+
+/// Killing the direct child is not the same as stopping the action, and the
+/// pre-existing `..._outruns_the_action_timeout` test cannot tell them apart: it
+/// asserts only that `execute_spec` returns a timeout error, which is true of a
+/// daemon that gives up waiting while the work keeps running as root.
+///
+/// This is the assertion that distinguishes them. The script starts a marker
+/// process and then blocks, so the marker is a *grandchild* of the process the
+/// daemon spawned. Every privileged SysKnife action has this shape, because the
+/// daemon runs unprivileged and elevates through `sudo`, which forks.
+///
+/// The child here is same-uid, so the daemon can signal its group and the
+/// verdict must be the plain stopped-timeout, `ExecutorError::Io`, never
+/// `ActionNotStopped`. Asserting the variant, not a substring, is deliberate:
+/// the `ActionNotStopped` message also contains the word "timeout", so a
+/// substring check could not separate the two outcomes this PR exists to
+/// separate. See issue #140.
+#[tokio::test]
+async fn execute_spec_stops_the_work_not_just_the_direct_child() {
+    const MARKER: &str = "31499";
+    assert!(
+        marker_pids(MARKER).is_empty(),
+        "a previous run leaked the marker; the assertion below would be meaningless"
+    );
+
+    std::env::set_var("SYSKNIFE_ACTION_TIMEOUT_SECS", "1");
+    let spec = ActionSpec {
+        action_name: "TimeoutGrandchildProbe",
+        mechanism: ActionMechanism::Command {
+            program: "sh",
+            args: vec!["-c".to_string(), format!("sleep {MARKER} & wait")],
+        },
+        risk_level: RiskLevel::Low,
+        reboot_required: false,
+        rollback_available: false,
+    };
+
+    let result = execute_spec(&spec).await;
+    // Reap before asserting, so a failure cannot leak the marker.
+    let survivors = reap_markers(MARKER);
+
+    match result {
+        Err(ExecutorError::Io(e)) if e.kind() == std::io::ErrorKind::TimedOut => {}
+        other => {
+            assert!(
+                survivors.is_empty(),
+                "leaked {} marker(s) {survivors:?}",
+                survivors.len()
+            );
+            panic!("expected a stopped-timeout Io error for a same-uid child, got: {other:?}");
+        }
+    }
+    assert!(
+        survivors.is_empty(),
+        "the action outlived its own timeout: {} marker(s) {survivors:?} still running. The \
+         daemon reported failure and would now start an automatic rollback against work that \
+         never stopped.",
+        survivors.len(),
+    );
+}
+
+/// The production spawn site. Every real privileged action reaches
+/// `RealActionExecutor::execute_with_progress`, not `execute_spec` (which serves
+/// the non-Command fallback and the rollback spec). The containment above only
+/// covers `execute_spec`, so without this the `process_group(0)` on the progress
+/// path could regress while the test that names #140 stayed green.
+#[tokio::test]
+async fn execute_with_progress_stops_the_work_not_just_the_direct_child() {
+    const MARKER: &str = "31497";
+    assert!(
+        marker_pids(MARKER).is_empty(),
+        "a previous run leaked the marker; the assertion below would be meaningless"
+    );
+
+    std::env::set_var("SYSKNIFE_ACTION_TIMEOUT_SECS", "1");
+    let spec = ActionSpec {
+        action_name: "TimeoutGrandchildProbeProgress",
+        mechanism: ActionMechanism::Command {
+            program: "sh",
+            args: vec!["-c".to_string(), format!("sleep {MARKER} & wait")],
+        },
+        risk_level: RiskLevel::Low,
+        reboot_required: false,
+        rollback_available: false,
+    };
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let result = RealActionExecutor.execute_with_progress(&spec, tx).await;
+    let survivors = reap_markers(MARKER);
+
+    assert!(
+        matches!(&result, Err(ExecutorError::Io(e)) if e.kind() == std::io::ErrorKind::TimedOut),
+        "expected a stopped-timeout, got: {result:?}"
+    );
+    assert!(
+        survivors.is_empty(),
+        "the production spawn path leaked {} marker(s) {survivors:?}",
+        survivors.len(),
+    );
+}
+
+/// A child that traps and ignores SIGTERM must still be stopped, by SIGKILL
+/// after the grace, and the whole path must return in bounded time rather than
+/// hang. This is the test that pins the escalation (SIGTERM alone leaves the
+/// marker; only SIGKILL removes it) and the hang-prevention (an unbounded
+/// `wait()` on a stubborn child would run for the marker's full 8 hours).
+#[tokio::test]
+async fn a_sigterm_ignoring_child_is_escalated_to_sigkill_within_the_grace() {
+    const MARKER: &str = "31495";
+    assert!(
+        marker_pids(MARKER).is_empty(),
+        "a previous run leaked the marker; the assertion below would be meaningless"
+    );
+
+    std::env::set_var("SYSKNIFE_ACTION_TIMEOUT_SECS", "1");
+    let spec = ActionSpec {
+        action_name: "SigtermIgnoringProbe",
+        mechanism: ActionMechanism::Command {
+            program: "sh",
+            // `trap '' TERM` makes SIGTERM a no-op for the whole group, so only
+            // the SIGKILL escalation can end it.
+            args: vec![
+                "-c".to_string(),
+                format!("trap '' TERM; sleep {MARKER} & wait"),
+            ],
+        },
+        risk_level: RiskLevel::Low,
+        reboot_required: false,
+        rollback_available: false,
+    };
+
+    let started = std::time::Instant::now();
+    let result = execute_spec(&spec).await;
+    let elapsed = started.elapsed();
+    let survivors = reap_markers(MARKER);
+
+    assert!(
+        matches!(&result, Err(ExecutorError::Io(e)) if e.kind() == std::io::ErrorKind::TimedOut),
+        "the child must be stopped and reported as a plain timeout, got: {result:?}"
+    );
+    assert!(
+        survivors.is_empty(),
+        "SIGTERM was ignored and SIGKILL did not land: {} marker(s) {survivors:?} survived",
+        survivors.len(),
+    );
+    // Bounded return: the deadline (1s) plus the grace (5s) plus slack, and well
+    // under the marker's own 8-hour lifetime. This is what proves the timeout
+    // path cannot itself become the hang it exists to prevent.
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "the timeout path must return promptly, took {elapsed:?}"
     );
 }

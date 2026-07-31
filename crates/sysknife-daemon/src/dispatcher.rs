@@ -2519,6 +2519,12 @@ async fn handle_execute(
     .await;
 
     // Attempt automatic rollback if the action failed and rollback is available.
+    // A deadline that could not stop the work is the one failure that must not
+    // trigger one: the original action may still be running.
+    let action_may_still_be_running = matches!(
+        &output,
+        Err(crate::executor::ExecutorError::ActionNotStopped { .. })
+    );
     let (final_status, summary, rollback_ref) = attempt_rollback_if_needed(
         framed,
         &executor,
@@ -2527,14 +2533,29 @@ async fn handle_execute(
         &spec,
         initial_status,
         initial_summary,
+        action_may_still_be_running,
     )
     .await;
 
-    // Clear the high-risk-reboot slot now that the action has finished
-    // (success OR failure). The slot was only set when this action was
-    // itself High-risk + reboot-required; for other mutating actions the
-    // guard was read but never written, so there is nothing to clear.
-    release_exclusive_slots(state, &to_claim, &stored_hash).await;
+    // Clear the exclusion slot now that the action has finished, EXCEPT when it
+    // could not be confirmed stopped. If a privileged transaction may still be
+    // running, its resource is still in use, and releasing the slot would admit
+    // a second mutating action to race it — the exact concurrent-transaction
+    // state the rollback veto above refuses to create itself. Holding the slot
+    // makes the veto binding against the operator too, not just the daemon. The
+    // slot lives in memory, so a daemon restart clears it, which is the same
+    // "inspect the host before retrying" recovery the error already names.
+    if action_may_still_be_running {
+        if !to_claim.is_empty() {
+            eprintln!(
+                "[sysknife-daemon] holding the exclusion slot for {action_name}: the action \
+                 could not be confirmed stopped, so no other mutating action may start until \
+                 the daemon is restarted"
+            );
+        }
+    } else {
+        release_exclusive_slots(state, &to_claim, &stored_hash).await;
+    }
 
     // Update the transaction record. A failure here is an audit-trail loss —
     // log it and surface it as a warning in the job result so the client is
@@ -2580,6 +2601,14 @@ async fn handle_execute(
 ///
 /// Sends `JobProgress` frames announcing the attempt and its outcome.
 /// Send failures are logged but do not abort the rollback.
+///
+/// `action_may_still_be_running` vetoes the rollback. A failed action normally
+/// means the host is where it was, so reverting is the safe move; but a deadline
+/// that could not stop the work means the original transaction may still be
+/// live, and `rpm-ostree rollback` on top of a running upgrade puts two package
+/// transactions on one host. Doing nothing is recoverable, doing both is not.
+/// See issue #140.
+#[allow(clippy::too_many_arguments)]
 async fn attempt_rollback_if_needed(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     executor: &Arc<dyn ActionExecutor>,
@@ -2588,9 +2617,34 @@ async fn attempt_rollback_if_needed(
     spec: &crate::actions::ActionSpec,
     status: JobState,
     summary: String,
+    action_may_still_be_running: bool,
 ) -> (JobState, String, Option<String>) {
     if !matches!(status, JobState::Failed) || !spec.rollback_available {
         return (status, summary, None);
+    }
+    if action_may_still_be_running {
+        eprintln!(
+            "[sysknife-daemon] {action_name} could not be confirmed stopped; \
+             skipping automatic rollback"
+        );
+        let line = format!(
+            "{action_name} could not be confirmed stopped, so automatic rollback was \
+             skipped: rolling back over a running transaction would be worse than \
+             leaving it. Inspect the host before retrying."
+        );
+        let _ = send_response(
+            framed,
+            &DaemonResponse::JobProgress {
+                job_id: job_id.to_string(),
+                line: line.clone(),
+            },
+        )
+        .await;
+        return (
+            status,
+            format!("{summary} (automatic rollback skipped)"),
+            None,
+        );
     }
     let Some(rb_spec) = rollback_spec_for(action_name) else {
         return (status, summary, None);
@@ -2745,6 +2799,99 @@ mod tests {
     };
     use std::io;
     use tempfile::tempdir;
+
+    // ------------------------------------------------------------------
+    // Automatic rollback is vetoed when the action may still be running
+    // ------------------------------------------------------------------
+
+    /// Records whether a rollback was ever attempted, so a test can assert on
+    /// the absence of one. Counting the calls is the only way to tell "rollback
+    /// ran and failed" from "rollback never ran".
+    #[derive(Default)]
+    struct CountingRollbackExecutor {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl ActionExecutor for CountingRollbackExecutor {
+        async fn execute(
+            &self,
+            _spec: &crate::actions::ActionSpec,
+        ) -> Result<crate::executor::ExecutionOutput, crate::executor::ExecutorError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(crate::executor::ExecutionOutput {
+                stdout: "rolled back\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+            })
+        }
+    }
+
+    /// `UpdateSystem`'s spec: rollback-eligible and High risk, the exact shape
+    /// this veto exists to protect.
+    fn rollback_eligible_spec() -> crate::actions::ActionSpec {
+        let spec = crate::executor::build_action_spec("UpdateSystem", &serde_json::json!({}))
+            .expect("UpdateSystem builds without params");
+        assert!(
+            spec.rollback_available,
+            "this test is meaningless unless the action is rollback-eligible"
+        );
+        spec
+    }
+
+    async fn rollback_outcome(
+        may_still_be_running: bool,
+    ) -> (JobState, String, Option<String>, usize) {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let mut framed = FramedStream::new(a);
+        let counting = Arc::new(CountingRollbackExecutor::default());
+        let executor: Arc<dyn ActionExecutor> = counting.clone();
+        let (status, summary, rollback_ref) = attempt_rollback_if_needed(
+            &mut framed,
+            &executor,
+            "job-1",
+            "UpdateSystem",
+            &rollback_eligible_spec(),
+            JobState::Failed,
+            "UpdateSystem failed".to_string(),
+            may_still_be_running,
+        )
+        .await;
+        let calls = counting.calls.load(std::sync::atomic::Ordering::SeqCst);
+        (status, summary, rollback_ref, calls)
+    }
+
+    /// The control: an ordinary failure still rolls back, so the veto below
+    /// cannot pass by disabling rollback entirely.
+    #[tokio::test]
+    async fn an_ordinary_failure_still_rolls_back() {
+        let (status, _summary, rollback_ref, calls) = rollback_outcome(false).await;
+        assert_eq!(calls, 1, "the rollback action must have been executed");
+        assert!(matches!(status, JobState::RolledBack));
+        assert!(rollback_ref.is_some());
+    }
+
+    /// A deadline that could not stop the work must not start a second
+    /// privileged transaction on top of the first. Rolling back over a live
+    /// `rpm-ostree upgrade` is worse than leaving it alone: doing nothing is
+    /// recoverable, doing both is not. See issue #140.
+    #[tokio::test]
+    async fn an_action_that_could_not_be_stopped_is_never_rolled_back_over() {
+        let (status, summary, rollback_ref, calls) = rollback_outcome(true).await;
+        assert_eq!(
+            calls, 0,
+            "no rollback may be executed while the original action may still be running"
+        );
+        assert!(
+            matches!(status, JobState::Failed),
+            "the job stays failed rather than claiming it was rolled back"
+        );
+        assert!(rollback_ref.is_none());
+        assert!(
+            summary.contains("rollback skipped"),
+            "the operator must be told why nothing was reverted, got: {summary}"
+        );
+    }
 
     // ------------------------------------------------------------------
     // PID-reuse hardening (SO_PEERPIDFD)

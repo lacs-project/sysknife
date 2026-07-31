@@ -403,3 +403,92 @@ async fn non_rollbackable_action_does_not_trigger_rollback() {
         "rollback_ref must be null for non-rollbackable actions"
     );
 }
+
+/// Executor whose primary action reports `ActionNotStopped` — the timeout could
+/// not confirm the privileged work stopped — and which counts any rollback the
+/// dispatcher attempts.
+///
+/// This is the wiring the two dispatcher unit tests cannot reach: they call
+/// `attempt_rollback_if_needed` directly and pass the veto boolean by hand, so
+/// they prove the function body but not that `handle_execute` derives the
+/// boolean from the executor error at all. A mutant that hardcodes the boolean
+/// to `false` survives every other test; this one kills it.
+struct NotStoppedExecutor {
+    rollbacks: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl ActionExecutor for NotStoppedExecutor {
+    async fn execute(
+        &self,
+        spec: &sysknife_daemon::actions::ActionSpec,
+    ) -> Result<ExecutionOutput, ExecutorError> {
+        if spec.action_name == "RollbackDeployment" {
+            self.rollbacks
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            return Ok(ExecutionOutput {
+                stdout: "Rollback successful\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+            });
+        }
+        // The primary action: the deadline passed and the group could not be
+        // confirmed stopped. Every real privileged action reaches the executor
+        // through `execute_with_progress`, whose default forwards to this.
+        Err(ExecutorError::ActionNotStopped {
+            program: "rpm-ostree".to_string(),
+            pgid: 4242,
+            timeout_secs: 7200,
+        })
+    }
+}
+
+/// End to end through the real dispatcher: an action that could not be confirmed
+/// stopped must not be rolled back over, and the operator must be told why.
+///
+/// This is the test that proves the veto is wired, not just implemented. It
+/// drives preview -> execute and asserts the rollback executor was never called,
+/// the job stays failed, no rollback_ref is set, and a progress frame explains
+/// the skip. See issue #140.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_action_that_could_not_be_stopped_is_not_rolled_back_over_end_to_end() {
+    let dir = tempdir().unwrap();
+    let state = test_state(&dir);
+    let counting = Arc::new(NotStoppedExecutor {
+        rollbacks: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let executor: Arc<dyn ActionExecutor> = counting.clone();
+    let mut framed = spawn_handler_with_executor(state, executor).await;
+
+    let (transaction_id, receipt) = preview_update_system(&mut framed).await;
+    execute_update_system(&mut framed, &transaction_id, &receipt).await;
+    let (messages, completed) = drain_until_completed(&mut framed).await;
+
+    assert_eq!(
+        counting.rollbacks.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "no rollback may run while the original action may still be in flight"
+    );
+    let status = completed["result"]["status"].as_str().unwrap();
+    assert_eq!(
+        status, "failed",
+        "the job stays failed, not rolled_back; got: {status}"
+    );
+    assert!(
+        completed["result"]["rollback_ref"].is_null(),
+        "no rollback happened, so there is no rollback_ref"
+    );
+
+    let progress: Vec<&str> = messages
+        .iter()
+        .filter(|m| m["type"] == "job_progress")
+        .filter_map(|m| m["line"].as_str())
+        .collect();
+    assert!(
+        progress
+            .iter()
+            .any(|l| l.contains("could not be confirmed stopped")
+                && l.contains("Inspect the host")),
+        "the operator must be told the rollback was skipped and to inspect the host; got: {progress:?}"
+    );
+}
