@@ -363,6 +363,24 @@ pub fn apt_history_list() -> ActionSpec {
     }
 }
 
+/// The set of packages `apt-get -s autoremove` would remove, parsed from its
+/// simulate (`-s`) output.
+///
+/// apt prints one `Remv <package> [<version>]` line per package it would remove
+/// (the package token may carry an `:arch` suffix, which we keep verbatim). This
+/// is used to bind `AptAutoremove`'s approval to the exact set the operator saw
+/// at preview time — `apt-get autoremove -y` otherwise resolves the deletion set
+/// at run time, so the executed effect is unbound by the approval (#151).
+pub fn parse_autoremove_removals(simulate_stdout: &str) -> std::collections::BTreeSet<String> {
+    simulate_stdout
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim_start().strip_prefix("Remv ")?;
+            rest.split_whitespace().next().map(str::to_string)
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -371,6 +389,52 @@ pub fn apt_history_list() -> ActionSpec {
 mod tests {
     use super::*;
     use crate::actions::ActionMechanism;
+
+    fn removals(s: &str) -> Vec<String> {
+        parse_autoremove_removals(s).into_iter().collect()
+    }
+
+    #[test]
+    fn parse_autoremove_extracts_the_remv_package_set() {
+        let out = "Reading package lists... Done\n\
+                   Building dependency tree... Done\n\
+                   The following packages will be REMOVED:\n\
+                   \x20 linux-image-5.4.0-100 linux-modules-5.4.0-100\n\
+                   0 upgraded, 0 newly installed, 2 to remove and 0 not upgraded.\n\
+                   Remv linux-image-5.4.0-100 [5.4.0-100.113]\n\
+                   Remv linux-modules-5.4.0-100 [5.4.0-100.113]\n";
+        assert_eq!(
+            removals(out),
+            vec![
+                "linux-image-5.4.0-100".to_string(),
+                "linux-modules-5.4.0-100".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_autoremove_keeps_arch_suffix_and_ignores_non_remv_lines() {
+        let out = "Inst libkeep [1.0] (2.0 amd64)\n\
+                   Remv libfoo:amd64 [1.2-3]\n\
+                   Conf libbar [4.5]\n";
+        assert_eq!(removals(out), vec!["libfoo:amd64".to_string()]);
+    }
+
+    #[test]
+    fn parse_autoremove_on_empty_or_nothing_to_remove_is_empty() {
+        assert!(parse_autoremove_removals("").is_empty());
+        assert!(parse_autoremove_removals(
+            "Reading package lists... Done\n0 to remove and 0 not upgraded.\n"
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn parse_autoremove_deduplicates_and_sorts() {
+        // A BTreeSet gives a stable, deduplicated order regardless of apt's.
+        let out = "Remv b [1]\nRemv a [1]\nRemv b [1]\n";
+        assert_eq!(removals(out), vec!["a".to_string(), "b".to_string()]);
+    }
 
     fn extract_args(spec: &ActionSpec) -> (&'static str, Vec<&str>) {
         match &spec.mechanism {
