@@ -12,6 +12,18 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Security
 
+- **The audit store refuses a Postgres connection that could leak its credential to a network attacker.**
+  ([#149](https://github.com/lacs-project/sysknife/issues/149)) sqlx defaults to
+  `sslmode=Prefer`, which silently downgrades to plaintext if the server declines TLS.
+  `require` is no better against an active attacker: sqlx accepts any certificate under
+  `require`, so a man-in-the-middle can present a self-signed cert and read the credential.
+  Both the transaction store and the checkpoint sink now require at least `sslmode=verify-ca`
+  (authenticates the certificate chain) for a connection that crosses the network, with an
+  actionable error recommending `verify-full` (also checks the hostname). Unix-socket and
+  loopback connections are exempt (they never touch the network), so local and packaged
+  setups are unaffected. **Potentially breaking:** a remote audit/checkpoint URL below
+  `verify-ca` (including `require`) now fails at startup; add `?sslmode=verify-full` to the URL.
+
 - **`AddMount` can no longer mount an attacker share over a symlinked critical path.**
   ([#155](https://github.com/lacs-project/sysknife/issues/155)) `op_mount` checked the
   literal mountpoint string, then `os.makedirs(exist_ok=True)` and `mount(8)` both

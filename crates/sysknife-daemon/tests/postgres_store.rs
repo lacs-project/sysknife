@@ -566,3 +566,58 @@ async fn attribution_census_over_a_real_postgres_round_trip() {
     .await
     .expect("drop isolated schema");
 }
+
+fn audit_key() -> Arc<AuditKey> {
+    let key_dir = tempfile::tempdir().expect("create audit-key directory");
+    Arc::new(
+        AuditKey::load_or_generate(&key_dir.path().join("audit-key")).expect("generate audit key"),
+    )
+}
+
+/// The TLS floor (#149) refuses a remote URL that does not authenticate the
+/// server BEFORE any connection attempt, so this runs without a live database.
+/// The timeout proves no connection was attempted (db.example.com would hang).
+#[tokio::test]
+async fn connect_refuses_a_downgradeable_remote_url() {
+    let config = PostgresConfig {
+        url: "postgres://u:p@db.example.com:5432/audit".to_string(),
+        ..PostgresConfig::default()
+    };
+    let refusal = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        PostgresStore::connect(&config, audit_key()),
+    )
+    .await
+    .expect("the guard must refuse without attempting a connection");
+    let err = refusal.expect_err("a remote audit URL without TLS must be refused");
+    assert!(
+        err.to_string().contains("sslmode"),
+        "refusal should name sslmode: {err}"
+    );
+}
+
+/// A loopback + sslmode=disable URL must pass the TLS floor to the network layer
+/// (loopback never crosses the network). Nothing listens on 127.0.0.1:1, so the
+/// connection fails with a network error that does NOT name sslmode — proving the
+/// guard did not over-block. Runs without a live database.
+#[tokio::test]
+async fn connect_lets_a_loopback_url_through_the_tls_floor() {
+    let config = PostgresConfig {
+        url: "postgres://u:p@127.0.0.1:1/audit?sslmode=disable".to_string(),
+        // Short acquire_timeout so the pool stops retrying the refused connection
+        // quickly; the point is that the guard let it reach the network at all.
+        acquire_timeout: std::time::Duration::from_millis(300),
+        ..PostgresConfig::default()
+    };
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        PostgresStore::connect(&config, audit_key()),
+    )
+    .await
+    .expect("a loopback connection attempt must not hang");
+    let err = outcome.expect_err("nothing should be listening on 127.0.0.1:1");
+    assert!(
+        !err.to_string().contains("sslmode"),
+        "loopback must pass the TLS floor; got a guard refusal instead: {err}"
+    );
+}
