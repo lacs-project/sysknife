@@ -146,6 +146,48 @@ single-use, 15-minute bearer value makes timing recovery impractical. The
 daemon uses constant-time comparison when validating the signed commitment
 before issuing a receipt.
 
+### vsock transport authentication — threat model and residual risk
+
+Over a Unix socket the caller's identity is attested by the kernel
+(`SO_PEERCRED`) and cannot be forged or replayed. Over **vsock** (the daemon in
+a VM) there is no equivalent: the client authenticates with a **pre-shared
+bearer token** sent as the first frame, and possession of the token — a file,
+not an account — is the whole of the proof (`token:vsock` in the principal
+table above).
+
+This has a residual risk that cannot be fully closed at the application layer
+([#152](https://github.com/lacs-project/sysknife/issues/152)):
+
+- **The token is a replayable bearer credential over an unencrypted channel.**
+  An adjacent party that can observe one legitimate vsock connection (a
+  co-located guest that can see the traffic, a compromised hypervisor path, a
+  vsock proxy) reads the token from the first frame and can open its own
+  connection, authenticate as the configured role (`SYSKNIFE_TOKEN_ROLE`,
+  default `Dev`), and from there mint a fresh one-time approval receipt. The
+  approval-receipt and atomic-claim layers above stop *replay of a captured
+  request*, but not an attacker who holds the token and constructs their own.
+
+- **Why it is inherent.** A bearer token over a channel with no confidentiality
+  or peer authentication is, by construction, replayable by anyone who can read
+  the channel. Closing it fully requires either confidentiality + peer
+  authentication under the vsock (TLS or a WireGuard underlay), or a
+  per-connection challenge so the token is never sent in the clear (a
+  nonce/HMAC handshake, which defeats a *passive* observer but still not an
+  active man-in-the-middle). Both are larger changes tracked on #152.
+
+**Operator guidance (do this until the deeper mitigation lands):**
+
+- Treat the vsock token as a secret with the blast radius of `SYSKNIFE_TOKEN_ROLE`.
+  Prefer the lowest role that works; do not give the vsock path `admin`.
+- Run the daemon only where the vsock namespace is **isolated**: a single
+  trusted host↔guest pair on a hypervisor you control, not a multi-tenant host
+  where other guests share the vsock namespace.
+- Rotate the token file on any suspicion of exposure; the daemon reloads it.
+- For anything crossing an untrusted boundary, forward the daemon's **Unix**
+  socket over an authenticated, encrypted transport (`ssh -L`) instead of
+  exposing vsock directly — SSH gives the confidentiality and peer
+  authentication vsock does not.
+
 ---
 
 ## Deployment — User and Group Setup

@@ -12,6 +12,18 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Security
 
+- **Documented the vsock bearer-token replay risk and its threat model.**
+  ([#152](https://github.com/lacs-project/sysknife/issues/152)) The vsock pre-shared token is
+  sent in the clear as the first frame and is a replayable bearer credential: an adjacent
+  party who can observe one legitimate connection can reuse it to authenticate as
+  `SYSKNIFE_TOKEN_ROLE` and mint a fresh receipt. This is inherent to a bearer token over an
+  unencrypted channel and cannot be closed at the application layer. `SECURITY.md` (new "vsock
+  transport authentication" section) and `docs/vm-daemon-setup.md` now state the threat model,
+  the operator mitigations (isolate the vsock namespace, prefer forwarding the Unix socket over
+  `ssh -L`, lowest role, rotate the token), and the paths to fully close it (a nonce/HMAC
+  challenge, or TLS/WireGuard under vsock). A code comment marks the residual risk at the auth
+  site.
+
 - **A stalled connection can no longer pin megabytes of memory with a false length header.**
   ([#150](https://github.com/lacs-project/sysknife/issues/150)) `FramedStream::recv`
   pre-allocated the full claimed body (`vec![0u8; len]`, up to 4 MiB) before reading a

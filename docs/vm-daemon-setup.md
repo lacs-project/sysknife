@@ -252,6 +252,19 @@ cat /sys/class/vsock/local_cid   # e.g. prints "10"
 vsock connections require a pre-shared token to authenticate the host to the
 daemon. This prevents other processes on the host from connecting.
 
+> **Security note — the vsock token is a replayable bearer credential.**
+> It is sent in the clear as the first frame, so anyone who can observe a
+> legitimate vsock connection can capture and reuse it to authenticate as
+> `SYSKNIFE_TOKEN_ROLE` (see
+> [#152](https://github.com/lacs-project/sysknife/issues/152) and the "vsock
+> transport authentication" section of `SECURITY.md`). Run the daemon only where
+> the vsock namespace is isolated (a single trusted host↔guest pair on a
+> hypervisor you control), give the vsock path the **lowest** role that works
+> (not `admin`), rotate the token on any suspicion of exposure, and for anything
+> crossing an untrusted boundary forward the daemon's **Unix** socket over
+> `ssh -L` instead — SSH gives the confidentiality and peer authentication vsock
+> does not.
+
 The token file holds **only the trimmed token itself** — no `role:` prefix.
 The role granted to a token-authenticated connection comes from a separate
 env var, `SYSKNIFE_TOKEN_ROLE` (default `Dev` if unset), read by the daemon
