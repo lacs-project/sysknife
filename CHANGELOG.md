@@ -21,6 +21,16 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   body costs nothing. The pre-auth window itself remains bounded by the existing
   `VSOCK_AUTH_FRAME_TIMEOUT_SECS`.
 
+- **`audit verify` warns when the daemon you administered is a different machine, even over a forwarded unix socket.**
+  ([#146](https://github.com/lacs-project/sysknife/issues/146)) Completes the partial fix in
+  0.5.0. Verification reads a local store, so an operator who tunnels a unix socket to another
+  host, acts there, then runs `audit verify` reads their own machine's chain and sees
+  `Intact` for a chain that has nothing to do with those actions. The env-only heuristic
+  could not tell a forwarded unix socket from a local one. The daemon now reports a salted
+  hash of its `/etc/machine-id` (never the raw id), and `audit verify` compares it to this
+  host's: a mismatch prints the wrong-machine caveat, a match stays quiet, and if the daemon
+  can't be reached it falls back to the previous heuristic (never worse than before).
+
 - **`AptAutoremove` binds the deletion set the operator approved.**
   ([#151](https://github.com/lacs-project/sysknife/issues/151)) The approval covered only
   the action name and empty params, but `apt-get autoremove -y` resolves the deletion set

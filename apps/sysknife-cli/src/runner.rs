@@ -167,6 +167,77 @@ fn remote_daemon_caveat(
     ))
 }
 
+/// Whether the daemon the client is configured to reach is this machine or a
+/// different one — the question the env heuristic cannot answer for a forwarded
+/// unix socket (#146).
+#[derive(Debug, PartialEq, Eq)]
+enum SocketOrigin {
+    /// A different machine; carry this caveat.
+    Remote(String),
+    /// Definitively this machine; suppress the caveat.
+    Local,
+    /// Could not determine (no socket configured, daemon unreachable, an older
+    /// daemon without the field, or /etc/machine-id unreadable). Fall back to the
+    /// env heuristic.
+    Unknown,
+}
+
+/// The configured daemon socket: `SYSKNIFE_SOCKET` (an explicit override) wins,
+/// else `config.toml`/unit-provided `SYSKNIFE_LISTEN_URI`. Returns the raw value,
+/// which env var it came from, and the parsed target.
+fn configured_socket_target() -> Option<(String, &'static str, crate::client::SocketTarget)> {
+    for source in ["SYSKNIFE_SOCKET", "SYSKNIFE_LISTEN_URI"] {
+        if let Ok(raw) = std::env::var(source) {
+            if let Ok(target) = crate::client::SocketTarget::try_from_str(&raw) {
+                return Some((raw, source, target));
+            }
+        }
+    }
+    None
+}
+
+/// Pure decision: compare the daemon's reported machine-id hash to the local one.
+/// Split from the I/O so the verdict logic is deterministically testable.
+fn socket_origin_from(
+    local_hash: Option<&str>,
+    daemon_hash: Option<&str>,
+    raw: &str,
+    source: &str,
+    target: &crate::client::SocketTarget,
+) -> SocketOrigin {
+    match (local_hash, daemon_hash) {
+        (Some(l), Some(d)) if l == d => SocketOrigin::Local,
+        (Some(_), Some(_)) => match remote_daemon_caveat(Some((raw, source)), target) {
+            Some(caveat) => SocketOrigin::Remote(caveat),
+            None => SocketOrigin::Unknown,
+        },
+        _ => SocketOrigin::Unknown,
+    }
+}
+
+/// Ask the configured daemon for its machine-id hash and compare it to this
+/// host's. Definitive when the daemon answers; otherwise `Unknown`.
+fn daemon_socket_origin() -> SocketOrigin {
+    let Some((raw, source, target)) = configured_socket_target() else {
+        return SocketOrigin::Unknown;
+    };
+    let local = sysknife_daemon::state_collector::machine_id_hash();
+    let daemon = crate::client::DaemonClient::new(target.clone()).machine_id_hash();
+    socket_origin_from(local.as_deref(), daemon.as_deref(), &raw, source, &target)
+}
+
+/// The wrong-machine caveat for `audit verify`. Prefers the definitive
+/// machine-id comparison (which closes the forwarded-unix-socket gap #146); when
+/// that cannot run, falls back to the env-only heuristic so behavior is never
+/// worse than before.
+fn resolve_daemon_socket_caveat() -> Option<String> {
+    match daemon_socket_origin() {
+        SocketOrigin::Remote(caveat) => Some(caveat),
+        SocketOrigin::Local => None,
+        SocketOrigin::Unknown => remote_daemon_caveat_from_env(),
+    }
+}
+
 /// The caveat that belongs next to a verification verdict when no independent
 /// checkpoint anchor is configured.
 ///
@@ -1100,7 +1171,7 @@ fn emit_verification(
             } else {
                 json!({"configured": false, "caveat": anchor_caveat(false)})
             },
-            "daemon_socket_caveat": remote_daemon_caveat_from_env(),
+            "daemon_socket_caveat": resolve_daemon_socket_caveat(),
             // Null rather than zero when no census was taken. A machine reader
             // that alerts on low attribution must be able to tell "no rows were
             // read" from "no row named an account"; a zero for both is the
@@ -1170,7 +1241,7 @@ fn emit_verification(
         };
         emit_attribution(log, &census, standing);
     }
-    if let Some(caveat) = remote_daemon_caveat_from_env() {
+    if let Some(caveat) = resolve_daemon_socket_caveat() {
         log.println(&caveat);
     }
     if let Some(caveat) = anchor_caveat(anchor_configured()) {
@@ -2166,6 +2237,70 @@ mod tests {
         assert!(
             !caveat.contains("sysknife-other.sock"),
             "and must not name the socket it did not dial, got: {caveat}"
+        );
+    }
+
+    fn unix_target() -> crate::client::SocketTarget {
+        crate::client::SocketTarget::Unix("/run/sysknife/daemon.sock".into())
+    }
+
+    #[test]
+    fn socket_origin_is_local_when_the_daemon_machine_id_matches() {
+        // Same hash -> the daemon is this machine -> suppress the caveat (#146).
+        assert_eq!(
+            socket_origin_from(
+                Some("same-hash"),
+                Some("same-hash"),
+                "unix:///run/sysknife/daemon.sock",
+                "SYSKNIFE_LISTEN_URI",
+                &unix_target(),
+            ),
+            SocketOrigin::Local
+        );
+    }
+
+    #[test]
+    fn socket_origin_is_remote_when_a_forwarded_unix_socket_is_another_machine() {
+        // The exact gap #146 closes: a unix socket via SYSKNIFE_LISTEN_URI whose
+        // daemon reports a different machine-id must now warn.
+        match socket_origin_from(
+            Some("local-hash"),
+            Some("remote-hash"),
+            "unix:///run/sysknife/daemon.sock",
+            "SYSKNIFE_LISTEN_URI",
+            &unix_target(),
+        ) {
+            SocketOrigin::Remote(caveat) => {
+                assert!(caveat.contains("SYSKNIFE_LISTEN_URI"), "{caveat}");
+                assert!(caveat.contains("forwarded"), "{caveat}");
+            }
+            other => panic!("a forwarded unix socket on another machine must warn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn socket_origin_is_unknown_when_the_daemon_or_local_id_is_missing() {
+        // Daemon unreachable / older daemon without the field -> fall back.
+        assert_eq!(
+            socket_origin_from(
+                Some("local"),
+                None,
+                "unix:///x",
+                "SYSKNIFE_LISTEN_URI",
+                &unix_target()
+            ),
+            SocketOrigin::Unknown
+        );
+        // Local /etc/machine-id unreadable -> cannot decide -> fall back.
+        assert_eq!(
+            socket_origin_from(
+                None,
+                Some("daemon"),
+                "unix:///x",
+                "SYSKNIFE_LISTEN_URI",
+                &unix_target()
+            ),
+            SocketOrigin::Unknown
         );
     }
 

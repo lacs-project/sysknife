@@ -15,6 +15,40 @@ pub struct CollectedState {
     pub layered_packages: Vec<String>,
     pub containers: Vec<String>,
     pub users: Vec<String>,
+    /// A stable per-machine identity a client can compare against its own, so
+    /// `audit verify` can tell whether the daemon it talked to is this machine or
+    /// a forwarded/remote one (#146). It is a salted hash of `/etc/machine-id`,
+    /// never the raw id (systemd treats the raw machine-id as confidential and
+    /// warns against exposing it). `None` when `/etc/machine-id` is unreadable.
+    #[serde(default)]
+    pub machine_id_hash: Option<String>,
+}
+
+/// Domain-separated hash of the local `/etc/machine-id`, or `None` if it cannot
+/// be read. Both the daemon (here) and the client compute this the same way, so
+/// equal hashes mean the same machine without either side revealing the raw id.
+pub fn machine_id_hash() -> Option<String> {
+    let raw = std::fs::read_to_string("/etc/machine-id").ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(hash_machine_id(trimmed))
+}
+
+/// The exact hashing both sides must agree on. Split out so it can be tested
+/// deterministically without depending on the host's `/etc/machine-id`.
+pub fn hash_machine_id(machine_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"sysknife-machine-id-v1\0");
+    hasher.update(machine_id.as_bytes());
+    let bytes = hasher.finalize();
+    bytes.iter().fold(String::with_capacity(64), |mut s, b| {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+        s
+    })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -148,6 +182,7 @@ pub fn collect_state(runner: &dyn CommandRunner) -> Result<CollectedState, Colle
         layered_packages,
         containers,
         users,
+        machine_id_hash: machine_id_hash(),
     })
 }
 
@@ -476,11 +511,24 @@ mod tests {
             layered_packages: vec!["vim".to_string()],
             containers: vec!["dev-box".to_string()],
             users: vec!["alice".to_string()],
+            machine_id_hash: Some("deadbeef".to_string()),
         };
 
         let json = serde_json::to_string(&state).unwrap();
         let restored: CollectedState = serde_json::from_str(&json).unwrap();
         assert_eq!(state, restored);
+    }
+
+    #[test]
+    fn machine_id_hash_is_stable_domain_separated_and_hides_the_raw_id() {
+        // Deterministic and dependent on the input.
+        assert_eq!(hash_machine_id("abc"), hash_machine_id("abc"));
+        assert_ne!(hash_machine_id("abc"), hash_machine_id("abd"));
+        // 64 hex chars (sha256) and never the raw id.
+        let h = hash_machine_id("0123456789abcdef0123456789abcdef");
+        assert_eq!(h.len(), 64);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(!h.contains("0123456789abcdef"));
     }
 
     #[test]
