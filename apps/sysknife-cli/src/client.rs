@@ -463,6 +463,30 @@ impl DaemonClient {
         }
     }
 
+    /// Best-effort query of the daemon's machine-id hash (#146), used only to
+    /// decide the `audit verify` wrong-machine caveat. Any failure — no daemon
+    /// reachable, a timeout, or an older daemon that does not report the field —
+    /// yields `None`, and the caller falls back to the env-based heuristic.
+    pub fn machine_id_hash(&self) -> Option<String> {
+        let mut stream = self.connect_sync().ok()?;
+        let req = serde_json::to_vec(&serde_json::json!({
+            "type": "query_state",
+            "request_id": "cli-machine-id"
+        }))
+        .ok()?;
+        stream.write_frame(&req).ok()?;
+        let raw = stream.read_frame().ok()?;
+        let resp: Value = serde_json::from_slice(&raw).ok()?;
+        resp.get("state")?
+            .get("machine_id_hash")?
+            .as_str()
+            // Treat an empty string the same as absent, symmetric with the daemon
+            // side (which never emits Some("")), so a stray "" can never be read
+            // as a machine-id that matches anything.
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    }
+
     fn query_action_inner(
         &self,
         action_name: &str,
@@ -958,6 +982,76 @@ mod tests {
         assert_eq!(state.services(), &["sshd.service", "nginx.service"]);
         assert_eq!(state.layered_packages(), &["vim"]);
         assert_eq!(state.users(), &["alice", "bob"]);
+    }
+
+    fn state_response_with(machine_id_hash: Option<&str>, request_id: &Value) -> Value {
+        let mut state = serde_json::json!({
+            "host_name": "h", "deployment": "", "services": [], "flatpaks": [],
+            "toolboxes": [], "layered_packages": [], "containers": [], "users": []
+        });
+        if let Some(h) = machine_id_hash {
+            state["machine_id_hash"] = serde_json::json!(h);
+        }
+        serde_json::json!({
+            "type": "state_response",
+            "request_id": request_id,
+            "state": state
+        })
+    }
+
+    #[test]
+    fn machine_id_hash_queries_state_and_extracts_the_hash() {
+        let socket_path = temp_socket_path();
+        let handle = serve_sync(&socket_path, |mut stream| {
+            let raw = read_framed(&mut stream).unwrap();
+            let req: Value = serde_json::from_slice(&raw).unwrap();
+            assert_eq!(req["type"].as_str(), Some("query_state"));
+            let resp = state_response_with(Some("abc123"), &req["request_id"]);
+            write_framed(&mut stream, &serde_json::to_vec(&resp).unwrap()).unwrap();
+        });
+        let got = DaemonClient::new(socket_path.clone()).machine_id_hash();
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+        assert_eq!(got.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn machine_id_hash_is_none_when_the_daemon_omits_the_field() {
+        // An older daemon that does not report machine_id_hash -> None, so the
+        // caller falls back to the env heuristic rather than misreading absence.
+        let socket_path = temp_socket_path();
+        let handle = serve_sync(&socket_path, |mut stream| {
+            let raw = read_framed(&mut stream).unwrap();
+            let req: Value = serde_json::from_slice(&raw).unwrap();
+            let resp = state_response_with(None, &req["request_id"]);
+            write_framed(&mut stream, &serde_json::to_vec(&resp).unwrap()).unwrap();
+        });
+        let got = DaemonClient::new(socket_path.clone()).machine_id_hash();
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn machine_id_hash_is_none_when_the_daemon_is_unreachable() {
+        let client = DaemonClient::new(PathBuf::from("/tmp/sysknife-no-such-socket-mid146.sock"));
+        assert_eq!(client.machine_id_hash(), None);
+    }
+
+    #[test]
+    fn machine_id_hash_treats_an_empty_string_as_absent() {
+        // A stray "" must never be read as a machine-id that could match anything.
+        let socket_path = temp_socket_path();
+        let handle = serve_sync(&socket_path, |mut stream| {
+            let raw = read_framed(&mut stream).unwrap();
+            let req: Value = serde_json::from_slice(&raw).unwrap();
+            let resp = state_response_with(Some(""), &req["request_id"]);
+            write_framed(&mut stream, &serde_json::to_vec(&resp).unwrap()).unwrap();
+        });
+        let got = DaemonClient::new(socket_path.clone()).machine_id_hash();
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&socket_path);
+        assert_eq!(got, None);
     }
 
     // -----------------------------------------------------------------------
