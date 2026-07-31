@@ -190,6 +190,14 @@ impl PostgresStore {
                 format!("invalid postgres URL: {e}"),
             ))
         })?;
+        // Refuse a remote connection that could downgrade to plaintext and leak
+        // the credential (#149).
+        crate::pg_tls::require_tls_for_remote(&connect_opts).map_err(|msg| {
+            TransactionStoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                msg,
+            ))
+        })?;
         connect_opts = connect_opts.statement_cache_capacity(config.statement_cache_capacity);
         PgPoolOptions::new()
             .max_connections(config.max_connections)

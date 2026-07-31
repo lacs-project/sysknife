@@ -566,3 +566,24 @@ async fn attribution_census_over_a_real_postgres_round_trip() {
     .await
     .expect("drop isolated schema");
 }
+
+/// The TLS floor (#149) refuses a remote URL that could downgrade to plaintext
+/// BEFORE any connection attempt, so this runs without a live database.
+#[tokio::test]
+async fn connect_refuses_a_downgradeable_remote_url() {
+    let key_dir = tempfile::tempdir().expect("create audit-key directory");
+    let key = Arc::new(
+        AuditKey::load_or_generate(&key_dir.path().join("audit-key")).expect("generate audit key"),
+    );
+    let config = PostgresConfig {
+        url: "postgres://u:p@db.example.com:5432/audit".to_string(),
+        ..PostgresConfig::default()
+    };
+    let err = PostgresStore::connect(&config, key)
+        .await
+        .expect_err("a remote audit URL without sslmode must be refused");
+    assert!(
+        err.to_string().contains("sslmode"),
+        "refusal should name sslmode: {err}"
+    );
+}

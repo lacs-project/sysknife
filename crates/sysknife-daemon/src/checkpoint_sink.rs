@@ -119,6 +119,9 @@ impl PostgresCheckpointSink {
         let opts = PgConnectOptions::from_str(url).map_err(|_| {
             CheckpointSinkError::Connect("invalid checkpoint database URL".to_string())
         })?;
+        // Refuse a remote connection that could downgrade to plaintext and leak
+        // the credential (#149).
+        crate::pg_tls::require_tls_for_remote(&opts).map_err(CheckpointSinkError::Connect)?;
         let pool = PgPoolOptions::new()
             .max_connections(4)
             .acquire_timeout(Duration::from_secs(10))
@@ -356,6 +359,21 @@ mod tests {
 
     fn key() -> AuditKey {
         AuditKey::from_bytes(vec![0x42; 32])
+    }
+
+    #[tokio::test]
+    async fn refuses_a_downgradeable_remote_url_before_connecting() {
+        // The TLS floor (#149) must reject a remote URL that could downgrade to
+        // plaintext BEFORE any network I/O, so this needs no live database.
+        let err = PostgresCheckpointSink::connect("postgres://u:p@db.example.com:5432/audit")
+            .await
+            .expect_err("a remote checkpoint URL without sslmode must be refused");
+        match err {
+            CheckpointSinkError::Connect(m) => {
+                assert!(m.contains("sslmode"), "message should name sslmode: {m}")
+            }
+            other => panic!("expected a Connect refusal, got {other:?}"),
+        }
     }
 
     /// Build a small intact chain the same way the daemon would.

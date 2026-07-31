@@ -7,6 +7,7 @@ pub mod checkpoint_sink;
 pub mod dispatcher;
 pub mod executor;
 pub mod jobs;
+mod pg_tls;
 pub mod policy;
 pub mod preview;
 pub mod state;
