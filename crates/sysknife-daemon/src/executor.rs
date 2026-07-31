@@ -296,18 +296,57 @@ fn root_group_kill_argv(signal: &str, pgid: i32) -> Vec<String> {
     ]
 }
 
+/// Counts `run_sudo` invocations so a test can prove the escalation path did
+/// (not) fire without needing a real sudo. Test-only.
+#[cfg(test)]
+static SUDO_INVOCATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Run a bounded, output-discarding `sudo` command for the privileged reaper.
-/// Best-effort: the caller re-probes the group to decide the outcome, so a
-/// failure here (no sudoers grant, sudo missing) just means the escalation did
-/// not help and the group is reported not-stopped.
+/// Best-effort for the *verdict* (the caller re-probes the group to decide the
+/// outcome), but the exit status is logged so a later "could not be confirmed
+/// stopped" line can be told apart from a misconfigured sudoers grant or a
+/// missing `sudo` — the reaper failing and the process genuinely wedging look
+/// identical from the group probe alone.
 async fn run_sudo(args: Vec<String>) {
+    #[cfg(test)]
+    SUDO_INVOCATIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let fut = tokio::process::Command::new("sudo")
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    let _ = tokio::time::timeout(REAP_WAIT_CAP, fut).await;
+    let joined = args.join(" ");
+    match tokio::time::timeout(REAP_WAIT_CAP, fut).await {
+        Ok(Ok(status)) if status.success() => {}
+        Ok(Ok(status)) => {
+            eprintln!("[sysknife-daemon] privileged reap `sudo {joined}` exited {status}")
+        }
+        Ok(Err(e)) => {
+            eprintln!("[sysknife-daemon] privileged reap `sudo {joined}` could not run: {e}")
+        }
+        Err(_) => eprintln!(
+            "[sysknife-daemon] privileged reap `sudo {joined}` timed out after {}s",
+            REAP_WAIT_CAP.as_secs()
+        ),
+    }
+}
+
+/// The first privileged reap command (the args passed to `sudo`) for an action
+/// whose group survived the daemon's own signals: `rpm-ostree cancel` for an
+/// rpm-ostree transaction (its work is in another cgroup), otherwise a root TERM
+/// to the action's own process group. Split out so the dispatch and the exact
+/// argv are unit-testable without running `sudo`.
+fn reap_command(pgid: i32, program: &str, args: &[String]) -> Vec<String> {
+    if is_rpm_ostree_action(program, args) {
+        vec![
+            "-n".to_string(),
+            "/usr/bin/rpm-ostree".to_string(),
+            "cancel".to_string(),
+        ]
+    } else {
+        root_group_kill_argv("TERM", pgid)
+    }
 }
 
 /// Last-resort privileged reap for a group the daemon's own signals could not
@@ -316,16 +355,16 @@ async fn run_sudo(args: Vec<String>) {
 /// detect-and-veto, so `ActionNotStopped` becomes a genuine last resort rather
 /// than the expected path for every sudo action.
 async fn privileged_reap(pgid: i32, program: &str, args: &[String]) {
+    run_sudo(reap_command(pgid, program, args)).await;
+    // rpm-ostree cancel is a single, blocking call; only the group-kill path
+    // escalates TERM → KILL. The client process blocks until the daemon-side
+    // transaction resolves (completes, errors, or cancels), so once `cancel`
+    // returns the transaction is stopped and the client group exits — which is
+    // why the caller's group probe (of the client) correctly reflects the
+    // transaction, even though the work itself ran in rpm-ostreed's cgroup.
     if is_rpm_ostree_action(program, args) {
-        run_sudo(vec![
-            "-n".to_string(),
-            "/usr/bin/rpm-ostree".to_string(),
-            "cancel".to_string(),
-        ])
-        .await;
         return;
     }
-    run_sudo(root_group_kill_argv("TERM", pgid)).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     if !probe_group(pgid).is_gone() {
         run_sudo(root_group_kill_argv("KILL", pgid)).await;
@@ -402,9 +441,20 @@ async fn kill_and_reap(
     // `sudo` action's privileged child), which an unprivileged daemon cannot
     // signal. Escalate to a privileged reaper — a root kill of the group, or an
     // `rpm-ostree cancel` for a transaction that lives in another cgroup (#142).
-    if !probe_group(pgid).is_gone() {
+    //
+    // Escalate only for `AliveUnreachable` (EPERM): the members run as root, the
+    // sudo action's privileged child the daemon cannot signal. A same-uid process
+    // wedged in D-state (`AliveReachable`) or an `Unknown` errno would not be
+    // helped by a root signal, so those fall straight through to
+    // `ActionNotStopped` rather than a pointless sudo round-trip.
+    //
+    // Signalling the group by its numeric pgid is safe against pid reuse: POSIX
+    // keeps a process-group id allocated for the group's whole lifetime (while it
+    // has any member), so a probe reporting the group alive guarantees the pgid
+    // still names THIS action's group, never a recycled unrelated process.
+    if probe_group(pgid) == GroupState::AliveUnreachable {
         eprintln!(
-            "[sysknife-daemon] {program} process group {pgid} survived the daemon's signals; \
+            "[sysknife-daemon] {program} process group {pgid} survived as root; \
              escalating to a privileged reap"
         );
         privileged_reap(pgid, program, args).await;
@@ -2540,6 +2590,7 @@ mod tests {
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn");
+        SUDO_INVOCATIONS.store(0, std::sync::atomic::Ordering::SeqCst);
         let started = tokio::time::Instant::now();
         let err = kill_and_reap(&mut child, "sh", &[]).await;
         let elapsed = started.elapsed();
@@ -2551,6 +2602,40 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(GROUP_TERM_GRACE.as_secs() + 3),
             "must return promptly, took {elapsed:?}"
+        );
+        // A same-uid group is killed by the daemon's own signals, so the
+        // privileged escalation must NOT fire (a mutation that always escalates
+        // would shell out to sudo and trip this).
+        assert_eq!(
+            SUDO_INVOCATIONS.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a killable group must not escalate to the privileged reaper"
+        );
+    }
+
+    #[test]
+    fn reap_command_cancels_rpm_ostree_but_group_kills_everything_else() {
+        // rpm-ostree -> cancel (its work is in another cgroup, a signal can't reach it).
+        assert_eq!(
+            reap_command(
+                99,
+                "sudo",
+                &["/usr/bin/rpm-ostree".to_string(), "upgrade".to_string()]
+            ),
+            vec!["-n", "/usr/bin/rpm-ostree", "cancel"]
+        );
+        // Everything else -> a root TERM to its own process group.
+        assert_eq!(
+            reap_command(
+                99,
+                "sudo",
+                &[
+                    "env".to_string(),
+                    "apt-get".to_string(),
+                    "install".to_string()
+                ]
+            ),
+            root_group_kill_argv("TERM", 99)
         );
     }
 
@@ -2592,6 +2677,17 @@ mod tests {
         ]));
         assert!(!sudo(&["/usr/bin/kill", "-s", "KILL", "--", "-1"]));
         assert!(!is_rpm_ostree_action("sudo", &[]));
+        // Absolute path as the top-level program (no sudo wrapper).
+        assert!(is_rpm_ostree_action(
+            "/usr/bin/rpm-ostree",
+            &["deploy".to_string()]
+        ));
+        // A path segment must match, not a substring (guards a future refactor
+        // to `.contains()`).
+        assert!(!is_rpm_ostree_action(
+            "sudo",
+            &["explain-rpm-ostree-usage".to_string()]
+        ));
     }
 
     /// restored at its owning layer. Proves `RealActionExecutor` forwards each
