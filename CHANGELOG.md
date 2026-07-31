@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [Unreleased]
+
+### Security
+
+- **`AddMount` can no longer mount an attacker share over a symlinked critical path.**
+  ([#155](https://github.com/lacs-project/sysknife/issues/155)) `op_mount` checked the
+  literal mountpoint string, then `os.makedirs(exist_ok=True)` and `mount(8)` both
+  followed symlinks, so `AddMount{mountpoint: '/tmp/x'}` with `/tmp/x -> /etc` mounted
+  the share over `/etc`. `assert_mountpoint_safe` now refuses a symlinked or
+  critical-resolving mountpoint (also closing the `/etc/` and `//etc` denylist
+  bypasses), and `op_mount` materializes the mountpoint with `O_DIRECTORY|O_NOFOLLOW`
+  and mounts onto `/proc/self/fd/<fd>` so a symlink swapped in after the check cannot
+  redirect the mount (the TOCTOU class `op_addswap` also closes). `op_unmount` gained
+  the same symlink refusal so a symlinked mountpoint cannot unmount an unrelated
+  critical filesystem.
+
 ## [0.5.0] — 2026-07-31
 
 ### Security

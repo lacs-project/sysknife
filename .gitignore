@@ -29,3 +29,7 @@ book/
 # Local private docs (strategy, planning, personal notes — not for public repo)
 docs/local/
 /RELAUNCH_PLAN.md
+
+# Python bytecode from packaging scripts (compiled when tests import them)
+__pycache__/
+*.pyc

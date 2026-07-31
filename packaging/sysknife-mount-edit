@@ -76,6 +76,27 @@ def valid_mountpoint(mp: str) -> bool:
     )
 
 
+def assert_mountpoint_safe(mp: str) -> None:
+    """Refuse a mountpoint whose resolved target is a critical/forbidden path, or
+    that is reached through a symlink.
+
+    A string-only check lets `/tmp/x -> /etc` mount an attacker share over /etc
+    (#155), and `/etc/` or `//etc` slip past the literal denylist. Resolving the
+    path with realpath and re-checking closes both. This is a fast pre-check with
+    a clear error; it does NOT by itself close the TOCTOU window between the check
+    and the later mount (op_mount does that with O_NOFOLLOW + /proc/self/fd).
+    """
+    real = os.path.realpath(mp)
+    # A target that RESOLVES to a forbidden path is refused first, so /etc/,
+    # //etc and symlinks into /etc all get an accurate, non-symlink message.
+    if not valid_mountpoint(real):
+        die(f"mountpoint {mp!r} resolves to {real!r}, which is invalid or forbidden")
+    # A symlinked path (final component or an ancestor) to a non-critical target
+    # is still attacker-controlled; refuse it.
+    if os.path.islink(mp) or real != os.path.normpath(mp):
+        die(f"mountpoint {mp!r} resolves to {real!r} through a symlink; refusing")
+
+
 def read_fstab() -> list:
     if not os.path.exists(FSTAB):
         return []
@@ -137,32 +158,66 @@ def op_mount(args) -> None:
         die(f"invalid options {options!r}")
     options = ensure_nofail(options)
 
-    try:
-        os.makedirs(args.mountpoint, exist_ok=True)
-    except OSError as exc:
-        die(f"cannot create mountpoint: {exc}")
+    # Fast pre-check: reject a critical target or an already-symlinked mountpoint
+    # with a clear message before doing any work.
+    assert_mountpoint_safe(args.mountpoint)
 
     lines = read_fstab()
     # Refuse if this mountpoint already has an fstab entry.
     if any(fstab_field2(ln) == args.mountpoint for ln in lines):
         die(f"{args.mountpoint} already has an /etc/fstab entry")
 
+    # Materialize the mountpoint as a real directory and hold a fd to that exact
+    # inode. O_DIRECTORY|O_NOFOLLOW rejects a symlink swapped in for the leaf
+    # after the pre-check, and mounting onto /proc/self/fd/<fd> pins the verified
+    # inode so a concurrent rename cannot redirect the mount — the same TOCTOU
+    # class op_addswap closes with O_EXCL|O_NOFOLLOW. A symlinked *ancestor* is
+    # caught by assert_mountpoint_safe above; the residual reboot-time `mount -a`
+    # path re-walk is bounded by the `nofail` option ensure_nofail() added.
+    parent = os.path.dirname(args.mountpoint) or "/"
+    try:
+        os.makedirs(parent, exist_ok=True)
+        try:
+            os.mkdir(args.mountpoint, 0o755)
+        except FileExistsError:
+            pass  # a pre-existing real directory is fine; O_NOFOLLOW checks it below
+        fd = os.open(args.mountpoint, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        die(f"mountpoint {args.mountpoint!r} is not a real directory: {exc}")
+
+    # Mount against the held inode, not the path string, so the mount cannot be
+    # redirected by a symlink swap between the open above and the mount here.
+    try:
+        result = subprocess.run(
+            [MOUNT, "-t", args.fstype, "-o", options, args.device, f"/proc/self/fd/{fd}"],
+            check=False,
+            stderr=subprocess.PIPE,
+            pass_fds=(fd,),
+        )
+    finally:
+        os.close(fd)
+    if result.returncode != 0:
+        die(f"mount failed: {result.stderr.decode(errors='replace').strip()}")
+
+    # Persist to fstab only after the mount succeeds (no bad-line-then-rollback window).
     entry = f"{args.device}\t{args.mountpoint}\t{args.fstype}\t{options}\t0\t0\n"
     new_lines = lines + ([] if (not lines or lines[-1].endswith("\n")) else ["\n"]) + [entry]
     write_fstab(new_lines)
-
-    # Validate the entry actually mounts; roll back the fstab line if not.
-    result = subprocess.run(
-        [MOUNT, args.mountpoint], check=False, stderr=subprocess.PIPE
-    )
-    if result.returncode != 0:
-        write_fstab(lines)  # rollback
-        die(f"mount failed, fstab reverted: {result.stderr.decode(errors='replace').strip()}")
 
 
 def op_unmount(args) -> None:
     if not valid_mountpoint(args.mountpoint):
         die(f"invalid or forbidden mountpoint {args.mountpoint!r}")
+    # umount(8) canonicalizes its argument, so a symlinked mountpoint would let a
+    # caller unmount an unrelated (possibly critical) filesystem — the same
+    # symlink-follow class as op_mount (#155). Refuse a symlinked mountpoint and
+    # any that resolves to a critical path. This deliberately does NOT use the
+    # strict realpath==normpath rule op_mount applies, which would wrongly reject
+    # a legitimate mount reached through a symlinked ancestor like /var/run -> /run.
+    if os.path.islink(args.mountpoint):
+        die(f"mountpoint {args.mountpoint!r} is a symlink; refusing to unmount through it")
+    if os.path.realpath(args.mountpoint) in CRITICAL_MOUNTPOINTS:
+        die(f"mountpoint {args.mountpoint!r} resolves to a critical path; refusing")
     # Unmount if currently mounted (ignore "not mounted").
     subprocess.run([UMOUNT, args.mountpoint], check=False, stderr=subprocess.DEVNULL)
     lines = read_fstab()

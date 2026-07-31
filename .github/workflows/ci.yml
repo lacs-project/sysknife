@@ -59,6 +59,9 @@ jobs:
       - name: Check release rehearsal contract
         run: bash tests/release/release-rehearsal.test.sh
 
+      - name: Check mount-edit refuses symlinked mountpoints
+        run: bash tests/release/mount-edit.test.sh
+
       - name: Check Ubuntu VM bootstrap contract
         run: bash tests/e2e/ubuntu-vm-bootstrap.test.sh
 
