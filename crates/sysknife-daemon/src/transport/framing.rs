@@ -85,7 +85,96 @@ const READ_CHUNK_BYTES: usize = 64 * 1024;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::{duplex, AsyncWriteExt};
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::task::{Context, Poll};
+    use tokio::io::{duplex, AsyncWriteExt, ReadBuf};
+
+    /// Wraps a reader and records the largest buffer size `recv` ever asks it to
+    /// fill in a single `poll_read`. This is what distinguishes the streaming
+    /// reader from the old `vec![0u8; len]; read_exact(&mut body)`: the old code
+    /// handed the whole claimed body to one `poll_read` (up to 4 MiB), the new
+    /// code never asks for more than `READ_CHUNK_BYTES` at a time.
+    struct RecordingReader<R> {
+        inner: R,
+        max_requested: Arc<AtomicUsize>,
+    }
+    impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for RecordingReader<R> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            self.max_requested
+                .fetch_max(buf.remaining(), Ordering::SeqCst);
+            Pin::new(&mut self.inner).poll_read(cx, buf)
+        }
+    }
+    // FramedStream's recv/send impl block requires AsyncWrite too; this half is
+    // only ever read in the test, so the writes just pass through.
+    impl<W: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for RecordingReader<W> {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.inner).poll_write(cx, buf)
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
+    #[tokio::test]
+    async fn recv_never_requests_more_than_one_chunk_per_read() {
+        // A body several chunks long, fully delivered. The streaming reader must
+        // never ask the underlying stream to fill more than READ_CHUNK_BYTES at
+        // once — that bound is what stops a large claimed length from pinning
+        // memory. Mutation guard: the old vec![0u8; len]; read_exact asked for the
+        // whole body in one poll_read, so this fails against it and passes only
+        // for the chunked reader.
+        let payload = vec![0x5Au8; 5 * READ_CHUNK_BYTES + 7];
+        let (mut a, b) = duplex(MAX_MESSAGE_BYTES + 8);
+        let max_requested = Arc::new(AtomicUsize::new(0));
+        let mut recvr = FramedStream::new(RecordingReader {
+            inner: b,
+            max_requested: Arc::clone(&max_requested),
+        });
+        let p2 = payload.clone();
+        let writer = tokio::spawn(async move {
+            a.write_all(&(p2.len() as u32).to_le_bytes()).await.unwrap();
+            a.write_all(&p2).await.unwrap();
+        });
+        let got = recvr.recv().await.expect("recv should reassemble the body");
+        writer.await.unwrap();
+        assert_eq!(got, payload);
+        let peak = max_requested.load(Ordering::SeqCst);
+        assert!(
+            peak <= READ_CHUNK_BYTES,
+            "recv asked to fill {peak} bytes in one read; must be <= {READ_CHUNK_BYTES}"
+        );
+    }
+
+    #[tokio::test]
+    async fn round_trip_a_full_max_size_body() {
+        // The largest legitimate message: exactly MAX_MESSAGE_BYTES (64 full
+        // chunks). Exercises the whole chunk loop and guards the len-boundary
+        // arithmetic on a real transfer, not just a claim.
+        let data = vec![0x9Cu8; MAX_MESSAGE_BYTES];
+        assert_eq!(round_trip(&data).await, data);
+    }
+
+    #[tokio::test]
+    async fn round_trip_a_body_of_exactly_one_chunk() {
+        // len == READ_CHUNK_BYTES: the last (only) iteration fills a whole chunk,
+        // the natural place for a `<=` vs `<` slip in the loop to surface.
+        let data = vec![0x3Fu8; READ_CHUNK_BYTES];
+        assert_eq!(round_trip(&data).await, data);
+    }
 
     /// Send `data` from one half of a duplex pair, receive from the other.
     async fn round_trip(data: &[u8]) -> Vec<u8> {
@@ -142,12 +231,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_withheld_body_after_a_large_length_claim_errors_without_buffering_the_claim() {
+    async fn a_withheld_body_after_a_large_length_claim_errors_promptly() {
         // Announce the maximum body size but send only a few bytes, then close.
-        // The old code allocated the full 4 MiB up front (vec![0u8; len]); the
-        // streaming reader must instead error out promptly on EOF (#150) — it
-        // neither hangs waiting for the withheld body nor returns a short body
-        // as if complete.
+        // The reader must error out on EOF rather than hang waiting for the
+        // withheld body or return a short body as if complete. (The bounded-memory
+        // property is proven separately by recv_never_requests_more_than_one_chunk_per_read;
+        // this test only guards the promptness/EOF behavior.)
         let (mut a, b) = duplex(1024);
         let mut recvr = FramedStream::new(b);
         let writer = tokio::spawn(async move {
