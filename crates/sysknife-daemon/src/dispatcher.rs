@@ -2537,11 +2537,25 @@ async fn handle_execute(
     )
     .await;
 
-    // Clear the high-risk-reboot slot now that the action has finished
-    // (success OR failure). The slot was only set when this action was
-    // itself High-risk + reboot-required; for other mutating actions the
-    // guard was read but never written, so there is nothing to clear.
-    release_exclusive_slots(state, &to_claim, &stored_hash).await;
+    // Clear the exclusion slot now that the action has finished, EXCEPT when it
+    // could not be confirmed stopped. If a privileged transaction may still be
+    // running, its resource is still in use, and releasing the slot would admit
+    // a second mutating action to race it — the exact concurrent-transaction
+    // state the rollback veto above refuses to create itself. Holding the slot
+    // makes the veto binding against the operator too, not just the daemon. The
+    // slot lives in memory, so a daemon restart clears it, which is the same
+    // "inspect the host before retrying" recovery the error already names.
+    if action_may_still_be_running {
+        if !to_claim.is_empty() {
+            eprintln!(
+                "[sysknife-daemon] holding the exclusion slot for {action_name}: the action \
+                 could not be confirmed stopped, so no other mutating action may start until \
+                 the daemon is restarted"
+            );
+        }
+    } else {
+        release_exclusive_slots(state, &to_claim, &stored_hash).await;
+    }
 
     // Update the transaction record. A failure here is an audit-trail loss —
     // log it and surface it as a warning in the job result so the client is
