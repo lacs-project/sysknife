@@ -5,12 +5,13 @@ use crate::actions::{
     release_upgrade, resolvectl, services, snap, ssh, sudoers, sysctl, system_info, toolbox,
     ubuntu_pro, ufw, users,
     validate::{
-        validated_apparmor_profile, validated_apt_package, validated_apt_pin_expr,
-        validated_apt_pin_name, validated_audit_path, validated_audit_perms, validated_cpu_quota,
-        validated_domain, validated_email, validated_fstype, validated_group,
-        validated_group_not_critical, validated_hostname, validated_journal_grep,
-        validated_journal_priority, validated_journal_time, validated_locale, validated_log_path,
-        validated_lvm_name, validated_lvm_size, validated_memory_limit, validated_mount_device,
+        validated_activatable_unit, validated_apparmor_profile, validated_apt_package,
+        validated_apt_pin_expr, validated_apt_pin_name, validated_audit_path,
+        validated_audit_perms, validated_cpu_quota, validated_domain, validated_email,
+        validated_fstype, validated_group, validated_group_not_critical, validated_hostname,
+        validated_install_package, validated_journal_grep, validated_journal_priority,
+        validated_journal_time, validated_locale, validated_log_path, validated_lvm_name,
+        validated_lvm_size, validated_memory_limit, validated_mount_device,
         validated_mount_options, validated_mount_point, validated_port_or_service,
         validated_ppa_name, validated_pro_service, validated_safe_arg, validated_sudo_commands,
         validated_sudoers_name, validated_swap_path, validated_sysctl_key, validated_sysctl_value,
@@ -588,20 +589,20 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             Ok(layering::remove_packages(&refs))
         }
         "AddLayeredPackage" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_install_package(require_str(params, "package")?, "package")?;
             Ok(layering::add_layered_package(&package))
         }
         "RemoveLayeredPackage" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_install_package(require_str(params, "package")?, "package")?;
             Ok(layering::remove_layered_package(&package))
         }
         "ReplaceLayeredPackage" => {
-            let old = validated_safe_arg(require_str(params, "old")?, "old")?;
-            let new = validated_safe_arg(require_str(params, "new")?, "new")?;
+            let old = validated_install_package(require_str(params, "old")?, "old")?;
+            let new = validated_install_package(require_str(params, "new")?, "new")?;
             Ok(layering::replace_layered_package(&old, &new))
         }
         "RemoveBasePackage" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_install_package(require_str(params, "package")?, "package")?;
             Ok(layering::remove_base_package(&package))
         }
         "GetPendingUpdates" => Ok(layering::get_pending_updates()),
@@ -625,7 +626,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         // ── Services ─────────────────────────────────────────────────────
         "ListServices" => Ok(services::list_services()),
         "StartService" => {
-            let unit = validated_unit_name(require_str(params, "unit")?, "unit")?;
+            let unit = validated_activatable_unit(require_str(params, "unit")?, "unit")?;
             Ok(services::start_service(&unit))
         }
         "StopService" => {
@@ -633,22 +634,26 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             Ok(services::stop_service(&unit))
         }
         "RestartService" => {
-            let unit = validated_unit_name(require_str(params, "unit")?, "unit")?;
+            let unit = validated_activatable_unit(require_str(params, "unit")?, "unit")?;
             Ok(services::restart_service(&unit))
         }
         "SetServiceEnabled" => {
-            let unit = validated_unit_name(require_str(params, "unit")?, "unit")?;
-            Ok(services::set_service_enabled(
-                &unit,
-                require_bool(params, "enabled")?,
-            ))
+            let enabled = require_bool(params, "enabled")?;
+            // Enabling brings the unit up at boot, so it must clear the root-shell
+            // denylist; disabling one is a mitigation and stays allowed.
+            let unit = if enabled {
+                validated_activatable_unit(require_str(params, "unit")?, "unit")?
+            } else {
+                validated_unit_name(require_str(params, "unit")?, "unit")?
+            };
+            Ok(services::set_service_enabled(&unit, enabled))
         }
         "MaskService" => {
             let unit = validated_unit_name(require_str(params, "unit")?, "unit")?;
             Ok(services::mask_service(&unit))
         }
         "UnmaskService" => {
-            let unit = validated_unit_name(require_str(params, "unit")?, "unit")?;
+            let unit = validated_activatable_unit(require_str(params, "unit")?, "unit")?;
             Ok(services::unmask_service(&unit))
         }
         "GetServiceLogs" => {
@@ -1255,24 +1260,24 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "AptUpdate" => Ok(apt::apt_update()),
         "AptUpgrade" => Ok(apt::apt_upgrade()),
         "AptInstall" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_install_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_install(&package))
         }
         "AptRemove" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_install_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_remove(&package))
         }
         "AptPurge" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_install_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_purge(&package))
         }
         "AptAutoremove" => Ok(apt::apt_autoremove()),
         "AptHold" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_install_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_hold(&package))
         }
         "AptUnhold" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_install_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_unhold(&package))
         }
         "AptSearch" => {

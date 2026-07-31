@@ -99,9 +99,24 @@ fn anchor_configured() -> bool {
 /// used. An unparseable value yields no caveat: `resolve_socket_target` already
 /// exits with a clear message before verification runs.
 pub(crate) fn remote_daemon_caveat_from_env() -> Option<String> {
-    let raw = std::env::var("SYSKNIFE_SOCKET").ok()?;
+    // Resolve the socket the *same way the client dials it* (see
+    // `resolve_socket_target`), not only from `SYSKNIFE_SOCKET`. A forwarded
+    // socket configured through `config.toml` reaches the client as
+    // `SYSKNIFE_LISTEN_URI`, so reading only `SYSKNIFE_SOCKET` here left the
+    // wrong-machine caveat silent for exactly that documented topology: the
+    // operator administered a remote daemon and `audit verify` printed `Intact`
+    // for an unrelated local chain with no warning.
+    let (raw, source) = if let Ok(v) = std::env::var("SYSKNIFE_SOCKET") {
+        (v, "SYSKNIFE_SOCKET")
+    } else if let Ok(v) = std::env::var("SYSKNIFE_LISTEN_URI") {
+        (v, "SYSKNIFE_LISTEN_URI")
+    } else {
+        // The bare local default (XDG runtime path). The daemon is this
+        // machine's own, so stay quiet.
+        return None;
+    };
     let target = crate::client::SocketTarget::try_from_str(&raw).ok()?;
-    remote_daemon_caveat(Some(&raw), &target)
+    remote_daemon_caveat(Some((&raw, source)), &target)
 }
 
 /// The caveat that belongs next to a verification verdict when the daemon being
@@ -123,15 +138,15 @@ pub(crate) fn remote_daemon_caveat_from_env() -> Option<String> {
 /// means the local default, which is the common case and stays quiet: a caveat
 /// printed on every run is a caveat nobody reads.
 fn remote_daemon_caveat(
-    socket_env: Option<&str>,
+    socket_env: Option<(&str, &str)>,
     target: &crate::client::SocketTarget,
 ) -> Option<String> {
-    let raw = socket_env?;
+    let (raw, source) = socket_env?;
 
     #[cfg(target_os = "linux")]
     if matches!(target, crate::client::SocketTarget::Vsock { .. }) {
         return Some(format!(
-            "NOTE: SYSKNIFE_SOCKET is {raw}, so the daemon runs in a VM while this \
+            "NOTE: {source} is {raw}, so the daemon runs in a VM while this \
              verification read a store on this machine. The chain lives where the daemon \
              wrote it. Verify inside the VM, or copy its database and exported public key \
              out and re-run with --pubkey <FILE>."
@@ -139,7 +154,7 @@ fn remote_daemon_caveat(
     }
 
     Some(format!(
-        "NOTE: SYSKNIFE_SOCKET is {raw}. If that socket is forwarded from another host \
+        "NOTE: {source} is {raw}. If that socket is forwarded from another host \
          (for example `ssh -L`), the actions you took ran there while this verification \
          read a store on this machine. Verify on the host that owns the daemon, or copy \
          its database and exported public key out and re-run with --pubkey <FILE>."
@@ -2013,7 +2028,7 @@ mod tests {
     #[test]
     fn a_forwarded_socket_makes_the_verifier_name_the_machine_it_read() {
         let caveat = remote_daemon_caveat(
-            Some("/tmp/sysknife-web01.sock"),
+            Some(("/tmp/sysknife-web01.sock", "SYSKNIFE_SOCKET")),
             &crate::client::SocketTarget::Unix("/tmp/sysknife-web01.sock".into()),
         )
         .expect("an explicitly configured socket must produce a caveat");
@@ -2034,7 +2049,7 @@ mod tests {
     #[test]
     fn a_vsock_daemon_caveat_says_the_chain_lives_in_the_vm() {
         let caveat = remote_daemon_caveat(
-            Some("vsock://3:9734"),
+            Some(("vsock://3:9734", "SYSKNIFE_SOCKET")),
             &crate::client::SocketTarget::Vsock { cid: 3, port: 9734 },
         )
         .expect("a vsock target is always another host");
@@ -2047,6 +2062,31 @@ mod tests {
         assert!(
             caveat.contains("--pubkey"),
             "and point at the auditor path that works across machines, got: {caveat}"
+        );
+    }
+
+    /// A socket forwarded through `config.toml` reaches the client as
+    /// `SYSKNIFE_LISTEN_URI`, not `SYSKNIFE_SOCKET`. The wrong-machine caveat
+    /// must fire for that topology too, naming the variable actually in play,
+    /// or `audit verify` silently vouches for an unrelated local chain.
+    #[test]
+    fn a_forwarded_socket_set_via_listen_uri_still_warns() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("SYSKNIFE_SOCKET");
+        std::env::set_var("SYSKNIFE_LISTEN_URI", "unix:///tmp/sysknife-web01.sock");
+
+        let caveat = remote_daemon_caveat_from_env();
+
+        std::env::remove_var("SYSKNIFE_LISTEN_URI");
+
+        let caveat = caveat.expect("an explicitly configured forwarded socket must warn");
+        assert!(
+            caveat.contains("/tmp/sysknife-web01.sock"),
+            "the caveat must name the socket in play, got: {caveat}"
+        );
+        assert!(
+            caveat.contains("SYSKNIFE_LISTEN_URI"),
+            "and name the variable that configured it, not SYSKNIFE_SOCKET, got: {caveat}"
         );
     }
 
