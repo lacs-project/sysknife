@@ -190,8 +190,11 @@ impl PostgresStore {
                 format!("invalid postgres URL: {e}"),
             ))
         })?;
-        // Refuse a remote connection that could downgrade to plaintext and leak
-        // the credential (#149).
+        // Refuse a remote connection that could leak the credential (#149). This
+        // is a hard configuration refusal, not a transient I/O error: it fails
+        // daemon startup and is never retried. It is mapped onto Io(PermissionDenied)
+        // only because that is the closest existing variant; nothing branches on
+        // the ErrorKind for this path.
         crate::pg_tls::require_tls_for_remote(&connect_opts).map_err(|msg| {
             TransactionStoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,

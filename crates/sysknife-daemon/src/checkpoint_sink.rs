@@ -363,18 +363,31 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_a_downgradeable_remote_url_before_connecting() {
-        // The TLS floor (#149) must reject a remote URL that could downgrade to
-        // plaintext BEFORE any network I/O, so this needs no live database.
-        let err = PostgresCheckpointSink::connect("postgres://u:p@db.example.com:5432/audit")
-            .await
-            .expect_err("a remote checkpoint URL without sslmode must be refused");
-        match err {
+        // The TLS floor (#149) must reject a remote URL that could leak the
+        // credential BEFORE any network I/O. The timeout proves no connection was
+        // attempted (db.example.com would otherwise hang), independent of sqlx's
+        // error wording, and the message check proves it was the guard.
+        let refusal = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            PostgresCheckpointSink::connect("postgres://u:p@db.example.com:5432/audit"),
+        )
+        .await
+        .expect("the guard must refuse without attempting a connection");
+        match refusal.expect_err("a remote checkpoint URL without TLS must be refused") {
             CheckpointSinkError::Connect(m) => {
                 assert!(m.contains("sslmode"), "message should name sslmode: {m}")
             }
             other => panic!("expected a Connect refusal, got {other:?}"),
         }
     }
+
+    // The positive "loopback passes the TLS floor" case is proven at the
+    // PostgresStore call site (tests/postgres_store.rs), where the config's
+    // acquire_timeout is settable so the refused connection returns fast.
+    // PostgresCheckpointSink::connect hardcodes a 10s acquire_timeout, which makes
+    // that shape slow to test here; both call sites invoke the identical
+    // require_tls_for_remote, and the pg_tls unit tests cover the loopback → Ok
+    // decision directly, so the over-blocking regression is already guarded.
 
     /// Build a small intact chain the same way the daemon would.
     pub(super) fn build_chain(key: &AuditKey, count: usize) -> Vec<ChainRow> {
