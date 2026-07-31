@@ -12,6 +12,19 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Security
 
+- **A hung privileged action is now force-stopped on timeout, not just detected.**
+  ([#142](https://github.com/lacs-project/sysknife/issues/142)) Follow-up to #140. The daemon
+  runs unprivileged and elevates through `sudo`, so it cannot signal the root child a `sudo`
+  action forks; #140 detected this (`ActionNotStopped`) and vetoed rollback, but the work ran
+  on. On timeout the daemon now escalates: after its own SIGTERM/SIGKILL to the process group,
+  if the group survives as root-owned it runs a root `sudo -n /usr/bin/kill -s <SIG> -- -<pgid>`
+  (reaching the root children via the existing kill grant), or `rpm-ostree cancel` for a
+  transaction that runs in `rpm-ostreed`'s own cgroup. `ActionNotStopped` is now a genuine last
+  resort — the reaper actually failed — rather than the expected path for every sudo action.
+  The same-uid path, the escalation dispatch, and the command construction are unit-tested;
+  the cross-uid root-child termination is inherently root-only and must be validated on a live
+  VM (per the issue's acceptance).
+
 - **Documented the vsock bearer-token replay risk and its threat model.**
   ([#152](https://github.com/lacs-project/sysknife/issues/152)) The vsock pre-shared token is
   sent in the clear as the first frame and is a replayable bearer credential: an adjacent
