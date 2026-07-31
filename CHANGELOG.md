@@ -10,38 +10,6 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
-### Fixed
-
-- **The action timeout now contains the whole process tree, and reports honestly
-  when it cannot.** ([#140](https://github.com/lacs-project/sysknife/issues/140))
-  The daemon runs unprivileged and elevates through `sudo`, which forks, so
-  SIGKILL to the process it spawned left the privileged work running while the
-  deadline reported "killed". Actions now run in their own process group and the
-  deadline signals the group (a pid-targeted floor, then SIGTERM, then SIGKILL),
-  which genuinely stops non-privileged commands. An unprivileged daemon cannot
-  signal a root child, so for a `sudo` action whose work runs as root the group
-  cannot be force-killed; the timeout now detects that (the group probe returns
-  `EPERM`, not "gone") and returns `ActionNotStopped` instead of a false
-  success. Real termination of a root child needs a privileged reaper, tracked
-  in [#142](https://github.com/lacs-project/sysknife/issues/142).
-- **A rollback is never started over an action that may still be running.**
-  A timeout marks the job failed, and a failed rollback-eligible action used to
-  trigger `rpm-ostree rollback` immediately, which combined with the bug above
-  could put two package transactions on one host. When the action cannot be
-  confirmed stopped the daemon now skips the rollback and holds the exclusion
-  slot, so no other mutating action can start either, until the daemon is
-  restarted. Doing nothing is recoverable; doing both is not.
-- **The timeout path can no longer hang.** Every `wait()` on a child that may be
-  an unkillable root process is bounded, so the timeout that exists to stop a
-  hang cannot itself become one.
-- The timeout test asserted only that the call returned a timeout error, which
-  is true of a daemon that gives up waiting while the work continues. It now
-  asserts the spawned work is gone by exact argv from `/proc`, covers the
-  production spawn path, pins the SIGTERM to SIGKILL escalation, and drives the
-  rollback veto end to end through the real dispatcher.
-
-## [Unreleased]
-
 ### Security
 
 Hardening from a defensive red-team pass. Each fix has an issue and a test.
@@ -78,6 +46,36 @@ Hardening from a defensive red-team pass. Each fix has an issue and a test.
 Deferred, tracked: TLS downgrade on unverified Postgres URLs (#149), vsock
 partial-frame DoS (#150), unbound AptAutoremove approval (#151), vsock bearer-token
 replay (#152).
+
+### Fixed
+
+- **The action timeout now contains the whole process tree, and reports honestly
+  when it cannot.** ([#140](https://github.com/lacs-project/sysknife/issues/140))
+  The daemon runs unprivileged and elevates through `sudo`, which forks, so
+  SIGKILL to the process it spawned left the privileged work running while the
+  deadline reported "killed". Actions now run in their own process group and the
+  deadline signals the group (a pid-targeted floor, then SIGTERM, then SIGKILL),
+  which genuinely stops non-privileged commands. An unprivileged daemon cannot
+  signal a root child, so for a `sudo` action whose work runs as root the group
+  cannot be force-killed; the timeout now detects that (the group probe returns
+  `EPERM`, not "gone") and returns `ActionNotStopped` instead of a false
+  success. Real termination of a root child needs a privileged reaper, tracked
+  in [#142](https://github.com/lacs-project/sysknife/issues/142).
+- **A rollback is never started over an action that may still be running.**
+  A timeout marks the job failed, and a failed rollback-eligible action used to
+  trigger `rpm-ostree rollback` immediately, which combined with the bug above
+  could put two package transactions on one host. When the action cannot be
+  confirmed stopped the daemon now skips the rollback and holds the exclusion
+  slot, so no other mutating action can start either, until the daemon is
+  restarted. Doing nothing is recoverable; doing both is not.
+- **The timeout path can no longer hang.** Every `wait()` on a child that may be
+  an unkillable root process is bounded, so the timeout that exists to stop a
+  hang cannot itself become one.
+- The timeout test asserted only that the call returned a timeout error, which
+  is true of a daemon that gives up waiting while the work continues. It now
+  asserts the spawned work is gone by exact argv from `/proc`, covers the
+  production spawn path, pins the SIGTERM to SIGKILL escalation, and drives the
+  rollback veto end to end through the real dispatcher.
 
 ## [0.4.0] — 2026-07-30
 

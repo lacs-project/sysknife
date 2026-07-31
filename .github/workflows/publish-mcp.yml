@@ -76,7 +76,7 @@ jobs:
           if ! git merge-base --is-ancestor HEAD "origin/${DEFAULT_BRANCH}"; then
             head="$(git rev-parse HEAD)"
             echo "::error::refusing to publish ${head}: not reachable from" \
-                 "${DEFAULT_BRANCH}. Only merged commits may be published." >&2
+                 "${DEFAULT_BRANCH}. Only merged commits may be published."
             exit 1
           fi
           echo "commit $(git rev-parse --short HEAD) is reachable from ${DEFAULT_BRANCH}"

@@ -161,7 +161,12 @@ pub fn validated_unit_name(s: &str, param: &'static str) -> Result<String, Execu
 /// `rescue` drop to a root maintenance shell. Bringing any of them up is an
 /// Admin-or-above act, but the generic service actions are Medium-risk (Dev), so
 /// the name has to be refused rather than relying on the risk tier.
-const ROOT_SHELL_UNITS: &[&str] = &["debug-shell", "emergency", "rescue"];
+/// `runlevel1` is a stock systemd alias of `rescue.target` on both Debian and
+/// Fedora, so it must be denied too or `StartService runlevel1.target` reaches
+/// the same root maintenance shell. A name-based denylist cannot catch every
+/// alias a site might add; the residual risk is documented in issue #144, and
+/// the operator note there recommends masking these units outright.
+const ROOT_SHELL_UNITS: &[&str] = &["debug-shell", "emergency", "rescue", "runlevel1"];
 
 /// Validate a unit name that an action will **activate** (start, restart, enable,
 /// unmask), refusing units that would yield a root shell.
@@ -172,12 +177,16 @@ const ROOT_SHELL_UNITS: &[&str] = &["debug-shell", "emergency", "rescue"];
 pub fn validated_activatable_unit(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     let unit = validated_unit_name(s, param)?;
     // Lowercase first: systemd unit names are case-insensitive, so `.SERVICE`
-    // must strip like `.service`.
+    // must strip like `.service`. Strip every unit-type suffix, not just
+    // service/target, so a `rescue.socket`-style spelling cannot slip past the
+    // denylist by wearing a different type.
     let lower = unit.to_ascii_lowercase();
-    let bare = lower
-        .strip_suffix(".service")
-        .or_else(|| lower.strip_suffix(".target"))
-        .unwrap_or(&lower);
+    let bare = [
+        ".service", ".target", ".socket", ".mount", ".path", ".slice", ".scope",
+    ]
+    .iter()
+    .find_map(|suffix| lower.strip_suffix(suffix))
+    .unwrap_or(&lower);
     if ROOT_SHELL_UNITS.contains(&bare) {
         return Err(ExecutorError::InvalidParam(param));
     }
