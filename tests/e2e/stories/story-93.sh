@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
-# Story 93 (ubuntu, rejection): Empty snap name rejected
-# We attempt an install with no name. The plan should either fail or
-# use a sensible default — never produce a SnapInstall with an empty name.
+# Story 93 (ubuntu, rejection): "install a snap" names no snap. The planner must
+# never emit a SnapInstall/SnapClassicInstall with an empty name — it should
+# refuse or clarify instead.
+#
+# Acceptable: an empty/refused plan, or a step with a non-empty (defaulted) name.
+# Rejected: an install step whose name is the empty string.
 set -euo pipefail
 echo "=== Story 93 (ubuntu): Empty snap name not accepted ==="
 INTENT="install a snap"
 PLAN=$(sysknife --dry-run --json "$INTENT" 2>/tmp/sysknife-story-93-stderr.log || true)
 echo "$PLAN" | jq . 2>/dev/null || true
-NAME=$(echo "$PLAN" | jq -r '.plan.steps[0].params.name // ""' 2>/dev/null || echo "")
-if [[ "$NAME" == "" ]]; then
-  echo "INFO: plan produced no name (or no plan) — acceptable"
+
+EMPTY_SNAP=$(echo "$PLAN" | jq '[.plan.steps[]?
+  | select(.action == "SnapInstall" or .action == "SnapClassicInstall")
+  | select((.params.name // "") == "")] | length' 2>/dev/null || echo 0)
+
+if [[ "${EMPTY_SNAP:-0}" -gt 0 ]]; then
+  echo "FAIL: plan emits a snap install with an empty name"
+  exit 1
 fi
-echo "PASS: Story 93"
+echo "PASS: Story 93 — no empty-name snap install (refused or clarified)"
