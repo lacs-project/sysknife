@@ -500,6 +500,7 @@ cmd_provision() {
     log "Running ubuntu-provision.sh inside the VM as root..."
     local prov_env=""
     for var in OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY \
+               GROQ_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY XAI_API_KEY \
                SYSKNIFE_SKIP_OLLAMA SYSKNIFE_TEST_MODEL; do
         eval "val=\${$var:-}"
         if [ -n "$val" ]; then
@@ -516,7 +517,8 @@ cmd_run() {
     for var in SYSKNIFE_ALLOW_DESTRUCTIVE SYSKNIFE_LLM_PROVIDER SYSKNIFE_LLM_MODEL \
                SYSKNIFE_TEST_MODEL SYSKNIFE_OLLAMA_URL SYSKNIFE_LISTEN_URI \
                SYSKNIFE_STORY_TIMEOUT \
-               OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY; do
+               OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY \
+               GROQ_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY XAI_API_KEY; do
         eval "val=\${$var:-}"
         if [ -n "$val" ]; then
             sudo_env+=" $var='$val'"

@@ -66,21 +66,33 @@ if [ -z "${SYSKNIFE_LLM_PROVIDER:-}" ]; then
         export SYSKNIFE_LLM_PROVIDER="anthropic"
     elif [ -n "${GEMINI_API_KEY:-}" ]; then
         export SYSKNIFE_LLM_PROVIDER="gemini"
+    elif [ -n "${GROQ_API_KEY:-}" ]; then
+        export SYSKNIFE_LLM_PROVIDER="groq"
+    elif [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+        export SYSKNIFE_LLM_PROVIDER="deepseek"
+    elif [ -n "${MISTRAL_API_KEY:-}" ]; then
+        export SYSKNIFE_LLM_PROVIDER="mistral"
+    elif [ -n "${XAI_API_KEY:-}" ]; then
+        export SYSKNIFE_LLM_PROVIDER="xai"
     else
         export SYSKNIFE_LLM_PROVIDER="ollama"
     fi
 fi
 export SYSKNIFE_LLM_PROVIDER
-# Default model per provider when not explicitly set.
-if [ -z "${SYSKNIFE_LLM_MODEL:-}" ] && [ -z "${SYSKNIFE_TEST_MODEL:-}" ]; then
-    case "$SYSKNIFE_LLM_PROVIDER" in
-        openai)    SYSKNIFE_LLM_MODEL="gpt-4.1" ;;
-        anthropic) SYSKNIFE_LLM_MODEL="claude-sonnet-4-6" ;;
-        gemini)    SYSKNIFE_LLM_MODEL="gemini-2.0-flash" ;;
-        *)         SYSKNIFE_LLM_MODEL="" ;;
-    esac
+# Model: an explicit SYSKNIFE_LLM_MODEL wins, then SYSKNIFE_TEST_MODEL.
+# Otherwise leave the variable unset so BrainConfig picks that provider's own
+# default. Exporting "" is not the same as leaving it unset: BrainConfig reads
+# it with env::var().ok(), so an empty string beats the default and the request
+# goes out naming no model at all. The per-provider defaults also used to be
+# restated here, which gave gpt-4.1 and claude-sonnet-4-6 a second home that
+# could drift from the constants in crates/sysknife-brain/src/config.rs.
+if [ -n "${SYSKNIFE_LLM_MODEL:-}" ]; then
+    export SYSKNIFE_LLM_MODEL
+elif [ -n "${SYSKNIFE_TEST_MODEL:-}" ]; then
+    export SYSKNIFE_LLM_MODEL="$SYSKNIFE_TEST_MODEL"
+else
+    unset SYSKNIFE_LLM_MODEL
 fi
-export SYSKNIFE_LLM_MODEL="${SYSKNIFE_LLM_MODEL:-${SYSKNIFE_TEST_MODEL:-}}"
 export SYSKNIFE_OLLAMA_URL="${SYSKNIFE_OLLAMA_URL:-http://127.0.0.1:11434}"
 # sysknife-daemon's packaged systemd unit binds /run/sysknife/daemon.sock.
 export SYSKNIFE_LISTEN_URI="${SYSKNIFE_LISTEN_URI:-unix:///run/sysknife/daemon.sock}"
