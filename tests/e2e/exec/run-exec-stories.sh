@@ -60,21 +60,31 @@ if [ -z "${SYSKNIFE_LLM_PROVIDER:-}" ]; then
         export SYSKNIFE_LLM_PROVIDER="anthropic"
     elif [ -n "${GEMINI_API_KEY:-}" ]; then
         export SYSKNIFE_LLM_PROVIDER="gemini"
+    elif [ -n "${GROQ_API_KEY:-}" ]; then
+        export SYSKNIFE_LLM_PROVIDER="groq"
+    elif [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+        export SYSKNIFE_LLM_PROVIDER="deepseek"
+    elif [ -n "${MISTRAL_API_KEY:-}" ]; then
+        export SYSKNIFE_LLM_PROVIDER="mistral"
+    elif [ -n "${XAI_API_KEY:-}" ]; then
+        export SYSKNIFE_LLM_PROVIDER="xai"
     else
         export SYSKNIFE_LLM_PROVIDER="ollama"
     fi
 fi
 export SYSKNIFE_LLM_PROVIDER
 
-if [ -z "${SYSKNIFE_LLM_MODEL:-}" ] && [ -z "${SYSKNIFE_TEST_MODEL:-}" ]; then
-    case "$SYSKNIFE_LLM_PROVIDER" in
-        openai)    SYSKNIFE_LLM_MODEL="gpt-4.1" ;;
-        anthropic) SYSKNIFE_LLM_MODEL="claude-sonnet-4-6" ;;
-        gemini)    SYSKNIFE_LLM_MODEL="gemini-2.0-flash" ;;
-        *)         SYSKNIFE_LLM_MODEL="" ;;
-    esac
+# Leave SYSKNIFE_LLM_MODEL unset rather than empty when nothing overrides it:
+# BrainConfig reads it with env::var().ok(), so "" is Some("") and beats the
+# per-provider default, sending a request that names no model. See the same
+# note in run-stories.sh.
+if [ -n "${SYSKNIFE_LLM_MODEL:-}" ]; then
+    export SYSKNIFE_LLM_MODEL
+elif [ -n "${SYSKNIFE_TEST_MODEL:-}" ]; then
+    export SYSKNIFE_LLM_MODEL="$SYSKNIFE_TEST_MODEL"
+else
+    unset SYSKNIFE_LLM_MODEL
 fi
-export SYSKNIFE_LLM_MODEL="${SYSKNIFE_LLM_MODEL:-${SYSKNIFE_TEST_MODEL:-}}"
 export SYSKNIFE_OLLAMA_URL="${SYSKNIFE_OLLAMA_URL:-http://127.0.0.1:11434}"
 # SYSKNIFE_SOCKET — client-side path to the daemon socket (read by the CLI).
 # SYSKNIFE_LISTEN_URI — daemon-side bind URI (read by sysknife-daemon, not the CLI).

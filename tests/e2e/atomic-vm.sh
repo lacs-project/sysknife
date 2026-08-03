@@ -298,7 +298,9 @@ cmd_provision() {
         "$repo_root/" "${VM_USER}@127.0.0.1:/home/${VM_USER}/sysknife/"
     log "Running provisioner inside the VM..."
     local prov_env=""
-    for var in OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY SYSKNIFE_SKIP_OLLAMA \
+    for var in OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY \
+               GROQ_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY XAI_API_KEY \
+               SYSKNIFE_SKIP_OLLAMA \
                SYSKNIFE_TEST_MODEL VM_USER; do
         eval "val=\${$var:-}"
         if [ -n "$val" ]; then
@@ -440,8 +442,9 @@ cmd_run() {
     local sudo_env=""
     for var in SYSKNIFE_ALLOW_DESTRUCTIVE SYSKNIFE_LLM_PROVIDER SYSKNIFE_LLM_MODEL \
                SYSKNIFE_TEST_MODEL SYSKNIFE_OLLAMA_URL SYSKNIFE_LISTEN_URI \
-               SYSKNIFE_STORY_TIMEOUT \
-               OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY; do
+               SYSKNIFE_STORY_TIMEOUT SYSKNIFE_MAX_RPM \
+               OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY \
+               GROQ_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY XAI_API_KEY; do
         eval "val=\${$var:-}"
         if [ -n "$val" ]; then
             sudo_env+=" $var='$val'"
@@ -486,8 +489,9 @@ cmd_test_exec() {
     local env_prefix=""
     for var in SYSKNIFE_ALLOW_DESTRUCTIVE SYSKNIFE_LLM_PROVIDER SYSKNIFE_LLM_MODEL \
                SYSKNIFE_TEST_MODEL SYSKNIFE_OLLAMA_URL SYSKNIFE_SOCKET SYSKNIFE_LISTEN_URI \
-               SYSKNIFE_STORY_TIMEOUT \
-               OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY; do
+               SYSKNIFE_STORY_TIMEOUT SYSKNIFE_MAX_RPM \
+               OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY \
+               GROQ_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY XAI_API_KEY; do
         eval "val=\${$var:-}"
         if [ -n "$val" ]; then
             env_prefix+=" $var='$val'"

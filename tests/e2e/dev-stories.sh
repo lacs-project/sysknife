@@ -121,6 +121,14 @@ if [[ -z "${SYSKNIFE_LLM_PROVIDER:-}" ]]; then
         export SYSKNIFE_LLM_PROVIDER="openai"
     elif [[ -n "${GEMINI_API_KEY:-}" ]]; then
         export SYSKNIFE_LLM_PROVIDER="gemini"
+    elif [[ -n "${GROQ_API_KEY:-}" ]]; then
+        export SYSKNIFE_LLM_PROVIDER="groq"
+    elif [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
+        export SYSKNIFE_LLM_PROVIDER="deepseek"
+    elif [[ -n "${MISTRAL_API_KEY:-}" ]]; then
+        export SYSKNIFE_LLM_PROVIDER="mistral"
+    elif [[ -n "${XAI_API_KEY:-}" ]]; then
+        export SYSKNIFE_LLM_PROVIDER="xai"
     else
         export SYSKNIFE_LLM_PROVIDER="ollama"
     fi
