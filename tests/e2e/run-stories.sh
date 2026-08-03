@@ -186,6 +186,21 @@ fi
 # Runner
 # ---------------------------------------------------------------------------
 
+# True when a story's output shows the planner refused the request because of
+# the built-in rate limit (DEFAULT_MAX_RPM, 20/min) rather than because of
+# anything the model did. Stories write the CLI's stderr to their own file, so
+# both that and the story log have to be checked.
+#
+# This has to be consulted even when a story *passed*: the rejection stories
+# (91 to 93) accept an empty plan, so a rate-limited run makes them pass while
+# proving nothing. Reporting that as PASS is how a throttled suite reads as a
+# healthy one.
+story_was_rate_limited() {
+  local n="$1" log="$2"
+  grep -qi 'rate limit exceeded' "$log" 2>/dev/null && return 0
+  grep -qi 'rate limit exceeded' "/tmp/sysknife-story-${n}-stderr.log" 2>/dev/null
+}
+
 run_story() {
   local n="$1"
   local script="$STORY_DIR/story-${n}.sh"
@@ -207,7 +222,13 @@ run_story() {
   if timeout "$STORY_TIMEOUT" bash "$script" > "$log" 2>&1; then
     local last_line
     last_line=$(grep -E '^(PASS|SKIP)' "$log" | tail -1 || true)
-    if [[ "$last_line" == SKIP* ]]; then
+    if story_was_rate_limited "$n" "$log"; then
+      # Overrides the story's own verdict on purpose. It never saw a plan.
+      RESULTS[$n]="RATELIMIT"
+      MESSAGES[$n]="planner rate limit hit; this result is not evidence"
+      DURATIONS[$n]="0.0"
+      echo "RATELIMIT"
+    elif [[ "$last_line" == SKIP* ]]; then
       RESULTS[$n]="SKIP"
       MESSAGES[$n]="${last_line#SKIP}"
       DURATIONS[$n]="0.0"
@@ -221,14 +242,20 @@ run_story() {
     fi
   else
     local exit_code=$?
+    local end_time
+    end_time=$(date +%s.%N)
+    DURATIONS[$n]=$(echo "$end_time - $start_time" | bc 2>/dev/null || echo "?")
+    if story_was_rate_limited "$n" "$log"; then
+      RESULTS[$n]="RATELIMIT"
+      MESSAGES[$n]="planner rate limit hit; this result is not evidence"
+      echo "RATELIMIT"
+      return
+    fi
     RESULTS[$n]="FAIL"
     MESSAGES[$n]=$(tail -n 5 "$log" | grep -v '^$' | tail -n 1)
     if [[ $exit_code -eq 124 ]]; then
       MESSAGES[$n]="timed out after ${STORY_TIMEOUT}s"
     fi
-    local end_time
-    end_time=$(date +%s.%N)
-    DURATIONS[$n]=$(echo "$end_time - $start_time" | bc 2>/dev/null || echo "?")
     echo "FAIL (${DURATIONS[$n]}s)"
   fi
 }
@@ -262,6 +289,7 @@ echo "================================================================"
 pass_count=0
 fail_count=0
 skip_count=0
+ratelimit_count=0
 
 for n in "${STORIES[@]}"; do
   local_name="${STORY_NAMES[$n]:-Story $n}"
@@ -284,12 +312,23 @@ for n in "${STORIES[@]}"; do
       echo "SKIP — $local_msg"
       ((skip_count++)) || true
       ;;
+    RATELIMIT)
+      echo "RATELIMIT — $local_msg"
+      ((ratelimit_count++)) || true
+      ;;
   esac
 done
 
 total=${#STORIES[@]}
 echo ""
-echo "Summary: $pass_count/$total passed, $fail_count failed, $skip_count skipped"
+echo "Summary: $pass_count/$total passed, $fail_count failed, $skip_count skipped, $ratelimit_count rate-limited"
+if [[ $ratelimit_count -gt 0 ]]; then
+  echo ""
+  echo "  $ratelimit_count story/stories never reached the model: the planner's own"
+  echo "  rate limit (DEFAULT_MAX_RPM, 20 requests/minute) rejected them. Those"
+  echo "  results say nothing about the model and must not be counted either way."
+  echo "  Raise it for a full-suite run, e.g. SYSKNIFE_MAX_RPM=120."
+fi
 echo "Logs:    $LOG_DIR/"
 echo ""
 

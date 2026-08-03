@@ -273,6 +273,7 @@ run_hygiene_group() {
     run_step 'hygiene: smithery-manifest.test.sh' bash "$repo_root/tests/release/smithery-manifest.test.sh"
     run_step 'hygiene: release-rehearsal.test.sh' bash "$repo_root/tests/release/release-rehearsal.test.sh"
     run_step 'hygiene: ubuntu-vm-bootstrap.test.sh' bash "$repo_root/tests/e2e/ubuntu-vm-bootstrap.test.sh"
+    run_step 'hygiene: provider-parity.test.sh' bash "$repo_root/tests/e2e/provider-parity.test.sh"
 
     if have markdownlint-cli2; then
         run_step 'hygiene: markdownlint-cli2' hygiene_markdownlint
