@@ -190,6 +190,17 @@ impl ShellCommandState {
             fallback,
         };
         let planner = LlmPlanner::from_config(config, build_state_client()).unwrap_or_else(|err| {
+            // A cassette misconfiguration is not a credentials problem, and the
+            // Ollama retry cannot fix it: it reads the same environment, fails
+            // identically, and then panics on `expect` with a message naming the
+            // wrong variable. Say what is actually wrong instead.
+            if err.contains("SYSKNIFE_CASSETTE") {
+                panic!(
+                    "cassette is misconfigured: {err}\nThis is not an LLM-provider \
+                     problem. Unset SYSKNIFE_CASSETTE, or set SYSKNIFE_CASSETTE_MODE \
+                     to \"record\" or \"replay\"."
+                );
+            }
             eprintln!(
                 "[sysknife-shell WARNING] Failed to build LLM provider: {err}. \
                  Check SYSKNIFE_LLM_PROVIDER and related env vars."
@@ -443,6 +454,11 @@ fn map_planning_error(err: sysknife_brain::planner::PlanningError) -> ShellError
                 ProviderError::RateLimit(_) => "llm_rate_limit",
                 ProviderError::Http { .. } | ProviderError::Auth(_) => "llm_http_error",
                 ProviderError::Parse(_) | ProviderError::Request(_) => "llm_parse_error",
+                // Only reachable when a cassette is configured, which is a
+                // testing setup rather than anything a user drives. It gets its
+                // own code regardless: reporting "parse error" for a replay that
+                // simply had no recording would send the reader after the model.
+                ProviderError::CassetteMiss(_) => "llm_cassette_miss",
             };
             (code, err.to_string())
         }

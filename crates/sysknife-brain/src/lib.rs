@@ -2,6 +2,7 @@ pub use planner::PlanEvent;
 
 pub mod action_name;
 pub mod audit;
+pub mod cassette;
 pub mod config;
 pub mod journal;
 pub mod planner;

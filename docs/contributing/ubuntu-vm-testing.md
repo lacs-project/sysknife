@@ -107,6 +107,69 @@ UBUNTU_RELEASE=noble ./tests/e2e/ubuntu-vm.sh stop
 UBUNTU_RELEASE=noble ./tests/e2e/ubuntu-vm.sh restore baseline
 ```
 
+## Record once, replay for free
+
+A live suite run needs an API key, costs money, is capped by the planner's own
+rate limit, and does not give the same answer twice: the models used here
+intermittently emit a reasoning channel instead of a tool call, which is enough
+to flip a story between runs. A cassette removes all four problems by recording
+every LLM call once and answering from the file afterwards.
+
+The wrapper sits at the provider boundary, so a replay still exercises prompt
+assembly, the tool-use loop, the safety fence, the ActionSpec risk substitution
+and the daemon IPC. Only the network hop is served from disk.
+
+```sh
+# Record. Costs one live run; the cassette lands inside the VM.
+CASSETTE=tests/e2e/cassettes/ubuntu-jammy-gpt-oss-120b.json
+GROQ_API_KEY=gsk-... \
+SYSKNIFE_LLM_PROVIDER=groq SYSKNIFE_LLM_MODEL=openai/gpt-oss-120b \
+SYSKNIFE_CASSETTE="$CASSETTE" SYSKNIFE_CASSETTE_MODE=record \
+UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh run $(seq 55 104)
+
+# Copy it out of the guest (the suite runs as root, so read it with sudo).
+UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh ssh "sudo cat $CASSETTE" > "$CASSETTE"
+
+# If the cassette directory did not yet exist in the guest, root created it while
+# recording and `sync` will fail on it afterwards with "Permission denied". Give
+# it back once:
+UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh ssh \
+    "sudo chown -R ubuntu:ubuntu /home/ubuntu/sysknife/tests/e2e/cassettes"
+
+# Replay. No network, no spend, same answer every time.
+SYSKNIFE_CASSETTE="$CASSETTE" SYSKNIFE_CASSETTE_MODE=replay \
+SYSKNIFE_LLM_PROVIDER=groq SYSKNIFE_LLM_MODEL=openai/gpt-oss-120b \
+GROQ_API_KEY=unused-under-replay \
+UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh run $(seq 55 104)
+```
+
+A key still has to be *present* under replay, because `BrainConfig::from_env`
+validates one before the planner is built. Its value is never used: a replay
+never calls the inner provider, and a call the cassette does not cover returns
+an error rather than falling through to the network. Any placeholder works, and
+using a deliberately invalid one is a good way to prove the run was hermetic.
+
+Two rules the harness enforces so a replay cannot lie:
+
+- **A miss fails the run.** It means the recording and the code have diverged,
+  most often because `prompt.rs` changed, so the results describe neither the
+  recording nor the live model. The error names the system-prompt hash when that
+  is the cause, since a prompt change misses every call at once.
+- **Serving nothing fails the run.** A replay that answered no calls looks
+  exactly like a replay where every story passed, so `run-stories.sh` reads the
+  ledger next to the cassette and requires at least one served call. The ledger
+  is truncated at the start of each replay, so it never inherits an older tally.
+
+The cassette is keyed on `(provider/model, system prompt, messages, tools,
+max_tokens)`. A different model therefore misses instead of inheriting someone
+else's answers, which is deliberate: a recording is evidence about the model that
+produced it and nothing else. Re-record after any change to `prompt.rs`, the tool
+definitions, or the model.
+
+`SYSKNIFE_CASSETTE` set without `SYSKNIFE_CASSETTE_MODE` is an error, not a
+no-op. Ignoring it would send a run meant to be hermetic to the live model, and
+the only symptom would be the bill.
+
 ## Running all three VMs in parallel
 
 All three VMs bind to different host SSH ports (2222, 2223, 2224) so they

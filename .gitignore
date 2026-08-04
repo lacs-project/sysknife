@@ -23,6 +23,11 @@ tests/e2e/ubuntu-vm/resolute/
 tests/e2e/logs/*.log
 tests/e2e/exec/logs/*.log
 
+# Cassette replay ledgers are per-run evidence, regenerated on every replay and
+# truncated at its start. The cassettes themselves ARE committed: they are the
+# fixture that lets the story suite run offline.
+tests/e2e/cassettes/*.replay-log.jsonl
+
 # mdBook build output
 book/
 

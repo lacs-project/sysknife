@@ -649,6 +649,12 @@ impl LlmPlanner {
         config: BrainConfig,
         state_client: Box<dyn StateClient>,
     ) -> Result<Self, String> {
+        // Read before the match below consumes `config.provider`. This names the
+        // cassette surface, so a recording made against one model can never be
+        // replayed as evidence about another.
+        let surface = format!("{}/{}", config.provider_name(), config.model_name());
+        let cassette = crate::cassette::from_env()?;
+
         let provider: Box<dyn LlmProvider> = match config.provider {
             ProviderConfig::Anthropic {
                 api_key,
@@ -729,8 +735,28 @@ impl LlmPlanner {
                 Box::new(RigCompletionAdapter::new(completion_model))
             }
         };
+        let replaying = matches!(
+            cassette.as_ref().map(crate::cassette::Cassette::mode),
+            Some(crate::cassette::CassetteMode::Replay)
+        );
+        let provider: Box<dyn LlmProvider> = match cassette {
+            Some(cassette) => Box::new(crate::cassette::CassetteProvider::new(
+                provider, cassette, surface,
+            )),
+            None => provider,
+        };
+
         let mut planner = Self::new(provider, state_client, config.max_turns);
         planner.prefs_path = Some(sysknife_core::config::prefs_path());
+
+        if replaying {
+            // No rate limiter under replay. It exists to bound spend and load on a
+            // provider, and a replay reaches neither: every answer comes off disk.
+            // Leaving it installed would throttle a 50-story suite at story 20 on
+            // the strength of requests that were never sent.
+            return Ok(planner);
+        }
+
         // Wire the default rate limiter. `SYSKNIFE_MAX_RPM` overrides at runtime.
         // The timestamp file lives next to the audit log in $XDG_DATA_HOME/sysknife/.
         let rate_log_path = {
@@ -1191,6 +1217,66 @@ mod tests {
     // serialised to avoid cross-test interference on a multi-threaded
     // test runner.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// A StateClient is required to build a planner but is never consulted by
+    /// `from_config`, so the methods stay unreachable on purpose.
+    struct UnusedState;
+
+    impl crate::state_client::StateClient for UnusedState {
+        fn curated_state(&self) -> Result<crate::state_client::CuratedState, PlanningError> {
+            unreachable!("from_config must not query system state")
+        }
+        fn query_action(
+            &self,
+            _action: &str,
+            _params: &serde_json::Value,
+        ) -> Result<String, PlanningError> {
+            unreachable!("from_config must not query the daemon")
+        }
+    }
+
+    /// The limiter is consulted per `plan_intent`, before the provider call, so
+    /// leaving it installed under replay throttled a 50-story suite at story 20 on
+    /// the strength of requests that were never sent. A replay reaches neither
+    /// spend nor provider load.
+    #[test]
+    fn replay_installs_no_rate_limiter_because_nothing_is_sent() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let cassette = dir.path().join("c.json");
+        std::fs::write(
+            &cassette,
+            serde_json::json!({"version": 1, "meta": {}, "entries": {}}).to_string(),
+        )
+        .unwrap();
+
+        unsafe {
+            std::env::set_var(crate::cassette::ENV_CASSETTE, &cassette);
+            std::env::set_var(crate::cassette::ENV_CASSETTE_MODE, "replay");
+        }
+        let replaying = ollama_planner();
+        unsafe {
+            std::env::remove_var(crate::cassette::ENV_CASSETTE);
+            std::env::remove_var(crate::cassette::ENV_CASSETTE_MODE);
+        }
+        let live = ollama_planner();
+
+        assert!(
+            replaying.rate_limiter.is_none(),
+            "a replay sends nothing, so there is nothing to rate limit"
+        );
+        assert!(
+            live.rate_limiter.is_some(),
+            "a live run must keep its spend guard"
+        );
+    }
+
+    /// Built twice in the test above; a helper so the env manipulation stays
+    /// readable. Ollama needs no credentials, which is what makes it usable here.
+    fn ollama_planner() -> LlmPlanner {
+        LlmPlanner::from_config(BrainConfig::ollama_defaults(), Box::new(UnusedState))
+            .expect("ollama defaults need no credentials")
+    }
 
     #[test]
     fn into_authorized_replaces_every_step_risk() {

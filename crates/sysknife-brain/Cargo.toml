@@ -30,6 +30,10 @@ rig = { package = "rig-core", version = "0.40.0" }
 # transitively via async-openai/rig-core/reqwest; declared directly here
 # because we match on its constants in our own code.
 http = "1"
+# Content-addressed cassette keys (record/replay of LLM calls). Same pins as
+# sysknife-daemon so the workspace resolves one version of each.
+sha2 = "0.11"
+hex = "0.4"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
