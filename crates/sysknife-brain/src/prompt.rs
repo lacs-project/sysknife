@@ -256,12 +256,12 @@ lists the information they want, treat it as a **direct read-only request** —
 not as an open-ended diagnosis. Go straight to `propose_plan` with the listed
 actions. Do NOT call `get_system_state` to "gather context" first.
 
-User: "Something broke after my last system update — check what toolbox containers I have, list my configured Flatpak remotes, and tell me if any services are in a failed state"
+User: "Something broke after my last system update — tell me if any services are in a failed state, show me what is listening on the network, and check how much disk space is left"
 
 Three explicit read-only requests, each mapping directly to an action:
-- "toolbox containers I have" → `ListToolboxes`
-- "configured Flatpak remotes" → `ListFlatpakRemotes`
 - "services in a failed state" → `ListServices`
+- "what is listening on the network" → `GetListeningPorts`
+- "how much disk space is left" → `GetDiskUsage`
 
 Do NOT call `get_system_state`, `query_services`, or any query tool first.
 The complaint framing does NOT change the planning rule.
@@ -269,24 +269,24 @@ Call `propose_plan` immediately:
 
 ```json
 {
-  "summary": "List toolbox containers, Flatpak remotes, and service states",
-  "explanation": "The user described a problem and then listed three specific read-only things to inspect. All three map directly to named actions — ListToolboxes, ListFlatpakRemotes, ListServices. The complaint framing does not require a diagnostic state query first.",
+  "summary": "List service states, listening ports, and disk usage",
+  "explanation": "The user described a problem and then listed three specific read-only things to inspect. All three map directly to named actions — ListServices, GetListeningPorts, GetDiskUsage. The complaint framing does not require a diagnostic state query first.",
   "steps": [
-    {
-      "action_name": "ListToolboxes",
-      "summary": "List all toolbox containers",
-      "risk_level": "low",
-      "params": {}
-    },
-    {
-      "action_name": "ListFlatpakRemotes",
-      "summary": "List configured Flatpak remotes",
-      "risk_level": "low",
-      "params": {}
-    },
     {
       "action_name": "ListServices",
       "summary": "List systemd services to identify any in a failed state",
+      "risk_level": "low",
+      "params": {}
+    },
+    {
+      "action_name": "GetListeningPorts",
+      "summary": "Show listening TCP/UDP sockets and the process bound to each",
+      "risk_level": "low",
+      "params": {}
+    },
+    {
+      "action_name": "GetDiskUsage",
+      "summary": "Show disk space usage for all mounted filesystems",
       "risk_level": "low",
       "params": {}
     }
@@ -1280,8 +1280,17 @@ mod tests {
         let prompt = build_system_prompt(None, None);
         // Example D covers complaint/diagnostic framing — must include the key
         // actions and the explicit anti-pattern instruction.
-        assert!(prompt.contains("ListToolboxes"));
-        assert!(prompt.contains("ListFlatpakRemotes"));
+        //
+        // Its three actions are deliberately no-param and cross-distro. The
+        // originals (`ListToolboxes`, `ListFlatpakRemotes`) were neither: both
+        // are user-scoped and require `username`, which the example showed as
+        // `params: {}` while the params section tells the model to call
+        // `query_current_user` when no username is given — so the example
+        // demonstrated a plan the daemon rejects with MissingParam. And
+        // `ListToolboxes` needs `toolbox`, which Ubuntu does not have.
+        assert!(prompt.contains("ListServices"));
+        assert!(prompt.contains("GetListeningPorts"));
+        assert!(prompt.contains("GetDiskUsage"));
         // Must explicitly teach: complaint framing does not justify get_system_state.
         assert!(
             prompt.contains("complaint")
@@ -1322,10 +1331,30 @@ mod tests {
         assert!(prompt.contains("State and diagnostic action disambiguation"));
     }
 
-    // example_d uses ListToolboxes and ListFlatpakRemotes — these are in the
-    // EXAMPLES const (shared), so the generic prompt must also contain them
-    // even though they are Fedora-specific actions. The generic prompt does NOT
-    // list them in risk tables; they only appear in the examples section.
-    // The isolation tests above use None (generic) and do NOT check for
-    // ListToolboxes/ListFlatpakRemotes as forbidden — which is correct.
+    /// The shared `EXAMPLES` block is spliced into all three prompts, so every
+    /// action it demonstrates must be runnable on every family.
+    ///
+    /// This is the test that was missing. Example D used to walk through
+    /// `ListToolboxes`, and the note that stood here declared that "correct"
+    /// because the isolation tests only forbade a hand-listed set of Fedora
+    /// names. So the Ubuntu prompt shipped a worked example of a `toolbox`
+    /// action, and in a live 22.04 VM the planner answered "what development
+    /// containers do I have running" with `ListToolboxes` — an action whose
+    /// binary Ubuntu does not have.
+    #[test]
+    fn shared_examples_demonstrate_only_cross_distro_actions() {
+        for (family, actions) in [
+            ("Fedora-only", FEDORA_ONLY_ACTION_NAMES),
+            ("Debian-only", DEBIAN_ONLY_ACTION_NAMES),
+        ] {
+            for action in actions {
+                assert!(
+                    !EXAMPLES.contains(action),
+                    "shared EXAMPLES demonstrates {family} action {action}; \
+                     every prompt embeds this block, so it must name only \
+                     actions that run on every family"
+                );
+            }
+        }
+    }
 }

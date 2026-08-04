@@ -19,7 +19,26 @@
 
 /// Fedora-family action names that are NOT available on Debian-family distros.
 ///
-/// These are rpm-ostree shaped actions.
+/// These are rpm-ostree shaped actions, plus the three tool families whose
+/// binary ships only on the Fedora side and has a full Ubuntu twin here:
+///
+/// | Fedora tool | action(s) | Ubuntu twin |
+/// |---|---|---|
+/// | `firewall-cmd` | `GetFirewallState`, `ConfigureFirewall` | `UfwStatus`, `UfwAllow`/`UfwDeny` |
+/// | `toolbox` | `ListToolboxes`, `CreateToolbox`, `RemoveToolbox` | `DistroboxList`, `DistroboxCreate`, `DistroboxRemove` |
+///
+/// Those five were classified cross-distro until an Ubuntu VM story run caught
+/// the planner answering "show the current firewall rules" with
+/// `GetFirewallState` and "what development containers do I have" with
+/// `ListToolboxes` — `firewall-cmd` and `toolbox` are not installed on Ubuntu,
+/// so both plans were approvable and then unrunnable. `prompt.rs` already
+/// treated them as Fedora-only and the story suite already accepted only the
+/// Ubuntu twin on Ubuntu; this list was the one place that still said "All".
+///
+/// Flatpak is deliberately NOT in here: the un-prefixed `InstallFlatpak`
+/// family covers remotes, search, and app info, which the `Ubuntu*Flatpak`
+/// actions do not, so scoping it to Fedora would remove capability from Ubuntu
+/// rather than redirect it.
 pub const FEDORA_ONLY_ACTIONS: &[&str] = &[
     "AddLayeredPackage",
     "RemoveLayeredPackage",
@@ -36,6 +55,14 @@ pub const FEDORA_ONLY_ACTIONS: &[&str] = &[
     "RebaseSystem",
     "GetKernelArguments",
     "SetKernelArguments",
+    // firewalld — Ubuntu uses ufw (installable via apt, but never the default,
+    // and managing firewalld while ufw holds the rules is a footgun).
+    "GetFirewallState",
+    "ConfigureFirewall",
+    // toolbox — Ubuntu uses distrobox.
+    "ListToolboxes",
+    "CreateToolbox",
+    "RemoveToolbox",
 ];
 
 /// Debian-family action names that are NOT available on Fedora-family distros.
