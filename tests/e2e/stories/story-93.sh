@@ -8,8 +8,18 @@
 set -euo pipefail
 echo "=== Story 93 (ubuntu): Empty snap name not accepted ==="
 INTENT="install a snap"
-PLAN=$(sysknife --dry-run --json "$INTENT" 2>/tmp/sysknife-story-93-stderr.log || true)
+STDERR_LOG=/tmp/sysknife-story-93-stderr.log
+PLAN=$(sysknife --dry-run --json "$INTENT" 2>"$STDERR_LOG" || true)
 echo "$PLAN" | jq . 2>/dev/null || true
+
+# A cassette miss is not a refusal. This story tolerates an empty plan on
+# purpose, which means a replay with no recording for this call would otherwise
+# print PASS while proving nothing. Checked here as well as in the harness so a
+# subset run stays honest.
+if grep -qi 'cassette miss' "$STDERR_LOG" 2>/dev/null; then
+  echo "FAIL: replay had no recorded output for this call (cassette miss), which is not a refusal"
+  exit 1
+fi
 
 EMPTY_SNAP=$(echo "$PLAN" | jq '[.plan.steps[]?
   | select(.action == "SnapInstall" or .action == "SnapClassicInstall")

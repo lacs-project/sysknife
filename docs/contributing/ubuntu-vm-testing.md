@@ -130,6 +130,12 @@ UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh run $(seq 55 104)
 # Copy it out of the guest (the suite runs as root, so read it with sudo).
 UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh ssh "sudo cat $CASSETTE" > "$CASSETTE"
 
+# If the cassette directory did not yet exist in the guest, root created it while
+# recording and `sync` will fail on it afterwards with "Permission denied". Give
+# it back once:
+UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh ssh \
+    "sudo chown -R ubuntu:ubuntu /home/ubuntu/sysknife/tests/e2e/cassettes"
+
 # Replay. No network, no spend, same answer every time.
 SYSKNIFE_CASSETTE="$CASSETTE" SYSKNIFE_CASSETTE_MODE=replay \
 SYSKNIFE_LLM_PROVIDER=groq SYSKNIFE_LLM_MODEL=openai/gpt-oss-120b \

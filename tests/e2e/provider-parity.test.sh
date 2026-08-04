@@ -114,6 +114,20 @@ run_stories="$repo_root/tests/e2e/run-stories.sh"
 grep -Fq -- 'replay-log.jsonl' "$run_stories" \
     || report "run-stories.sh does not audit the cassette ledger"
 
+# CassetteMode::parse trims and lowercases, so the shell must too. When they
+# disagreed, SYSKNIFE_CASSETTE_MODE=Replay made the planner replay strictly while
+# this audit was skipped in silence, and a subset run of the rejection stories
+# could miss every call and still exit 0.
+grep -Fq -- "tr '[:upper:]' '[:lower:]'" "$run_stories" \
+    || report "run-stories.sh does not normalise SYSKNIFE_CASSETTE_MODE the way CassetteMode::parse does"
+
+# The rejection stories accept an empty plan, so they must tell a cassette miss
+# apart from a refusal or they pass while proving nothing.
+for n in 91 92 93; do
+    grep -Fq -- 'cassette miss' "$repo_root/tests/e2e/stories/story-$n.sh" \
+        || report "story-$n.sh treats a cassette miss as an acceptable empty plan"
+done
+
 if [ "$failures" -ne 0 ]; then
     printf '\n%d provider-parity failure(s) across %d providers.\n' "$failures" "${#keys[@]}" >&2
     exit 1

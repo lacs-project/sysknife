@@ -232,6 +232,28 @@ impl Cassette {
             }
         };
 
+        // Under replay the ledger *is* the evidence, so prove it can be written
+        // now rather than discovering per call that it cannot. A read-only
+        // checkout used to produce a run whose every call replayed correctly and
+        // whose audit then reported "served 0 calls", sending the reader after a
+        // missing cassette instead of a missing write permission.
+        if mode == CassetteMode::Replay {
+            if let Some(parent) = ledger_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent).map_err(|source| CassetteError::Io {
+                    path: parent.to_path_buf(),
+                    source,
+                })?;
+            }
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&ledger_path)
+                .map_err(|source| CassetteError::Io {
+                    path: ledger_path.clone(),
+                    source,
+                })?;
+        }
+
         Ok(Self {
             path,
             ledger_path,
@@ -313,14 +335,23 @@ impl Cassette {
                 .system_prompt_sha256
                 .insert(prompt_sha.to_string());
             state.entries.insert(
-                key,
+                key.clone(),
                 Entry {
                     surface: surface.to_string(),
                     output,
                 },
             );
         }
-        self.persist()
+        // Roll back if it never reached disk, so "in memory" and "durable" cannot
+        // diverge. Today the caller aborts on this error anyway, but an entry that
+        // is visible to `lookup` while absent from the file is a recording that
+        // believes it captured a call it did not.
+        if let Err(e) = self.persist() {
+            let mut state = self.state.lock().expect("cassette state poisoned");
+            state.entries.remove(&key);
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Write after every new entry, so an interrupted recording keeps the calls
@@ -328,7 +359,15 @@ impl Cassette {
     /// renamed, so a crash mid-write cannot leave a truncated cassette that would
     /// later parse as "these calls were never recorded".
     fn persist(&self) -> Result<(), CassetteError> {
-        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        // A bare filename yields Some(""), not None, and neither create_dir_all
+        // nor NamedTempFile::new_in accepts "" meaningfully, so map both the empty
+        // and the absent parent onto the current directory. Written as a filter so
+        // the fallback is actually reachable rather than decorative.
+        let parent = self
+            .path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent).map_err(|source| CassetteError::Io {
             path: parent.to_path_buf(),
             source,
@@ -355,6 +394,24 @@ impl Cassette {
             path: self.path.clone(),
             source: e.error,
         })?;
+
+        // NamedTempFile creates at 0600 and the rename keeps it, which is wrong for
+        // a cassette: it is a committed fixture holding model outputs, not a secret.
+        // Recording inside a VM as root then left a 0600 root-owned file in the
+        // synced tree, and every later `ubuntu-vm.sh sync` failed trying to update
+        // it. Failure to relax the mode is not fatal on its own.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            if let Err(e) =
+                std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o644))
+            {
+                eprintln!(
+                    "[sysknife-brain] could not relax cassette permissions on {}: {e}",
+                    self.path.display()
+                );
+            }
+        }
         Ok(())
     }
 
@@ -370,18 +427,22 @@ impl Cassette {
             // Record mode's evidence is the cassette itself.
             return;
         }
-        // Best effort: a ledger that cannot be written must not fail a run whose
-        // real outcome was fine. The strictness that matters is the returned
-        // error; this file is the cross-check for a caller that swallowed it.
-        if let Ok(mut f) = std::fs::OpenOptions::new()
+        // Writability was proven at open, so a failure here is a change of
+        // circumstances (disk full, the file removed underneath us) rather than a
+        // misconfiguration. It must be said out loud: losing the line for a miss
+        // while keeping earlier hits is the one combination that makes the audit
+        // read "served N, 0 misses" on a run that in fact missed.
+        let line = serde_json::json!({"outcome": outcome, "surface": surface, "key": key});
+        let appended = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.ledger_path)
-        {
-            let _ = writeln!(
-                f,
-                "{}",
-                serde_json::json!({"outcome": outcome, "surface": surface, "key": key})
+            .and_then(|mut f| writeln!(f, "{line}"));
+        if let Err(e) = appended {
+            eprintln!(
+                "[sysknife-brain] cassette ledger write failed at {}: {e} \
+                 -- this replay's evidence is incomplete and its result is not trustworthy",
+                self.ledger_path.display()
             );
         }
     }
@@ -876,6 +937,82 @@ mod tests {
             std::env::remove_var(ENV_CASSETTE_MODE);
         }
         assert!(err.contains("playback"), "must quote the bad value: {err}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_recorded_cassette_is_group_and_world_readable() {
+        // It is a committed fixture, not a secret. NamedTempFile's 0600 default
+        // used to survive the rename, and a root-owned 0600 file in the synced
+        // tree broke every later `ubuntu-vm.sh sync`.
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let (inner, _) = counting();
+        let p = CassetteProvider::new(
+            inner,
+            Cassette::open(&path, CassetteMode::Record).unwrap(),
+            SURFACE,
+        );
+        p.complete("sys", &msgs("hi"), &[], 100).await.unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "cassette should be 0644, got {mode:o}");
+    }
+
+    #[test]
+    fn replay_refuses_to_start_when_it_cannot_write_its_ledger() {
+        // The ledger is the evidence a replay happened. A read-only checkout used
+        // to yield a run whose calls all replayed correctly and whose audit then
+        // said "served 0 calls", pointing the reader at a missing cassette rather
+        // than a missing write permission.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({"version": 1, "meta": {}, "entries": {}}).to_string(),
+        )
+        .unwrap();
+
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+
+        let outcome = Cassette::open(&path, CassetteMode::Replay);
+
+        // Restore before asserting so the tempdir can always clean itself up.
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+
+        // Skipped rather than failed when running as root, which ignores the mode
+        // bits entirely; asserting there would be testing the kernel, not this.
+        if running_as_root() {
+            return;
+        }
+        assert!(
+            matches!(outcome, Err(CassetteError::Io { .. })),
+            "an unwritable ledger must fail at open, got {outcome:?}"
+        );
+    }
+
+    /// Real uid from /proc, to avoid a libc dependency for one call in one test.
+    /// An unreadable or unparseable status file is treated as non-root, which
+    /// keeps the assertion active rather than skipping it on a guess.
+    fn running_as_root() -> bool {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status
+                    .lines()
+                    .find(|l| l.starts_with("Uid:"))?
+                    .split_whitespace()
+                    .nth(1)?
+                    .parse::<u32>()
+                    .ok()
+            })
+            .is_some_and(|uid| uid == 0)
     }
 
     #[tokio::test]

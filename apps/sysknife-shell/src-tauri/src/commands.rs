@@ -190,6 +190,17 @@ impl ShellCommandState {
             fallback,
         };
         let planner = LlmPlanner::from_config(config, build_state_client()).unwrap_or_else(|err| {
+            // A cassette misconfiguration is not a credentials problem, and the
+            // Ollama retry cannot fix it: it reads the same environment, fails
+            // identically, and then panics on `expect` with a message naming the
+            // wrong variable. Say what is actually wrong instead.
+            if err.contains("SYSKNIFE_CASSETTE") {
+                panic!(
+                    "cassette is misconfigured: {err}\nThis is not an LLM-provider \
+                     problem. Unset SYSKNIFE_CASSETTE, or set SYSKNIFE_CASSETTE_MODE \
+                     to \"record\" or \"replay\"."
+                );
+            }
             eprintln!(
                 "[sysknife-shell WARNING] Failed to build LLM provider: {err}. \
                  Check SYSKNIFE_LLM_PROVIDER and related env vars."
