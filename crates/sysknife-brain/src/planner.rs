@@ -649,6 +649,12 @@ impl LlmPlanner {
         config: BrainConfig,
         state_client: Box<dyn StateClient>,
     ) -> Result<Self, String> {
+        // Read before the match below consumes `config.provider`. This names the
+        // cassette surface, so a recording made against one model can never be
+        // replayed as evidence about another.
+        let surface = format!("{}/{}", config.provider_name(), config.model_name());
+        let cassette = crate::cassette::from_env()?;
+
         let provider: Box<dyn LlmProvider> = match config.provider {
             ProviderConfig::Anthropic {
                 api_key,
@@ -729,8 +735,28 @@ impl LlmPlanner {
                 Box::new(RigCompletionAdapter::new(completion_model))
             }
         };
+        let replaying = matches!(
+            cassette.as_ref().map(crate::cassette::Cassette::mode),
+            Some(crate::cassette::CassetteMode::Replay)
+        );
+        let provider: Box<dyn LlmProvider> = match cassette {
+            Some(cassette) => Box::new(crate::cassette::CassetteProvider::new(
+                provider, cassette, surface,
+            )),
+            None => provider,
+        };
+
         let mut planner = Self::new(provider, state_client, config.max_turns);
         planner.prefs_path = Some(sysknife_core::config::prefs_path());
+
+        if replaying {
+            // No rate limiter under replay. It exists to bound spend and load on a
+            // provider, and a replay reaches neither: every answer comes off disk.
+            // Leaving it installed would throttle a 50-story suite at story 20 on
+            // the strength of requests that were never sent.
+            return Ok(planner);
+        }
+
         // Wire the default rate limiter. `SYSKNIFE_MAX_RPM` overrides at runtime.
         // The timestamp file lives next to the audit log in $XDG_DATA_HOME/sysknife/.
         let rate_log_path = {

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// A single turn in the planning conversation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: Vec<ContentBlock>,
@@ -51,7 +51,7 @@ impl Message {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
     User,
     Assistant,
@@ -61,7 +61,7 @@ pub enum Role {
 ///
 /// Assistant messages may contain `Text` and `ToolUse` blocks.
 /// User messages may contain `Text` and `ToolResult` blocks.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ContentBlock {
     Text {
         text: String,
@@ -118,13 +118,13 @@ pub struct ToolDefinition {
 // ---------------------------------------------------------------------------
 
 /// The result of a single LLM `complete` call.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Completion {
     pub content: Vec<ContentBlock>,
     pub stop_reason: StopReason,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StopReason {
     EndTurn,
     ToolUse,
@@ -173,4 +173,11 @@ pub enum ProviderError {
 
     #[error("request error: {0}")]
     Request(String),
+
+    /// A replay found no recorded output for this call. Deliberately a provider
+    /// error rather than a silent fallthrough to the live model: a replay that
+    /// quietly went to the network would report results the cassette never
+    /// contained. See [`crate::cassette`].
+    #[error("cassette miss: {0}")]
+    CassetteMiss(String),
 }

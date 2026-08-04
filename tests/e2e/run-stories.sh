@@ -98,6 +98,19 @@ export SYSKNIFE_OLLAMA_URL="${SYSKNIFE_OLLAMA_URL:-http://127.0.0.1:11434}"
 export SYSKNIFE_LISTEN_URI="${SYSKNIFE_LISTEN_URI:-unix:///run/sysknife/daemon.sock}"
 
 # ---------------------------------------------------------------------------
+# Cassette (deterministic record/replay of the LLM call)
+# ---------------------------------------------------------------------------
+# SYSKNIFE_CASSETTE + SYSKNIFE_CASSETTE_MODE are read by the planner itself; this
+# script only has to manage the ledger, which is how a replay proves it happened.
+# The ledger is append-only across processes, so it has to be truncated at the
+# start of a run or this run inherits the previous one's tally.
+CASSETTE_LEDGER=""
+if [ -n "${SYSKNIFE_CASSETTE:-}" ] && [ "${SYSKNIFE_CASSETTE_MODE:-}" = "replay" ]; then
+  CASSETTE_LEDGER="${SYSKNIFE_CASSETTE}.replay-log.jsonl"
+  rm -f "$CASSETTE_LEDGER"
+fi
+
+# ---------------------------------------------------------------------------
 # Determine which stories to run
 # ---------------------------------------------------------------------------
 
@@ -332,7 +345,37 @@ fi
 echo "Logs:    $LOG_DIR/"
 echo ""
 
-if [[ $fail_count -gt 0 ]]; then
+# ---------------------------------------------------------------------------
+# Cassette replay audit
+# ---------------------------------------------------------------------------
+# A replay that answered nothing looks exactly like a replay where everything
+# passed, so the run is only trustworthy if the ledger says calls were served.
+# Checked even when every story passed: that is the case this guards.
+cassette_failed=0
+if [[ -n "$CASSETTE_LEDGER" ]]; then
+  if [[ -f "$CASSETTE_LEDGER" ]]; then
+    hits=$(jq -s '[.[] | select(.outcome == "hit")] | length' "$CASSETTE_LEDGER" 2>/dev/null || echo 0)
+    misses=$(jq -s '[.[] | select(.outcome != "hit")] | length' "$CASSETTE_LEDGER" 2>/dev/null || echo 0)
+  else
+    hits=0
+    misses=0
+  fi
+  echo "Cassette:  replay served ${hits} call(s), ${misses} miss(es)"
+  if [[ "${misses:-0}" -gt 0 ]]; then
+    echo "  FAIL: the cassette did not cover this run. A miss means the recording"
+    echo "  and the code have diverged (most often prompt.rs changed), so these"
+    echo "  results describe neither the recording nor the live model. Re-record."
+    cassette_failed=1
+  fi
+  if [[ "${hits:-0}" -eq 0 ]]; then
+    echo "  FAIL: replay was requested but no call was served from the cassette."
+    echo "  Every story result above is therefore unproven, including the passes."
+    cassette_failed=1
+  fi
+  echo ""
+fi
+
+if [[ $fail_count -gt 0 || $cassette_failed -gt 0 ]]; then
   exit 1
 fi
 exit 0

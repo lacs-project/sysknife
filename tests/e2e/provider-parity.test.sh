@@ -98,6 +98,22 @@ for rel in "${forwarding_scripts[@]}"; do
         || report "$rel does not forward SYSKNIFE_MAX_RPM, so a full suite cannot raise the planner rate limit"
 done
 
+# A cassette that does not reach the guest is worse than none: the run looks
+# hermetic from the host and quietly bills a live model inside the VM.
+for rel in "${forwarding_scripts[@]}"; do
+    for var in SYSKNIFE_CASSETTE SYSKNIFE_CASSETTE_MODE; do
+        grep -Fq -- "$var" "$repo_root/$rel" \
+            || report "$rel does not forward $var, so record/replay cannot reach the guest"
+    done
+done
+
+# The runner owns the ledger: truncating it per run, and failing when a replay
+# served nothing or missed. Without that a throttled or diverged replay reads as
+# a clean pass.
+run_stories="$repo_root/tests/e2e/run-stories.sh"
+grep -Fq -- 'replay-log.jsonl' "$run_stories" \
+    || report "run-stories.sh does not audit the cassette ledger"
+
 if [ "$failures" -ne 0 ]; then
     printf '\n%d provider-parity failure(s) across %d providers.\n' "$failures" "${#keys[@]}" >&2
     exit 1
