@@ -38,6 +38,14 @@ fi
 output="$(mktemp)"
 trap 'rm -f "$output"' EXIT
 
+# Both runners colourise their summaries when CI=true, even with output piped, so
+# the count is read from de-colourised text. Skipping this cost a CI run: vitest
+# passed 72/72 and the parse then reported no count at all, because the line
+# arrives as `ESC[2m      Tests ESC[22m ... (72)ESC[39m`.
+strip_ansi() {
+    sed -E "s/$(printf '\033')\[[0-9;]*[a-zA-Z]//g" "$1"
+}
+
 if [[ "$suite" == "frontend" ]]; then
     shell_dir="$repo_root/apps/sysknife-shell"
     if [[ ! -x "$shell_dir/node_modules/.bin/vitest" ]]; then
@@ -52,7 +60,7 @@ if [[ "$suite" == "frontend" ]]; then
     # "      Tests  72 passed (72)" — the parenthesised figure is the total, which
     # counts skipped and failed tests too, so it is the suite size rather than a
     # pass count.
-    count="$(sed -nE 's/^[[:space:]]*Tests[[:space:]]+.*\(([0-9]+)\)[[:space:]]*$/\1/p' "$output" | tail -1)"
+    count="$(strip_ansi "$output" | sed -nE 's/^[[:space:]]*Tests[[:space:]]+.*\(([0-9]+)\)[[:space:]]*$/\1/p' | tail -1)"
 else
     set +e
     cargo nextest run --workspace --locked "$@" 2>&1 | tee "$output"
@@ -61,7 +69,7 @@ else
     # "Starting 1681 tests across 37 binaries" — present whether the run passes or
     # fails, unlike the Summary line, whose shape changes on failure
     # ("1503/1675 tests run" vs "1681 tests run").
-    count="$(sed -nE 's/^[[:space:]]*Starting ([0-9]+) tests? across .*/\1/p' "$output" | tail -1)"
+    count="$(strip_ansi "$output" | sed -nE 's/^[[:space:]]*Starting ([0-9]+) tests? across .*/\1/p' | tail -1)"
 fi
 
 if [[ -z "$count" ]]; then
