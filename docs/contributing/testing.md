@@ -14,7 +14,7 @@ validation before a release.
 | **Dev stories (local, no VM)** | LLM plan structure for read-only stories; runs on any Linux host | 1-3 min | After brain/prompt changes |
 | CI smoke (container) | Daemon + Ollama + read-only stories in a Linux runner | 5-10 min | Opt-in (PR label `e2e` or manual trigger) |
 | E2E Atomic VM | **Real Silverblue** in QEMU/KVM, full stack, all 54 stories | 15-30 min first boot; 2-3 min subsequent | Local / pre-release |
-| **E2E Ubuntu VM** | **Ubuntu 24.04** cloud image, full story suite, 65/65 stories | ~15 min first boot; ~2 min subsequent | After Ubuntu action changes |
+| **E2E Ubuntu VM** | **Ubuntu 24.04** cloud image, full story suite (pass rate in `tests/evidence/story-runs/`) | ~15 min first boot; ~2 min subsequent | After Ubuntu action changes |
 | Manual QA | Real Silverblue/Kinoite hardware, destructive actions, GUI | 30-60 min | Before releases + demo video |
 
 No single layer is enough on its own. Use the ones that match your change.
@@ -47,17 +47,35 @@ names, risk levels, parameters). It does **not** execute the actions — it
 tests plan structure only. This works on any Linux host because the story
 scripts check the JSON plan output, not the results of `df`, `ps`, etc.
 
-**LLM provider:** auto-detected from environment variables (same logic as
-the product's `BrainConfig::from_env`):
+**LLM provider:** the harness mirrors the product's `BrainConfig::from_env`,
+which auto-detects exactly two providers:
 
-| Variable set | Provider used | Model |
+| Condition | Provider | Default model |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | `anthropic` | `claude-sonnet-4-6` |
-| `OPENAI_API_KEY` | `openai` | `gpt-4.1` |
-| `GEMINI_API_KEY` | `gemini` | `gemini-2.0-flash` |
-| neither | `ollama` | `qwen3:8b` (must be pulled; CPU-only is impractical — use `SYSKNIFE_LLM_MODEL=llama3.2:3b` on CPU) |
+| `ANTHROPIC_API_KEY` set and non-blank | `anthropic` | `claude-sonnet-4-6` |
+| otherwise | `ollama` | `qwen3:8b` (must be pulled; CPU-only is impractical — use `SYSKNIFE_LLM_MODEL=llama3.2:3b` on CPU) |
 
-Override with `SYSKNIFE_LLM_PROVIDER` and `SYSKNIFE_LLM_MODEL`.
+The other six providers are supported but never auto-detected: setting the key
+alone does nothing, because `from_env` only consults `ANTHROPIC_API_KEY`. Each
+needs `SYSKNIFE_LLM_PROVIDER` **and** its key:
+
+| `SYSKNIFE_LLM_PROVIDER` | Key | Default model |
+|---|---|---|
+| `openai` | `OPENAI_API_KEY` | `gpt-4.1` |
+| `gemini` | `GEMINI_API_KEY` | `gemini-2.0-flash` |
+| `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
+| `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
+| `mistral` | `MISTRAL_API_KEY` | `mistral-large-latest` |
+| `xai` | `XAI_API_KEY` | `grok-3` |
+
+This table listed three auto-detected providers and omitted four entirely, which
+is how a run with only `GROQ_API_KEY` exported silently fell through to the
+uninstalled Ollama fallback and failed all fifty stories with an error naming the
+wrong provider. `tests/e2e/provider-parity.test.sh` now derives the provider list
+and the default models from `config.rs` and fails when this table drifts again.
+
+Override the model with `SYSKNIFE_LLM_MODEL` (leave it *unset* rather than empty:
+an empty value wins over the per-provider default).
 
 ```sh
 # Run the default read-only stories with an Anthropic key
@@ -307,8 +325,9 @@ follow-up if Windows contributor interest warrants it.
 
 ## Running the Ubuntu 24.04 E2E suite
 
-Ubuntu 24.04 support is validated (65/65 stories pass on a live VM with
-gpt-4.1). The `ubuntu-vm.sh` script mirrors the `atomic-vm.sh` workflow but
+Ubuntu 24.04 support is validated by the live-VM story suite. The pass rate and
+the model that produced it are recorded in `tests/evidence/story-runs/`, written
+by the run itself. The `ubuntu-vm.sh` script mirrors the `atomic-vm.sh` workflow but
 uses a Ubuntu 24.04 cloud image instead of a Fedora Atomic ISO.
 
 See [docs/contributing/ubuntu-vm-testing.md](ubuntu-vm-testing.md) for the

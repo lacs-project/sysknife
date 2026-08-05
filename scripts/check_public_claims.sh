@@ -2,6 +2,10 @@
 set -euo pipefail
 
 repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# The helpers live next to this script, not inside the tree being checked: the
+# mutation fixture in tests/release/public-claims.test.sh copies only claim files
+# and evidence, so a path relative to repo_root would not resolve there.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 claim_files=(
     "$repo_root/README.md"
@@ -29,18 +33,16 @@ reject_pattern() {
     fi
 }
 
-# Any count below the current baseline is stale. The range must be widened
-# whenever the baseline moves: it once stopped at 1,347 while reality was at
-# 1,490, so the guard sat green through 85 tests of drift.
-#
-# The baseline counts the WHOLE workspace — exactly what
-# `cargo nextest run --workspace --locked` prints — so a reader can verify it
-# with one command. Quoting a subset (e.g. excluding the GUI crate) makes the
-# number unverifiable from the documented command, which is how it silently
-# came to mean two different things.
-reject_pattern '1,(2[0-9][0-9]|3[0-9][0-9]|4[0-9][0-9]|5[0-5][0-9]|56[0-0])( Rust)? tests' \
-    'test count is stale; the release baseline is 1,561 Rust tests' \
-    "${claim_files[@]}"
+# Numeric claims — test counts, the action count, story pass rates — are checked
+# against the artifacts that produced them by check_evidence_claims.py. This used
+# to be a hand-maintained blacklist of stale ranges plus a required literal
+# ("1,561 Rust tests"), which meant the guard itself had to be edited whenever
+# reality moved, and it was not: the range stopped at 1,560 while the suite had
+# grown to 1,681, so the docs, the guard, and the code all disagreed at once.
+if ! python3 "$script_dir/check_evidence_claims.py" "$repo_root"; then
+    printf 'Invalid public claim: a published figure does not derive from evidence\n' >&2
+    exit 1
+fi
 reject_pattern 'until npm publish lands|publish[- ]pending' \
     'setup package is documented as unpublished' "${claim_files[@]}"
 reject_pattern 'Fedora([^\n]|$)*(Workstation|Server)([^\n]|$)*fully supported|(Workstation|Server)([^\n]|$)*fully supported' \
@@ -62,19 +64,6 @@ required_receipt_docs=(
     "$repo_root/assets/demo/mcp-flow-mock.sh"
     "$repo_root/packages/setup/index.js"
 )
-
-required_test_count_docs=(
-    "$repo_root/README.md"
-    "$repo_root/docs/introduction.md"
-    "$repo_root/docs/distro-support.md"
-)
-for path in "${required_test_count_docs[@]}"; do
-    if ! grep -Fq '1,561 Rust tests' "$path"; then
-        printf 'Verified test baseline missing from %s: expected 1,561 Rust tests\n' \
-            "$path" >&2
-        exit 1
-    fi
-done
 
 for path in "${required_receipt_docs[@]}"; do
     if ! grep -Fq 'sysknife approve <transaction-id>' "$path"; then

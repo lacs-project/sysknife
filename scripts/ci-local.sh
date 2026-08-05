@@ -148,8 +148,12 @@ run_rust_group() {
     fi
 
     if have cargo-nextest; then
-        run_step 'rust: cargo nextest run --workspace --locked' \
-            cargo nextest run --workspace --locked
+        # Through test_baseline.sh, which runs the same command and additionally
+        # holds tests/evidence/workspace-tests.json to the suite's real size.
+        # Published test counts derive from that artifact, so the check belongs
+        # where the number is actually known.
+        run_step 'rust: cargo nextest run --workspace --locked (+ test baseline)' \
+            bash "$repo_root/scripts/test_baseline.sh"
     else
         record WARN 'rust: cargo nextest run -- SKIPPED (cargo-nextest not found; install: cargo install cargo-nextest --locked)'
     fi
@@ -179,8 +183,9 @@ frontend_tsc() (
 )
 
 frontend_vitest() (
-    cd "$repo_root/apps/sysknife-shell" || exit 1
-    ./node_modules/.bin/vitest run
+    # Via test_baseline.sh --frontend for the same reason as the Rust suite: the
+    # published frontend test count derives from the recorded baseline.
+    bash "$repo_root/scripts/test_baseline.sh" --frontend
 )
 
 run_frontend_group() {
@@ -210,7 +215,7 @@ run_frontend_group() {
     fi
 
     run_step 'frontend: tsc --noEmit' frontend_tsc
-    run_step 'frontend: vitest run' frontend_vitest
+    run_step 'frontend: vitest run (+ test baseline)' frontend_vitest
 }
 
 # ---------------------------------------------------------------------------
@@ -274,6 +279,7 @@ run_hygiene_group() {
     run_step 'hygiene: release-rehearsal.test.sh' bash "$repo_root/tests/release/release-rehearsal.test.sh"
     run_step 'hygiene: ubuntu-vm-bootstrap.test.sh' bash "$repo_root/tests/e2e/ubuntu-vm-bootstrap.test.sh"
     run_step 'hygiene: provider-parity.test.sh' bash "$repo_root/tests/e2e/provider-parity.test.sh"
+    run_step 'hygiene: story-metadata.test.sh' bash "$repo_root/tests/e2e/story-metadata.test.sh"
 
     if have markdownlint-cli2; then
         run_step 'hygiene: markdownlint-cli2' hygiene_markdownlint
