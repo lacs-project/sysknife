@@ -45,7 +45,7 @@ apt and a read-only root, so the Debian-family action set cannot apply.
 
 | Distro | Action backend | Evidence | Launch tier |
 |---|---|---|---|
-| **Ubuntu 24.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | 65/65 stories on a live VM with `gpt-4.1` | **Validated** |
+| **Ubuntu 24.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite; pass rate and model recorded in `tests/evidence/story-runs/` | **Validated** |
 | **Ubuntu 22.04 LTS** | Ubuntu/apt family | VM bootstrap and smoke tests | **Smoke-tested** |
 | **Ubuntu 26.04 LTS** | Ubuntu/apt family | VM bootstrap, smoke tests, and sudo-rs sudoers verification (26.04 ships sudo-rs 0.2.x; `visudo -cf` parses the SysKnife sudoers and every grant — including the trailing-`*` wildcard grants — is honoured) | **Smoke-tested** |
 | **Every other Ubuntu 20.04+ release** (20.04, 20.10, 21.x, 23.x, 25.x, 26.10, …) | Ubuntu/apt family | Eligible by release family; no per-release VM run | **Smoke-tested** |
@@ -53,7 +53,7 @@ apt and a read-only root, so the Debian-family action set cannot apply.
 | **Other Fedora Atomic 41+ variants** | rpm-ostree family | Detection and shared action tests | **Experimental** (eligible, awaiting a fresh VM run) |
 | **Fedora Workstation / Server** | `dnf` family incomplete | Detection tests only | **Experimental** |
 
-The deterministic workspace baseline is 1,561 Rust tests plus 72 frontend
+The deterministic workspace baseline is 1,681 Rust tests plus 72 frontend
 tests. Those tests verify action construction, policy, approval, storage, and
 UI behavior, but they do not replace a real distribution VM run.
 

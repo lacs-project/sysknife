@@ -128,6 +128,35 @@ for n in 91 92 93; do
         || report "story-$n.sh treats a cassette miss as an acceptable empty plan"
 done
 
+# The contributor docs carry a provider table. It listed three auto-detected
+# providers when from_env auto-detects two, and omitted four providers outright —
+# which is how a run with only GROQ_API_KEY exported fell through to the
+# uninstalled Ollama fallback. Derive both the provider names and their default
+# models from config.rs so the table cannot drift again.
+testing_doc="$repo_root/docs/contributing/testing.md"
+if [ ! -f "$testing_doc" ]; then
+    report "docs/contributing/testing.md is missing; the provider table cannot be checked"
+else
+    for key in "${keys[@]}"; do
+        provider="$(printf '%s' "${key%_API_KEY}" | tr '[:upper:]' '[:lower:]')"
+        grep -Fq -- "$provider" "$testing_doc" \
+            || report "docs/contributing/testing.md does not mention provider $provider"
+    done
+
+    # `pub const DEFAULT_GROQ_MODEL: &str = "llama-3.3-70b-versatile";`
+    mapfile -t default_models < <(
+        grep -oE 'DEFAULT_[A-Z0-9]+_MODEL: &str = "[^"]+"' "$config_rs" |
+            sed -E 's/.*"([^"]+)"$/\1/'
+    )
+    if [ "${#default_models[@]}" -lt 8 ]; then
+        report "found only ${#default_models[@]} default models in config.rs; the pattern has drifted"
+    fi
+    for model in "${default_models[@]}"; do
+        grep -Fq -- "$model" "$testing_doc" \
+            || report "docs/contributing/testing.md does not list default model $model"
+    done
+fi
+
 if [ "$failures" -ne 0 ]; then
     printf '\n%d provider-parity failure(s) across %d providers.\n' "$failures" "${#keys[@]}" >&2
     exit 1

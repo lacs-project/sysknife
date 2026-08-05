@@ -121,7 +121,10 @@ jobs:
         run: ./node_modules/.bin/tsc --noEmit
 
       - name: Test
-        run: ./node_modules/.bin/vitest run
+        # Wrapper around the same vitest command; it also fails when the
+        # published frontend test count no longer matches the suite.
+        working-directory: ${{ github.workspace }}
+        run: scripts/test_baseline.sh --frontend
 
   rust:
     runs-on: ubuntu-latest
@@ -172,7 +175,10 @@ jobs:
           tool: cargo-nextest
 
       - name: Test workspace
-        run: cargo nextest run --workspace --locked
+        # Wrapper around the same nextest command; it also fails when the
+        # published test count in tests/evidence/workspace-tests.json no longer
+        # matches the suite, because the docs derive their figure from it.
+        run: scripts/test_baseline.sh
 
   postgres-contract:
     runs-on: ubuntu-latest

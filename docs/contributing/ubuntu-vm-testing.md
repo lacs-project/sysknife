@@ -121,11 +121,17 @@ and the daemon IPC. Only the network hop is served from disk.
 
 ```sh
 # Record. Costs one live run; the cassette lands inside the VM.
+# `ubuntu` is the whole Ubuntu story family, derived from the story files. It
+# replaced `$(seq 55 104)`, a hand-typed range that stops covering the suite the
+# moment story 105 is added. SYSKNIFE_RESULTS_JSON writes the machine-readable
+# result every published pass rate has to derive from.
 CASSETTE=tests/e2e/cassettes/ubuntu-jammy-gpt-oss-120b.json
+RESULTS=tests/evidence/story-runs/ubuntu-22.04-gpt-oss-120b.json
 GROQ_API_KEY=gsk-... \
 SYSKNIFE_LLM_PROVIDER=groq SYSKNIFE_LLM_MODEL=openai/gpt-oss-120b \
 SYSKNIFE_CASSETTE="$CASSETTE" SYSKNIFE_CASSETTE_MODE=record \
-UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh run $(seq 55 104)
+SYSKNIFE_RESULTS_JSON="$RESULTS" \
+UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh run ubuntu
 
 # Copy it out of the guest (the suite runs as root, so read it with sudo).
 UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh ssh "sudo cat $CASSETTE" > "$CASSETTE"
@@ -140,7 +146,12 @@ UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh ssh \
 SYSKNIFE_CASSETTE="$CASSETTE" SYSKNIFE_CASSETTE_MODE=replay \
 SYSKNIFE_LLM_PROVIDER=groq SYSKNIFE_LLM_MODEL=openai/gpt-oss-120b \
 GROQ_API_KEY=unused-under-replay \
-UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh run $(seq 55 104)
+UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh run ubuntu
+
+# Copy the evidence out of the guest the same way as the cassette, then commit it:
+# every published pass rate is checked against these files by
+# scripts/check_evidence_claims.py, so a figure with no run behind it fails CI.
+UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh ssh "sudo cat $RESULTS" > "$RESULTS"
 ```
 
 A key still has to be *present* under replay, because `BrainConfig::from_env`

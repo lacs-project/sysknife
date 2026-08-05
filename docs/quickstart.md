@@ -57,7 +57,7 @@ build (measured 6m56s on Ubuntu 24.04, 11m43s on 22.04).
 
 > **ℹ️ Fedora / Silverblue**
 >
-> Ubuntu 24.04 is validated with 65/65 stories on a live VM. Ubuntu 22.04 and
+> Ubuntu 24.04 is validated by the live-VM story suite. Ubuntu 22.04 and
 > 26.04 have smoke-test coverage. Fedora Atomic uses the rpm-ostree action
 > family and requires a current Silverblue 44 validation run for each release.
 > Plain Fedora remains experimental. See [distro support](distro-support.md).

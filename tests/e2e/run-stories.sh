@@ -17,6 +17,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$SCRIPT_DIR/logs"
 STORY_DIR="$SCRIPT_DIR/stories"
 
+# `--metadata` prints the derived story table and exits without running
+# anything. It is handled before the preflight on purpose: the table comes from
+# story files in the repo, so it is checkable on any host, and
+# tests/e2e/story-metadata.test.sh asserts on THIS parser instead of
+# reimplementing it. A second parser is a second answer.
+METADATA_ONLY=0
+if [[ "${1:-}" == "--metadata" ]]; then
+  METADATA_ONLY=1
+  shift
+fi
+
 mkdir -p "$LOG_DIR"
 
 # ---------------------------------------------------------------------------
@@ -25,22 +36,22 @@ mkdir -p "$LOG_DIR"
 
 preflight_ok=true
 
-if [[ ! -f /var/lib/sysknife-e2e/ready ]]; then
+if [[ $METADATA_ONLY -eq 0 ]] && [[ ! -f /var/lib/sysknife-e2e/ready ]]; then
   echo "ERROR: /var/lib/sysknife-e2e/ready not found. Run provisioning first."
   preflight_ok=false
 fi
 
-if ! systemctl is-active --quiet sysknife-daemon 2>/dev/null; then
+if [[ $METADATA_ONLY -eq 0 ]] && ! systemctl is-active --quiet sysknife-daemon 2>/dev/null; then
   echo "ERROR: sysknife-daemon is not running."
   preflight_ok=false
 fi
 
-if ! command -v sysknife &>/dev/null; then
+if [[ $METADATA_ONLY -eq 0 ]] && ! command -v sysknife &>/dev/null; then
   echo "ERROR: sysknife not found in PATH."
   preflight_ok=false
 fi
 
-if ! command -v jq &>/dev/null; then
+if [[ $METADATA_ONLY -eq 0 ]] && ! command -v jq &>/dev/null; then
   echo "ERROR: jq not found in PATH."
   preflight_ok=false
 fi
@@ -129,75 +140,91 @@ ALLOW_DESTRUCTIVE="${SYSKNIFE_ALLOW_DESTRUCTIVE:-0}"
 # and tolerant of the CPU fallback. Override with SYSKNIFE_STORY_TIMEOUT.
 STORY_TIMEOUT="${SYSKNIFE_STORY_TIMEOUT:-600}"
 
+# ---------------------------------------------------------------------------
+# Story metadata — derived, never restated
+# ---------------------------------------------------------------------------
+# Every story opens with `# Story N[ (tags)]: Title`, so the title and the
+# distro family are already recorded in the story file. They used to be
+# duplicated into a 54-entry STORY_NAMES table here, which had already drifted
+# apart from the files: the table stopped at 54, so all 50 Ubuntu stories
+# printed as a bare "Story 73" with no name in every results table we have
+# published. Derive both instead — a second copy of a fact is a copy that will
+# disagree.
 declare -A STORY_NAMES
-STORY_NAMES[1]="Check disk usage"
-STORY_NAMES[2]="Memory pressure diagnosis"
-STORY_NAMES[3]="Service health check"
-STORY_NAMES[4]="Firewall inspection"
-STORY_NAMES[5]="List layered packages"
-STORY_NAMES[6]="Running containers overview"
-STORY_NAMES[7]="SSH key inventory"
-STORY_NAMES[8]="Layer vim via rpm-ostree (destructive)"
-STORY_NAMES[9]="Create a toolbox (destructive)"
-STORY_NAMES[10]="Add SSH authorized key (destructive)"
-STORY_NAMES[11]="Deployment status + kernel arguments"
-STORY_NAMES[12]="SysKnife activity log — today"
-STORY_NAMES[13]="Service logs for firewalld"
-STORY_NAMES[14]="Triple compound — disk + memory + services"
-STORY_NAMES[15]="Rollback history"
-STORY_NAMES[16]="Network status + firewall rules"
-STORY_NAMES[17]="Container list + specific info"
-STORY_NAMES[18]="Restart bluetooth service (destructive)"
-STORY_NAMES[19]="Update system (destructive)"
-STORY_NAMES[20]="Add user to wheel group (destructive)"
-STORY_NAMES[21]="GetSystemState direct request"
-STORY_NAMES[22]="ListProcesses direct"
-STORY_NAMES[23]="SetTimezone — Europe/Berlin (destructive)"
-STORY_NAMES[24]="StopService — cups (destructive)"
-STORY_NAMES[25]="ListUsers direct"
-STORY_NAMES[26]="ListUsers + ListGroups compound"
-STORY_NAMES[27]="SetServiceEnabled — sshd at boot (destructive)"
-STORY_NAMES[28]="GetKernelArguments + ListDeployments compound"
-STORY_NAMES[29]="Triple compound — processes + network + memory"
-STORY_NAMES[30]="RemoveAuthorizedKey — user alice (destructive)"
-STORY_NAMES[31]="RemoveUserFromGroup — alice from docker (destructive)"
-STORY_NAMES[32]="Security audit — SSH keys + users + groups"
-STORY_NAMES[33]="SetKernelArguments — blacklist nouveau (destructive)"
-STORY_NAMES[34]="RollbackDeployment — resist query temptation (destructive)"
-STORY_NAMES[35]="ConfigureFirewall — open port 8080 (destructive)"
-STORY_NAMES[36]="CreateUser — devteam account (destructive)"
-STORY_NAMES[37]="DeleteUser — oldstaff removal (destructive)"
-STORY_NAMES[38]="Diagnostic compound — processes + nginx logs + job history"
-STORY_NAMES[39]="SetDnsServers — Cloudflare 1.1.1.1 + 1.0.0.1 (destructive)"
-STORY_NAMES[40]="RebaseSystem — Fedora Silverblue 41 (destructive)"
-STORY_NAMES[41]="Read compound — repos + containers + network"
-STORY_NAMES[42]="MaskService cups — not SetServiceEnabled (destructive)"
-STORY_NAMES[43]="CleanupDeployments — free deployment disk (destructive)"
-STORY_NAMES[44]="SetHostname — workstation-42 (destructive)"
-STORY_NAMES[45]="RebootSystem — kernel activation framing (destructive)"
-STORY_NAMES[46]="GetPendingUpdates — check not apply"
-STORY_NAMES[47]="ListInstalledFlatpaks — local vs remote"
-STORY_NAMES[48]="GetServiceStatus — nginx single unit"
-STORY_NAMES[49]="ListTimers — scheduled tasks"
-STORY_NAMES[50]="ReloadService — nginx without restart (destructive)"
-STORY_NAMES[51]="ReloadDaemon — after unit file creation (destructive)"
-STORY_NAMES[52]="UpdateFlatpak — Firefox (destructive)"
-STORY_NAMES[53]="RemoveBasePackage — gedit from base image (destructive)"
-STORY_NAMES[54]="UpdateFlatpak — update all, no specific app (destructive)"
+declare -A STORY_FAMILY
+ALL_STORY_IDS=()
+UBUNTU_STORY_IDS=()
+
+for _story_file in "$STORY_DIR"/story-*.sh; do
+    [ -f "$_story_file" ] || continue
+    _header="$(sed -n '2p' "$_story_file")"
+    # `# Story 62 (ubuntu, medium-risk): Unhold a package`
+    #             ^tags                   ^title
+    if [[ "$_header" =~ ^#\ Story\ ([0-9]+)(\ \(([^\)]*)\))?:\ (.*)$ ]]; then
+        _id="${BASH_REMATCH[1]}"
+        _tags="${BASH_REMATCH[3]}"
+        _title="${BASH_REMATCH[4]}"
+    else
+        # A story whose header cannot be parsed would otherwise vanish from the
+        # derived sets without a word, which is the failure this replaced.
+        printf 'ERROR: unparseable story header in %s: %s\n' "$_story_file" "$_header" >&2
+        exit 1
+    fi
+    STORY_NAMES[$_id]="$_title"
+    if [[ "$_tags" == *ubuntu* ]]; then
+        STORY_FAMILY[$_id]="ubuntu"
+        UBUNTU_STORY_IDS+=("$_id")
+    else
+        STORY_FAMILY[$_id]="atomic"
+    fi
+    ALL_STORY_IDS+=("$_id")
+done
+
+# Numeric order, so results tables read in story order rather than glob order
+# (story-10 sorts before story-2 as a string).
+mapfile -t ALL_STORY_IDS < <(printf '%s\n' "${ALL_STORY_IDS[@]}" | sort -n)
+mapfile -t UBUNTU_STORY_IDS < <(printf '%s\n' "${UBUNTU_STORY_IDS[@]}" | sort -n)
+
+if [[ $METADATA_ONLY -eq 1 ]]; then
+  for n in "${ALL_STORY_IDS[@]}"; do
+    printf '%s\t%s\t%s\n' "$n" "${STORY_FAMILY[$n]}" "${STORY_NAMES[$n]}"
+  done
+  exit 0
+fi
 
 declare -A RESULTS
 declare -A DURATIONS
 declare -A MESSAGES
 
-if [[ $# -gt 0 ]]; then
+STORY_SET=""
+
+if [[ "${1:-}" == "ubuntu" ]]; then
+  # The whole Ubuntu family, derived from the story headers. Documented runs
+  # used to spell this `$(seq 55 104)`, a hand-typed range that silently stops
+  # covering the suite the moment story 105 is added.
+  STORY_SET="ubuntu"
+  STORIES=("${UBUNTU_STORY_IDS[@]}")
+elif [[ "${1:-}" == "atomic" ]]; then
+  STORY_SET="atomic"
+  mapfile -t STORIES < <(
+    for n in "${ALL_STORY_IDS[@]}"; do
+      [[ "${STORY_FAMILY[$n]}" == "atomic" ]] && printf '%s\n' "$n"
+    done
+  )
+elif [[ $# -gt 0 ]]; then
   STORIES=("$@")
 elif [[ "$ALLOW_DESTRUCTIVE" == "1" ]]; then
-  STORIES=(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 \
-           21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 \
-           41 42 43 44 45 46 47 48 49 50 51 52 53 54)
+  STORY_SET="atomic"
+  mapfile -t STORIES < <(
+    for n in "${ALL_STORY_IDS[@]}"; do
+      [[ "${STORY_FAMILY[$n]}" == "atomic" ]] && printf '%s\n' "$n"
+    done
+  )
 else
   # Read-only and non-destructive stories only. Stories self-gate via
   # SYSKNIFE_ALLOW_DESTRUCTIVE — skipped ones still appear in results as SKIP.
+  # This subset is curated, not derivable: it is the atomic-family stories that
+  # need no live rpm-ostree host, which no header tag records.
   STORIES=(1 2 3 4 5 6 7 11 12 13 14 15 16 17 \
            21 22 25 26 28 29 32 38 41 46 47 48 49)
 fi
@@ -351,6 +378,64 @@ if [[ $ratelimit_count -gt 0 ]]; then
 fi
 echo "Logs:    $LOG_DIR/"
 echo ""
+
+# ---------------------------------------------------------------------------
+# Machine-readable evidence
+# ---------------------------------------------------------------------------
+# Every validation number SysKnife publishes has to come from a run, not from a
+# person's memory of one. The README claimed "65/65 stories validated" in eight
+# places for months with no artifact behind it and no number that could produce
+# it; scripts/check_public_claims.sh now refuses any N/M story claim that does
+# not match one of these files.
+#
+# Opt-in via SYSKNIFE_RESULTS_JSON so a two-story debugging run cannot overwrite
+# a full-suite record. `story_set` names the derived set that was run, and is
+# empty for an explicit story list — the checker only honours a full family set,
+# so a four-story probe can never become the headline figure.
+if [[ -n "${SYSKNIFE_RESULTS_JSON:-}" ]]; then
+  results_dir="$(dirname "$SYSKNIFE_RESULTS_JSON")"
+  mkdir -p "$results_dir"
+
+  cassette_sha="null"
+  if [[ -n "${SYSKNIFE_CASSETTE:-}" ]] && [[ -f "${SYSKNIFE_CASSETTE}" ]]; then
+    cassette_sha="\"$(sha256sum "${SYSKNIFE_CASSETTE}" | cut -d' ' -f1)\""
+  fi
+
+  # The release the stories actually ran against, read from the host they ran on
+  # rather than from whatever the operator typed on the command line.
+  release="$(. /etc/os-release 2>/dev/null && printf '%s' "${VERSION_ID:-unknown}")"
+  distro_id="$(. /etc/os-release 2>/dev/null && printf '%s' "${ID:-unknown}")"
+
+  {
+    printf '{\n'
+    printf '  "version": 1,\n'
+    printf '  "distro_id": "%s",\n' "$distro_id"
+    printf '  "release": "%s",\n' "$release"
+    printf '  "surface": "%s/%s",\n' "${SYSKNIFE_LLM_PROVIDER:-unset}" "${SYSKNIFE_LLM_MODEL:-provider-default}"
+    printf '  "cassette_mode": "%s",\n' "${CASSETTE_MODE_NORMALIZED:-live}"
+    printf '  "cassette_sha256": %s,\n' "$cassette_sha"
+    printf '  "story_set": "%s",\n' "$STORY_SET"
+    printf '  "ran_at": "%s",\n' "$(date --iso-8601=seconds)"
+    printf '  "totals": {\n'
+    printf '    "total": %d,\n' "$total"
+    printf '    "passed": %d,\n' "$pass_count"
+    printf '    "failed": %d,\n' "$fail_count"
+    printf '    "skipped": %d,\n' "$skip_count"
+    printf '    "rate_limited": %d\n' "$ratelimit_count"
+    printf '  },\n'
+    printf '  "stories": {\n'
+    sep=""
+    for n in "${STORIES[@]}"; do
+      printf '%s    "%s": { "verdict": "%s", "name": "%s" }' \
+        "$sep" "$n" "${RESULTS[$n]}" "${STORY_NAMES[$n]//\"/\\\"}"
+      sep=",\n"
+    done
+    printf '\n  }\n'
+    printf '}\n'
+  } > "$SYSKNIFE_RESULTS_JSON"
+  echo "Evidence: $SYSKNIFE_RESULTS_JSON"
+  echo ""
+fi
 
 # ---------------------------------------------------------------------------
 # Cassette replay audit

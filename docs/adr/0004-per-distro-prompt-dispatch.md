@@ -26,7 +26,8 @@ After adding Debian actions this caused two problems:
 2. **Context window waste**: every planning call carried ~40% action names that
    could never legally be executed on the current host.
 
-The E2E story suite (65/65 passing on Ubuntu 24.04 with gpt-4.1) validated
+The E2E story suite (recorded at the time as 65/65 passing on Ubuntu 24.04 with
+gpt-4.1 — see the correction note at the end of this ADR) validated
 that per-distro isolation fixes (1) and reduces prompt size meaningfully.
 
 ## Decision
@@ -79,3 +80,14 @@ which reads `/etc/os-release` at startup. If detection fails, `distro_hint` is
 - `docs/research/prompt-composition-patterns.md` — survey of dynamic
   prompt patterns that informed this design (dynamic middleware, template
   composition, conditional blocks)
+
+## Correction (2026-08-05)
+
+The "65/65" figure quoted above was never backed by a run: no story set of that
+size has existed, and the Ubuntu family contains 50 stories. The first
+measurements traceable to an artifact are 46/50 on 22.04 and 45/50 on 24.04 with
+`openai/gpt-oss-120b`. The decision this ADR records — structural per-distro
+prompt isolation — is unaffected, and was independently confirmed later: the two
+Fedora actions that still reached Ubuntu plans came from the *tool schema*, which
+this ADR did not cover, not from the prompt. Published figures now derive from
+`tests/evidence/` and are enforced by `scripts/check_evidence_claims.py`.
