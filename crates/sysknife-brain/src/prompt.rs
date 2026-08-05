@@ -817,6 +817,11 @@ const DEBIAN_SELECTION_RULES: &str = r#"
 - `AptAutoremove` removes orphaned dependency packages only — LOW.
 - `AptListUpgradable` lists packages with available upgrades — LOW, read-only. Use for "what updates are pending?" or "are there pending updates?" on Ubuntu/Debian. (Fedora equivalent: `GetPendingUpdates`.)
 - `AptHistoryList` reads the apt transaction log — LOW, read-only. Use for "what was recently installed/removed?", "show apt history".
+- `AptHold` / `AptUnhold` control whether apt is ALLOWED to touch a package, which is a different question from what to install. A hold "will prevent the package from being automatically installed, upgraded or removed" (apt-mark(8)), so read the sentence for permission, not for the verb:
+  - "hold nginx where it is", "stop nginx from being upgraded", "freeze nginx at this version" → `AptHold` — MEDIUM.
+  - "let nginx be upgraded again", "allow nginx to upgrade", "stop holding nginx", "unfreeze nginx" → `AptUnhold` — MEDIUM.
+  `AptInstall` does not lift a hold and `AptUpgrade` skips held packages, so proposing either for "let nginx be upgraded again" leaves the hold in place and does nothing the user asked for. This is the same pair as `SnapHold` / `SnapUnhold`, one package manager over.
+  Pinning to a *named* version or release is a different action — `SetAptPin` — because it writes an apt preferences rule rather than a hold flag.
 - `CheckPendingReboot` checks `/var/run/reboot-required` — LOW, read-only. Use for "do I need to reboot?", "is a reboot pending?". Ubuntu/Debian only; on Fedora use `GetPendingUpdates`.
 - `AddPpa` / `RemovePpa` add or remove a Launchpad PPA — MEDIUM. Param: `name` in `<user>/<ppa>` format (e.g. `"deadsnakes/ppa"`). Requires `software-properties-common` at runtime.
 - `GrubGetKargs` reads the current GRUB kernel command line — LOW, read-only.
@@ -824,6 +829,7 @@ const DEBIAN_SELECTION_RULES: &str = r#"
 - `SnapRevert` rolls a snap back to its previous revision — MEDIUM.
 - `SnapClassicInstall` installs a snap with classic confinement (full system access) — MEDIUM.
 - `UfwAllow` and `UfwDeny` mutate firewall rules — HIGH (lock-out risk on remote sessions).
+- A ufw rule's port must be a real port: 1-65535, optionally with `/tcp` or `/udp`, or a ufw app-profile name (`OpenSSH`, `Nginx Full`). **Port 0 is reserved and cannot carry traffic**, so "block port 0" is not a rule the firewall can hold — the daemon rejects it and the plan fails. When the user names port 0, or any number above 65535, do not emit a `UfwAllow`/`UfwDeny`/`UfwLimit` step for it: say what is wrong with the value and ask which port they meant.
 - `UfwEnable` and `UfwDisable` toggle the firewall on/off — HIGH.
 - `UfwDeleteRule` removes a numbered rule (`ufw status numbered` shows indices) — HIGH. Use when the user says "delete rule 3" or "remove rule number N". Param: `rule_number` (positive integer). Never use for named port/service removal — use `UfwDeny` or `UfwReset` instead.
 - `UfwLimit` adds rate-limiting on a port/service (blocks IPs with >6 connections/30 s) — HIGH. Use for SSH brute-force mitigation ("rate limit SSH", "limit port 22"). Prefer `UfwAllow` when the intent is simply to open a port without rate limiting.
@@ -1329,6 +1335,57 @@ mod tests {
         assert!(prompt.contains("GetSystemState"));
         // Must teach the decision rule in the disambiguation section.
         assert!(prompt.contains("State and diagnostic action disambiguation"));
+    }
+
+    /// Port 0 is reserved, so a firewall rule naming it is not a rule.
+    ///
+    /// The daemon has always refused it (`validated_port_or_service` rejects 0
+    /// and anything above 65535), but the prompt never said so, so "block port 0
+    /// in the firewall" cost a live call and produced `UfwDeny{"0"}` — a plan
+    /// that could only fail. The CLI now also refuses such a plan at plan time;
+    /// this line is what stops the model proposing one in the first place.
+    #[test]
+    fn debian_prompt_states_the_valid_port_range() {
+        let hint = debian_hint();
+        let p = build_system_prompt(None, Some(&hint));
+        assert!(
+            p.contains("1-65535"),
+            "Debian prompt must state the valid port range for ufw rules"
+        );
+        assert!(
+            p.contains("port 0"),
+            "Debian prompt must call out port 0 specifically — it is the value the model actually emitted"
+        );
+    }
+
+    /// A held package is one apt refuses to change, so restoring permission is
+    /// `AptUnhold` — never an install.
+    ///
+    /// In a live 22.04 run the planner answered "let the nginx package be
+    /// upgraded again" with `AptInstall{nginx}`: it read "upgraded" as the verb
+    /// and missed that the sentence is about permission. That plan leaves the
+    /// hold in place, so it does nothing the user asked for. The selection rules
+    /// listed no `AptHold`/`AptUnhold` guidance at all, which is why the model
+    /// had nothing to key on — the snap twins worked in the same run only
+    /// because their catalogue entries say "auto-refresh".
+    #[test]
+    fn debian_prompt_maps_permission_language_to_unhold() {
+        let hint = debian_hint();
+        let p = build_system_prompt(None, Some(&hint));
+        assert!(
+            p.contains("AptUnhold") && p.contains("AptHold"),
+            "Debian prompt must name both halves of the hold pair"
+        );
+        // The mapping, not just the names: the phrasing that failed and the
+        // reason an install is the wrong answer.
+        assert!(
+            p.contains("upgraded again"),
+            "Debian prompt must map permission-restoring phrasing to AptUnhold"
+        );
+        assert!(
+            p.contains("does not lift a hold"),
+            "Debian prompt must say why AptInstall is not a substitute for AptUnhold"
+        );
     }
 
     /// The shared `EXAMPLES` block is spliced into all three prompts, so every
