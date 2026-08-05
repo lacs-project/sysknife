@@ -239,8 +239,10 @@ User: "did SysKnife successfully update my system recently?"
 Here you need to CHECK the transaction log before answering. The user is asking
 about what SysKnife has done, not about current system state.
 
-1. Call `query_job_history(action_filter: "UpdateSystem", since_hours: 168)` to
-   check the last week of update-related transactions.
+1. Call `query_job_history(since_hours: 168)` to check the last week of
+   transactions. Leave `action_filter` off unless the user named a specific
+   action: the update action differs per distro, and this example is shared by
+   all of them.
 2. Call `propose_plan` with `ListJobHistory` if the user wants to see the full
    log, or `GetSystemState` if the query answered the question and you just need
    a plan to finish.
@@ -415,7 +417,7 @@ const CROSS_DISTRO_RISK_TABLES: &str = r#"
 GetSystemState, CollectDiagnostics,
 ListServices, GetServiceLogs, GetServiceStatus, ListTimers,
 GetNetworkStatus, GetDiskUsage, GetDateTime, ListProcesses, GetMemoryInfo,
-GetAuthorizedKeys, ListPackageRepositories, ListContainers, GetContainerInfo,
+GetAuthorizedKeys, ListContainers, GetContainerInfo,
 ListUsers, ListGroups, ListJobHistory,
 ResolvectlStatus,
 GetJournalLog, GetLvmReport, GetSysctl, GetServiceResourceLimits, GetMounts, GetSudoGrants,
@@ -433,7 +435,6 @@ StartService, StopService, RestartService, ReloadService, ReloadDaemon,
 SetServiceEnabled, MaskService, UnmaskService,
 ConfigureWifi, SetDnsServers,
 SetHostname, SetTimezone, SetLocale, SetNtp,
-AddPackageRepository, RemovePackageRepository, EnablePackageRepository, DisablePackageRepository,
 CreateContainer, StartContainer, StopContainer, RemoveContainer,
 CreateUser
 
@@ -577,10 +578,6 @@ Use `"username"` as the key — NOT `"user"`.
 - `SetTimezone`: `{"timezone":"America/Chicago"}`
 - `SetLocale`: `{"locale":"en_US.UTF-8"}`
 - `SetNtp`: `{"enabled":true}`
-
-**Package repositories**:
-- `AddPackageRepository`: `{"repo_id":"epel","repo_url":"https://..."}`
-- `RemovePackageRepository` / `EnablePackageRepository` / `DisablePackageRepository`: `{"repo_id":"epel"}`
 
 **Network**:
 - `ConfigureWifi`: `{"ssid":"MyNetwork","password":"secret"}` (password optional for open networks)
@@ -726,7 +723,12 @@ const FEDORA_PARAMS: &str = r#"
 
 **No params** — use `{}`: GetDeploymentHistory, ListDeployments, UpdateSystem,
 CleanupDeployments, RollbackDeployment, GetKernelArguments, GetLayeredPackages,
-ResetLayeredPackageOverride, GetPendingUpdates, GetFirewallState.
+ResetLayeredPackageOverride, GetPendingUpdates, GetFirewallState,
+ListPackageRepositories.
+
+**DNF repositories** (`/etc/yum.repos.d`, so Fedora-family only):
+- `AddPackageRepository`: `{"repo_id":"epel","repo_url":"https://..."}`
+- `RemovePackageRepository` / `EnablePackageRepository` / `DisablePackageRepository`: `{"repo_id":"epel"}`
 
 **Flatpak** — all user-scoped ops require `"username"` (the Linux user whose
 Flatpak installation to target). Use `"username"` — NOT `"user"`.
@@ -815,14 +817,14 @@ const DEBIAN_SELECTION_RULES: &str = r#"
 - `AptUpdate` refreshes the apt cache only, no packages changed — LOW.
 - `AptUpgrade` upgrades every installed package — HIGH (large blast radius).
 - `AptAutoremove` removes orphaned dependency packages only — LOW.
-- `AptListUpgradable` lists packages with available upgrades — LOW, read-only. Use for "what updates are pending?" or "are there pending updates?" on Ubuntu/Debian. (Fedora equivalent: `GetPendingUpdates`.)
+- `AptListUpgradable` lists packages with available upgrades — LOW, read-only. Use for "what updates are pending?" or "are there pending updates?" on Ubuntu/Debian.
 - `AptHistoryList` reads the apt transaction log — LOW, read-only. Use for "what was recently installed/removed?", "show apt history".
 - `AptHold` / `AptUnhold` control whether apt is ALLOWED to touch a package, which is a different question from what to install. A hold "will prevent the package from being automatically installed, upgraded or removed" (apt-mark(8)), so read the sentence for permission, not for the verb:
   - "hold nginx where it is", "stop nginx from being upgraded", "freeze nginx at this version" → `AptHold` — MEDIUM.
   - "let nginx be upgraded again", "allow nginx to upgrade", "stop holding nginx", "unfreeze nginx" → `AptUnhold` — MEDIUM.
   `AptInstall` does not lift a hold and `AptUpgrade` skips held packages, so proposing either for "let nginx be upgraded again" leaves the hold in place and does nothing the user asked for. This is the same pair as `SnapHold` / `SnapUnhold`, one package manager over.
   Pinning to a *named* version or release is a different action — `SetAptPin` — because it writes an apt preferences rule rather than a hold flag.
-- `CheckPendingReboot` checks `/var/run/reboot-required` — LOW, read-only. Use for "do I need to reboot?", "is a reboot pending?". Ubuntu/Debian only; on Fedora use `GetPendingUpdates`.
+- `CheckPendingReboot` checks `/var/run/reboot-required` — LOW, read-only. Use for "do I need to reboot?", "is a reboot pending?".
 - `AddPpa` / `RemovePpa` add or remove a Launchpad PPA — MEDIUM. Param: `name` in `<user>/<ppa>` format (e.g. `"deadsnakes/ppa"`). Requires `software-properties-common` at runtime.
 - `GrubGetKargs` reads the current GRUB kernel command line — LOW, read-only.
 - `GrubSetKargs` edits `GRUB_CMDLINE_LINUX_DEFAULT` and runs `update-grub` — HIGH. Requires reboot. Use params `append` (list of args to add) and/or `delete` (list of args to remove).
@@ -1184,6 +1186,44 @@ mod tests {
         }
     }
 
+    /// Derived from the family fence, not from a hand-written list. The old
+    /// hardcoded set named nine actions and missed the ones that mattered:
+    /// `AddPackageRepository` and friends write under `/etc/yum.repos.d`, and the
+    /// Debian prompt described their parameters in a cross-distro block.
+    #[test]
+    fn debian_prompt_names_no_fedora_only_action() {
+        let hint = debian_hint();
+        let p = build_system_prompt(None, Some(&hint));
+        let mut leaked = Vec::new();
+        for action in FEDORA_ONLY_ACTION_NAMES {
+            if p.contains(action) {
+                leaked.push(*action);
+            }
+        }
+        assert!(
+            leaked.is_empty(),
+            "the Debian prompt names Fedora-only actions: {leaked:?}"
+        );
+    }
+
+    /// Same, for the planner-preference list: an action the Debian tool schema
+    /// withholds must not be recommended by the prose either.
+    #[test]
+    fn debian_prompt_names_no_non_canonical_action() {
+        let hint = debian_hint();
+        let p = build_system_prompt(None, Some(&hint));
+        let mut leaked = Vec::new();
+        for action in sysknife_core::action_family::NON_CANONICAL_ON_DEBIAN {
+            if p.contains(action) {
+                leaked.push(*action);
+            }
+        }
+        assert!(
+            leaked.is_empty(),
+            "the Debian prompt recommends non-canonical actions: {leaked:?}"
+        );
+    }
+
     #[test]
     fn debian_prompt_omits_fedora_actions() {
         let hint = debian_hint();
@@ -1403,6 +1443,10 @@ mod tests {
         for (family, actions) in [
             ("Fedora-only", FEDORA_ONLY_ACTION_NAMES),
             ("Debian-only", DEBIAN_ONLY_ACTION_NAMES),
+            (
+                "non-canonical-on-Debian",
+                sysknife_core::action_family::NON_CANONICAL_ON_DEBIAN,
+            ),
         ] {
             for action in actions {
                 assert!(

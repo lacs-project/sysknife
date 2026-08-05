@@ -796,17 +796,33 @@ fn validate_action_platform(state: &DaemonState, action_name: &str) -> Result<()
         return Ok(());
     }
 
-    let distro = state.host_distro.as_ref().ok_or_else(|| {
-        format!("cannot safely run {action_name}: host distribution could not be detected")
-    })?;
-    if !distro.is_supported() {
+    // Eligibility and detection are mutation gates, which is exactly what
+    // docs/distro-support.md promises: "the daemon refuses every *mutating*
+    // action when it is false". Applying them to reads as well broke inspection
+    // wherever the tool is native but the host is not an eligible *target*: on
+    // Debian, `AptShow` was refused — apt is right there — because
+    // `DistroId::Debian` is not supported. Any read-only action carrying a family
+    // tag inherited the same refusal, so tagging one was a silent regression.
+    let distro = match state.host_distro.as_ref() {
+        Some(distro) => distro,
+        // Nothing to check the family against, and a read cannot damage the host.
+        None if !is_mutating => return Ok(()),
+        None => {
+            return Err(format!(
+                "cannot safely run {action_name}: host distribution could not be detected"
+            ))
+        }
+    };
+    if is_mutating && !distro.is_supported() {
         return Err(format!(
             "cannot run {action_name} on unsupported host {distro}; see docs/distro-support.md"
         ));
     }
+    // The family fence itself applies to reads as much as to writes: on an apt
+    // host `rpm-ostree status` produces an error, not an answer.
     if required_family.is_some_and(|family| distro.family() != family) {
         return Err(format!(
-            "action {action_name} is incompatible with supported host {distro}"
+            "action {action_name} is incompatible with host {distro}"
         ));
     }
     Ok(())
@@ -1677,8 +1693,10 @@ async fn handle_query_action(
     // Same fence preview and execute apply. Without it a Fedora-only read-only
     // action reached the executor on a Debian host and failed as "rpm-ostree:
     // No such file or directory" — an execution error where the other paths
-    // give a clean refusal. Read-only actions with no family requirement short
-    // out inside `validate_action_platform`, so this costs them nothing.
+    // give a clean refusal. A read-only action with no family requirement shorts
+    // out inside `validate_action_platform`; one *with* a family requirement is
+    // checked against the family but exempt from the eligibility and
+    // detection gates, which are mutation gates by contract.
     if let Err(message) = validate_action_platform(state, action_name) {
         return send_error(framed, request_id, "unsupported_platform", message).await;
     }
@@ -4591,7 +4609,11 @@ mod tests {
         // under-privileged caller on a *different* connection, yet remain
         // actionable by an authorized caller.
         let dir = tempdir().unwrap();
-        let state = test_state(&dir);
+        // UpdateSystem is the Admin-tier vehicle here, and it is rpm-ostree
+        // shaped, so the host has to be a Fedora-family one. The subject of this
+        // test is authorization, not platform.
+        let mut state = test_state(&dir);
+        state.host_distro = Some(sysknife_core::distro::DistroId::FedoraSilverblue { version: 41 });
 
         // An Admin caller previews an Admin-tier action, persisting a queued tx.
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
@@ -4741,21 +4763,60 @@ mod tests {
         assert!(validate_action_platform(&state, "AptInstall").is_err());
 
         // Below the support floor: no longer receiving Ubuntu security updates.
+        // The vehicle has to be an action Ubuntu can run at all — `UpdateSystem`
+        // is `rpm-ostree upgrade` and is fenced to the Fedora family, so using it
+        // here would assert the support floor while actually measuring the family
+        // fence.
         state.host_distro = Some(sysknife_core::distro::DistroId::Ubuntu {
             major: 18,
             minor: 4,
         });
-        assert!(validate_action_platform(&state, "UpdateSystem").is_err());
+        assert!(validate_action_platform(&state, "AptUpgrade").is_err());
 
         // The counterpart assertion, so this test keeps its teeth: releases at
         // and above the floor DO reach the mutation path, interim ones included.
         for (major, minor) in [(20, 4), (25, 10), (26, 4)] {
             state.host_distro = Some(sysknife_core::distro::DistroId::Ubuntu { major, minor });
             assert!(
-                validate_action_platform(&state, "UpdateSystem").is_ok(),
+                validate_action_platform(&state, "AptUpgrade").is_ok(),
                 "Ubuntu {major}.{minor:02} must be able to run mutating actions"
             );
         }
+    }
+
+    #[test]
+    fn a_read_only_action_still_runs_where_its_tool_is_native_but_the_host_is_not_a_target() {
+        // docs/distro-support.md: eligibility decides whether the daemon will
+        // *act* on a host — "the daemon refuses every mutating action when it is
+        // false". Reads were refused too, so on Debian (not an eligible target)
+        // `AptShow` failed even though apt is the native package manager, and on
+        // plain Fedora the same held for rpm-ostree reads. Tagging any read-only
+        // action to a family therefore broke it on that family's own unsupported
+        // releases.
+        let dir = tempdir().unwrap();
+        let mut state = test_state(&dir);
+
+        state.host_distro = Some(sysknife_core::distro::DistroId::Debian { version: Some(12) });
+        assert!(
+            !state.host_distro.as_ref().unwrap().is_supported(),
+            "this test is about an unsupported host; Debian must still be one"
+        );
+        assert!(
+            validate_action_platform(&state, "AptShow").is_ok(),
+            "a read-only apt query must work on Debian, where apt is native"
+        );
+        assert!(
+            validate_action_platform(&state, "AptInstall").is_err(),
+            "the mutating counterpart must still be refused, or the fence is gone"
+        );
+
+        // The family fence still applies to reads: apt tooling on a Fedora host
+        // produces an error, not an answer.
+        state.host_distro = Some(sysknife_core::distro::DistroId::FedoraSilverblue { version: 41 });
+        assert!(
+            validate_action_platform(&state, "AptShow").is_err(),
+            "an apt read on a Fedora host must still be refused"
+        );
     }
 
     #[test]

@@ -19,26 +19,27 @@
 
 /// Fedora-family action names that are NOT available on Debian-family distros.
 ///
-/// These are rpm-ostree shaped actions, plus the three tool families whose
-/// binary ships only on the Fedora side and has a full Ubuntu twin here:
+/// Membership means **impossibility**, not preference: the action's mechanism
+/// cannot work on the other family, so the daemon fence and the CLI routing
+/// guard refuse it there. For "runnable but not this family's canonical tool",
+/// see [`NON_CANONICAL_ON_DEBIAN`].
 ///
-/// | Fedora tool | action(s) | Ubuntu twin |
-/// |---|---|---|
-/// | `firewall-cmd` | `GetFirewallState`, `ConfigureFirewall` | `UfwStatus`, `UfwAllow`/`UfwDeny` |
-/// | `toolbox` | `ListToolboxes`, `CreateToolbox`, `RemoveToolbox` | `DistroboxList`, `DistroboxCreate`, `DistroboxRemove` |
+/// These are the rpm-ostree and dnf shaped actions, derived from each action's
+/// own argv by `family_fence_agrees_with_each_action_s_mechanism` in
+/// `sysknife-daemon/tests/action_consistency.rs` — so an action that drives
+/// `rpm-ostree` and is missing from this list fails the build rather than being
+/// quietly offered to an apt host.
 ///
-/// Those five were classified cross-distro until an Ubuntu VM story run caught
-/// the planner answering "show the current firewall rules" with
-/// `GetFirewallState` and "what development containers do I have" with
-/// `ListToolboxes` — `firewall-cmd` and `toolbox` are not installed on Ubuntu,
-/// so both plans were approvable and then unrunnable. `prompt.rs` already
-/// treated them as Fedora-only and the story suite already accepted only the
-/// Ubuntu twin on Ubuntu; this list was the one place that still said "All".
+/// One documented exception: `GetSystemState` also runs `rpm-ostree status`, but
+/// it is woven through fifteen places in the shared, empirically-validated prompt
+/// blocks as *the* state action, with no Ubuntu equivalent to put in its place.
+/// Fencing it needs a prompt restructure validated against the story suite, so it
+/// is tracked separately rather than done blind.
 ///
-/// Flatpak is deliberately NOT in here: the un-prefixed `InstallFlatpak`
-/// family covers remotes, search, and app info, which the `Ubuntu*Flatpak`
-/// actions do not, so scoping it to Fedora would remove capability from Ubuntu
-/// rather than redirect it.
+/// Flatpak is deliberately NOT in here: the un-prefixed `InstallFlatpak` family
+/// covers remotes, search, and app info, which the `Ubuntu*Flatpak` actions do
+/// not, so scoping it to Fedora would remove capability from Ubuntu rather than
+/// redirect it.
 pub const FEDORA_ONLY_ACTIONS: &[&str] = &[
     "AddLayeredPackage",
     "RemoveLayeredPackage",
@@ -55,11 +56,47 @@ pub const FEDORA_ONLY_ACTIONS: &[&str] = &[
     "RebaseSystem",
     "GetKernelArguments",
     "SetKernelArguments",
-    // firewalld — Ubuntu uses ufw (installable via apt, but never the default,
-    // and managing firewalld while ufw holds the rules is a footgun).
+    // rpm-ostree, reached through names that do not say so. These sat outside the
+    // fence while `AddLayeredPackage` — the single-package twin of
+    // `InstallPackages`, same `rpm-ostree install` argv — sat inside it, so an
+    // Ubuntu host was offered `UpdateSystem` (High, reboot) and four actions that
+    // write under `/etc/yum.repos.d/`. `family_fence_agrees_with_each_action_s_mechanism`
+    // now derives this from each action's argv so the list cannot drift again.
+    "UpdateSystem",
+    "InstallPackages",
+    "RemovePackages",
+    "GetPendingUpdates",
+    // dnf repository files under /etc/yum.repos.d.
+    "ListPackageRepositories",
+    "AddPackageRepository",
+    "RemovePackageRepository",
+    "EnablePackageRepository",
+    "DisablePackageRepository",
+];
+
+/// Actions the **planner** must not offer on a Debian-family host, even though
+/// the daemon can still run them there.
+///
+/// This is a different question from the family fence above, and conflating the
+/// two caused a regression. `firewall-cmd` and `toolbox` are installable on
+/// Ubuntu, so "cannot run here" is false — but they are not the family's
+/// canonical tooling, and offering them is how the planner answered "show the
+/// current firewall rules" on Ubuntu with `GetFirewallState` and "what
+/// development containers do I have" with `ListToolboxes`.
+///
+/// Putting them in `FEDORA_ONLY_ACTIONS` fixed the planning defect and broke two
+/// other things: the daemon fence and the CLI routing guard then *refused* them,
+/// so an Ubuntu host running firewalld lost firewall management entirely, and
+/// `UfwStatus` answered `Status: inactive` — a confident wrong answer instead of
+/// a refusal.
+///
+/// Consumed only by `sysknife-brain`'s catalogue filter. The fence must not read
+/// it: preference is not impossibility.
+pub const NON_CANONICAL_ON_DEBIAN: &[&str] = &[
+    // Ubuntu's canonical firewall is ufw (UfwStatus, UfwAllow/UfwDeny).
     "GetFirewallState",
     "ConfigureFirewall",
-    // toolbox — Ubuntu uses distrobox.
+    // Ubuntu's canonical container environment is distrobox.
     "ListToolboxes",
     "CreateToolbox",
     "RemoveToolbox",

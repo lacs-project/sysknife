@@ -1492,6 +1492,23 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     // to approve one.
     reject_unrunnable_params(&plan)?;
 
+    // ---- distro routing guard ---------------------------------------------
+    // Validate every step's action against the detected distro. This sits beside
+    // the parameter check, and before the plan is displayed, for the same reason:
+    // it ran after approval, so on a Fedora host `sysknife run "show the firewall
+    // rules"` printed the plan, asked for confirmation, waited for "yes", and only
+    // then refused. A dry run still displays such a plan on purpose — inspecting
+    // what the planner produced is the point of it.
+    if !opts.dry_run {
+        for step in plan.steps() {
+            if let Err(msg) =
+                crate::distro_routing::check_action_distro(step.action_name(), distro.as_ref())
+            {
+                return Err(CliError::ConfigOrDaemon(msg));
+            }
+        }
+    }
+
     // Surface any step where the planner's proposed risk disagreed with the
     // authoritative ActionSpec risk. A mismatch is a useful signal in its own
     // right — the model may be confused about this action (and could have gotten
@@ -1578,20 +1595,6 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
                 if !prompt_confirm(&msg).await {
                     return Err(CliError::Rejected);
                 }
-            }
-        }
-    }
-
-    // ---- distro routing guard ---------------------------------------------
-    // Validate every step's action against the detected distro before
-    // executing anything.  This surfaces a clear error for obviously wrong
-    // plans (e.g. AptInstall on Fedora) without touching the daemon.
-    if !opts.dry_run {
-        for step in plan.steps() {
-            if let Err(msg) =
-                crate::distro_routing::check_action_distro(step.action_name(), distro.as_ref())
-            {
-                return Err(CliError::ConfigOrDaemon(msg));
             }
         }
     }

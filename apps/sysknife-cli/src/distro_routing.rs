@@ -23,6 +23,7 @@ use sysknife_core::distro::{DistroFamily, DistroId};
 // `sysknife-core::action_family`; the daemon fence, this routing guard, and the
 // brain prompt all reference the same constants so they cannot drift apart.
 use sysknife_core::action_family::{DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS};
+use sysknife_types::CallerRole;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -61,7 +62,16 @@ pub fn check_action_distro(action_name: &str, distro: Option<&DistroId>) -> Resu
         ));
     }
 
+    // Eligibility is a mutation gate, matching the daemon's own fence in
+    // `validate_action_platform` and the contract in docs/distro-support.md. When
+    // it applied to reads as well, `AptShow` was refused on Debian — apt is
+    // native there — because Debian is not an eligible target. A client that
+    // refuses what the daemon would run is worse than no guard: the operator
+    // cannot tell a policy decision from a bug.
+    let is_mutating = sysknife_daemon::policy::min_role_for_action(action_name)
+        .is_some_and(|role| role > CallerRole::Observer);
     if (DEBIAN_ONLY_ACTIONS.contains(&action_name) || FEDORA_ONLY_ACTIONS.contains(&action_name))
+        && is_mutating
         && !distro.is_supported()
     {
         return Err(format!(

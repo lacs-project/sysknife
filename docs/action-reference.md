@@ -13,7 +13,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `CollectDiagnostics` | `journalctl -b -n 500 --no-pager` | Low | All | – | – | recent system journal log (last 500 lines) for error diagnosis and troubleshooting |
 | `GetDeploymentHistory` | `rpm-ostree status --json` | Low | Fedora | – | – | rpm-ostree deployment history: past and current OSTree commits with timestamps |
 | `ListDeployments` | `rpm-ostree status --json` | Low | Fedora | – | – | list all currently staged, pending, and booted deployments |
-| `UpdateSystem` | `sudo rpm-ostree upgrade` | High | All | ✓ | ✓ | download and stage the latest OSTree update (does not reboot) |
+| `UpdateSystem` | `sudo rpm-ostree upgrade` | High | Fedora | ✓ | ✓ | download and stage the latest OSTree update (does not reboot) |
 | `PinDeployment` | `sudo ostree admin pin 0` | High | Fedora | – | – | pin a deployment so it is not GC'd — param: index (u32, deployment index from ListDeployments) |
 | `UnpinDeployment` | `sudo ostree admin pin --unpin 0` | High | Fedora | – | – | unpin a previously pinned deployment — param: index (u32) |
 | `RebaseSystem` | `sudo rpm-ostree rebase fedora/41/x86_64/silverblue` | High | Fedora | ✓ | ✓ | switch to a different OSTree ref/remote — param: target_ref (string, e.g. fedora/40/x86_64/silverblue) |
@@ -27,15 +27,15 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `InstallPackages` | `sudo rpm-ostree install --idempotent podman` | High | All | ✓ | ✓ | layer multiple RPM packages — param: packages\* (string\[\]) |
-| `RemovePackages` | `sudo rpm-ostree uninstall podman` | High | All | ✓ | ✓ | remove layered RPM packages — param: packages\* (string\[\]) |
+| `InstallPackages` | `sudo rpm-ostree install --idempotent podman` | High | Fedora | ✓ | ✓ | layer multiple RPM packages — param: packages\* (string\[\]) |
+| `RemovePackages` | `sudo rpm-ostree uninstall podman` | High | Fedora | ✓ | ✓ | remove layered RPM packages — param: packages\* (string\[\]) |
 | `GetLayeredPackages` | `rpm-ostree status --json` | Low | Fedora | – | – | list RPM packages layered on top of the base OS image — no params |
 | `AddLayeredPackage` | `sudo rpm-ostree install --idempotent podman` | High | Fedora | ✓ | ✓ | layer a single RPM package (requires reboot) — param: package\* (string) |
 | `RemoveLayeredPackage` | `sudo rpm-ostree uninstall podman` | High | Fedora | ✓ | ✓ | remove a single layered RPM package (requires reboot) — param: package\* (string) |
 | `ReplaceLayeredPackage` | `sudo rpm-ostree install neovim --uninstall vim` | High | Fedora | ✓ | ✓ | replace one layered package with another — params: old\* (string), new\* (string) |
 | `ResetLayeredPackageOverride` | `sudo rpm-ostree override reset --all` | High | Fedora | ✓ | ✓ | reset all rpm-ostree override changes — no params |
 | `RemoveBasePackage` | `sudo rpm-ostree override remove gedit` | High | Fedora | ✓ | ✓ | exclude a base OS package from the deployment — param: package\* (string) |
-| `GetPendingUpdates` | `rpm-ostree upgrade --check` | Low | All | – | – | check for a staged update and show its diff — no params |
+| `GetPendingUpdates` | `rpm-ostree upgrade --check` | Low | Fedora | – | – | check for a staged update and show its diff — no params |
 
 ## Filesystem
 
@@ -65,9 +65,9 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `ListToolboxes` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox list"` | Low | Fedora | – | – | list toolbox containers for a user — param: username\* |
-| `CreateToolbox` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox create --container 'sysknife-dev' --release '41'"` | Medium | Fedora | – | – | create a toolbox container — params: username\*, name\*; optional: image, release |
-| `RemoveToolbox` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox rm 'sysknife-dev'"` | Medium | Fedora | – | – | remove a toolbox container — params: username\*, name\* |
+| `ListToolboxes` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox list"` | Low | All | – | – | list toolbox containers for a user — param: username\* |
+| `CreateToolbox` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox create --container 'sysknife-dev' --release '41'"` | Medium | All | – | – | create a toolbox container — params: username\*, name\*; optional: image, release |
+| `RemoveToolbox` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox rm 'sysknife-dev'"` | Medium | All | – | – | remove a toolbox container — params: username\*, name\* |
 
 ## Services
 
@@ -178,8 +178,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 |---|---|---|---|---|---|---|
 | `ConfigureWifi` | `sudo nmcli device wifi connect CafeHotspot` | High | All | – | – | connect to a Wi-Fi network — params: ssid\*, password (optional for open networks) |
 | `SetDnsServers` | `sudo resolvectl dns wlp1s0 1.1.1.1 8.8.8.8` | High | All | – | – | set DNS servers for an interface — params: interface\* (e.g. wlp1s0), servers\* (string\[\]) |
-| `ConfigureFirewall` | `sudo sh -c "firewall-cmd --permanent --zone='public' --add-service='ssh' && firewall-cmd --reload"` | High | Fedora | – | – | add/remove a service in a firewalld zone — params: zone\*, service\*, enabled\* (bool) |
-| `GetFirewallState` | `firewall-cmd --list-all` | Low | Fedora | – | – | show current firewalld zones, open services, and port rules — no params |
+| `ConfigureFirewall` | `sudo sh -c "firewall-cmd --permanent --zone='public' --add-service='ssh' && firewall-cmd --reload"` | High | All | – | – | add/remove a service in a firewalld zone — params: zone\*, service\*, enabled\* (bool) |
+| `GetFirewallState` | `firewall-cmd --list-all` | Low | All | – | – | show current firewalld zones, open services, and port rules — no params |
 | `GetNetworkStatus` | `ip -brief addr` | Low | All | – | – | show network interfaces, IP addresses, and connection state — no params |
 | `GetListeningPorts` | `ss -tulpnH` | Low | All | – | – | show listening TCP/UDP sockets and the process bound to each (ss -tulpn) — no params; read-only; use for "what is listening on port X?" |
 
@@ -228,11 +228,11 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `ListPackageRepositories` | scan `/etc/yum.repos.d` | Low | All | – | – | list configured DNF/rpm-ostree repos and their enabled state — no params |
-| `AddPackageRepository` | write `/etc/yum.repos.d/repo-id.repo` | High | All | – | – | add a DNF repo — params: repo_id\*, repo_url\* |
-| `RemovePackageRepository` | delete `/etc/yum.repos.d/repo-id.repo` | Medium | All | – | – | remove a DNF repo — param: repo_id\* |
-| `EnablePackageRepository` | patch `/etc/yum.repos.d/repo-id.repo` | Medium | All | – | – | enable a disabled DNF repo — param: repo_id\* |
-| `DisablePackageRepository` | patch `/etc/yum.repos.d/repo-id.repo` | Medium | All | – | – | disable a DNF repo without removing it — param: repo_id\* |
+| `ListPackageRepositories` | scan `/etc/yum.repos.d` | Low | Fedora | – | – | list configured DNF/rpm-ostree repos and their enabled state — no params |
+| `AddPackageRepository` | write `/etc/yum.repos.d/repo-id.repo` | High | Fedora | – | – | add a DNF repo — params: repo_id\*, repo_url\* |
+| `RemovePackageRepository` | delete `/etc/yum.repos.d/repo-id.repo` | Medium | Fedora | – | – | remove a DNF repo — param: repo_id\* |
+| `EnablePackageRepository` | patch `/etc/yum.repos.d/repo-id.repo` | Medium | Fedora | – | – | enable a disabled DNF repo — param: repo_id\* |
+| `DisablePackageRepository` | patch `/etc/yum.repos.d/repo-id.repo` | Medium | Fedora | – | – | disable a DNF repo without removing it — param: repo_id\* |
 
 ## System info
 
