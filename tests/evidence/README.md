@@ -7,11 +7,14 @@ produces fails the build.
 
 This exists because the README claimed "65/65 stories" validated on a live VM in
 eight places. No run ever produced that figure; no story set of that size has
-existed, and the Ubuntu family contains 50 stories. The first measurements
-traceable to a run are 46/50 on 22.04 and 45/50 on 24.04 with
-`openai/gpt-oss-120b`. The test count had rotted the other way: three docs said
-"1,561 Rust tests" and the claims checker *required* that exact string while the
-suite had grown past 1,600.
+existed, and the Ubuntu family contains 50 stories. The test count had rotted the
+other way: three docs said "1,561 Rust tests" and the claims checker *required*
+that exact string while the suite had grown past 1,600.
+
+`story-runs/` is empty until a full family run is recorded and committed. Nothing
+here is filled in by hand, including by way of illustration — a number in this
+directory is a claim, and the point of the directory is that claims come from
+runs.
 
 ## `workspace-tests.json`
 

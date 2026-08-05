@@ -84,9 +84,11 @@ which reads `/etc/os-release` at startup. If detection fails, `distro_hint` is
 ## Correction (2026-08-05)
 
 The "65/65" figure quoted above was never backed by a run: no story set of that
-size has existed, and the Ubuntu family contains 50 stories. The first
-measurements traceable to an artifact are 46/50 on 22.04 and 45/50 on 24.04 with
-`openai/gpt-oss-120b`. The decision this ADR records — structural per-distro
+size has existed, and the Ubuntu family contains 50 stories. Later runs were
+observed at 46/50 on 22.04 and 45/50 on 24.04 with `openai/gpt-oss-120b`, but
+those numbers come from run logs that were never committed, so they are **not
+artifact-backed either** and are recorded here only as history. Figures fit to
+publish live in `tests/evidence/story-runs/`, written by the run itself. The decision this ADR records — structural per-distro
 prompt isolation — is unaffected, and was independently confirmed later: the two
 Fedora actions that still reached Ubuntu plans came from the *tool schema*, which
 this ADR did not cover, not from the prompt. Published figures now derive from

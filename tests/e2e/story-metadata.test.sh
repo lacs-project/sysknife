@@ -69,6 +69,22 @@ if [ "$ubuntu_count" -lt 1 ] || [ "$atomic_count" -lt 1 ]; then
     report "family split is degenerate: $ubuntu_count ubuntu, $atomic_count atomic"
 fi
 
+# The two families must partition the ids contiguously: atomic first, then
+# ubuntu. Checking only that both are non-empty would let a story that lost its
+# `ubuntu` tag fall into the atomic family, which is the set that
+# SYSKNIFE_ALLOW_DESTRUCTIVE=1 runs by default. Contiguity pins the partition
+# without restating either count, so adding a story to either end still passes.
+atomic_max="$(printf '%s\n' "$metadata" | awk -F'\t' '$2 == "atomic" {print $1}' | sort -n | tail -1)"
+ubuntu_min="$(printf '%s\n' "$metadata" | awk -F'\t' '$2 == "ubuntu" {print $1}' | sort -n | head -1)"
+if [ -n "$atomic_max" ] && [ -n "$ubuntu_min" ] && [ "$ubuntu_min" -le "$atomic_max" ]; then
+    report "families interleave: ubuntu starts at $ubuntu_min but atomic runs to $atomic_max"
+fi
+atomic_ids="$(printf '%s\n' "$metadata" | awk -F'\t' '$2 == "atomic" {print $1}' | sort -n)"
+expected_atomic="$(seq 1 "$atomic_count")"
+if [ "$atomic_ids" != "$expected_atomic" ]; then
+    report "the atomic family is not the contiguous range 1..$atomic_count; a story may have lost its ubuntu tag"
+fi
+
 duplicates="$(printf '%s\n' "$metadata" | cut -f1 | sort | uniq -d)"
 if [ -n "$duplicates" ]; then
     report "duplicate story ids derived: $(printf '%s' "$duplicates" | tr '\n' ' ')"

@@ -99,8 +99,9 @@ UBUNTU_RELEASE=noble ./tests/e2e/ubuntu-vm.sh stop
 UBUNTU_RELEASE=noble ./tests/e2e/ubuntu-vm.sh snapshot baseline
 UBUNTU_RELEASE=noble ./tests/e2e/ubuntu-vm.sh start
 
-# Run the Ubuntu story suite
-UBUNTU_RELEASE=noble ./tests/e2e/ubuntu-vm.sh run
+# Run the Ubuntu story suite. `ubuntu` is the derived family set; a bare `run`
+# selects the curated atomic read-only subset instead.
+UBUNTU_RELEASE=noble ./tests/e2e/ubuntu-vm.sh run ubuntu
 
 # Roll back to the clean baseline
 UBUNTU_RELEASE=noble ./tests/e2e/ubuntu-vm.sh stop

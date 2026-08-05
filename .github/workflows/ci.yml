@@ -62,6 +62,12 @@ jobs:
       - name: Check mount-edit refuses symlinked mountpoints
         run: bash tests/release/mount-edit.test.sh
 
+      - name: Check provider parity across E2E entry points
+        run: bash tests/e2e/provider-parity.test.sh
+
+      - name: Check story metadata is derived from the story files
+        run: bash tests/e2e/story-metadata.test.sh
+
       - name: Check Ubuntu VM bootstrap contract
         run: bash tests/e2e/ubuntu-vm-bootstrap.test.sh
 
