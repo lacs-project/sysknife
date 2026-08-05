@@ -65,9 +65,9 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `ListToolboxes` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox list"` | Low | All | – | – | list toolbox containers for a user — param: username\* |
-| `CreateToolbox` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox create --container 'sysknife-dev' --release '41'"` | Medium | All | – | – | create a toolbox container — params: username\*, name\*; optional: image, release |
-| `RemoveToolbox` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox rm 'sysknife-dev'"` | Medium | All | – | – | remove a toolbox container — params: username\*, name\* |
+| `ListToolboxes` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox list"` | Low | Fedora | – | – | list toolbox containers for a user — param: username\* |
+| `CreateToolbox` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox create --container 'sysknife-dev' --release '41'"` | Medium | Fedora | – | – | create a toolbox container — params: username\*, name\*; optional: image, release |
+| `RemoveToolbox` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox rm 'sysknife-dev'"` | Medium | Fedora | – | – | remove a toolbox container — params: username\*, name\* |
 
 ## Services
 
@@ -178,8 +178,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 |---|---|---|---|---|---|---|
 | `ConfigureWifi` | `sudo nmcli device wifi connect CafeHotspot` | High | All | – | – | connect to a Wi-Fi network — params: ssid\*, password (optional for open networks) |
 | `SetDnsServers` | `sudo resolvectl dns wlp1s0 1.1.1.1 8.8.8.8` | High | All | – | – | set DNS servers for an interface — params: interface\* (e.g. wlp1s0), servers\* (string\[\]) |
-| `ConfigureFirewall` | `sudo sh -c "firewall-cmd --permanent --zone='public' --add-service='ssh' && firewall-cmd --reload"` | High | All | – | – | add/remove a service in a firewalld zone — params: zone\*, service\*, enabled\* (bool) |
-| `GetFirewallState` | `firewall-cmd --list-all` | Low | All | – | – | show current firewalld zones, open services, and port rules — no params |
+| `ConfigureFirewall` | `sudo sh -c "firewall-cmd --permanent --zone='public' --add-service='ssh' && firewall-cmd --reload"` | High | Fedora | – | – | add/remove a service in a firewalld zone — params: zone\*, service\*, enabled\* (bool) |
+| `GetFirewallState` | `firewall-cmd --list-all` | Low | Fedora | – | – | show current firewalld zones, open services, and port rules — no params |
 | `GetNetworkStatus` | `ip -brief addr` | Low | All | – | – | show network interfaces, IP addresses, and connection state — no params |
 | `GetListeningPorts` | `ss -tulpnH` | Low | All | – | – | show listening TCP/UDP sockets and the process bound to each (ss -tulpn) — no params; read-only; use for "what is listening on port X?" |
 

@@ -7,6 +7,8 @@
 use crate::action_name::ActionName;
 use crate::planner::{Plan, PlanRiskLevel, PlanStep, PlanningError};
 use crate::provider::ToolDefinition;
+use sysknife_core::action_family::{DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS};
+use sysknife_types::{DISTRO_FAMILY_DEBIAN, DISTRO_FAMILY_FEDORA};
 
 // ---------------------------------------------------------------------------
 // Tool definition
@@ -448,15 +450,45 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "list Multipass VMs and their state — no params; Ubuntu only; read-only"),
 ];
 
-pub fn propose_plan_tool_def() -> ToolDefinition {
-    let action_enum: Vec<serde_json::Value> = KNOWN_ACTIONS
+/// Is `action` runnable on `family`, given the family fence in
+/// [`sysknife_core::action_family`]?
+///
+/// `None` — no distro hint — offers everything: without a detected family there
+/// is no basis to exclude an action, and a generic deployment still has to be
+/// able to plan.
+fn available_on(action: &str, family: Option<&str>) -> bool {
+    match family {
+        Some(DISTRO_FAMILY_DEBIAN) => !FEDORA_ONLY_ACTIONS.contains(&action),
+        Some(DISTRO_FAMILY_FEDORA) => !DEBIAN_ONLY_ACTIONS.contains(&action),
+        _ => true,
+    }
+}
+
+/// Build the `propose_plan` tool definition, offering only the actions that the
+/// detected distro family can actually run.
+///
+/// The filter is not a nicety. `prompt.rs` renders per-distro prose and a test
+/// asserts the Debian prompt names no Fedora action, but this schema used to
+/// hand every host all 189 actions regardless — so the model could pick a
+/// `firewall-cmd` or `toolbox` action on Ubuntu having never seen it in the
+/// prompt, and did, in two live VM stories. Prose cannot fix that; only not
+/// offering the action can.
+pub fn propose_plan_tool_def(family: Option<&str>) -> ToolDefinition {
+    // One filtered pass feeds both the enum and the catalogue, so the model can
+    // never be told about an action the enum would reject.
+    let offered: Vec<&(&str, &str)> = KNOWN_ACTIONS
+        .iter()
+        .filter(|(name, _)| available_on(name, family))
+        .collect();
+
+    let action_enum: Vec<serde_json::Value> = offered
         .iter()
         .map(|(name, _)| serde_json::Value::String((*name).into()))
         .collect();
 
     // Build a compact catalogue so the model can match intent to action by
     // purpose.  Format: "Name — description" on its own line.
-    let action_catalogue: String = KNOWN_ACTIONS
+    let action_catalogue: String = offered
         .iter()
         .map(|(name, desc)| format!("{name} — {desc}"))
         .collect::<Vec<_>>()
@@ -888,5 +920,126 @@ mod tests {
             "steps": [{ "action_name": "ListJobHistory", "summary": "show recent activity", "risk_level": "low", "params": {} }]
         });
         parse_proposed_plan("show history", &input).unwrap();
+    }
+
+    // ── distro-scoped catalogue ──────────────────────────────────────────────
+    //
+    // `prompt.rs` isolates the per-distro *prose* (a passing test asserts the
+    // Debian prompt names no Fedora action), but the tool schema sitting beside
+    // it offered all 189 actions to every host. Two Ubuntu VM story failures
+    // came from exactly that gap: the model answered "show the current firewall
+    // rules" with `GetFirewallState` (`firewall-cmd`, absent on Ubuntu) and
+    // "what development containers do I have" with `ListToolboxes` (`toolbox`,
+    // likewise). Neither name appears anywhere in the Debian prompt — the model
+    // read them out of the enum.
+
+    /// Action names offered in the `action_name` enum of a built tool def.
+    fn offered_actions(def: &ToolDefinition) -> Vec<String> {
+        def.input_schema["properties"]["steps"]["items"]["properties"]["action_name"]["enum"]
+            .as_array()
+            .expect("action_name must carry an enum of allowed names")
+            .iter()
+            .map(|v| v.as_str().expect("enum entries are strings").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn debian_tool_def_omits_fedora_only_actions() {
+        let def = propose_plan_tool_def(Some(DISTRO_FAMILY_DEBIAN));
+        let offered = offered_actions(&def);
+        let catalogue = def.input_schema["properties"]["steps"]["items"]["properties"]
+            ["action_name"]["description"]
+            .as_str()
+            .expect("action_name carries a catalogue description")
+            .to_string();
+
+        for name in FEDORA_ONLY_ACTIONS {
+            assert!(
+                !offered.contains(&name.to_string()),
+                "Debian tool def offered Fedora-only action {name}"
+            );
+            // The catalogue prose is the other half of the leak: an action the
+            // enum rejects must not be advertised in the description either.
+            assert!(
+                !catalogue.contains(&format!("{name} — ")),
+                "Debian catalogue described Fedora-only action {name}"
+            );
+        }
+        // The Ubuntu twins of the two actions that actually leaked in the VM
+        // must still be on offer, or this filter has broken the distro it is
+        // meant to serve.
+        for kept in ["UfwStatus", "DistroboxList", "AptInstall"] {
+            assert!(
+                offered.contains(&kept.to_string()),
+                "Debian tool def dropped Ubuntu action {kept}"
+            );
+        }
+    }
+
+    #[test]
+    fn fedora_tool_def_omits_debian_only_actions() {
+        let def = propose_plan_tool_def(Some(DISTRO_FAMILY_FEDORA));
+        let offered = offered_actions(&def);
+        for name in DEBIAN_ONLY_ACTIONS {
+            assert!(
+                !offered.contains(&name.to_string()),
+                "Fedora tool def offered Debian-only action {name}"
+            );
+        }
+        for kept in ["GetFirewallState", "ListToolboxes", "AddLayeredPackage"] {
+            assert!(
+                offered.contains(&kept.to_string()),
+                "Fedora tool def dropped Fedora action {kept}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_family_tool_def_offers_every_action() {
+        // No hint means no basis to exclude anything: a generic deployment must
+        // still be able to plan for whatever it is running on.
+        let offered = offered_actions(&propose_plan_tool_def(None));
+        assert_eq!(offered.len(), KNOWN_ACTIONS.len());
+    }
+
+    #[test]
+    fn every_offered_action_is_described_in_the_catalogue() {
+        // The enum and the catalogue are derived from one filtered iterator; if
+        // they are ever built from two separate passes, this catches the drift
+        // where the model is told about an action it is not allowed to name.
+        for family in [Some(DISTRO_FAMILY_DEBIAN), Some(DISTRO_FAMILY_FEDORA), None] {
+            let def = propose_plan_tool_def(family);
+            let catalogue = def.input_schema["properties"]["steps"]["items"]["properties"]
+                ["action_name"]["description"]
+                .as_str()
+                .expect("action_name carries a catalogue description")
+                .to_string();
+            let offered = offered_actions(&def);
+            assert!(!offered.is_empty(), "no actions offered for {family:?}");
+
+            // Entries are `Name — description`, one per line. A description may
+            // itself contain both " — " and an embedded newline
+            // (`CreateScheduledJob` does), so an entry is identified by its
+            // *leading* name, not by counting separators.
+            let described: Vec<&str> = catalogue
+                .lines()
+                .filter_map(|l| l.split_once(" — ").map(|(name, _)| name))
+                .filter(|name| KNOWN_ACTIONS.iter().any(|(known, _)| known == name))
+                .collect();
+
+            for name in &offered {
+                assert!(
+                    described.contains(&name.as_str()),
+                    "{name} is in the enum but missing from the catalogue for {family:?}"
+                );
+            }
+            assert_eq!(
+                described.len(),
+                offered.len(),
+                "catalogue describes {} actions but the enum allows {} for {family:?}",
+                described.len(),
+                offered.len()
+            );
+        }
     }
 }

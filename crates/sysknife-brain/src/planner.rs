@@ -517,15 +517,20 @@ impl From<PlanValidationError> for PlanningError {
 
 /// Drives the LLM planning loop.
 ///
-/// Tool definitions are built once at construction time and reused across all
-/// planning calls. The system prompt is rebuilt per `plan_intent()` call to
-/// include current user preferences and, when set, a distro-specific action
-/// family hint.
+/// Tool definitions and the system prompt are both rebuilt per `plan_intent()`
+/// call, from the same state: current user preferences and, when set, a
+/// distro-specific action family hint.
+///
+/// The tools used to be snapshotted in [`LlmPlanner::new`]. That was safe only
+/// while the schema was distro-agnostic — [`with_distro`] runs *after* `new`, so
+/// a construction-time snapshot could not reflect the hint, and the Debian
+/// `propose_plan` schema went out offering every Fedora action.
+///
+/// [`with_distro`]: LlmPlanner::with_distro
 pub struct LlmPlanner {
     provider: Box<dyn LlmProvider>,
     state_client: Box<dyn StateClient>,
     max_turns: usize,
-    tools: Vec<ToolDefinition>,
     audit_log: Option<SafetyAuditLog>,
     prefs_path: Option<std::path::PathBuf>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<PlanEvent>>,
@@ -548,14 +553,6 @@ impl LlmPlanner {
             provider,
             state_client,
             max_turns,
-            tools: {
-                let mut t = vec![get_state_tool_def()];
-                t.extend(query_tools());
-                t.push(crate::planning_tools::preferences::remember_tool_def());
-                t.push(crate::planning_tools::preferences::forget_tool_def());
-                t.push(propose_plan_tool_def());
-                t
-            },
             audit_log: None,
             prefs_path: None,
             progress_tx: None,
@@ -607,6 +604,22 @@ impl LlmPlanner {
     pub fn with_rate_limiter(mut self, rl: crate::rate_limit::RateLimiter) -> Self {
         self.rate_limiter = Some(std::sync::Arc::new(rl));
         self
+    }
+
+    /// The tools offered for one planning call: the query tools, the preference
+    /// tools, and a `propose_plan` schema scoped to the detected distro family.
+    ///
+    /// Built per call, not cached, because [`Self::with_distro`] can only run
+    /// after [`Self::new`] — see the type-level note on `LlmPlanner`.
+    fn tool_defs(&self) -> Vec<ToolDefinition> {
+        let mut t = vec![get_state_tool_def()];
+        t.extend(query_tools());
+        t.push(crate::planning_tools::preferences::remember_tool_def());
+        t.push(crate::planning_tools::preferences::forget_tool_def());
+        t.push(propose_plan_tool_def(
+            self.distro_hint.as_ref().map(|h| h.family),
+        ));
+        t
     }
 
     /// Attach a [`DistroHint`] to guide action-family selection in the prompt.
@@ -886,17 +899,14 @@ impl LlmPlanner {
             };
             build_system_prompt(prefs_content.as_deref(), self.distro_hint.as_ref())
         };
+        // Same lifetime as the prompt: one build per plan, reused across turns.
+        let tools = self.tool_defs();
 
         for turn in 0..self.max_turns {
             self.emit(PlanEvent::Thinking);
             let completion = self
                 .provider
-                .complete(
-                    &effective_prompt,
-                    &messages,
-                    &self.tools,
-                    PLANNING_MAX_TOKENS,
-                )
+                .complete(&effective_prompt, &messages, &tools, PLANNING_MAX_TOKENS)
                 .await
                 .map_err(PlanningError::from)?;
 

@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use clap::CommandFactory;
 use serde_json::{json, Value};
 use sysknife_brain::config::BrainConfig;
-use sysknife_brain::planner::{LlmPlanner, PlanRiskLevel};
+use sysknife_brain::planner::{LlmPlanner, Plan, PlanRiskLevel};
 use sysknife_brain::PlanEvent;
 use sysknife_types::{
     DistroHint, RiskLevel, TransactionId, DISTRO_FAMILY_DEBIAN, DISTRO_FAMILY_FEDORA,
@@ -413,6 +413,35 @@ fn plan_risk_of(risk: RiskLevel) -> PlanRiskLevel {
 /// higher risk than was approved.
 fn authoritative_plan_risk(action_name: &str) -> PlanRiskLevel {
     plan_risk_of(sysknife_daemon::preview::gate_risk(action_name))
+}
+
+/// Refuse a plan whose parameters the daemon would refuse, before the operator
+/// is asked to approve it.
+///
+/// [`authoritative_plan_risk`] asks the catalogue about a step by *name* only,
+/// so nothing built its `ActionSpec` until the daemon did — at execution, after
+/// approval. A live Ubuntu 22.04 run showed what that costs: "block port 0 in
+/// the firewall" produced an approvable `UfwDeny{port_or_service:"0"}` even
+/// though the daemon's `validated_port_or_service` rejects port 0 outright, so
+/// the operator was shown a plan that could only fail.
+///
+/// [`sysknife_daemon::executor::build_action_spec`] is the daemon's own
+/// construction path, params and all, and it is pure — so calling it here
+/// validates against the single source of truth rather than a second copy of
+/// each rule that could drift from it. Anything it rejects here would have
+/// failed at execution anyway; the only change is *when* the user finds out.
+fn reject_unrunnable_params(plan: &Plan) -> Result<(), CliError> {
+    for step in plan.steps() {
+        if let Err(e) =
+            sysknife_daemon::executor::build_action_spec(step.action_name(), step.params())
+        {
+            return Err(CliError::PlanningFailed(format!(
+                "step {} has parameters the daemon cannot run: {e}",
+                step.action_name()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Fail-closed check run at execution time: is the live daemon's risk for a step
@@ -1456,6 +1485,12 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     finish_spinner(&spinner);
 
     let plan = plan_result.map_err(|e| CliError::PlanningFailed(e.to_string()))?;
+
+    // Before anything is displayed or approved: refuse a plan the daemon could
+    // not run as written. A parameter the executor rejects is a planning
+    // failure, not an execution failure, and the operator should never be asked
+    // to approve one.
+    reject_unrunnable_params(&plan)?;
 
     // Surface any step where the planner's proposed risk disagreed with the
     // authoritative ActionSpec risk. A mismatch is a useful signal in its own
@@ -2530,7 +2565,7 @@ mod tests {
         );
     }
     use sysknife_brain::action_name::ActionName;
-    use sysknife_brain::planner::{AuthorizedPlan, Plan, PlanStep};
+    use sysknife_brain::planner::{AuthorizedPlan, PlanStep};
 
     /// Serialize env-var mutations so concurrent tests do not race on
     /// `SYSKNIFE_SOCKET`.  All tests that call `set_var` / `remove_var` must
@@ -2646,6 +2681,98 @@ mod tests {
         let h0 = since_to_hours("1970-01-01T00:00:00Z").unwrap();
         let h1 = since_to_hours("1970-01-01T01:00:00Z").unwrap();
         assert_eq!(h0, h1 + 1, "timestamps 1 h apart must differ by exactly 1");
+    }
+
+    // -----------------------------------------------------------------------
+    // reject_unrunnable_params — plan-time parameter validation
+    //
+    // `authoritative_plan_risk` asks the daemon catalogue about a step by NAME
+    // only, so nothing built its ActionSpec until the daemon did — at execution,
+    // after the operator had already approved. A live 22.04 run showed the cost:
+    // "block port 0 in the firewall" produced an approvable
+    // `UfwDeny{port_or_service:"0"}` even though the daemon's
+    // `validated_port_or_service` rejects port 0 outright.
+    // -----------------------------------------------------------------------
+
+    fn ufw_deny_plan(port: &str) -> Plan {
+        Plan::new(
+            "block a port".into(),
+            "block a port".into(),
+            "explanation".into(),
+            vec![PlanStep::new(
+                ActionName::parse("UfwDeny").unwrap(),
+                "deny inbound traffic".into(),
+                PlanRiskLevel::High,
+                serde_json::json!({ "port_or_service": port }),
+            )
+            .unwrap()],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_reserved_port_is_rejected_at_plan_time() {
+        let err = reject_unrunnable_params(&ufw_deny_plan("0"))
+            .expect_err("port 0 must not survive planning");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("UfwDeny") && msg.contains("port_or_service"),
+            "the error must name the step and the offending param, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_real_port_passes_plan_time_validation() {
+        // The guard must not be a blanket refusal: the same action with a valid
+        // port has to pass, or it would break every firewall plan.
+        reject_unrunnable_params(&ufw_deny_plan("23")).expect("port 23 is valid");
+        reject_unrunnable_params(&ufw_deny_plan("22/tcp")).expect("22/tcp is valid");
+        reject_unrunnable_params(&ufw_deny_plan("OpenSSH")).expect("an app profile is valid");
+    }
+
+    #[test]
+    fn a_missing_required_param_is_rejected_at_plan_time() {
+        // Port 0 is one instance of a general defect: any param the daemon would
+        // refuse used to reach the approval prompt. This covers the other half.
+        let plan = Plan::new(
+            "install".into(),
+            "install a package".into(),
+            "explanation".into(),
+            vec![PlanStep::new(
+                ActionName::parse("AptInstall").unwrap(),
+                "install".into(),
+                PlanRiskLevel::Medium,
+                serde_json::json!({}),
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        let err = reject_unrunnable_params(&plan)
+            .expect_err("AptInstall without a package is unrunnable");
+        assert!(err.to_string().contains("AptInstall"));
+    }
+
+    #[test]
+    fn every_catalogued_no_param_action_passes_plan_time_validation() {
+        // Guard against the validator rejecting the ordinary case: every action
+        // the daemon builds from an empty params object must still plan.
+        for action in ["GetDiskUsage", "UfwStatus", "AptUpdate", "ListServices"] {
+            let plan = Plan::new(
+                "read".into(),
+                "read state".into(),
+                "explanation".into(),
+                vec![PlanStep::new(
+                    ActionName::parse(action).unwrap(),
+                    "read".into(),
+                    PlanRiskLevel::Low,
+                    serde_json::json!({}),
+                )
+                .unwrap()],
+            )
+            .unwrap();
+            reject_unrunnable_params(&plan)
+                .unwrap_or_else(|e| panic!("{action} should plan cleanly: {e}"));
+        }
     }
 
     // -----------------------------------------------------------------------
