@@ -33,6 +33,10 @@ fixture_files=(
     # every assert_rejected below would pass for the wrong reason.
     "tests/evidence/workspace-tests.json"
     "crates/sysknife-brain/src/planning_tools/propose_plan.rs"
+    # The committed story run that backs the published pass rate. Without it the
+    # pristine fixture fails, because README's figure would have no evidence — the
+    # guard working, but on the fixture rather than on a real claim.
+    "tests/evidence/story-runs/ubuntu-22.04-gpt-oss-120b.json"
 )
 for rel in "${fixture_files[@]}"; do
     mkdir -p "$fixture/$(dirname "$rel")"
@@ -77,7 +81,7 @@ cp "$repo_root/README.md" "$fixture/README.md"
 
 # A figure with no artifact at all behind it. This is the "65/65 stories" shape:
 # published for months, never produced by a run.
-printf '\nUbuntu 24.04 is validated with 49/50 stories on a live VM.\n' >> "$fixture/README.md"
+printf '\nUbuntu 24.04 is validated with 47/50 stories on a live VM.\n' >> "$fixture/README.md"
 assert_rejected 'story pass rate with no recorded run'
 cp "$repo_root/README.md" "$fixture/README.md"
 
@@ -104,18 +108,18 @@ write_fixture_run() {
           EV_SKIPPED=0 EV_RATELIMITED=0 \
           python3 "$repo_root/scripts/record_story_run.py"
 }
-write_fixture_run ubuntu 50 49 ok
+write_fixture_run ubuntu 50 47 ok
 # The writer's output must be valid JSON — the defect it replaced was not.
 python3 -m json.tool "$fixture/tests/evidence/story-runs/fixture-run.json" >/dev/null \
     || { printf 'FAIL: record_story_run.py emitted invalid JSON\n' >&2; exit 1; }
-printf '\nUbuntu 24.04 is validated with 49/50 stories on a live VM.\n' >> "$fixture/README.md"
+printf '\nUbuntu 24.04 is validated with 47/50 stories on a live VM.\n' >> "$fixture/README.md"
 if ! "$checker" "$fixture" >/dev/null 2>&1; then
     printf 'FAIL: checker rejected a story claim that its recorded run backs\n' >&2
     exit 1
 fi
 
 # Backed by a run, but attributed to a model that did not produce it.
-sed -i 's|49/50 stories on a live VM.|49/50 stories on a live VM with gpt-4.1.|' "$fixture/README.md"
+sed -i 's|47/50 stories on a live VM.|47/50 stories on a live VM with gpt-4.1.|' "$fixture/README.md"
 grep -q 'gpt-4.1' "$fixture/README.md" || {
     printf 'FAIL: model-attribution mutation did not apply\n' >&2
     exit 1
@@ -126,8 +130,8 @@ cp "$repo_root/README.md" "$fixture/README.md"
 # A replay the harness declared unproven must not back a figure either. The
 # artifact used to be written before the cassette audit ran, so a run that missed
 # every call still produced a file with a healthy pass rate.
-write_fixture_run ubuntu 50 49 failed
-printf '\nUbuntu 24.04 is validated with 49/50 stories on a live VM.\n' >> "$fixture/README.md"
+write_fixture_run ubuntu 50 47 failed
+printf '\nUbuntu 24.04 is validated with 47/50 stories on a live VM.\n' >> "$fixture/README.md"
 assert_rejected 'story pass rate from a replay whose cassette audit failed'
 cp "$repo_root/README.md" "$fixture/README.md"
 
@@ -136,7 +140,7 @@ write_fixture_run "" 4 4 ok
 printf '\nUbuntu 24.04 is validated with 4/4 stories on a live VM.\n' >> "$fixture/README.md"
 assert_rejected 'four-story probe quoted as a headline figure'
 cp "$repo_root/README.md" "$fixture/README.md"
-rm -rf "$fixture/tests/evidence/story-runs"
+rm -f "$fixture/tests/evidence/story-runs/fixture-run.json"
 
 # A claim file that vanishes must fail rather than quietly leave the checked set.
 mv "$fixture/ROADMAP.md" "$fixture/ROADMAP.held"

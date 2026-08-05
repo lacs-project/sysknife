@@ -135,7 +135,11 @@ SYSKNIFE_RESULTS_JSON="$RESULTS" \
 UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh run ubuntu
 
 # Copy it out of the guest (the suite runs as root, so read it with sudo).
-UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh ssh "sudo cat $CASSETTE" > "$CASSETTE"
+# Absolute path on purpose: `ssh` lands in the login home, not the repo, so a
+# relative path here `cat`s nothing and the redirection still creates the file —
+# leaving a 0-byte artifact that reads as a failed run rather than a missing copy.
+GUEST=/home/ubuntu/sysknife
+UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh ssh "sudo cat $GUEST/$CASSETTE" > "$CASSETTE"
 
 # If the cassette directory did not yet exist in the guest, root created it while
 # recording and `sync` will fail on it afterwards with "Permission denied". Give
@@ -152,7 +156,7 @@ UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh run ubuntu
 # Copy the evidence out of the guest the same way as the cassette, then commit it:
 # every published pass rate is checked against these files by
 # scripts/check_evidence_claims.py, so a figure with no run behind it fails CI.
-UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh ssh "sudo cat $RESULTS" > "$RESULTS"
+UBUNTU_RELEASE=jammy ./tests/e2e/ubuntu-vm.sh ssh "sudo cat $GUEST/$RESULTS" > "$RESULTS"
 ```
 
 A key still has to be *present* under replay, because `BrainConfig::from_env`
