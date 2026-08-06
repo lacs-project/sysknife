@@ -51,12 +51,16 @@ reject_pattern 'plan and approve from inside (Claude|chat)|chat approval is suff
     'MCP approval must be issued by the separate terminal command' "${claim_files[@]}"
 reject_pattern 'words like "yes", "do it"|explicit approval, then execute' \
     'generated integrations must require terminal-issued receipts' "${claim_files[@]}"
-# A 22.04/26.04 table row whose final tier cell is "Validated" — covers both
-# the bare `| 22.04 | … | validated |` (ubuntu-vm-testing.md) and the bolded
+# A table row *about* 22.04/26.04 whose final tier cell is "Validated" — covers
+# both the bare `| 22.04 | … | validated |` (ubuntu-vm-testing.md) and the bolded
 # `| **Ubuntu 22.04 LTS** | … | **Validated** |` (distro-support.md) shapes.
-# grep -i makes it case-insensitive; the trailing-cell anchor avoids matching
-# prose or the legitimately Validated 24.04 row.
-reject_pattern '(22\.04|26\.04).*\|[[:space:]]*\*{0,2}validated\*{0,2}[[:space:]]*\|' \
+# grep -i makes it case-insensitive.
+#
+# The version has to appear in the row's FIRST cell — `[^|]*` before the first
+# pipe. Matching it anywhere in the row made the 24.04 row unmentionable: citing
+# "the committed run is 22.04" in its evidence cell tripped a rule about tiering,
+# which would have pushed the honest wording out of the doc to appease the guard.
+reject_pattern '^\|[^|]*(22\.04|26\.04)[^|]*\|.*\|[[:space:]]*\*{0,2}validated\*{0,2}[[:space:]]*\|' \
     'Ubuntu 22.04 and 26.04 are smoke-tested, not launch-validated' "${claim_files[@]}"
 
 required_receipt_docs=(

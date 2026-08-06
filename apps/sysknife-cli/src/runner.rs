@@ -84,20 +84,13 @@ pub fn resolve_socket_target() -> SocketTarget {
     })
 }
 
-/// Whether an independent checkpoint anchor is configured for this deployment.
-///
-/// Reads the same variable the daemon reads, so the CLI cannot claim an anchor
-/// the daemon is not using.
-fn anchor_configured() -> bool {
-    std::env::var("SYSKNIFE_CHECKPOINT_DB").is_ok_and(|v| !v.trim().is_empty())
-}
-
 /// `remote_daemon_caveat` applied to the process environment.
 ///
-/// Mirrors how [`anchor_configured`] reads its own variable rather than taking it
-/// as an argument, so the caveat cannot drift from the socket the client actually
-/// used. An unparseable value yields no caveat: `resolve_socket_target` already
-/// exits with a clear message before verification runs.
+/// Reads its own variable rather than taking one as an argument — the same shape
+/// [`verify_configured_anchor`] uses — so the caveat cannot drift from the socket
+/// the client actually used. An unparseable value yields no caveat:
+/// `resolve_socket_target` already exits with a clear message before
+/// verification runs.
 pub(crate) fn remote_daemon_caveat_from_env() -> Option<String> {
     let (raw, source, target) = configured_socket_target()?;
     // `SYSKNIFE_SOCKET` is a deliberate client-side override, so any value there
@@ -263,16 +256,61 @@ fn resolve_daemon_socket_caveat() -> Option<String> {
 /// reports `Intact`. Detecting the loss requires a previously anchored signed
 /// tip in a store the host attacker does not control. Returning `None` when an
 /// anchor exists keeps the normal output free of noise.
-fn anchor_caveat(anchor_configured: bool) -> Option<&'static str> {
-    if anchor_configured {
-        return None;
+/// Render an anchor cross-check verdict for the human report.
+fn anchor_line(outcome: &CheckpointOutcome) -> String {
+    match outcome {
+        CheckpointOutcome::Consistent {
+            checkpoints_checked,
+        } => format!(
+            "OK: {checkpoints_checked} anchored checkpoint(s) still match this chain \
+             (a deleted tail would show here)"
+        ),
+        CheckpointOutcome::Truncated {
+            checkpoint_seq,
+            current_max_seq,
+        } => format!(
+            "TRUNCATED: seq={checkpoint_seq} was anchored but the chain now ends at \
+             seq={current_max_seq}. Rows have been deleted since that checkpoint."
+        ),
+        CheckpointOutcome::TipMismatch {
+            seq,
+            anchored,
+            actual,
+        } => format!(
+            "REWRITTEN: the chain hash at seq={seq} does not match the anchored \
+             value.\n  anchored: {anchored}\n  actual:   {actual}"
+        ),
+        CheckpointOutcome::BadSignature { seq } => format!(
+            "BAD CHECKPOINT SIGNATURE: the checkpoint at seq={seq} does not verify \
+             under this key"
+        ),
+        CheckpointOutcome::CannotVerify { reason } => {
+            format!("ANCHOR NOT CHECKED: {reason}")
+        }
     }
-    Some(
-        "NOTE: no independent checkpoint anchor is configured, so removal of the \
+}
+
+/// The machine-readable form of [`anchor_line`].
+fn anchor_json(outcome: &CheckpointOutcome) -> serde_json::Value {
+    let status = match outcome {
+        CheckpointOutcome::Consistent { .. } => "consistent",
+        CheckpointOutcome::Truncated { .. } => "truncated",
+        CheckpointOutcome::TipMismatch { .. } => "rewritten",
+        CheckpointOutcome::BadSignature { .. } => "bad_signature",
+        CheckpointOutcome::CannotVerify { .. } => "cannot_verify",
+    };
+    json!({
+        "configured": true,
+        "status": status,
+        "detail": anchor_line(outcome),
+    })
+}
+
+fn anchor_caveat() -> &'static str {
+    "NOTE: no independent checkpoint anchor is configured, so removal of the \
          newest rows would not be detectable — a truncated chain still verifies. \
          Set SYSKNIFE_CHECKPOINT_DB and run `sysknife audit checkpoint` \
-         periodically; see docs/the-audit-chain.md.",
-    )
+         periodically; see docs/the-audit-chain.md."
 }
 
 /// Whether this step needs an operator confirmation *after* its preview has
@@ -474,7 +512,7 @@ pub async fn run_approve(
         "Action:  {}\nRisk:    {:?}\nSummary: {}\nProposed change:\n{}",
         details.action_name,
         details.preview.risk_level,
-        details.preview.summary,
+        crate::operator_text::operator_safe(&details.preview.summary),
         serde_json::to_string_pretty(&details.preview.proposed_change)
             .unwrap_or_else(|_| "<unavailable>".to_string())
     ));
@@ -797,7 +835,13 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
                     "public key file {} could not be read: {e}",
                     pubkey_path.display()
                 );
-                emit_verification(&args, log, &cannot_verify_all(reason), &label_for_diag);
+                emit_verification(
+                    &args,
+                    log,
+                    &cannot_verify_all(reason),
+                    &label_for_diag,
+                    None,
+                );
                 return Err(CliError::Exit(2));
             }
         }
@@ -820,7 +864,13 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
                     ""
                 }
             );
-            emit_verification(&args, log, &cannot_verify_all(reason), &label_for_diag);
+            emit_verification(
+                &args,
+                log,
+                &cannot_verify_all(reason),
+                &label_for_diag,
+                None,
+            );
             return Err(CliError::Exit(2));
         }
 
@@ -828,7 +878,13 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
             Ok(k) => Verifier::Private(Box::new(k)),
             Err(e) => {
                 let reason = format!("audit key load failed: {e}");
-                emit_verification(&args, log, &cannot_verify_all(reason), &label_for_diag);
+                emit_verification(
+                    &args,
+                    log,
+                    &cannot_verify_all(reason),
+                    &label_for_diag,
+                    None,
+                );
                 return Err(CliError::Exit(2));
             }
         }
@@ -843,8 +899,21 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
         _ => verify_sqlite(&db_path, &verifier).await,
     };
 
-    let exit_code = outcome.exit_code();
-    emit_verification(&args, log, &outcome, &label_for_diag);
+    // `verify_chain` proves the chain is internally consistent and correctly
+    // signed. It cannot prove it is COMPLETE: a chain with its newest rows
+    // deleted still verifies. Only a previously anchored tip catches that, and
+    // this command used to report `audit_anchor: {configured: true}` without
+    // ever reading the anchor — implying a check it did not perform.
+    let anchor = verify_configured_anchor(&lacs_config, &db_path, &verifier).await;
+    let anchor_exit = anchor
+        .as_ref()
+        .map(sysknife_daemon::audit_chain::checkpoint_outcome_to_exit_code)
+        .unwrap_or(0);
+
+    // Worst verdict wins: a chain that verifies against itself but not against
+    // its anchor has been tampered with, whatever the local check said.
+    let exit_code = outcome.exit_code().max(anchor_exit);
+    emit_verification(&args, log, &outcome, &label_for_diag, anchor.as_ref());
     if exit_code == 0 {
         Ok(())
     } else {
@@ -953,6 +1022,67 @@ pub async fn run_audit_checkpoint(
 }
 
 /// What the audit chain is verified against.
+/// Cross-check the local chain against the configured checkpoint anchor.
+///
+/// `None` when no anchor is configured — that case keeps [`anchor_caveat`],
+/// which is honest about truncation being undetectable. When one IS configured
+/// the check must actually run: an operator who set anchoring up and gets back
+/// only `configured: true` is worse informed than one who never bothered.
+///
+/// Anchoring is SQLite-only today (`sysknife audit checkpoint` opens a
+/// `TransactionStore`), so a Postgres deployment gets an explicit "not
+/// supported" rather than a silent skip that would read as coverage.
+async fn verify_configured_anchor(
+    lacs_config: &sysknife_core::config::LacsConfig,
+    db_path: &std::path::Path,
+    verifier: &Verifier,
+) -> Option<CheckpointOutcome> {
+    use sysknife_daemon::checkpoint_sink::{verify_against_anchor, PostgresCheckpointSink};
+    use sysknife_daemon::transactions::TransactionStore;
+
+    let db_url = std::env::var("SYSKNIFE_CHECKPOINT_DB")
+        .ok()
+        .filter(|v| !v.trim().is_empty())?;
+
+    if lacs_config
+        .storage
+        .as_ref()
+        .is_some_and(|s| s.backend.eq_ignore_ascii_case("postgres"))
+    {
+        return Some(CheckpointOutcome::CannotVerify {
+            reason: "checkpoint anchoring is implemented for the sqlite backend only; \
+                     `sysknife audit checkpoint` cannot anchor a postgres chain either, \
+                     so this chain has no anchor to check against"
+                .to_string(),
+        });
+    }
+
+    let rows = match TransactionStore::open_read_only(db_path).and_then(|s| s.fetch_chain_rows()) {
+        Ok(rows) => rows,
+        Err(e) => {
+            return Some(CheckpointOutcome::CannotVerify {
+                reason: format!("reading the local chain for the anchor check failed: {e}"),
+            })
+        }
+    };
+
+    let sink = match PostgresCheckpointSink::connect(&db_url).await {
+        Ok(s) => s,
+        Err(e) => {
+            return Some(CheckpointOutcome::CannotVerify {
+                reason: format!("connecting to the checkpoint database failed: {e}"),
+            })
+        }
+    };
+
+    match verify_against_anchor(&verifier.verifying_key_hex(), &rows, &sink).await {
+        Ok(outcome) => Some(outcome),
+        Err(e) => Some(CheckpointOutcome::CannotVerify {
+            reason: format!("reading anchored checkpoints failed: {e}"),
+        }),
+    }
+}
+
 pub(crate) enum Verifier {
     /// The private signing key (also derives the public key used to verify).
     Private(Box<sysknife_daemon::audit_chain::AuditKey>),
@@ -961,7 +1091,19 @@ pub(crate) enum Verifier {
     Public(String),
 }
 
-use sysknife_daemon::audit_chain::AuditVerification;
+use sysknife_daemon::audit_chain::{AuditVerification, CheckpointOutcome};
+
+impl Verifier {
+    /// The hex Ed25519 public key, however the verifier was built. Checkpoint
+    /// signatures verify with the public half in both the operator (private key
+    /// on disk) and auditor (`--pubkey`) paths.
+    fn verifying_key_hex(&self) -> String {
+        match self {
+            Verifier::Private(key) => key.verifying_key_hex(),
+            Verifier::Public(hex) => hex.clone(),
+        }
+    }
+}
 
 /// Lift a single "we could not even read the rows" reason into all three
 /// checks, so the caller never has to special-case a partially populated
@@ -1201,6 +1343,7 @@ fn emit_verification(
     log: &Logger,
     verification: &AuditVerification,
     backend_label: &str,
+    anchor: Option<&CheckpointOutcome>,
 ) {
     use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
 
@@ -1212,10 +1355,9 @@ fn emit_verification(
             "backend": backend_label,
             "chain": outcome_json(&verification.chain),
             "approval_events": outcome_json(&verification.events),
-            "audit_anchor": if anchor_configured() {
-                json!({"configured": true})
-            } else {
-                json!({"configured": false, "caveat": anchor_caveat(false)})
+            "audit_anchor": match anchor {
+                Some(outcome) => anchor_json(outcome),
+                None => json!({"configured": false, "caveat": anchor_caveat()}),
             },
             "daemon_socket_caveat": resolve_daemon_socket_caveat(),
             // Null rather than zero when no census was taken. A machine reader
@@ -1290,8 +1432,11 @@ fn emit_verification(
     if let Some(caveat) = resolve_daemon_socket_caveat() {
         log.println(&caveat);
     }
-    if let Some(caveat) = anchor_caveat(anchor_configured()) {
-        log.println(caveat);
+    match anchor {
+        Some(outcome) => log.println(&anchor_line(outcome)),
+        None => {
+            log.println(anchor_caveat());
+        }
     }
 
     match &verification.events {
@@ -1492,6 +1637,23 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     // to approve one.
     reject_unrunnable_params(&plan)?;
 
+    // ---- distro routing guard ---------------------------------------------
+    // Validate every step's action against the detected distro. This sits beside
+    // the parameter check, and before the plan is displayed, for the same reason:
+    // it ran after approval, so on a Fedora host `sysknife run "show the firewall
+    // rules"` printed the plan, asked for confirmation, waited for "yes", and only
+    // then refused. A dry run still displays such a plan on purpose — inspecting
+    // what the planner produced is the point of it.
+    if !opts.dry_run {
+        for step in plan.steps() {
+            if let Err(msg) =
+                crate::distro_routing::check_action_distro(step.action_name(), distro.as_ref())
+            {
+                return Err(CliError::ConfigOrDaemon(msg));
+            }
+        }
+    }
+
     // Surface any step where the planner's proposed risk disagreed with the
     // authoritative ActionSpec risk. A mismatch is a useful signal in its own
     // right — the model may be confused about this action (and could have gotten
@@ -1582,20 +1744,6 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
         }
     }
 
-    // ---- distro routing guard ---------------------------------------------
-    // Validate every step's action against the detected distro before
-    // executing anything.  This surfaces a clear error for obviously wrong
-    // plans (e.g. AptInstall on Fedora) without touching the daemon.
-    if !opts.dry_run {
-        for step in plan.steps() {
-            if let Err(msg) =
-                crate::distro_routing::check_action_distro(step.action_name(), distro.as_ref())
-            {
-                return Err(CliError::ConfigOrDaemon(msg));
-            }
-        }
-    }
-
     // ---- execute steps -----------------------------------------------------
 
     let exec_client = DaemonClient::new(opts.socket.clone());
@@ -1645,7 +1793,13 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
                 GateAction::Refuse(err) => return Err(err),
                 GateAction::AskOperator => {
                     let msg = if opts.json {
-                        format!("Execute {} ({})?", step.action_name(), step.summary())
+                        // The summary is model-written and this string IS the
+                        // approval question; it must not be able to redraw it.
+                        format!(
+                            "Execute {} ({})?",
+                            step.action_name(),
+                            crate::operator_text::operator_safe(step.summary())
+                        )
                     } else {
                         format!(
                             "Apply {} ({} risk) as previewed above?",
@@ -1897,6 +2051,7 @@ mod tests {
             &log,
             &verification,
             "/tmp/test.db",
+            None,
         );
         std::fs::read_to_string(&path).expect("logger wrote the rendered output")
     }
@@ -2474,7 +2629,7 @@ mod tests {
     /// verdict rather than let "OK" be read as "nothing was removed".
     #[test]
     fn a_verdict_without_an_anchor_carries_a_truncation_caveat() {
-        let caveat = anchor_caveat(false).expect("unanchored chains need a caveat");
+        let caveat = anchor_caveat();
         assert!(
             caveat.to_lowercase().contains("truncat"),
             "the caveat must name what is undetectable, got: {caveat}"
@@ -2485,13 +2640,44 @@ mod tests {
         );
     }
 
+    /// A configured anchor used to suppress the caveat and report nothing else,
+    /// so the verdict said `configured: true` and checked nothing. It must now
+    /// carry the cross-check result, and a bad result must reach the exit code —
+    /// a verify that prints TRUNCATED and exits 0 is not a verify.
     #[test]
-    fn an_anchored_chain_needs_no_caveat() {
-        assert_eq!(
-            anchor_caveat(true),
-            None,
-            "with an anchor configured the verdict stands on its own"
+    fn an_anchored_chain_reports_the_cross_check_not_just_that_it_is_configured() {
+        use sysknife_daemon::audit_chain::checkpoint_outcome_to_exit_code;
+
+        let consistent = CheckpointOutcome::Consistent {
+            checkpoints_checked: 3,
+        };
+        assert!(anchor_line(&consistent).starts_with("OK:"));
+        assert_eq!(anchor_json(&consistent)["status"], "consistent");
+        assert_eq!(anchor_json(&consistent)["configured"], true);
+        assert_eq!(checkpoint_outcome_to_exit_code(&consistent), 0);
+
+        let truncated = CheckpointOutcome::Truncated {
+            checkpoint_seq: 42,
+            current_max_seq: 17,
+        };
+        let line = anchor_line(&truncated);
+        assert!(
+            line.contains("TRUNCATED") && line.contains("42") && line.contains("17"),
+            "the verdict must name the gap it found, got: {line}"
         );
+        assert_eq!(anchor_json(&truncated)["status"], "truncated");
+        assert_eq!(
+            checkpoint_outcome_to_exit_code(&truncated),
+            1,
+            "a detected truncation must fail the command"
+        );
+
+        // A configured anchor that holds nothing must not read as success.
+        let empty = CheckpointOutcome::CannotVerify {
+            reason: "no checkpoints".to_string(),
+        };
+        assert_eq!(anchor_json(&empty)["status"], "cannot_verify");
+        assert_eq!(checkpoint_outcome_to_exit_code(&empty), 2);
     }
 
     // -----------------------------------------------------------------------

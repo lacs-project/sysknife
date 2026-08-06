@@ -15,7 +15,8 @@ use std::collections::BTreeSet;
 
 use serde_json::json;
 use sysknife_brain::planning_tools::propose_plan::KNOWN_ACTIONS;
-use sysknife_daemon::actions::all_specs;
+use sysknife_core::action_family::{DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS};
+use sysknife_daemon::actions::{all_specs, ActionSpec};
 use sysknife_daemon::executor::build_action_spec;
 use sysknife_daemon::policy::{min_role_for_action, role_for_risk_level};
 use sysknife_daemon::preview::preview_action;
@@ -294,3 +295,152 @@ fn every_catalogued_action_has_a_preview_profile() {
 //
 // Adding a direct assertion would restate a property these already guarantee,
 // so it is left out on purpose rather than forgotten.
+
+// ---------------------------------------------------------------------------
+// Family classification, derived from each action's mechanism
+// ---------------------------------------------------------------------------
+//
+// `FEDORA_ONLY_ACTIONS` and `DEBIAN_ONLY_ACTIONS` are the family fence: the
+// daemon, the CLI routing guard and the planner's own catalogue filter all read
+// them to decide what may run, or be offered, on a host. They were maintained by
+// hand, and drifted — ten rpm-ostree/DNF-shaped actions sat outside the Fedora
+// list while `AddLayeredPackage`, whose argv is the same `rpm-ostree install`,
+// sat inside it. So an Ubuntu host was offered `UpdateSystem`
+// (`sudo rpm-ostree upgrade`, High risk, reboot) and `AddPackageRepository`
+// (a privileged write under `/etc/yum.repos.d/`).
+//
+// The tool an action drives is not a matter of judgement — it is in the argv. So
+// the classification is derived from the mechanism and the list has to agree.
+
+/// Tokens in an action's argv that mean it can only work on a Fedora-family
+/// host. Deliberately excludes `firewall-cmd` and `toolbox`: both are
+/// installable on Ubuntu, so they are a planner *preference* (see
+/// `NON_CANONICAL_ON_DEBIAN`), not an impossibility.
+const FEDORA_TOOLS: &[&str] = &["rpm-ostree", "ostree", "dnf", "rpm"];
+
+/// Path prefixes that only exist on a Fedora-family host.
+const FEDORA_PATHS: &[&str] = &["/etc/yum.repos.d"];
+
+/// Tokens that mean Debian-family only.
+const DEBIAN_TOOLS: &[&str] = &[
+    "apt-get",
+    "apt-mark",
+    "apt-cache",
+    "dpkg",
+    "snap",
+    "ufw",
+    "netplan",
+    "add-apt-repository",
+    "do-release-upgrade",
+    "canonical-livepatch",
+    "multipass",
+    "aa-status",
+    "aa-enforce",
+    "aa-complain",
+    "cloud-init",
+    "fail2ban-client",
+    "update-grub",
+    "unattended-upgrade",
+];
+
+const DEBIAN_PATHS: &[&str] = &["/etc/apt/", "/etc/default/grub", "/var/run/reboot-required"];
+
+/// The full command line (or file path) an action drives, as one searchable
+/// string. `sudo sh -c "…"` wrappers hide the real tool inside an argument, so
+/// the whole argv is joined rather than reading `program` alone.
+fn mechanism_text(spec: &ActionSpec) -> String {
+    match &spec.mechanism {
+        sysknife_daemon::actions::ActionMechanism::Command { program, args } => {
+            format!("{program} {}", args.join(" "))
+        }
+        sysknife_daemon::actions::ActionMechanism::FileScan { path }
+        | sysknife_daemon::actions::ActionMechanism::FileWrite { path, .. }
+        | sysknife_daemon::actions::ActionMechanism::FilePatch { path, .. }
+        | sysknife_daemon::actions::ActionMechanism::FileDelete { path } => path.clone(),
+    }
+}
+
+/// Whole-word search, so `rpm` does not match `rpm-ostree`'s substring and
+/// `snap` does not match `snapshot`.
+fn mentions_tool(text: &str, tool: &str) -> bool {
+    text.split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_' && c != '.')
+        .any(|word| word == tool)
+}
+
+/// The one action whose mechanism says Fedora but which is deliberately not
+/// fenced, with the reason, so the exception is visible and cannot grow.
+///
+/// `GetSystemState` runs `rpm-ostree status --json`, so on an apt host it fails —
+/// today at execution, with `command not found`. Fencing it is the right end
+/// state, but it appears in fifteen places across the *shared* prompt blocks as
+/// the state action every worked example reaches for, and Ubuntu has no
+/// equivalent to put in those places. Restructuring empirically-validated prompt
+/// examples requires an E2E story run to confirm, so it is tracked as its own
+/// change rather than smuggled into this one.
+const UNFENCED_BY_DECISION: &[&str] = &["GetSystemState"];
+
+#[test]
+fn family_fence_agrees_with_each_action_s_mechanism() {
+    let mut wrong = Vec::new();
+
+    for spec in all_specs() {
+        let name = spec.action_name;
+        let text = mechanism_text(&spec);
+
+        let fedora_shaped = FEDORA_TOOLS.iter().any(|t| mentions_tool(&text, t))
+            || FEDORA_PATHS.iter().any(|p| text.contains(p));
+        let debian_shaped = DEBIAN_TOOLS.iter().any(|t| mentions_tool(&text, t))
+            || DEBIAN_PATHS.iter().any(|p| text.contains(p));
+
+        // An action cannot be shaped by both families' tooling; if one ever is,
+        // the token lists need splitting rather than the fence.
+        if fedora_shaped && debian_shaped {
+            wrong.push(format!(
+                "{name}: mechanism mentions both families' tooling: {text}"
+            ));
+            continue;
+        }
+        if fedora_shaped
+            && !FEDORA_ONLY_ACTIONS.contains(&name)
+            && !UNFENCED_BY_DECISION.contains(&name)
+        {
+            wrong.push(format!(
+                "{name}: drives Fedora-only tooling but is not in FEDORA_ONLY_ACTIONS ({text})"
+            ));
+        }
+        if debian_shaped && !DEBIAN_ONLY_ACTIONS.contains(&name) {
+            wrong.push(format!(
+                "{name}: drives Debian-only tooling but is not in DEBIAN_ONLY_ACTIONS ({text})"
+            ));
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "the family fence disagrees with what these actions actually run:\n  {}",
+        wrong.join("\n  ")
+    );
+}
+
+#[test]
+fn the_unfenced_by_decision_list_is_still_load_bearing() {
+    // A stale exemption is worse than none: it reads as a considered decision
+    // while silently covering nothing, or covering an action that has since been
+    // fenced properly.
+    for name in UNFENCED_BY_DECISION {
+        assert!(
+            !FEDORA_ONLY_ACTIONS.contains(name) && !DEBIAN_ONLY_ACTIONS.contains(name),
+            "{name} is now fenced; remove it from UNFENCED_BY_DECISION"
+        );
+        let spec = all_specs()
+            .into_iter()
+            .find(|s| s.action_name == *name)
+            .unwrap_or_else(|| panic!("{name} is not in the catalogue at all"));
+        let text = mechanism_text(&spec);
+        assert!(
+            FEDORA_TOOLS.iter().any(|t| mentions_tool(&text, t))
+                || FEDORA_PATHS.iter().any(|p| text.contains(p)),
+            "{name} no longer drives family-specific tooling ({text}); the exemption is stale"
+        );
+    }
+}

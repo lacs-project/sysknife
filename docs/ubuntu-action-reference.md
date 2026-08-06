@@ -25,10 +25,17 @@ Sources consulted:
 
 ## apt (apt-get, apt-mark, apt-cache, dpkg)
 
-### AptUpdate — Refresh package index
+#> **The absolute path is load-bearing, not cosmetic.** sudo PATH-resolves only its
+> primary command; every later token is matched literally against the sudoers
+> rule, and `packaging/sysknife-sudoers` spells `/usr/bin/apt-get`. A bare
+> `apt-get` does not match and sudo falls through to asking for a password. See
+> `crates/sysknife-daemon/src/actions/apt.rs` and the
+> `sudoers_grants_match_argv` test that pins the two together.
+
+## AptUpdate — Refresh package index
 
 - **Canonical**: `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update`
-- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "apt-get", "update"]`
+- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "/usr/bin/apt-get", "update"]`
 - **Status**: ✅ matches
 - **Notes**: `DEBIAN_FRONTEND=noninteractive` suppresses all debconf prompts.
   `NEEDRESTART_MODE=a` auto-restarts services post-install without prompting.
@@ -38,7 +45,7 @@ Sources consulted:
 ### AptUpgrade — Full system upgrade
 
 - **Canonical**: `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get dist-upgrade -y`
-- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "apt-get", "dist-upgrade", "-y"]`
+- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "/usr/bin/apt-get", "dist-upgrade", "-y"]`
 - **Status**: ✅ matches
 - **Notes**: `dist-upgrade` resolves dependency changes by removing packages where
   necessary. `upgrade` (without `dist-`) is safer but may not complete all upgrades.
@@ -50,7 +57,7 @@ Sources consulted:
 ### AptInstall — Install package
 
 - **Canonical**: `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y <pkg>`
-- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "apt-get", "install", "-y", "<pkg>"]`
+- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "/usr/bin/apt-get", "install", "-y", "<pkg>"]`
 - **Status**: ✅ matches
 - **Notes**: Exit code 0 = success; 100 = error (package not found, broken deps, etc.).
   `-y` / `--assume-yes` required for non-interactive use.
@@ -58,20 +65,20 @@ Sources consulted:
 ### AptRemove — Remove package (keep config files)
 
 - **Canonical**: `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get remove -y <pkg>`
-- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "apt-get", "remove", "-y", "<pkg>"]`
+- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "/usr/bin/apt-get", "remove", "-y", "<pkg>"]`
 - **Status**: ✅ matches
 - **Notes**: Config files in `/etc` are preserved. Use `purge` to also remove them.
 
 ### AptPurge — Remove package and its config files
 
 - **Canonical**: `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get purge -y <pkg>`
-- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "apt-get", "purge", "-y", "<pkg>"]`
+- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "/usr/bin/apt-get", "purge", "-y", "<pkg>"]`
 - **Status**: ✅ matches
 
 ### AptAutoremove — Remove orphaned dependency packages
 
 - **Canonical**: `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get autoremove -y`
-- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "apt-get", "autoremove", "-y"]`
+- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "/usr/bin/apt-get", "autoremove", "-y"]`
 - **Status**: ✅ matches
 
 ### AptHold — Pin package at current version

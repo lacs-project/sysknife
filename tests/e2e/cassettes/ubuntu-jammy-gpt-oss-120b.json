@@ -5,6 +5,7 @@
       "groq/openai/gpt-oss-120b"
     ],
     "system_prompt_sha256": [
+      "aae976f60a093fef5c4bdc6a889da86d0284908ea05290af764b660bea55f0a4",
       "f8c3cbc09ddbd982b1efef0423b1a6a29d94849fe6b17df470faec4c9fd41b11"
     ]
   },
@@ -76,6 +77,33 @@
         "stop_reason": "EndTurn"
       }
     },
+    "groq/openai/gpt-oss-120b:076f16fcbd5ee2b3c1cfa394899d36b07c49cd790e2f4495175959814e2c9080": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_3ecdec76-9479-48e3-b45e-1678e5af56e0",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to bring all packages up to date. This will run AptUpgrade, which upgrades every installed package on the Ubuntu system. This operation is high risk because it may affect many services and could require a reboot.",
+                "steps": [
+                  {
+                    "action_name": "AptUpgrade",
+                    "params": "{}",
+                    "risk_level": "high",
+                    "summary": "Upgrade all installed packages to their latest versions"
+                  }
+                ],
+                "summary": "Upgrade all installed packages to the latest versions"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
     "groq/openai/gpt-oss-120b:0c22a802d63c754eae03dc50e2c08654f16ab7b944b9cccf0ab5abe7d66e4c97": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -96,6 +124,100 @@
                   }
                 ],
                 "summary": "Refresh all installed snap packages to their latest versions"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:0e02541d164ec66e6d2aa5b72c1677be9fa48b4e96951775c19275746d0c2d32": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_51af9b69-5a5f-401e-97de-e3093f580d2b",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested information about the lxd snap. SnapInfo provides metadata such as version, channel, description, and confinement for the specified snap. This is a read‑only low‑risk action.",
+                "steps": [
+                  {
+                    "action_name": "SnapInfo",
+                    "params": "{\"name\":\"lxd\"}",
+                    "risk_level": "low",
+                    "summary": "Retrieve detailed information for the lxd snap"
+                  }
+                ],
+                "summary": "Show details about the lxd snap"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:104a22e70b55e493d103e6a05d4d63aa337ed67e5c6431ca3ea3f9915fafa270": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_fa15b8e2-5137-4ccd-b06e-3af7bd3cb895",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to know whether the openssh-server package is present and its version. AptShow returns package details including installed version on Ubuntu systems.",
+                "steps": [
+                  {
+                    "action_name": "AptShow",
+                    "params": "{\"package\":\"openssh-server\"}",
+                    "risk_level": "low",
+                    "summary": "Show details of the openssh-server package, including installed version"
+                  }
+                ],
+                "summary": "Check if openssh-server is installed and show its version"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:12d96934367d7c03773975df00b722595334947acc02caff7cd0151bb9a835c7": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "Text": {
+              "text": "I’m sorry, but I can’t help with that."
+            }
+          }
+        ],
+        "stop_reason": "EndTurn"
+      }
+    },
+    "groq/openai/gpt-oss-120b:14dc2495309ebecd0ec5160d9a0cb86e32a2c02d712d7a71c8c823669dab5172": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_7d9054b8-77c3-4d63-8630-3f5f7487e0e9",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to revert all UFW firewall rules back to their default state. This will remove all existing rules and restore the default policy, which is a high-risk operation that may affect network access.",
+                "steps": [
+                  {
+                    "action_name": "UfwReset",
+                    "params": "{}",
+                    "risk_level": "high",
+                    "summary": "Reset all UFW firewall rules to default settings"
+                  }
+                ],
+                "summary": "Reset UFW firewall rules to defaults"
               }
             }
           }
@@ -130,6 +252,114 @@
         "stop_reason": "ToolUse"
       }
     },
+    "groq/openai/gpt-oss-120b:1a2ef89853af0a7b6f572b9806fadaa4e7d4de04814e7c84f649259d94f1e4b2": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_84ac1e45-496f-45e1-9433-cfa48a920a09",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested installing the 'code' snap using the beta release channel. SnapInstall will fetch and install that snap from the specified channel. This is a medium‑risk operation because it changes installed software.",
+                "steps": [
+                  {
+                    "action_name": "SnapInstall",
+                    "params": "{\"name\":\"code\",\"channel\":\"beta\"}",
+                    "risk_level": "medium",
+                    "summary": "Install the 'code' snap from the beta channel"
+                  }
+                ],
+                "summary": "Install the code snap from the beta channel"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:1a99b3cdcb3e745d31d55a9f04d1691bb56625230a52a0b008531b39e8144cd3": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_c42eb05e-86db-4493-9823-422f3e26fbdd",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested installation of nginx on this Ubuntu system. AptInstall will download and install the package, handling dependencies automatically. This is a medium‑risk action as it modifies the system package set.",
+                "steps": [
+                  {
+                    "action_name": "AptInstall",
+                    "params": "{\"package\":\"nginx\"}",
+                    "risk_level": "medium",
+                    "summary": "Install the nginx package via apt"
+                  }
+                ],
+                "summary": "Install the nginx web server package"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:1c300d4f26b968eac8079371ef910d5aa17f71f0b88e418947628d56477a0f7d": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_ca327c6d-28b4-4471-854a-ff0d9e5b2982",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to find APT packages related to Docker. AptSearch performs a read‑only search of the package database using the provided term, which satisfies the request without making any changes.",
+                "steps": [
+                  {
+                    "action_name": "AptSearch",
+                    "params": "{\"term\":\"docker\"}",
+                    "risk_level": "low",
+                    "summary": "Search APT package list for packages matching the term 'docker'"
+                  }
+                ],
+                "summary": "Search for Docker packages in APT repositories"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:1cc15e9aff77de332f802762f035cec4e860c6814b1ed4f9cf4bd94fd4b842bb": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_e4d70276-78bd-42cc-8508-779243701539",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to freeze the postgresql package so it won't be upgraded. Using AptHold will mark the package as held, preventing apt from upgrading it until the hold is removed.",
+                "steps": [
+                  {
+                    "action_name": "AptHold",
+                    "params": "{\"package\":\"postgresql\"}",
+                    "risk_level": "medium",
+                    "summary": "Mark the postgresql package as held to block upgrades"
+                  }
+                ],
+                "summary": "Hold the PostgreSQL package to prevent upgrades"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
     "groq/openai/gpt-oss-120b:1cd38b01faac7c1e19ceb968a136816d3c0fc8b0b44dd733e94e7c4d25a78b28": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -150,6 +380,33 @@
                   }
                 ],
                 "summary": "Remove orphaned packages that are no longer needed"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:1ef10dd3d25d7fb734126e3d04e88e05e21d3b1fcc5bd093570dd9b501546554": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_a154a987-7c54-453c-9a8c-591b2fedc7a9",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to allow inbound traffic for the 'Nginx Full' profile in the UFW firewall. Adding this rule enables HTTP and HTTPS traffic as defined by the profile.",
+                "steps": [
+                  {
+                    "action_name": "UfwAllow",
+                    "params": "{\"port_or_service\":\"Nginx Full\"}",
+                    "risk_level": "high",
+                    "summary": "Add a firewall rule to allow the Nginx Full profile"
+                  }
+                ],
+                "summary": "Allow Nginx Full profile in UFW"
               }
             }
           }
@@ -224,6 +481,46 @@
         "stop_reason": "ToolUse"
       }
     },
+    "groq/openai/gpt-oss-120b:2e92c75e96a954e46c19b01c178c53b1aa2f35da9556c95f2aa1cd699ef15c3b": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_cbea4813-b787-4be9-9dd7-2abb75ad0077",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to fully uninstall postfix, including all its configuration files. AptPurge removes the package and any related configuration, ensuring no leftover files remain. This is a medium-risk action as it modifies the package state.",
+                "steps": [
+                  {
+                    "action_name": "AptPurge",
+                    "params": "{\"package\":\"postfix\"}",
+                    "risk_level": "medium",
+                    "summary": "Purge the postfix package and its configuration files"
+                  }
+                ],
+                "summary": "Completely remove postfix and delete its configuration"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:2e977fb570ef7ec0b09de67a60b354f2bcec27de94c1aa4c5388032cbd8b6cc1": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "Text": {
+              "text": "I’m sorry, but I can’t help with that."
+            }
+          }
+        ],
+        "stop_reason": "EndTurn"
+      }
+    },
     "groq/openai/gpt-oss-120b:2ea4c99adc7a6aa4488627177f2e507c22d4f2b0db03679ecc7d5ea590462bf1": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -284,6 +581,39 @@
                   }
                 ],
                 "summary": "Reset UFW firewall rules to defaults"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:3245347279860d8d0d1265fed87fc737dfd3df7a877eee2b011a509ce408a74f": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_721624bc-635e-415a-854f-c1aac4dd1d05",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to know the status of the ufw firewall and see which network ports are currently open. UfwStatus reports whether ufw is active and its rule set, while GetListeningPorts shows the listening sockets on the system.",
+                "steps": [
+                  {
+                    "action_name": "UfwStatus",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Show ufw firewall enabled/disabled state and current rules"
+                  },
+                  {
+                    "action_name": "GetListeningPorts",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "List all listening TCP/UDP ports and the processes using them"
+                  }
+                ],
+                "summary": "Check if the Ubuntu firewall (ufw) is enabled and list open listening ports"
               }
             }
           }
@@ -398,6 +728,160 @@
         "stop_reason": "ToolUse"
       }
     },
+    "groq/openai/gpt-oss-120b:4716ac88d09cb6ca8d6e0fa537e09d4d01a42feea906cd9e3ac4b8474ed8e12f": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_b50a21c2-8af0-441b-9cf8-90a22b4429ac",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to install a snap but did not specify which one. Listing installed snaps first is a safe, low‑risk action that lets the user see current snap packages before choosing one to install.",
+                "steps": [
+                  {
+                    "action_name": "SnapList",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Show all installed snaps on the system"
+                  }
+                ],
+                "summary": "List available snaps"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:48bddbe8e0be42af8e95a0a0f08bc4260d7144473bfbd954b188bfcc901e9c0c": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_332af8c4-4f11-412a-b167-19f09c8f0f9f",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to prevent mysql-server from being upgraded by placing a hold (AptHold) and then view the package's information (AptShow). AptHold is a medium‑risk action because it changes package management state; AptShow is low‑risk and simply reads package metadata.",
+                "steps": [
+                  {
+                    "action_name": "AptHold",
+                    "params": "{\"package\":\"mysql-server\"}",
+                    "risk_level": "medium",
+                    "summary": "Place a hold on the mysql-server package to prevent upgrades"
+                  },
+                  {
+                    "action_name": "AptShow",
+                    "params": "{\"package\":\"mysql-server\"}",
+                    "risk_level": "low",
+                    "summary": "Show details of the mysql-server package, including version and description"
+                  }
+                ],
+                "summary": "Hold the mysql-server package and display its details"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:49919ed01370e630956df06dbc5bb282ddc18bd02de449a1d88364eb0f3da751": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_c561c5a7-0cd1-4820-85c6-33ffae5a4042",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to know which channel (e.g., stable, candidate, beta, edge) the Spotify snap is tracking. SnapInfo provides detailed snap metadata, including the current channel, without modifying the system.",
+                "steps": [
+                  {
+                    "action_name": "SnapInfo",
+                    "params": "{\"name\":\"spotify\"}",
+                    "risk_level": "low",
+                    "summary": "Retrieve metadata for the Spotify snap, including its current channel"
+                  }
+                ],
+                "summary": "Show channel information for the Spotify snap"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:4a5011c344c47eae9a085b380ad09a1f1102af97b1c634fbb91262d7a047ba6f": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_bc10042d-e39b-49b5-a06a-303b552e95c4",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to see the server's network configuration as defined by netplan. NetplanGetConfig returns the current netplan YAML configuration without making any changes. This is a low‑risk, read‑only operation.",
+                "steps": [
+                  {
+                    "action_name": "NetplanGetConfig",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Retrieve the current netplan configuration file(s)"
+                  }
+                ],
+                "summary": "Show current netplan network configuration"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:4ab31f93ed1e5fbbe0f42ed9ecb42b8515cc1c469ff96a0efbae9fb166e62d68": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "Text": {
+              "text": "I’m sorry, but I can’t help with that."
+            }
+          }
+        ],
+        "stop_reason": "EndTurn"
+      }
+    },
+    "groq/openai/gpt-oss-120b:4adeb0e73abfacce4066d5ee992a30c9900de362af0f303188af686be30baa46": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_2256736f-468d-4a98-98ef-161ccd580d06",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested a new Distrobox container. DistroboxCreate will create the container with the specified name and image. This is a medium‑risk operation because it adds a new isolated environment to the system.",
+                "steps": [
+                  {
+                    "action_name": "DistroboxCreate",
+                    "params": "{\"name\":\"fedora-dev\",\"image\":\"fedora:41\"}",
+                    "risk_level": "medium",
+                    "summary": "Create the distrobox container fedora-dev using the fedora:41 image"
+                  }
+                ],
+                "summary": "Create a Distrobox container named fedora-dev with the fedora:41 image"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
     "groq/openai/gpt-oss-120b:4ddd9ce6dcb33e0ef5b5daa5b8c399e0911f617efbec1597e4f1a64a7c562664": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -418,6 +902,60 @@
                   }
                 ],
                 "summary": "Install the 'code' snap from the beta channel"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:4fe7887b1a9fa0f09cbf6d2c17f596e4650dc107962e833db5c7b6cca2c0ef26": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_9fa03a0e-707a-4c0f-9866-663292ab0fca",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to uninstall the telnet package from the system. AptRemove will remove the specified package while preserving its configuration files. This is a medium‑risk operation as it modifies the package state.",
+                "steps": [
+                  {
+                    "action_name": "AptRemove",
+                    "params": "{\"package\":\"telnet\"}",
+                    "risk_level": "medium",
+                    "summary": "Remove the telnet package using apt"
+                  }
+                ],
+                "summary": "Remove the telnet package"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:52d9aecc7a5c2089484e5ebe741b9df369b35408cb4e800f21efa6fdbeea61fa": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_b506a7fb-f5b6-4f8b-a309-5d1eebb7e3e3",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to see the current Distrobox containers. DistroboxList retrieves a list of all existing Distrobox containers without modifying the system, so it is safe and requires no approval.",
+                "steps": [
+                  {
+                    "action_name": "DistroboxList",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Retrieve a list of all Distrobox containers"
+                  }
+                ],
+                "summary": "List Distrobox containers"
               }
             }
           }
@@ -458,6 +996,33 @@
         "stop_reason": "ToolUse"
       }
     },
+    "groq/openai/gpt-oss-120b:5a90f7a08c9edcfdf7d59a439b4d64f87b8c289abff5a1c767a3c1909f8e83dc": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_8b813041-a13c-4e48-a540-1b1401e34e93",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user asked for a list of installed snaps. SnapList provides a read‑only enumeration of all snap packages currently present on the system.",
+                "steps": [
+                  {
+                    "action_name": "SnapList",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Retrieve a list of all installed snap packages"
+                  }
+                ],
+                "summary": "List installed snap packages"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
     "groq/openai/gpt-oss-120b:5ef7798d64c4b9f7cf37d72d7bf0c7a5da3c9ded02ee0f35604a4e179cd4afe6": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -485,6 +1050,33 @@
         "stop_reason": "ToolUse"
       }
     },
+    "groq/openai/gpt-oss-120b:604bf8b767e0f88e9905f3da3d5841461fc3da76dda577a015259a1e08c9bf46": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_3fca4cc7-086f-42d0-a075-55a5f7598c67",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested a new Distrobox container called dev with the Ubuntu 24.04 image. This step creates the container with the specified name and image. It's a medium‑risk operation because it modifies the system by adding a container.",
+                "steps": [
+                  {
+                    "action_name": "DistroboxCreate",
+                    "params": "{\"name\":\"dev\",\"image\":\"ubuntu:24.04\"}",
+                    "risk_level": "medium",
+                    "summary": "Create the Distrobox container 'dev' based on the ubuntu:24.04 image"
+                  }
+                ],
+                "summary": "Create a Distrobox container named dev using Ubuntu 24.04"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
     "groq/openai/gpt-oss-120b:6255883eb8aa701a25f356a45f438d66df69b23fdc25c0ca48d0db84b1e29421": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -496,6 +1088,33 @@
           }
         ],
         "stop_reason": "EndTurn"
+      }
+    },
+    "groq/openai/gpt-oss-120b:67147da67336f6a3f4152ffee597229394dad2ab089ef3917e87a299b29e31ac": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_f28ea47b-caaa-4a6a-bd07-cef0f319a0c8",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user asked to block port 0, but port 0 is not a valid port number for firewall rules. Providing the current firewall status helps the user see existing rules and decide on a correct port to block.",
+                "steps": [
+                  {
+                    "action_name": "UfwStatus",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Display current ufw firewall rules and status"
+                  }
+                ],
+                "summary": "Show current firewall status and note invalid port request"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
       }
     },
     "groq/openai/gpt-oss-120b:68c1e4b6cbcf1a1c3ff89b93524c8993d40bd3e301a8fd73d96283cc9bacc9c2": {
@@ -551,6 +1170,33 @@
                   }
                 ],
                 "summary": "List installed apt packages and snap packages"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:6ad7e10e0de239d1fb44db278adb1ae83fa11c19017db4ce341b060d31017e5e": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_a723a1b9-7540-4ac5-af5c-a0c6e41a9014",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to apply the netplan configuration. NetplanApply applies any pending netplan changes, which may disrupt network connectivity. This is a high‑risk read‑only‑required action.",
+                "steps": [
+                  {
+                    "action_name": "NetplanApply",
+                    "params": "{}",
+                    "risk_level": "high",
+                    "summary": "Apply the current netplan configuration to bring network interfaces up"
+                  }
+                ],
+                "summary": "Apply pending netplan network configuration"
               }
             }
           }
@@ -618,6 +1264,33 @@
         "stop_reason": "ToolUse"
       }
     },
+    "groq/openai/gpt-oss-120b:735b7a9d95f3d72935c2e61a6e4115e7ec54309150ba8fb670e9ae7e00643184": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_6c1c8b5f-111d-4a6e-ba2b-8788c05089d8",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested cleaning up packages that are no longer needed. AptAutoremove will remove automatically-installed packages that are no longer required, which satisfies this request.",
+                "steps": [
+                  {
+                    "action_name": "AptAutoremove",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Remove automatically-installed packages that are no longer needed"
+                  }
+                ],
+                "summary": "Remove unused packages"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
     "groq/openai/gpt-oss-120b:7694abe6fddf1099bc46da20d76081374ce8d6943db9e149e97521214cffd97e": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -639,6 +1312,22 @@
                 ],
                 "summary": "Show the server's netplan network configuration"
               }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:7c506a9bb37ab58ce4aa83fba4297cc4569fd268b1187337b729d2929cc88f7f": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_c8b8327e-8b2c-4707-81e2-73e3efa04e57",
+              "call_id": null,
+              "name": "query_current_user",
+              "input": {}
             }
           }
         ],
@@ -730,6 +1419,39 @@
         "stop_reason": "EndTurn"
       }
     },
+    "groq/openai/gpt-oss-120b:86d6a7a14610b13f474e8576ff20db46b15cab14451540b2f48685cee32042bb": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_86624af9-b9c4-499a-9cab-f2baf99fdaec",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to see which apt packages and Snap packages are currently installed. Both AptListInstalled and SnapList are read‑only actions that provide this information without requiring any changes.",
+                "steps": [
+                  {
+                    "action_name": "AptListInstalled",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "List all installed apt packages"
+                  },
+                  {
+                    "action_name": "SnapList",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "List all installed Snap packages"
+                  }
+                ],
+                "summary": "List installed apt packages and Snap packages"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
     "groq/openai/gpt-oss-120b:89a3773824de4e5e7d9251544aca0f2c67001e3f9037fd042b3b9e35cbd022e0": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -767,6 +1489,33 @@
               "call_id": null,
               "name": "query_packages",
               "input": {}
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:8a5c8981bf926ae23ef738f3279a81a83d15e373fcd6209a46e2f706872b1b15": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_ad5a2c39-d9bc-4874-8b34-33f0b6f7d525",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested that all installed snaps be refreshed. SnapRefresh without a name updates every snap to its latest revision. This is a read/write operation but poses low to medium risk, requiring no approval.",
+                "steps": [
+                  {
+                    "action_name": "SnapRefresh",
+                    "params": "{}",
+                    "risk_level": "medium",
+                    "summary": "Refresh all installed snaps to their latest versions"
+                  }
+                ],
+                "summary": "Update all snap packages to the latest versions"
+              }
             }
           }
         ],
@@ -827,6 +1576,19 @@
         "stop_reason": "ToolUse"
       }
     },
+    "groq/openai/gpt-oss-120b:9a27db0a512c0c671800f6406efbc110bcfb5c1ecb88cea7da1324d29666968a": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "Text": {
+              "text": "I’m sorry, but I can’t help with that."
+            }
+          }
+        ],
+        "stop_reason": "EndTurn"
+      }
+    },
     "groq/openai/gpt-oss-120b:9abe5f4d90305dc12e0670ddf6d7bdbac6f58a0f5f3d4e10164e1110c193a6e8": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -838,6 +1600,39 @@
           }
         ],
         "stop_reason": "EndTurn"
+      }
+    },
+    "groq/openai/gpt-oss-120b:9acbace9603500dc5134e26961d5427f3149de690e08ec47442938fe2c2bd374": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_becff6d7-a5bb-487d-85e6-fe06b3e994a2",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to turn on ufw and create a rule that permits inbound SSH traffic. Enabling the firewall and adding an allow rule will secure the system while ensuring remote SSH access remains possible.",
+                "steps": [
+                  {
+                    "action_name": "UfwEnable",
+                    "params": "{}",
+                    "risk_level": "high",
+                    "summary": "Enable the ufw firewall"
+                  },
+                  {
+                    "action_name": "UfwAllow",
+                    "params": "{\"port_or_service\":\"ssh\"}",
+                    "risk_level": "high",
+                    "summary": "Allow inbound SSH connections through the firewall"
+                  }
+                ],
+                "summary": "Enable the firewall and allow SSH connections"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
       }
     },
     "groq/openai/gpt-oss-120b:9d4c5f7fb68cb04f227c0770fd99f684e246601fb23cfab9144fe8caba79ac4a": {
@@ -860,6 +1655,73 @@
                   }
                 ],
                 "summary": "Show the available apt package version for curl"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:a180e137f7034afb8d95aa417ffaf9c077f64210303f4b063058e0a276fa0684": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "Text": {
+              "text": "I’m sorry, but I can’t help with that."
+            }
+          }
+        ],
+        "stop_reason": "EndTurn"
+      }
+    },
+    "groq/openai/gpt-oss-120b:a1906cfab983278293aa1f241524e2e47488f1f80e09536d6b603a225d62c757": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_5cae551d-134a-40a2-b8b7-8579d16d31a4",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to know which version of curl is available from the apt package manager. AptShow retrieves detailed information, including the version, for a specified package without modifying the system.",
+                "steps": [
+                  {
+                    "action_name": "AptShow",
+                    "params": "{\"package\":\"curl\"}",
+                    "risk_level": "low",
+                    "summary": "Retrieve package details for curl, including its version"
+                  }
+                ],
+                "summary": "Show the available version of the curl package in apt"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:a1c1f8304bd8e8c5d0db4e8f61db40cbe2e26de482c7a3cd957e08d2b61f9a6f": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_c0d29aac-3214-45c6-bda7-1d98efbf32b2",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to stop the Chromium snap from automatically updating. Using SnapHold will hold the snap at its current revision, preventing future automatic refreshes.",
+                "steps": [
+                  {
+                    "action_name": "SnapHold",
+                    "params": "{\"name\":\"chromium\"}",
+                    "risk_level": "medium",
+                    "summary": "Hold the Chromium snap at its current version to stop auto-updating"
+                  }
+                ],
+                "summary": "Pin the Chromium snap to prevent auto-updates"
               }
             }
           }
@@ -967,6 +1829,39 @@
         "stop_reason": "EndTurn"
       }
     },
+    "groq/openai/gpt-oss-120b:ab503408d8764719817cef9b7fa53d7955764f30b54efc5682e8d0a5b229c5d4": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_f9f3edf9-2512-43f7-bb2b-21e1e7fd66b8",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to view the network configuration (NetplanGetConfig) and then apply any changes (NetplanApply). The first step is a low‑risk read‑only query of the netplan YAML, and the second step applies the configuration, which is high‑risk because it may disrupt network connectivity.",
+                "steps": [
+                  {
+                    "action_name": "NetplanGetConfig",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Retrieve the current netplan network configuration files"
+                  },
+                  {
+                    "action_name": "NetplanApply",
+                    "params": "{}",
+                    "risk_level": "high",
+                    "summary": "Apply the netplan configuration to activate any changes"
+                  }
+                ],
+                "summary": "Show current netplan network configuration and then apply it"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
     "groq/openai/gpt-oss-120b:abd8d65fffd5bf74fcc1dd0a2da9b7823acde6cb6556f36c8eb4138b42fc657f": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -1021,6 +1916,33 @@
         "stop_reason": "ToolUse"
       }
     },
+    "groq/openai/gpt-oss-120b:ac3c3b58993030f63fa07f595c413e66b336c142bead4bac60dc647276307abf": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_7e7f6f9d-9482-4dcc-82b3-239a66a284d6",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested a complete wipe of Apache2, including its config files. AptPurge will uninstall the apache2 package and purge all related configuration files from the system. This is a medium‑risk operation as it modifies the package state.",
+                "steps": [
+                  {
+                    "action_name": "AptPurge",
+                    "params": "{\"package\":\"apache2\"}",
+                    "risk_level": "medium",
+                    "summary": "Purge the apache2 package and all its configuration files"
+                  }
+                ],
+                "summary": "Fully remove Apache2 and its configuration files"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
     "groq/openai/gpt-oss-120b:aeaba02118bcf2e3fe697a66fda8f542dbc2c8557b688b30a098ff7efed4dbef": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -1047,6 +1969,72 @@
                   }
                 ],
                 "summary": "Allow inbound web traffic on ports 80 and 443 via UFW"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:af8c23a651e6846ddf83a7583737f4835839872ee4f51c81a225c2dea3630275": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_e2948b13-a18a-4a55-9f5b-cf706cd2e6bf",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to turn off the firewall. This will stop UFW from filtering network traffic. It is a high‑risk operation because it removes all active firewall protection, so it should be used with caution.",
+                "steps": [
+                  {
+                    "action_name": "UfwDisable",
+                    "params": "{}",
+                    "risk_level": "high",
+                    "summary": "Disable the UFW firewall"
+                  }
+                ],
+                "summary": "Disable the Ubuntu UFW firewall"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:b39498deffc116627a4d703234baad2314b0a37b69371029b31aaa6a09fed165": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_7dd36c86-dc13-47c4-803f-44e22b839179",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested installation of three common utilities. Each AptInstall action will install one package. These actions are medium risk as they modify the system's package set.",
+                "steps": [
+                  {
+                    "action_name": "AptInstall",
+                    "params": "{\"package\":\"git\"}",
+                    "risk_level": "medium",
+                    "summary": "Install the git version control system"
+                  },
+                  {
+                    "action_name": "AptInstall",
+                    "params": "{\"package\":\"curl\"}",
+                    "risk_level": "medium",
+                    "summary": "Install the curl command-line tool for data transfers"
+                  },
+                  {
+                    "action_name": "AptInstall",
+                    "params": "{\"package\":\"wget\"}",
+                    "risk_level": "medium",
+                    "summary": "Install the wget command-line tool for downloading files"
+                  }
+                ],
+                "summary": "Install git, curl, and wget packages"
               }
             }
           }
@@ -1108,6 +2096,33 @@
         "stop_reason": "ToolUse"
       }
     },
+    "groq/openai/gpt-oss-120b:c24f07ca0f50f670a9ebd5031c72c606bcb27c34d17c5064096012064da47fae": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_6909dc05-bba3-4c9d-8c54-27bae10123ec",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to update the list of available packages. AptUpdate refreshes the local APT cache without installing or removing any packages.",
+                "steps": [
+                  {
+                    "action_name": "AptUpdate",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Refresh the APT package index from configured repositories"
+                  }
+                ],
+                "summary": "Refresh the APT package index"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
     "groq/openai/gpt-oss-120b:c415c4d30900e8b9838629ed8a596322c771720a2bae8127761ba078a49d0399": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -1151,6 +2166,33 @@
         "stop_reason": "ToolUse"
       }
     },
+    "groq/openai/gpt-oss-120b:c4b4d69431a2ceba61e36087592526c12760bb8ebf5413d3aedc23aa71edc0c0": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_e7dc86bc-574c-468e-a85c-d4eb8bd0bc33",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to remove the Firefox snap package. SnapRemove will delete the installed snap, freeing the associated disk space. This is a reversible action via snap install if needed.",
+                "steps": [
+                  {
+                    "action_name": "SnapRemove",
+                    "params": "{\"name\":\"firefox\"}",
+                    "risk_level": "medium",
+                    "summary": "Remove the Firefox snap from the system"
+                  }
+                ],
+                "summary": "Uninstall the Firefox snap"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
     "groq/openai/gpt-oss-120b:c6c40722955d068d207d0f90eb0295a532a173d2885cbda0be02230e80de8153": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -1177,6 +2219,33 @@
                   }
                 ],
                 "summary": "Enable the firewall and allow SSH connections"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:c8f43ed965d06602479105339a5a4e2095019c015ecd12313c2e2d3ca9560b73": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_ab1dd5e4-6747-4e99-a16e-373a524edde7",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to turn on the firewall. Enabling UFW will activate the firewall with its current rules. This is a high‑risk action because it modifies network access and could affect active connections.",
+                "steps": [
+                  {
+                    "action_name": "UfwEnable",
+                    "params": "{}",
+                    "risk_level": "high",
+                    "summary": "Enable the UFW firewall"
+                  }
+                ],
+                "summary": "Enable the UFW firewall"
               }
             }
           }
@@ -1244,6 +2313,33 @@
                   }
                 ],
                 "summary": "Open SSH port 22 in the firewall"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:d0c39e814cb9cafaf147c52d78940dfffbc077f833d52e48ab986829a98ff95f": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_be4eb20e-9305-4164-82f3-bb57ec3114e4",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants the nginx package to be eligible for upgrades again. Removing the apt hold with AptUnhold allows future apt upgrades to include nginx.",
+                "steps": [
+                  {
+                    "action_name": "AptUnhold",
+                    "params": "{\"package\":\"nginx\"}",
+                    "risk_level": "medium",
+                    "summary": "Unhold the nginx package to allow it to be upgraded"
+                  }
+                ],
+                "summary": "Remove hold from the nginx package so it can be upgraded"
               }
             }
           }
@@ -1359,6 +2455,60 @@
         "stop_reason": "ToolUse"
       }
     },
+    "groq/openai/gpt-oss-120b:ddee74b07574a9a5ba847edf97a84c59ff9d02021092536a59752292519fb3ea": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_54753d9f-e1cd-4894-8d10-c776ff0cb4ca",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested a list of all installed packages on this Ubuntu system. AptListInstalled provides a read‑only enumeration of every package managed by dpkg, fulfilling the request without any system changes.",
+                "steps": [
+                  {
+                    "action_name": "AptListInstalled",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Retrieve a list of all packages currently installed via dpkg"
+                  }
+                ],
+                "summary": "List all installed packages"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:de4e16bfabf95daf15e2578142da542f0d46a721f7f961f211e0e370f8c5de5c": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_c32be37c-f9d1-465d-a401-d57ce736d141",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to see the firewall configuration. UfwStatus provides a read‑only view of the active UFW rules and overall status on Ubuntu. No system changes are made.",
+                "steps": [
+                  {
+                    "action_name": "UfwStatus",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "List the current UFW firewall rules and overall status"
+                  }
+                ],
+                "summary": "Display the current UFW firewall rules and status"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
     "groq/openai/gpt-oss-120b:dfa09dcef24a1002abbfba9f717badedeb29982620adea2c84b66d9767a72108": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -1386,6 +2536,160 @@
         "stop_reason": "ToolUse"
       }
     },
+    "groq/openai/gpt-oss-120b:e056729c7e9bb1d9f3fce66bfc11390720b1909684d28bce91db75a2f56e05ce": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_4986c875-02c1-46c8-a534-cfd0376453f4",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to permit inbound web traffic on the standard ports 80 (HTTP) and 443 (HTTPS). Adding these rules to ufw will open the specified ports. Both actions are high risk because firewall changes can affect connectivity, but they are required to satisfy the request.",
+                "steps": [
+                  {
+                    "action_name": "UfwAllow",
+                    "params": "{\"port_or_service\":\"80\"}",
+                    "risk_level": "high",
+                    "summary": "Allow inbound traffic on HTTP port 80"
+                  },
+                  {
+                    "action_name": "UfwAllow",
+                    "params": "{\"port_or_service\":\"443\"}",
+                    "risk_level": "high",
+                    "summary": "Allow inbound traffic on HTTPS port 443"
+                  }
+                ],
+                "summary": "Allow HTTP and HTTPS traffic through the firewall"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:e1bbca160bbe5317ee187834c7938ec44da03aed987edcfafecef3f6e444d9c8": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_3e801534-ce8c-4843-996d-36cb02724551",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants inbound SSH traffic allowed. Adding a ufw rule for port 22 will permit SSH connections. This is a high-risk change because firewall modifications can affect remote access, so it requires approval before execution.",
+                "steps": [
+                  {
+                    "action_name": "UfwAllow",
+                    "params": "{\"port_or_service\":\"22\"}",
+                    "risk_level": "high",
+                    "summary": "Allow inbound traffic on TCP port 22 for SSH"
+                  }
+                ],
+                "summary": "Open SSH port 22 in the firewall"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:e3fef6961970b72ac358a5f1a0068daa8629c20fa551ca2952b86e96e2cc5d76": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_05226d98-9cb4-4d5e-acd4-5ea925a62b39",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested removal of the Distrobox container named 'old-dev'. This action will stop and delete the container and its associated resources. It's a medium‑risk operation because it permanently removes the container.",
+                "steps": [
+                  {
+                    "action_name": "DistroboxRemove",
+                    "params": "{\"name\":\"old-dev\"}",
+                    "risk_level": "medium",
+                    "summary": "Remove the Distrobox container called old-dev"
+                  }
+                ],
+                "summary": "Delete the specified Distrobox container"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:e4c33f027adc3374d390fd6c1639b2908208bca6dede1e75fa39c53704afcab1": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "Text": {
+              "text": "I’m sorry, but I can’t help with that."
+            }
+          }
+        ],
+        "stop_reason": "EndTurn"
+      }
+    },
+    "groq/openai/gpt-oss-120b:e630e105191d8a2fa7b08ddb9227c11ee289f7e5d20fba6856cf2363ddef2d1e": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_c541e2d0-caf0-4815-8924-2259075bf9b9",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested installation of the VSCode snap. SnapInstall will download and set up the 'code' snap, which provides the Visual Studio Code editor. This is a medium‑risk action (installing software), but no further confirmation is needed for the plan.",
+                "steps": [
+                  {
+                    "action_name": "SnapInstall",
+                    "params": "{\"name\":\"code\"}",
+                    "risk_level": "medium",
+                    "summary": "Install the Visual Studio Code snap (named 'code')"
+                  }
+                ],
+                "summary": "Install the Visual Studio Code snap package"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:e9855b1d4114c33dca36d690e02199daffbd349854f23a5e24a26a06865dfda7": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_853e33fc-de58-4ef6-ba16-23997983a865",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested the current Netplan configuration. NetplanGetConfig returns the YAML configuration without modifying the system, so it's a low‑risk read‑only action.",
+                "steps": [
+                  {
+                    "action_name": "NetplanGetConfig",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Retrieve the Netplan network configuration file contents"
+                  }
+                ],
+                "summary": "Show Netplan network configuration"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
     "groq/openai/gpt-oss-120b:eac8db52e10df86faebfed099a3fb204f30136b1c0787d81ce01d26c3a2c8a1c": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -1406,6 +2710,66 @@
                   }
                 ],
                 "summary": "Install the VS Code snap package"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:eb0bdfcc26f226fd06bb507e29bc406fd4e012b8cd0ad78a012076f2113d538b": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_5ddfcda1-0aab-4ee0-a690-f648fae08354",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to find all Redis-related packages available in the apt repositories. AptSearch with the term 'redis' will list matching packages without modifying the system.",
+                "steps": [
+                  {
+                    "action_name": "AptSearch",
+                    "params": "{\"term\":\"redis\"}",
+                    "risk_level": "low",
+                    "summary": "Search apt repositories for packages related to Redis"
+                  }
+                ],
+                "summary": "Search for Redis-related packages"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:ec6cdfcda5df32e17aa241e2ea8cd463702f78fcbf8e57e60e1e661b34cdf4b1": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_a6427cdf-cd65-4135-9c54-1c187fd0ff37",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to update the package list and then install the htop utility. AptUpdate refreshes the local apt cache, and AptInstall adds the requested package. The first step is low risk, the second is medium risk.",
+                "steps": [
+                  {
+                    "action_name": "AptUpdate",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Refresh the apt package index"
+                  },
+                  {
+                    "action_name": "AptInstall",
+                    "params": "{\"package\":\"htop\"}",
+                    "risk_level": "medium",
+                    "summary": "Install the htop package"
+                  }
+                ],
+                "summary": "Refresh apt package index and install htop"
               }
             }
           }
@@ -1494,6 +2858,33 @@
         "stop_reason": "ToolUse"
       }
     },
+    "groq/openai/gpt-oss-120b:f0a2fb2fa14c6c312c483844705421ec49f5501a9ee802ef4323b692dca657fa": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_2979e1da-3cda-45ae-b185-d4d9cefcadcd",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to block port 23 (telnet) using the UFW firewall. The UfwDeny action will add a rule to deny inbound connections on that port. This is a high‑risk change because firewall modifications can affect connectivity.",
+                "steps": [
+                  {
+                    "action_name": "UfwDeny",
+                    "params": "{\"port_or_service\":\"23\"}",
+                    "risk_level": "high",
+                    "summary": "Deny inbound traffic on port 23 (telnet)"
+                  }
+                ],
+                "summary": "Block inbound telnet traffic by denying port 23 in the UFW firewall"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
     "groq/openai/gpt-oss-120b:f42c69372bc9a7b04d201a699600cfda0b381c67b3f8c661ef8bc5ce1f1d088f": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -1521,6 +2912,33 @@
         "stop_reason": "ToolUse"
       }
     },
+    "groq/openai/gpt-oss-120b:f42db01efcd0aacea5c146f8ef5411c30961219c9da97b984f8e78272532f485": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_4ada478f-ba49-404e-846c-b35dd0c90e93",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested a full package upgrade. AptUpgrade will refresh the package database and upgrade every installed package to the latest available versions. This is a high‑risk operation that may install new dependencies, restart services, and potentially require a reboot.",
+                "steps": [
+                  {
+                    "action_name": "AptUpgrade",
+                    "params": "{}",
+                    "risk_level": "high",
+                    "summary": "Upgrade all installed packages to the latest versions"
+                  }
+                ],
+                "summary": "Upgrade all installed packages on the system"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
     "groq/openai/gpt-oss-120b:f75f62a155818ed2b852ca4fb275732f0ac555515b49ee23dd0fcbe9fab00929": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -1541,6 +2959,33 @@
                   }
                 ],
                 "summary": "Completely remove Apache2 and its configuration files"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      }
+    },
+    "groq/openai/gpt-oss-120b:fabff464b27ec4e12e22fb48fa74092b665205c8910e756446beb5fb53215eaa": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_3197ea04-2e1b-4545-b7c8-0563464e6cdd",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to re-enable automatic updates for the chromium snap. Removing the hold on the snap will allow snapd to refresh it according to its normal schedule.",
+                "steps": [
+                  {
+                    "action_name": "SnapUnhold",
+                    "params": "{\"name\":\"chromium\"}",
+                    "risk_level": "medium",
+                    "summary": "Remove the update hold from the chromium snap so it can auto-update"
+                  }
+                ],
+                "summary": "Allow the chromium snap to auto-update again"
               }
             }
           }

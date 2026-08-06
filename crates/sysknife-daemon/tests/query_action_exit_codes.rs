@@ -80,7 +80,14 @@ fn test_state(dir: &tempfile::TempDir) -> DaemonState {
     let db_path = dir.path().join("test.db");
     let sock_path = dir.path().join("test.sock");
     let config = DaemonConfig::new(ListenTarget::Unix(sock_path), db_path);
-    DaemonState::open(config).unwrap()
+    // These tests drive rpm-ostree-shaped actions, so they must declare a
+    // Fedora-family host. `DaemonState::open` detects the *real* host, so they
+    // used to exercise a Fedora action against whatever the test machine ran —
+    // passing only because the family fence did not yet cover those actions. It
+    // does now, and the fence is right: `rpm-ostree` cannot run on an apt host.
+    let mut state = DaemonState::open(config).unwrap();
+    state.host_distro = Some(sysknife_core::distro::DistroId::FedoraSilverblue { version: 41 });
+    state
 }
 
 async fn spawn_handler(

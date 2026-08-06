@@ -48,13 +48,38 @@ KARG_PATTERN = re.compile(r"^[A-Za-z0-9_.+@:/=-]+$")
 # Defense-in-depth denylist — mirrors validated_safe_kernel_arg in executor.rs.
 # The daemon already rejects these before invoking the helper, but the helper is
 # directly sudo-invocable via the wildcard NOPASSWD grant, so it must enforce the
-# same policy independently. Applied to --append only; removing an arg (--delete)
-# is always safe. Blocks args that bypass boot security (init=, selinux=0,
-# enforcing=0, security=, module_blacklist=) or drop to a single-user root shell
-# (bare single/s/1, or systemd.unit= pointing at emergency/rescue/single).
+# same policy independently. Blocks args that bypass boot security (init=,
+# selinux=0, enforcing=0, security=, module_blacklist=) or drop to a single-user
+# root shell (bare single/s/1, or systemd.unit= pointing at emergency/rescue/
+# single).
 DENY_APPEND_PREFIXES = ("init=", "selinux=0", "enforcing=0", "security=", "module_blacklist=")
 DENY_APPEND_EXACT = ("single", "s", "1")
 DENY_UNIT_TARGETS = ("emergency", "rescue", "single")
+
+# --delete is screened too. "Removing an arg is always safe" was the premise for
+# leaving it open, and it inverts the risk: the dangerous move is removing a
+# PROTECTIVE arg. Deleting `module.sig_enforce=1` reaches the same next-boot
+# state as appending an unsigned-module loader, which DENY_APPEND already
+# refuses — so an unscreened --delete handed back every guarantee --append buys.
+# Mirrors validated_safe_kernel_arg_removal in executor.rs; the prefixes are the
+# KSPP-recommended boot parameters plus the LSM selectors.
+DENY_DELETE_PREFIXES = (
+    "lockdown=", "module.sig_enforce=", "security=", "selinux=", "enforcing=",
+    "apparmor=", "pti=", "mitigations=", "init_on_alloc=", "init_on_free=",
+    "page_alloc.shuffle=", "randomize_kstack_offset=", "slub_debug=",
+    "page_poison=", "vsyscall=", "debugfs=", "iommu=", "intel_iommu=",
+    "amd_iommu=",
+)
+DENY_DELETE_EXACT = ("slab_nomerge", "nosmt", "kaslr")
+# Escape hatch: these ARE the weakening, so removing one hardens the host. Without
+# it the screen would collapse into "no deletions at all" and SysKnife could never
+# undo `mitigations=off` on a host that already boots with it.
+ALLOW_DELETE_EXACT = (
+    "selinux=0", "enforcing=0", "apparmor=0", "mitigations=off", "pti=off",
+    "lockdown=none", "debugfs=on", "iommu=off", "intel_iommu=off",
+    "module.sig_enforce=0", "init_on_alloc=0", "init_on_free=0",
+    "randomize_kstack_offset=off", "page_alloc.shuffle=0",
+)
 
 UPDATE_GRUB = "/usr/sbin/update-grub"
 
@@ -92,6 +117,25 @@ def reject_dangerous_append(tokens: list[str]) -> None:
             print(
                 f"sysknife-grub-kargs-edit: refusing dangerous --append karg {tok!r} "
                 "(would bypass boot security or drop to a single-user root shell)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+
+def reject_dangerous_delete(tokens: list[str]) -> None:
+    """Raise SystemExit(1) if removing any --delete token would weaken the boot."""
+    for tok in tokens:
+        lower = tok.lower()
+        if lower in ALLOW_DELETE_EXACT:
+            continue
+        blocked = (
+            any(lower.startswith(p) for p in DENY_DELETE_PREFIXES)
+            or lower in DENY_DELETE_EXACT
+        )
+        if blocked:
+            print(
+                f"sysknife-grub-kargs-edit: refusing to --delete karg {tok!r} "
+                "(it is a boot-security protection; removing it weakens the next boot)",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -156,6 +200,7 @@ def main() -> None:
     validate_kargs(append_tokens, "--append")
     validate_kargs(delete_tokens, "--delete")
     reject_dangerous_append(append_tokens)
+    reject_dangerous_delete(delete_tokens)
 
     # Read grub config.
     try:

@@ -7,8 +7,10 @@
 use crate::action_name::ActionName;
 use crate::planner::{Plan, PlanRiskLevel, PlanStep, PlanningError};
 use crate::provider::ToolDefinition;
-use sysknife_core::action_family::{DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS};
-use sysknife_types::{DISTRO_FAMILY_DEBIAN, DISTRO_FAMILY_FEDORA};
+use sysknife_core::action_family::{
+    DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS, NON_CANONICAL_ON_DEBIAN,
+};
+use sysknife_types::{DISTRO_FAMILY_DEBIAN, DISTRO_FAMILY_FEDORA, DISTRO_FAMILY_OTHER};
 
 // ---------------------------------------------------------------------------
 // Tool definition
@@ -54,7 +56,7 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
     ("RebaseSystem",
      "switch to a different OSTree ref/remote — param: target_ref (string, e.g. fedora/40/x86_64/silverblue)"),
     ("SetKernelArguments",
-     "add/remove kernel command-line args — params: add (string[]), remove (string[]) — either may be []"),
+     "add/remove kernel command-line args — params: add (string[]), remove (string[]) — either may be []; both lists are screened: no weakening arg may be added, and no protective one (lockdown=, module.sig_enforce=1, pti=on, mitigations=, selinux=1, slab_nomerge, …) removed"),
     // Flatpak — NOTE: all user-scoped ops require username (NOT 'user')
     ("InstallFlatpak",
      "install a Flatpak app — params: username* (Linux user), app_id* (e.g. org.mozilla.firefox), remote* (e.g. flathub)"),
@@ -182,7 +184,7 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
     ("AddSwap",
      "create a swap file, enable it, and persist to /etc/fstab — params: file* (absolute path), size_mb* (integer MB); High risk"),
     ("RemoveSwap",
-     "disable a swap file, remove it, and drop its /etc/fstab entry — param: file*; High risk"),
+     "disable a swap file, remove it, and drop its /etc/fstab entry — param: file* (must already be a swap file per /proc/swaps or /etc/fstab, and not a symlink); High risk"),
     // apt pinning (preferences.d) — Ubuntu/Debian only
     ("GetAptPins",
      "show apt pin priorities (apt-cache policy) — param: package (optional); Ubuntu only; read-only"),
@@ -367,7 +369,7 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
     ("GrubGetKargs",
      "read current GRUB_CMDLINE_LINUX from /etc/default/grub — no params; Ubuntu only; read-only"),
     ("GrubSetKargs",
-     "modify GRUB kernel arguments and run update-grub — params: append (list), delete (list); Ubuntu only; High risk; requires reboot"),
+     "modify GRUB kernel arguments and run update-grub — params: append (list), delete (list), bare tokens only (no '='); both lists are screened for boot-security downgrades; Ubuntu only; High risk; requires reboot"),
     // ── Ubuntu / reboot ───────────────────────────────────────────────────────
     ("CheckPendingReboot",
      "check whether a reboot is pending (/var/run/reboot-required) — no params; Ubuntu/Debian only; read-only"),
@@ -450,16 +452,32 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "list Multipass VMs and their state — no params; Ubuntu only; read-only"),
 ];
 
-/// Is `action` runnable on `family`, given the family fence in
-/// [`sysknife_core::action_family`]?
+/// Should `action` be offered to a planner running on `family`?
 ///
-/// `None` — no distro hint — offers everything: without a detected family there
-/// is no basis to exclude an action, and a generic deployment still has to be
-/// able to plan.
+/// Two different reasons to withhold one, and they must stay distinct — merging
+/// them turned a planning fix into an execution-fence regression:
+///
+/// * the family fence in [`sysknife_core::action_family`], which says the action
+///   *cannot* run there; and
+/// * [`NON_CANONICAL_ON_DEBIAN`], which says it can, but the family has its own
+///   canonical tool and the planner should reach for that instead.
+///
+/// A detected `other` family (Arch, openSUSE, anything unrecognised) is filtered
+/// against **both** fences, matching the CLI routing guard: it refuses every
+/// family-specific action on such a host, so offering them invites a plan that is
+/// certain to be rejected after a paid call.
+///
+/// No hint at all still offers everything — without a detected family there is no
+/// basis to exclude anything, and a generic deployment has to be able to plan.
 fn available_on(action: &str, family: Option<&str>) -> bool {
     match family {
-        Some(DISTRO_FAMILY_DEBIAN) => !FEDORA_ONLY_ACTIONS.contains(&action),
+        Some(DISTRO_FAMILY_DEBIAN) => {
+            !FEDORA_ONLY_ACTIONS.contains(&action) && !NON_CANONICAL_ON_DEBIAN.contains(&action)
+        }
         Some(DISTRO_FAMILY_FEDORA) => !DEBIAN_ONLY_ACTIONS.contains(&action),
+        Some(DISTRO_FAMILY_OTHER) => {
+            !FEDORA_ONLY_ACTIONS.contains(&action) && !DEBIAN_ONLY_ACTIONS.contains(&action)
+        }
         _ => true,
     }
 }
@@ -992,6 +1010,52 @@ mod tests {
                 "Fedora tool def dropped Fedora action {kept}"
             );
         }
+    }
+
+    #[test]
+    fn debian_tool_def_withholds_non_canonical_actions_without_fencing_them() {
+        // The planner must not reach for firewalld or toolbox on Ubuntu, but the
+        // daemon must still be able to run them there — an Ubuntu host that
+        // installed firewalld has not lost firewall management, and `UfwStatus`
+        // reporting "inactive" on such a host would be a confident wrong answer.
+        let offered = offered_actions(&propose_plan_tool_def(Some(DISTRO_FAMILY_DEBIAN)));
+        for name in NON_CANONICAL_ON_DEBIAN {
+            assert!(
+                !offered.contains(&name.to_string()),
+                "Debian tool def offered non-canonical action {name}"
+            );
+            assert!(
+                !FEDORA_ONLY_ACTIONS.contains(name),
+                "{name} is a planner preference, not an impossibility; it must stay \
+                 out of the fence that the daemon and the routing guard read"
+            );
+        }
+        // Still offered where they are canonical.
+        let fedora = offered_actions(&propose_plan_tool_def(Some(DISTRO_FAMILY_FEDORA)));
+        for name in NON_CANONICAL_ON_DEBIAN {
+            assert!(
+                fedora.contains(&name.to_string()),
+                "Fedora tool def dropped {name}, which is canonical there"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_family_is_offered_no_family_specific_action() {
+        // The CLI routing guard refuses every family-specific action on a host
+        // that is neither Debian nor Fedora, so offering them here would spend a
+        // paid call on a plan certain to be rejected.
+        let offered = offered_actions(&propose_plan_tool_def(Some(DISTRO_FAMILY_OTHER)));
+        for name in FEDORA_ONLY_ACTIONS.iter().chain(DEBIAN_ONLY_ACTIONS.iter()) {
+            assert!(
+                !offered.contains(&name.to_string()),
+                "an unrecognised-family host was offered family-specific action {name}"
+            );
+        }
+        assert!(
+            offered.contains(&"ListServices".to_string()),
+            "cross-distro actions must still be offered"
+        );
     }
 
     #[test]

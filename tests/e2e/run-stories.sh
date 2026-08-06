@@ -392,51 +392,6 @@ echo ""
 # a full-suite record. `story_set` names the derived set that was run, and is
 # empty for an explicit story list — the checker only honours a full family set,
 # so a four-story probe can never become the headline figure.
-if [[ -n "${SYSKNIFE_RESULTS_JSON:-}" ]]; then
-  results_dir="$(dirname "$SYSKNIFE_RESULTS_JSON")"
-  mkdir -p "$results_dir"
-
-  cassette_sha="null"
-  if [[ -n "${SYSKNIFE_CASSETTE:-}" ]] && [[ -f "${SYSKNIFE_CASSETTE}" ]]; then
-    cassette_sha="\"$(sha256sum "${SYSKNIFE_CASSETTE}" | cut -d' ' -f1)\""
-  fi
-
-  # The release the stories actually ran against, read from the host they ran on
-  # rather than from whatever the operator typed on the command line.
-  release="$(. /etc/os-release 2>/dev/null && printf '%s' "${VERSION_ID:-unknown}")"
-  distro_id="$(. /etc/os-release 2>/dev/null && printf '%s' "${ID:-unknown}")"
-
-  {
-    printf '{\n'
-    printf '  "version": 1,\n'
-    printf '  "distro_id": "%s",\n' "$distro_id"
-    printf '  "release": "%s",\n' "$release"
-    printf '  "surface": "%s/%s",\n' "${SYSKNIFE_LLM_PROVIDER:-unset}" "${SYSKNIFE_LLM_MODEL:-provider-default}"
-    printf '  "cassette_mode": "%s",\n' "${CASSETTE_MODE_NORMALIZED:-live}"
-    printf '  "cassette_sha256": %s,\n' "$cassette_sha"
-    printf '  "story_set": "%s",\n' "$STORY_SET"
-    printf '  "ran_at": "%s",\n' "$(date --iso-8601=seconds)"
-    printf '  "totals": {\n'
-    printf '    "total": %d,\n' "$total"
-    printf '    "passed": %d,\n' "$pass_count"
-    printf '    "failed": %d,\n' "$fail_count"
-    printf '    "skipped": %d,\n' "$skip_count"
-    printf '    "rate_limited": %d\n' "$ratelimit_count"
-    printf '  },\n'
-    printf '  "stories": {\n'
-    sep=""
-    for n in "${STORIES[@]}"; do
-      printf '%s    "%s": { "verdict": "%s", "name": "%s" }' \
-        "$sep" "$n" "${RESULTS[$n]}" "${STORY_NAMES[$n]//\"/\\\"}"
-      sep=",\n"
-    done
-    printf '\n  }\n'
-    printf '}\n'
-  } > "$SYSKNIFE_RESULTS_JSON"
-  echo "Evidence: $SYSKNIFE_RESULTS_JSON"
-  echo ""
-fi
-
 # ---------------------------------------------------------------------------
 # Cassette replay audit
 # ---------------------------------------------------------------------------
@@ -474,6 +429,82 @@ if [[ -n "$CASSETTE_LEDGER" ]]; then
     echo "  Every story result above is therefore unproven, including the passes."
     cassette_failed=1
   fi
+  echo ""
+fi
+
+cassette_hits="${hits:-0}"
+cassette_misses="${misses:-0}"
+if [[ -z "$CASSETTE_LEDGER" ]]; then
+  cassette_verdict="not-applicable"
+elif [[ $cassette_failed -gt 0 ]]; then
+  cassette_verdict="failed"
+else
+  cassette_verdict="ok"
+fi
+
+# The artifact is written here, after the audit, and carries its verdict. Written
+# before it, the file recorded a healthy-looking pass rate for a replay the
+# harness had already declared unproven — and check_evidence_claims.py would have
+# honoured that file as backing for a published figure.
+if [[ -n "${SYSKNIFE_RESULTS_JSON:-}" ]]; then
+  mkdir -p "$(dirname "$SYSKNIFE_RESULTS_JSON")"
+
+  cassette_sha=""
+  if [[ -n "${SYSKNIFE_CASSETTE:-}" ]] && [[ -f "${SYSKNIFE_CASSETTE}" ]]; then
+    cassette_sha="$(sha256sum "${SYSKNIFE_CASSETTE}" | cut -d' ' -f1)"
+  fi
+
+  # Read from the host the stories actually ran on, not from what the operator
+  # typed. `. /etc/os-release && printf` would short-circuit to an empty string
+  # when the file is absent, never reaching the intended "unknown".
+  release="unknown"
+  distro_id="unknown"
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    release="$(. /etc/os-release && printf '%s' "${VERSION_ID:-unknown}")"
+    # shellcheck disable=SC1091
+    distro_id="$(. /etc/os-release && printf '%s' "${ID:-unknown}")"
+  fi
+
+  # Serialised by scripts/record_story_run.py. Hand-assembled printf JSON was
+  # malformed for every run of two or more stories, broke under `set -u` for a
+  # story id with no name, and escaped `"` but not `\`; one serialiser that a
+  # test can round-trip against the checker removes all three.
+  story_rows=""
+  for n in "${STORIES[@]}"; do
+    story_rows+="${n}"$'\t'"${RESULTS[$n]:-SKIP}"$'\t'"${STORY_NAMES[$n]:-Story $n}"$'\n'
+  done
+
+  if printf '%s' "$story_rows" \
+    | EV_PATH="$SYSKNIFE_RESULTS_JSON" \
+      EV_DISTRO_ID="$distro_id" \
+      EV_RELEASE="$release" \
+      EV_SURFACE="${SYSKNIFE_LLM_PROVIDER:-unset}/${SYSKNIFE_LLM_MODEL:-provider-default}" \
+      EV_CASSETTE_MODE="${CASSETTE_MODE_NORMALIZED:-live}" \
+      EV_CASSETTE_SHA="$cassette_sha" \
+      EV_CASSETTE_HITS="$cassette_hits" \
+      EV_CASSETTE_MISSES="$cassette_misses" \
+      EV_CASSETTE_VERDICT="$cassette_verdict" \
+      EV_STORY_SET="$STORY_SET" \
+      EV_RAN_AT="$(date --iso-8601=seconds)" \
+      EV_TOTAL="$total" \
+      EV_PASSED="$pass_count" \
+      EV_FAILED="$fail_count" \
+      EV_SKIPPED="$skip_count" \
+      EV_RATELIMITED="$ratelimit_count" \
+      python3 "$SCRIPT_DIR/../../scripts/record_story_run.py"; then
+    echo "Evidence: $SYSKNIFE_RESULTS_JSON"
+  else
+    echo "ERROR: failed to write $SYSKNIFE_RESULTS_JSON; the run has no evidence." >&2
+    exit 1
+  fi
+  echo ""
+elif [[ -n "$STORY_SET" ]]; then
+  # A full family run with nowhere to record it. Said out loud, because the
+  # documented recording procedure once dropped SYSKNIFE_RESULTS_JSON on the way
+  # into the guest and produced no artifact without a word.
+  echo "Note: this was a full '$STORY_SET' run but SYSKNIFE_RESULTS_JSON was not set,"
+  echo "      so no evidence was recorded and no published figure can cite it."
   echo ""
 fi
 

@@ -4,6 +4,7 @@ mod client;
 mod distro_routing;
 mod error;
 mod mcp_server;
+mod operator_text;
 mod render;
 mod runner;
 

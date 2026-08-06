@@ -20,8 +20,15 @@ cargo audit                             # full current report
 
 | Advisory | Crate | Note |
 |---|---|---|
-| RUSTSEC-2026-0097 | `rand` 0.7.3 | Unsound with a custom logger. Pulled via `phf` → `selectors` → `kuchikiki` → `tauri-utils`. **Explicitly `--ignore`d** in CI (it is a non-`unmaintained` class that would otherwise fail the build). |
 | RUSTSEC-2024-0429 | `glib` | Unsoundness in `VariantStrIter` iterator impls. GTK3 binding stack. |
+
+`RUSTSEC-2026-0097` (`rand` 0.7.3, reached via `phf` → `selectors` → `kuchikiki`
+→ `tauri-utils`) used to be listed here and `--ignore`d in CI. The crate has
+since left the lockfile — only `rand` 0.9.4 and 0.10.2 are built — so
+`cargo audit` now runs with no ignore at all. The ignore was removed rather than
+left in place: an ignore for a crate that is not built protects nothing, and
+would silently re-accept the advisory if a future dependency bump pulled 0.7.3
+back in.
 
 ## Unmaintained
 

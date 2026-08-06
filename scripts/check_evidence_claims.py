@@ -66,12 +66,18 @@ class Failure(Exception):
 
 def read_claim_files(root: Path) -> dict[str, str]:
     texts = {}
+    missing = []
     for rel in CLAIM_FILES:
         path = root / rel
         if path.exists():
             texts[rel] = path.read_text()
-    if not texts:
-        raise Failure(f"no claim files found under {root}")
+        else:
+            missing.append(rel)
+    if missing:
+        raise Failure(
+            "claim files are missing, so their figures would go unchecked: "
+            + ", ".join(missing)
+        )
     return texts
 
 
@@ -95,9 +101,16 @@ def count_actions(root: Path) -> int:
 
 
 def check_figure(texts: dict[str, str], noun: str, expected: int) -> list[str]:
-    """Every `<n> <noun>` in the docs must equal `expected`."""
+    r"""Every `<n> <noun>` in the docs must equal `expected`.
+
+    Whitespace between the words is matched as `\s+`, not literally. With
+    `re.escape` the space in "frontend tests" only matched a space, so
+    docs/distro-support.md's line-wrapped "72 frontend\ntests." was silently
+    unchecked and could be edited to any value.
+    """
     problems = []
-    pattern = re.compile(rf"([0-9][0-9,]*)\s+{re.escape(noun)}")
+    spaced = r"\s+".join(re.escape(word) for word in noun.split())
+    pattern = re.compile(rf"([0-9][0-9,]*)\s+{spaced}")
     for rel, text in texts.items():
         for match in pattern.finditer(text):
             claimed = int(match.group(1).replace(",", ""))
@@ -106,6 +119,28 @@ def check_figure(texts: dict[str, str], noun: str, expected: int) -> list[str]:
                     f"{rel}: claims {match.group(1)} {noun}, evidence says "
                     f"{expected:,} — regenerate the figure, do not retype it"
                 )
+    return problems
+
+
+BARE_TOTAL_FLOOR = 1000
+
+
+def check_bare_test_totals(texts: dict[str, str], allowed: tuple[int, ...]) -> list[str]:
+    """Flag an unqualified `<n> tests` that looks like a stale workspace total."""
+    problems = []
+    pattern = re.compile(r"([0-9][0-9,]*)\s+tests\b")
+    for rel, text in texts.items():
+        for match in pattern.finditer(text):
+            # Skip the qualified forms; check_figure owns those.
+            preceding = text[max(0, match.start() - 12) : match.start()]
+            claimed = int(match.group(1).replace(",", ""))
+            if claimed < BARE_TOTAL_FLOOR or claimed in allowed:
+                continue
+            problems.append(
+                f"{rel}: claims {match.group(1)} tests"
+                + (f" (after {preceding.strip()!r})" if preceding.strip() else "")
+                + f", which matches no recorded suite size {allowed}"
+            )
     return problems
 
 
@@ -137,6 +172,11 @@ def check_story_claims(texts: dict[str, str], runs: list[dict]) -> list[str]:
                 if run.get("story_set") in FULL_STORY_SETS
                 and run.get("totals", {}).get("passed") == passed
                 and run.get("totals", {}).get("total") == total
+                # A replay that missed, or served nothing, proves nothing — the
+                # harness says so and fails the run. Such an artifact used to be
+                # written anyway, with a healthy-looking pass rate.
+                and run.get("cassette_audit", {}).get("verdict")
+                in ("ok", "not-applicable")
             ]
             if not backing:
                 problems.append(
@@ -179,6 +219,13 @@ def main() -> int:
         problems += check_figure(texts, "Rust tests", baseline["tests"])
         problems += check_figure(texts, "frontend tests", baseline["frontend_tests"])
         problems += check_figure(texts, "typed actions", count_actions(root))
+        # The rule this replaced also caught an unqualified "1,347 tests". Only
+        # workspace-scale numbers are treated as totals, so ordinary prose like
+        # "3 tests" is left alone; 1000 is below either suite and above any count
+        # a sentence would mention in passing.
+        problems += check_bare_test_totals(
+            texts, (baseline["tests"], baseline["frontend_tests"])
+        )
         problems += check_story_claims(texts, load_story_runs(root))
 
         expected_tests = f"{baseline['tests']:,} Rust tests"

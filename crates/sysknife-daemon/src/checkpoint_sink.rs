@@ -5,7 +5,7 @@
 //! **independent, append-only** store is what makes tail-truncation and
 //! rewrite of the local chain *detectable* by a host attacker who controls the
 //! primary database: they cannot reproduce a previously anchored signed tip
-//! (see [`verify_checkpoints`](crate::audit_chain::verify_checkpoints)).
+//! (see [`verify_checkpoints`]).
 //!
 //! This module defines a small [`CheckpointSink`] interface with one deployable
 //! backend:
@@ -35,7 +35,7 @@ use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use crate::audit_chain::Checkpoint;
+use crate::audit_chain::{verify_checkpoints, ChainRow, Checkpoint, CheckpointOutcome};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CheckpointSinkError {
@@ -272,6 +272,41 @@ pub async fn anchor_once(
         }),
         other => Ok(AnchorOutcome::Inconsistent(other)),
     }
+}
+
+/// Verify the local chain against everything previously anchored to `sink`,
+/// without writing a new checkpoint.
+///
+/// [`anchor_once`] already performs this cross-check as part of anchoring. This
+/// is the read-only half, for `sysknife audit verify`, which until now proved
+/// only that the chain was internally consistent and correctly signed.
+///
+/// That is not the same as proving it is *complete*. A chain with its newest
+/// rows deleted is still internally consistent and still verifies — see
+/// [`verify_chain_alone_cannot_detect_tail_truncation`](self) — so a host
+/// attacker who can write the database can erase the record of what they did
+/// and pass a plain verify. Only a previously anchored tip, which they cannot
+/// reproduce without the signing key, catches it.
+///
+/// An anchor holding **no** checkpoints yields
+/// [`CheckpointOutcome::CannotVerify`] rather than `Consistent`: zero
+/// checkpoints trivially satisfy "every checkpoint agrees", and reporting that
+/// as success would attest to a chain nothing has ever committed to.
+pub async fn verify_against_anchor(
+    verifying_key_hex: &str,
+    rows: &[ChainRow],
+    sink: &dyn CheckpointSink,
+) -> Result<CheckpointOutcome, CheckpointSinkError> {
+    let anchored = sink.load_all().await?;
+    if anchored.is_empty() {
+        return Ok(CheckpointOutcome::CannotVerify {
+            reason: "a checkpoint anchor is configured but holds no checkpoints, so a \
+                     deleted tail would still go unnoticed; run `sysknife audit checkpoint` \
+                     (periodically — the interval is the window an attacker can rewrite)"
+                .to_string(),
+        });
+    }
+    Ok(verify_checkpoints(verifying_key_hex, rows, &anchored))
 }
 
 /// How often the daemon anchors a checkpoint when a sink is configured.
@@ -654,6 +689,60 @@ mod anchor_tests {
         assert!(
             matches!(outcome, CheckpointOutcome::TipMismatch { .. }),
             "the anchored tip must expose the rewrite, got {outcome:?}"
+        );
+    }
+
+    /// `sysknife audit verify` reported `audit_anchor: {configured: true}` and
+    /// exit 0 on a truncated chain, because it only ever ran `verify_chain`. The
+    /// unconfigured case at least prints a caveat saying truncation is
+    /// undetectable; the configured case implied a check it never performed, so
+    /// an operator who did the work to set anchoring up was left strictly worse
+    /// informed than one who did not.
+    #[tokio::test]
+    async fn verifying_against_the_anchor_catches_what_the_chain_alone_cannot() {
+        let key = key();
+        let full = chain(&key, 5);
+        let sink = InMemoryCheckpointSink::new();
+        anchor_once(&key, &full, &sink, "2026-04-24T12:00:00Z")
+            .await
+            .unwrap();
+
+        // Intact chain: the read-only cross-check agrees.
+        let outcome = verify_against_anchor(&key.verifying_key_hex(), &full, &sink)
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, CheckpointOutcome::Consistent { .. }),
+            "an untouched chain must verify against its anchor, got {outcome:?}"
+        );
+
+        // Delete the tail. `verify_chain` still says Intact (asserted by the
+        // test below); the anchor must not.
+        let truncated = &full[..3];
+        let outcome = verify_against_anchor(&key.verifying_key_hex(), truncated, &sink)
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, CheckpointOutcome::Truncated { .. }),
+            "a deleted tail must be reported, got {outcome:?}"
+        );
+    }
+
+    /// A configured-but-empty anchor is the trap: zero checkpoints trivially
+    /// satisfy "every checkpoint is consistent", so a naive cross-check reports
+    /// success on a chain nothing has ever attested to.
+    #[tokio::test]
+    async fn an_anchor_with_no_checkpoints_is_not_reported_as_consistent() {
+        let key = key();
+        let full = chain(&key, 5);
+        let sink = InMemoryCheckpointSink::new();
+
+        let outcome = verify_against_anchor(&key.verifying_key_hex(), &full, &sink)
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, CheckpointOutcome::CannotVerify { .. }),
+            "an empty anchor proves nothing and must not read as success, got {outcome:?}"
         );
     }
 

@@ -101,7 +101,10 @@ done
 # A cassette that does not reach the guest is worse than none: the run looks
 # hermetic from the host and quietly bills a live model inside the VM.
 for rel in "${forwarding_scripts[@]}"; do
-    for var in SYSKNIFE_CASSETTE SYSKNIFE_CASSETTE_MODE; do
+    # SYSKNIFE_RESULTS_JSON was added to run-stories.sh and documented in the
+    # recording procedure, but not to these allow-lists — so the documented run
+    # wrote no evidence and said nothing about it.
+    for var in SYSKNIFE_CASSETTE SYSKNIFE_CASSETTE_MODE SYSKNIFE_RESULTS_JSON; do
         grep -Fq -- "$var" "$repo_root/$rel" \
             || report "$rel does not forward $var, so record/replay cannot reach the guest"
     done
@@ -139,8 +142,13 @@ if [ ! -f "$testing_doc" ]; then
 else
     for key in "${keys[@]}"; do
         provider="$(printf '%s' "${key%_API_KEY}" | tr '[:upper:]' '[:lower:]')"
-        grep -Fq -- "$provider" "$testing_doc" \
-            || report "docs/contributing/testing.md does not mention provider $provider"
+        # Anchored to a table row (a line opening with `|` that carries the name
+        # as inline code). A file-wide substring search stayed green after a row
+        # was deleted, because the provider name still appeared in an example
+        # command elsewhere in the doc. The auto-detected providers sit in the
+        # second column, so the cell position is deliberately not pinned.
+        grep -Eq "^\|.*\`${provider}\`" "$testing_doc" \
+            || report "docs/contributing/testing.md has no provider table row for $provider"
     done
 
     # `pub const DEFAULT_GROQ_MODEL: &str = "llama-3.3-70b-versatile";`
@@ -152,8 +160,8 @@ else
         report "found only ${#default_models[@]} default models in config.rs; the pattern has drifted"
     fi
     for model in "${default_models[@]}"; do
-        grep -Fq -- "$model" "$testing_doc" \
-            || report "docs/contributing/testing.md does not list default model $model"
+        grep -Eq "^\|.*\`${model}\`" "$testing_doc" \
+            || report "docs/contributing/testing.md has no table row listing default model $model"
     done
 fi
 

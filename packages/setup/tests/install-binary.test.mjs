@@ -20,7 +20,50 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 
 // Import the module under test via CJS require (it's a CJS module).
-const { verifySha256, detectPlatform, isOnPath } = require('../install-binary.js');
+const {
+  verifySha256,
+  detectPlatform,
+  isOnPath,
+  stageForPrivilegedInstall,
+} = require('../install-binary.js');
+
+// ---------------------------------------------------------------------------
+// stageForPrivilegedInstall — the payload `sudo install` copies from
+// ---------------------------------------------------------------------------
+
+// `sudo install` copies these bytes to /usr/local/bin as root, mode 0755, so
+// whatever sits at the staging path when the copy runs becomes the sysknife
+// binary. The old path was `${os.tmpdir()}/sysknife-install-${process.pid}-...`
+// at mode 0644: a predictable name in a world-writable directory. Any local user
+// could pre-create it, let the installer write through it, then overwrite the
+// contents before the sudo — a root trojan for anyone who can guess a pid.
+test('privileged install staging is unguessable and private', async () => {
+  const a = await stageForPrivilegedInstall(Buffer.from('payload-a'));
+  const b = await stageForPrivilegedInstall(Buffer.from('payload-b'));
+  try {
+    // Same process, so same pid: a pid-derived name would collide here.
+    assert.notEqual(a.dir, b.dir, 'staging directory must not be predictable');
+
+    const dirMode = (await fsp.stat(a.dir)).mode & 0o777;
+    assert.equal(
+      dirMode, 0o700,
+      `staging dir must be 0700 so no other user can enter it, got 0${dirMode.toString(8)}`
+    );
+
+    const fileMode = (await fsp.stat(a.file)).mode & 0o777;
+    assert.equal(
+      fileMode, 0o600,
+      `staged payload must be 0600, got 0${fileMode.toString(8)}`
+    );
+
+    assert.equal(a.file, path.join(a.dir, path.basename(a.file)),
+      'the staged file must live inside its own staging dir, not beside it');
+    assert.equal((await fsp.readFile(a.file)).toString(), 'payload-a');
+  } finally {
+    await fsp.rm(a.dir, { recursive: true, force: true });
+    await fsp.rm(b.dir, { recursive: true, force: true });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // verifySha256 tests

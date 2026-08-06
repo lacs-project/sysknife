@@ -61,6 +61,11 @@ pub fn check_action_distro(action_name: &str, distro: Option<&DistroId>) -> Resu
         ));
     }
 
+    // Kept in step with the daemon's own fence in `validate_action_platform`,
+    // which does not exempt reads either: the RBAC role is a bad proxy for "does
+    // this mutate" — `AptUpdate` is Low/Observer and runs `sudo apt-get update`.
+    // A client that refuses what the daemon would run is confusing; a client that
+    // *permits* what the daemon refuses is worse, so both stay strict together.
     if (DEBIAN_ONLY_ACTIONS.contains(&action_name) || FEDORA_ONLY_ACTIONS.contains(&action_name))
         && !distro.is_supported()
     {

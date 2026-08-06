@@ -44,6 +44,10 @@ const MAX_SUDOERS_NAME_LEN: usize = 64;
 /// Longest absolute path accepted for log and audit targets. `NAME_MAX` is 255
 /// on ext4/xfs, used here as a whole-path bound.
 const MAX_ABSOLUTE_PATH_LEN: usize = 255;
+/// The only directory tree SysKnife will configure log rotation for. Must stay
+/// in step with `LOG_ROOT` in `packaging/sysknife-log-edit`; the trailing slash
+/// is load-bearing, as it is what stops `/var/logs` matching `/var/log`.
+const LOG_ROOT: &str = "/var/log/";
 /// Longest remote syslog host, which may be an address rather than a name.
 const MAX_SYSLOG_HOST_LEN: usize = 255;
 /// Longest Debian package name. Policy allows far less; this only stops abuse.
@@ -811,10 +815,18 @@ pub fn validated_apt_pin_name(s: &str, param: &'static str) -> Result<String, Ex
     validated_sudoers_name(s, param)
 }
 
-/// Validate a log path/glob for logrotate: absolute, no `..`, charset
-/// `[A-Za-z0-9/._*-]`, 1..=255. Mirrors `PATH_RE` in `packaging/sysknife-log-edit`.
+/// Validate a log path/glob for logrotate: under [`LOG_ROOT`], no `..`, charset
+/// `[A-Za-z0-9/._*-]`, 1..=255. Mirrors `valid_log_glob` in
+/// `packaging/sysknife-log-edit`.
+///
+/// The root confinement is the security-relevant half. The path becomes the
+/// stanza header of a config that root's logrotate acts on, so accepting any
+/// absolute path made `ConfigureLogRotation` — a Medium-risk, Dev-tier action —
+/// a way to schedule root-level truncation, rename, or deletion of `/etc/shadow`
+/// or `/boot/*`. A glob cannot be resolved with realpath, so confinement is by
+/// literal prefix: `//var/log/x` and `/var/logs/x` both fail it.
 pub fn validated_log_path(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if !s.starts_with('/') || s.len() > MAX_ABSOLUTE_PATH_LEN || s.contains("..") {
+    if !s.starts_with(LOG_ROOT) || s.len() > MAX_ABSOLUTE_PATH_LEN || s.contains("..") {
         return Err(ExecutorError::InvalidParam(param));
     }
     if !s
@@ -1971,5 +1983,41 @@ mod tests {
         assert!(validated_syslog_host("fe80::1", "h").is_ok());
         assert!(validated_syslog_host("-bad", "h").is_err());
         assert!(validated_syslog_host("bad host", "h").is_err());
+    }
+
+    /// The rotation target ends up as the stanza header of a config that root's
+    /// logrotate acts on, so anything outside the log root turns a Medium-risk
+    /// action into scheduled root-level truncation of an arbitrary file. Mirrors
+    /// `valid_log_glob` in `packaging/sysknife-log-edit`.
+    #[test]
+    fn log_path_is_confined_to_the_log_root() {
+        for outside in [
+            "/etc/shadow",
+            "/etc/*",
+            "/boot/*",
+            "/root/.ssh/authorized_keys",
+            "/usr/lib/sysknife/*",
+            "/*",
+            "/",
+            "/var/lib/*",
+            "/var/logs/x", // prefix of a prefix: must not pass a bare match
+            "/var/log",    // the directory itself is not a rotation target
+            "//var/log/x", // a doubled slash must not launder the prefix
+        ] {
+            assert!(
+                validated_log_path(outside, "p").is_err(),
+                "{outside} must not be accepted as a rotation target"
+            );
+        }
+        for inside in [
+            "/var/log/nginx/*.log",
+            "/var/log/syslog",
+            "/var/log/myapp/current.log",
+        ] {
+            assert!(
+                validated_log_path(inside, "p").is_ok(),
+                "{inside} is a legitimate log glob"
+            );
+        }
     }
 }

@@ -395,6 +395,31 @@ function verifySha256(data, sumsText, filename, opts = {}) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Stage `data` where `sudo install` can copy it from, without giving any other
+ * local user a chance to substitute it first.
+ *
+ * `sudo install` copies these bytes to the destination as root, mode 0755, so
+ * whatever sits at this path when the copy runs becomes the sysknife binary.
+ * Staging at a pid-derived name in the world-writable temp directory therefore
+ * handed out a root trojan to anyone who could guess a pid: pre-create the file,
+ * let the installer write through it, overwrite the contents before the sudo.
+ * `mkdtemp` closes that by construction — the directory name is unguessable and
+ * it is created 0700, so no other unprivileged user can enter it, let alone
+ * replace what is inside.
+ *
+ * The caller owns the returned directory and must remove it.
+ *
+ * @param {Buffer} data
+ * @returns {Promise<{ dir: string, file: string }>}
+ */
+async function stageForPrivilegedInstall(data) {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'sysknife-install-'));
+  const file = path.join(dir, 'sysknife');
+  await fsp.writeFile(file, data, { mode: 0o600 });
+  return { dir, file };
+}
+
+/**
  * Write `data` to `destPath` as an executable file (mode 0o755).
  * Creates the destination directory if needed.
  * If `destPath` is under /usr/local/bin or another root-owned directory,
@@ -411,14 +436,18 @@ async function writeBinary(data, destPath) {
     await fsp.writeFile(destPath, data, { mode: 0o755 });
   } catch (e) {
     if (e.code === 'EACCES' || e.code === 'EPERM') {
-      // Attempt sudo tee fallback
+      // Attempt sudo install fallback
       step(`Writing to ${destPath} requires elevated privileges — sudo may prompt.`);
-      const tmp = path.join(os.tmpdir(), `sysknife-install-${process.pid}-${path.basename(destPath)}`);
-      await fsp.writeFile(tmp, data, { mode: 0o644 });
-      execFileSync('sudo', ['install', '-o', 'root', '-g', 'root', '-m', '755', tmp, destPath], {
-        stdio: 'inherit',
-      });
-      await fsp.rm(tmp, { force: true });
+      const staged = await stageForPrivilegedInstall(data);
+      try {
+        execFileSync(
+          'sudo',
+          ['install', '-o', 'root', '-g', 'root', '-m', '755', staged.file, destPath],
+          { stdio: 'inherit' }
+        );
+      } finally {
+        await fsp.rm(staged.dir, { recursive: true, force: true });
+      }
     } else {
       throw e;
     }
@@ -639,6 +668,7 @@ module.exports = {
   verifySha256,
   digestFor,
   isOnPath,
+  stageForPrivilegedInstall,
   fetchLatestRelease,
   GITHUB_JSON_ACCEPT,
   ASSET_ACCEPT,

@@ -796,6 +796,23 @@ fn validate_action_platform(state: &DaemonState, action_name: &str) -> Result<()
         return Ok(());
     }
 
+    // Both gates below apply to family-tagged actions whether or not they read.
+    //
+    // An earlier revision exempted read-only ones, on the reasoning that
+    // docs/distro-support.md promises to refuse only *mutating* actions on an
+    // ineligible host. The exemption was keyed on `is_mutating`, which is derived
+    // from the RBAC role, which is derived from `risk_level` — and that proxy is
+    // wrong for at least one catalogued action: `AptUpdate` is `RiskLevel::Low`,
+    // so `Observer`, so "read-only" by that measure, while it runs
+    // `sudo apt-get update` as root, writes under /var/lib/apt/lists and takes
+    // the dpkg lock. Exempting it widened the set of hosts that can run a
+    // privileged mutation.
+    //
+    // Fail closed until the bit lives on its owner. "Does this action change the
+    // host" is a property of the ActionSpec, not of who may call it, and the fix
+    // is to record it there — see the linked issue. Until then the strict gate
+    // costs read-only inspection on ineligible hosts (`AptShow` on Debian), which
+    // is the pre-existing behaviour and the safe direction to be wrong in.
     let distro = state.host_distro.as_ref().ok_or_else(|| {
         format!("cannot safely run {action_name}: host distribution could not be detected")
     })?;
@@ -1677,8 +1694,10 @@ async fn handle_query_action(
     // Same fence preview and execute apply. Without it a Fedora-only read-only
     // action reached the executor on a Debian host and failed as "rpm-ostree:
     // No such file or directory" — an execution error where the other paths
-    // give a clean refusal. Read-only actions with no family requirement short
-    // out inside `validate_action_platform`, so this costs them nothing.
+    // give a clean refusal. A read-only action with no family requirement shorts
+    // out inside `validate_action_platform`; one *with* a family requirement is
+    // checked against the family but exempt from the eligibility and
+    // detection gates, which are mutation gates by contract.
     if let Err(message) = validate_action_platform(state, action_name) {
         return send_error(framed, request_id, "unsupported_platform", message).await;
     }
@@ -4591,7 +4610,11 @@ mod tests {
         // under-privileged caller on a *different* connection, yet remain
         // actionable by an authorized caller.
         let dir = tempdir().unwrap();
-        let state = test_state(&dir);
+        // UpdateSystem is the Admin-tier vehicle here, and it is rpm-ostree
+        // shaped, so the host has to be a Fedora-family one. The subject of this
+        // test is authorization, not platform.
+        let mut state = test_state(&dir);
+        state.host_distro = Some(sysknife_core::distro::DistroId::FedoraSilverblue { version: 41 });
 
         // An Admin caller previews an Admin-tier action, persisting a queued tx.
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
@@ -4741,23 +4764,50 @@ mod tests {
         assert!(validate_action_platform(&state, "AptInstall").is_err());
 
         // Below the support floor: no longer receiving Ubuntu security updates.
+        // The vehicle has to be an action Ubuntu can run at all — `UpdateSystem`
+        // is `rpm-ostree upgrade` and is fenced to the Fedora family, so using it
+        // here would assert the support floor while actually measuring the family
+        // fence.
         state.host_distro = Some(sysknife_core::distro::DistroId::Ubuntu {
             major: 18,
             minor: 4,
         });
-        assert!(validate_action_platform(&state, "UpdateSystem").is_err());
+        assert!(validate_action_platform(&state, "AptUpgrade").is_err());
 
         // The counterpart assertion, so this test keeps its teeth: releases at
         // and above the floor DO reach the mutation path, interim ones included.
         for (major, minor) in [(20, 4), (25, 10), (26, 4)] {
             state.host_distro = Some(sysknife_core::distro::DistroId::Ubuntu { major, minor });
             assert!(
-                validate_action_platform(&state, "UpdateSystem").is_ok(),
+                validate_action_platform(&state, "AptUpgrade").is_ok(),
                 "Ubuntu {major}.{minor:02} must be able to run mutating actions"
             );
         }
     }
 
+    #[test]
+    fn a_low_risk_action_that_mutates_is_not_treated_as_a_read() {
+        // `AptUpdate` is RiskLevel::Low, so min_role_for_action puts it at
+        // Observer — yet it runs `sudo apt-get update`. Any exemption keyed on
+        // the RBAC role therefore lets a privileged mutation through, which is
+        // why the platform gate does not exempt reads at all.
+        let dir = tempdir().unwrap();
+        let mut state = test_state(&dir);
+        state.host_distro = Some(sysknife_core::distro::DistroId::Debian { version: Some(12) });
+        assert!(
+            !state.host_distro.as_ref().unwrap().is_supported(),
+            "this test needs an ineligible host"
+        );
+        assert_eq!(
+            crate::policy::min_role_for_action("AptUpdate"),
+            Some(CallerRole::Observer),
+            "AptUpdate is the action that makes the role a bad proxy for mutation"
+        );
+        assert!(
+            validate_action_platform(&state, "AptUpdate").is_err(),
+            "a privileged mutation must stay refused on an ineligible host"
+        );
+    }
     #[test]
     fn raising_a_read_only_action_via_risk_overrides_does_not_arm_the_platform_fence() {
         // `[policy.risk_overrides]` answers "who may run this", not "is this a

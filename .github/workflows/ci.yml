@@ -62,6 +62,21 @@ jobs:
       - name: Check mount-edit refuses symlinked mountpoints
         run: bash tests/release/mount-edit.test.sh
 
+      - name: Check rmswap only removes known swap files
+        run: bash tests/release/rmswap.test.sh
+
+      - name: Check log-edit confines rotation to the log root
+        run: bash tests/release/log-edit.test.sh
+
+      - name: Check grub-kargs-edit screens karg deletions
+        run: bash tests/release/grub-kargs-edit.test.sh
+
+      - name: Check provider parity across E2E entry points
+        run: bash tests/e2e/provider-parity.test.sh
+
+      - name: Check story metadata is derived from the story files
+        run: bash tests/e2e/story-metadata.test.sh
+
       - name: Check Ubuntu VM bootstrap contract
         run: bash tests/e2e/ubuntu-vm-bootstrap.test.sh
 
@@ -227,14 +242,15 @@ jobs:
         # Fails the build on any unignored vulnerability. Unmaintained-crate
         # warnings are reported but non-fatal (default cargo-audit behaviour).
         #
-        # RUSTSEC-2026-0097 (rand 0.7.3) is ignored: it is pulled transitively
-        # only by the Tauri desktop shell's webview deps (kuchikiki/selectors),
-        # is not reachable from the privileged daemon, brain, or CLI, and has
-        # no fixed upstream release yet. Re-evaluate when Tauri bumps the chain.
+        # No advisory is ignored. The RUSTSEC-2026-0097 (rand 0.7.3) ignore was
+        # dropped once the dependency itself left the lockfile: an `--ignore` for
+        # a crate that is no longer built does not protect anything, it only
+        # arms a silent re-acceptance if a future bump drags the crate back in.
         #
         # The accepted unmaintained/unsound advisories (all GUI-transitive) are
-        # catalogued in docs/security/audit-advisories.md.
-        run: cargo audit --ignore RUSTSEC-2026-0097
+        # catalogued in docs/security/audit-advisories.md; those are warnings,
+        # which cargo-audit reports without failing.
+        run: cargo audit
 
   dependency-review:
     if: github.event_name == 'pull_request'

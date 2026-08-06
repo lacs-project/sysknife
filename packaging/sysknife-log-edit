@@ -33,6 +33,14 @@ SYSTEMCTL = "/usr/bin/systemctl"
 FWD_FILE = os.path.join(RSYSLOG_D, "60-sysknife-forward.conf")
 PREFIX = "sysknife-"
 
+# Rotation targets are confined to the log root. `--path` becomes the stanza
+# header of a config that root's logrotate acts on, so an unconfined path makes
+# this a "truncate, rename or delete any file on the box, as root, on a timer"
+# primitive: `--path /etc/shadow` with `rotate 0` is a Medium-risk action that
+# destroys the shadow file. The charset regex does not stop that — only knowing
+# where logs are allowed to live does.
+LOG_ROOT = "/var/log/"
+
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9/._*-]{1,255}$")
 HOST_RE = re.compile(r"^[A-Za-z0-9.:_-]{1,255}$")  # hostname or IPv4/IPv6-ish
@@ -42,6 +50,25 @@ FREQ = {"daily", "weekly", "monthly"}
 def die(msg: str) -> None:
     print(f"sysknife-log-edit: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def valid_log_glob(path: str) -> bool:
+    """True if `path` is a rotation target SysKnife is willing to manage.
+
+    The path may contain a `*` glob, so it cannot be resolved with realpath the
+    way a mountpoint can. Instead it is normalised textually — collapsing `//`
+    and resolving `.`/`..` — and the result must sit strictly *under* LOG_ROOT.
+    Strict: the log directory itself is not a rotation target, and `/var/logs`
+    must not pass on a bare string prefix match against `/var/log`.
+    """
+    if not PATH_RE.match(path) or ".." in path:
+        return False
+    normalised = os.path.normpath(path)
+    # normpath collapses `//x` to `/x` but preserves a leading `//` (POSIX
+    # implementation-defined), so re-check the literal form too.
+    if path.startswith("//"):
+        return False
+    return normalised.startswith(LOG_ROOT) and normalised != LOG_ROOT.rstrip("/")
 
 
 def atomic_write(path: str, content: str, mode: int = 0o644) -> None:
@@ -64,8 +91,8 @@ def atomic_write(path: str, content: str, mode: int = 0o644) -> None:
 def op_logrotate(args) -> None:
     if not NAME_RE.match(args.name):
         die(f"invalid name {args.name!r}")
-    if not PATH_RE.match(args.path) or ".." in args.path:
-        die(f"invalid log path {args.path!r}")
+    if not valid_log_glob(args.path):
+        die(f"log path {args.path!r} must be a path under {LOG_ROOT}")
     if args.frequency not in FREQ:
         die(f"frequency must be one of {sorted(FREQ)}")
     if args.rotate < 0 or args.rotate > 1000:

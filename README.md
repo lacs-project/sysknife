@@ -160,8 +160,8 @@ newgrp sysknife                       # or log out and back in
 npx sysknife-setup --no-binary --daemon-mode=skip
 ```
 
-Ubuntu 24.04 is validated by the live-VM story suite; the recorded pass rate
-lives in `tests/evidence/story-runs/`. Ubuntu 22.04 and
+Ubuntu 22.04 records 49/50 stories on a live VM; the run that produced that
+figure is in `tests/evidence/story-runs/`. Ubuntu 24.04 and
 26.04 have passed bootstrap and smoke tests but not the full story suite.
 Fedora Atomic is the rpm-ostree target; record a current Silverblue 44 VM run
 before treating a release as current-validated. Plain Fedora Workstation and
@@ -256,11 +256,11 @@ milestone.
 | Tamper-evident Ed25519-signed audit chain | ✅ |
 | RFC 5424 syslog forwarding (Splunk / Sentinel / QRadar) | ✅ |
 | Postgres backend (RDS / Cloud SQL / Neon / Supabase) | ✅ |
-| **Ubuntu 24.04 support** — live-VM story suite, pass rate recorded in `tests/evidence/story-runs/` | ✅ |
+| **Ubuntu support** — 49/50 stories on a live 22.04 VM, recorded in `tests/evidence/story-runs/` | ✅ |
 | **Ubuntu 22.04 / 26.04 VM tooling** — smoke tests pass on all three LTSes | ✅ |
 | Telegram approval interface | 📋 roadmap |
 
-**1,681 Rust tests and 72 frontend tests** form the current deterministic
+**1,711 Rust tests and 72 frontend tests** form the current deterministic
 release baseline.
 
 ## Configure your LLM
@@ -306,7 +306,7 @@ All config files that may contain API keys are created with `chmod 0600`.
 
 See [ROADMAP.md](ROADMAP.md) for the full milestone breakdown.
 
-- ✅ **Ubuntu 24.04** — validated by the live-VM story suite (pass rate in `tests/evidence/story-runs/`)
+- ✅ **Ubuntu 22.04** — 49/50 stories on a live VM (recorded in `tests/evidence/story-runs/`)
 - ✅ **Ubuntu 22.04 / 26.04** — VM tooling complete; smoke tests pass on all three LTSes
 - 📋 Telegram inline-button approvals
 - 📋 `sysknife audit export` (CEF / NDJSON for SIEM ingest)
