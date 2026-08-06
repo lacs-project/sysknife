@@ -86,10 +86,11 @@ pub fn resolve_socket_target() -> SocketTarget {
 
 /// `remote_daemon_caveat` applied to the process environment.
 ///
-/// Mirrors how [`anchor_configured`] reads its own variable rather than taking it
-/// as an argument, so the caveat cannot drift from the socket the client actually
-/// used. An unparseable value yields no caveat: `resolve_socket_target` already
-/// exits with a clear message before verification runs.
+/// Reads its own variable rather than taking one as an argument — the same shape
+/// [`verify_configured_anchor`] uses — so the caveat cannot drift from the socket
+/// the client actually used. An unparseable value yields no caveat:
+/// `resolve_socket_target` already exits with a clear message before
+/// verification runs.
 pub(crate) fn remote_daemon_caveat_from_env() -> Option<String> {
     let (raw, source, target) = configured_socket_target()?;
     // `SYSKNIFE_SOCKET` is a deliberate client-side override, so any value there

@@ -5,7 +5,7 @@
 //! **independent, append-only** store is what makes tail-truncation and
 //! rewrite of the local chain *detectable* by a host attacker who controls the
 //! primary database: they cannot reproduce a previously anchored signed tip
-//! (see [`verify_checkpoints`](crate::audit_chain::verify_checkpoints)).
+//! (see [`verify_checkpoints`]).
 //!
 //! This module defines a small [`CheckpointSink`] interface with one deployable
 //! backend:
