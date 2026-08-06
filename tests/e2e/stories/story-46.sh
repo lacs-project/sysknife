@@ -30,9 +30,13 @@ if echo "$ACTIONS" | grep -q "UpdateSystem"; then
   exit 1
 fi
 
-STEP=$(echo "$PLAN" | jq '.plan.steps[] | select(.action == "GetPendingUpdates" or .action == "AptUpdate")')
+# AptListUpgradable, not AptUpdate: this story exists to separate a query from a
+# mutation, and `apt-get update` mutates the package index. Accepting it let the
+# Ubuntu path pass by doing the exact thing the story rejects — and since
+# GetPendingUpdates is now Fedora-fenced, that was the *only* way it could pass.
+STEP=$(echo "$PLAN" | jq '.plan.steps[] | select(.action == "GetPendingUpdates" or .action == "AptListUpgradable")')
 if [[ -z "$STEP" || "$STEP" == "null" ]]; then
-  echo "FAIL: no GetPendingUpdates (Fedora) or AptUpdate (Ubuntu) step found"
+  echo "FAIL: no GetPendingUpdates (Fedora) or AptListUpgradable (Ubuntu) step found"
   echo "Actions: $ACTIONS"
   exit 1
 fi

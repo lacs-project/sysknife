@@ -796,33 +796,34 @@ fn validate_action_platform(state: &DaemonState, action_name: &str) -> Result<()
         return Ok(());
     }
 
-    // Eligibility and detection are mutation gates, which is exactly what
-    // docs/distro-support.md promises: "the daemon refuses every *mutating*
-    // action when it is false". Applying them to reads as well broke inspection
-    // wherever the tool is native but the host is not an eligible *target*: on
-    // Debian, `AptShow` was refused — apt is right there — because
-    // `DistroId::Debian` is not supported. Any read-only action carrying a family
-    // tag inherited the same refusal, so tagging one was a silent regression.
-    let distro = match state.host_distro.as_ref() {
-        Some(distro) => distro,
-        // Nothing to check the family against, and a read cannot damage the host.
-        None if !is_mutating => return Ok(()),
-        None => {
-            return Err(format!(
-                "cannot safely run {action_name}: host distribution could not be detected"
-            ))
-        }
-    };
-    if is_mutating && !distro.is_supported() {
+    // Both gates below apply to family-tagged actions whether or not they read.
+    //
+    // An earlier revision exempted read-only ones, on the reasoning that
+    // docs/distro-support.md promises to refuse only *mutating* actions on an
+    // ineligible host. The exemption was keyed on `is_mutating`, which is derived
+    // from the RBAC role, which is derived from `risk_level` — and that proxy is
+    // wrong for at least one catalogued action: `AptUpdate` is `RiskLevel::Low`,
+    // so `Observer`, so "read-only" by that measure, while it runs
+    // `sudo apt-get update` as root, writes under /var/lib/apt/lists and takes
+    // the dpkg lock. Exempting it widened the set of hosts that can run a
+    // privileged mutation.
+    //
+    // Fail closed until the bit lives on its owner. "Does this action change the
+    // host" is a property of the ActionSpec, not of who may call it, and the fix
+    // is to record it there — see the linked issue. Until then the strict gate
+    // costs read-only inspection on ineligible hosts (`AptShow` on Debian), which
+    // is the pre-existing behaviour and the safe direction to be wrong in.
+    let distro = state.host_distro.as_ref().ok_or_else(|| {
+        format!("cannot safely run {action_name}: host distribution could not be detected")
+    })?;
+    if !distro.is_supported() {
         return Err(format!(
             "cannot run {action_name} on unsupported host {distro}; see docs/distro-support.md"
         ));
     }
-    // The family fence itself applies to reads as much as to writes: on an apt
-    // host `rpm-ostree status` produces an error, not an answer.
     if required_family.is_some_and(|family| distro.family() != family) {
         return Err(format!(
-            "action {action_name} is incompatible with host {distro}"
+            "action {action_name} is incompatible with supported host {distro}"
         ));
     }
     Ok(())
@@ -4785,40 +4786,28 @@ mod tests {
     }
 
     #[test]
-    fn a_read_only_action_still_runs_where_its_tool_is_native_but_the_host_is_not_a_target() {
-        // docs/distro-support.md: eligibility decides whether the daemon will
-        // *act* on a host — "the daemon refuses every mutating action when it is
-        // false". Reads were refused too, so on Debian (not an eligible target)
-        // `AptShow` failed even though apt is the native package manager, and on
-        // plain Fedora the same held for rpm-ostree reads. Tagging any read-only
-        // action to a family therefore broke it on that family's own unsupported
-        // releases.
+    fn a_low_risk_action_that_mutates_is_not_treated_as_a_read() {
+        // `AptUpdate` is RiskLevel::Low, so min_role_for_action puts it at
+        // Observer — yet it runs `sudo apt-get update`. Any exemption keyed on
+        // the RBAC role therefore lets a privileged mutation through, which is
+        // why the platform gate does not exempt reads at all.
         let dir = tempdir().unwrap();
         let mut state = test_state(&dir);
-
         state.host_distro = Some(sysknife_core::distro::DistroId::Debian { version: Some(12) });
         assert!(
             !state.host_distro.as_ref().unwrap().is_supported(),
-            "this test is about an unsupported host; Debian must still be one"
+            "this test needs an ineligible host"
+        );
+        assert_eq!(
+            crate::policy::min_role_for_action("AptUpdate"),
+            Some(CallerRole::Observer),
+            "AptUpdate is the action that makes the role a bad proxy for mutation"
         );
         assert!(
-            validate_action_platform(&state, "AptShow").is_ok(),
-            "a read-only apt query must work on Debian, where apt is native"
-        );
-        assert!(
-            validate_action_platform(&state, "AptInstall").is_err(),
-            "the mutating counterpart must still be refused, or the fence is gone"
-        );
-
-        // The family fence still applies to reads: apt tooling on a Fedora host
-        // produces an error, not an answer.
-        state.host_distro = Some(sysknife_core::distro::DistroId::FedoraSilverblue { version: 41 });
-        assert!(
-            validate_action_platform(&state, "AptShow").is_err(),
-            "an apt read on a Fedora host must still be refused"
+            validate_action_platform(&state, "AptUpdate").is_err(),
+            "a privileged mutation must stay refused on an ineligible host"
         );
     }
-
     #[test]
     fn raising_a_read_only_action_via_risk_overrides_does_not_arm_the_platform_fence() {
         // `[policy.risk_overrides]` answers "who may run this", not "is this a
