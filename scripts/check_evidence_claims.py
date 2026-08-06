@@ -53,6 +53,7 @@ REQUIRE_TEST_COUNT = (
 
 TEST_BASELINE = "tests/evidence/workspace-tests.json"
 STORY_RUNS = "tests/evidence/story-runs"
+STORY_DIR = "tests/e2e/stories"
 ACTION_SOURCE = "crates/sysknife-brain/src/planning_tools/propose_plan.rs"
 
 # Full family sets that run-stories.sh can run and record. A claim may only rest
@@ -199,6 +200,75 @@ def check_story_claims(texts: dict[str, str], runs: list[dict]) -> list[str]:
     return problems
 
 
+def story_set_sizes(root: Path) -> set[int]:
+    """Legitimate story-suite sizes, derived from the story files themselves.
+
+    The whole suite, and each family within it. Family membership is read the
+    same way `tests/e2e/run-stories.sh` reads it — a story whose header tags name
+    `ubuntu` is in the ubuntu family, everything else is atomic — so the guard
+    and the harness cannot disagree about how big a family is.
+    """
+    directory = root / STORY_DIR
+    if not directory.is_dir():
+        return set()
+    header = re.compile(r"^#\s*Story\s+\d+\s*(?:\(([^)]*)\))?\s*:")
+    families: dict[str, int] = {"ubuntu": 0, "atomic": 0}
+    for path in directory.glob("story-*.sh"):
+        tags = ""
+        for line in path.read_text(errors="replace").splitlines()[:6]:
+            match = header.match(line)
+            if match:
+                tags = match.group(1) or ""
+                break
+        families["ubuntu" if "ubuntu" in tags else "atomic"] += 1
+    return set(families.values()) | {sum(families.values())}
+
+
+def check_bare_story_counts(
+    texts: dict[str, str], runs: list[dict], root: Path
+) -> list[str]:
+    """Catch a story count written without a pass/total slash.
+
+    `check_story_claims` only sees `N/M stories`, so
+    "validated with the full 65-story VM suite" was invisible to it — a figure
+    matching no run and no story set, sitting in the introduction while the one
+    recorded artifact said 49/50 on a different release. A guard that only
+    inspects the shape a claim happened to be written in is not a guard.
+
+    A bare count is allowed if it equals a story-set size on disk (the whole
+    suite, or one family) or the total of some recorded full-family run.
+    Anything else names a suite that does not exist.
+    """
+    slash_form = re.compile(r"[0-9]+\s*/\s*[0-9]+\s+stor")
+    bare = re.compile(r"\b([0-9]{2,})[-\s]stor(?:y|ies)\b")
+
+    allowed = {
+        run.get("totals", {}).get("total")
+        for run in runs
+        if run.get("story_set") in FULL_STORY_SETS
+    }
+    allowed.discard(None)
+    allowed |= story_set_sizes(root)
+
+    problems = []
+    for rel, text in texts.items():
+        for line in text.splitlines():
+            # The slash form has its own, stricter check; do not report twice.
+            if slash_form.search(line):
+                continue
+            for match in bare.finditer(line):
+                count = int(match.group(1))
+                if count in allowed:
+                    continue
+                known = ", ".join(str(c) for c in sorted(allowed)) or "none"
+                problems.append(
+                    f"{rel}: claims a {count}-story suite, which matches neither "
+                    f"the stories on disk nor any recorded run (known: {known}). "
+                    f"Quote a figure from {STORY_RUNS}/ or drop it."
+                )
+    return problems
+
+
 def main() -> int:
     root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     try:
@@ -226,7 +296,9 @@ def main() -> int:
         problems += check_bare_test_totals(
             texts, (baseline["tests"], baseline["frontend_tests"])
         )
-        problems += check_story_claims(texts, load_story_runs(root))
+        story_runs = load_story_runs(root)
+        problems += check_story_claims(texts, story_runs)
+        problems += check_bare_story_counts(texts, story_runs, root)
 
         expected_tests = f"{baseline['tests']:,} Rust tests"
         for rel in REQUIRE_TEST_COUNT:

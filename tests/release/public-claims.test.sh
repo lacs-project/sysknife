@@ -43,6 +43,13 @@ for rel in "${fixture_files[@]}"; do
     cp "$repo_root/$rel" "$fixture/$rel"
 done
 
+# The story files themselves: a bare "N-story suite" claim is checked against the
+# suite and family sizes counted from these headers, so without them a legitimate
+# figure (the 54-story atomic family, which no recorded run covers) reads as
+# fabricated and the pristine fixture fails.
+mkdir -p "$fixture/tests/e2e/stories"
+cp "$repo_root"/tests/e2e/stories/story-*.sh "$fixture/tests/e2e/stories/"
+
 # Guard against re-introducing the vacuous-fixture bug: the pristine copy must
 # PASS, proving rejections below come from the mutation, not a missing input.
 if ! "$checker" "$fixture" >/dev/null 2>&1; then
@@ -174,6 +181,23 @@ cp "$repo_root/README.md" "$fixture/README.md"
 sed -i '/sysknife approve <transaction-id>/d' "$fixture/assets/demo/mcp-flow-mock.sh"
 assert_rejected 'MCP demo without terminal approval command'
 cp "$repo_root/assets/demo/mcp-flow-mock.sh" "$fixture/assets/demo/mcp-flow-mock.sh"
+
+# A story count written WITHOUT a pass/total slash used to be invisible: the
+# story check only matched `N/M stories`, so "the full 65-story VM suite" sat in
+# the introduction for months naming a suite that has never existed. The size has
+# to match the stories on disk (whole suite or one family) or a recorded run.
+printf '\nValidated with the full 65-story VM suite.\n' >> "$fixture/docs/introduction.md"
+assert_rejected 'bare story count matching no suite and no run'
+cp "$repo_root/docs/introduction.md" "$fixture/docs/introduction.md"
+
+# ...and the counterpart: a real family size must still be quotable, or the guard
+# would force every honest mention of the suite out of the docs.
+printf '\nThe atomic family is 54 stories.\n' >> "$fixture/docs/introduction.md"
+if ! "$checker" "$fixture" >/dev/null 2>&1; then
+    printf 'FAIL: checker rejected a real family size (54 stories)\n' >&2
+    exit 1
+fi
+cp "$repo_root/docs/introduction.md" "$fixture/docs/introduction.md"
 
 # Flip the bolded 22.04 launch-matrix tier to Validated — the guard must reject
 # it even in distro-support.md's `**Ubuntu 22.04 LTS** … **Validated**` shape.
