@@ -401,15 +401,15 @@ async fn kill_and_reap(
     child: &mut tokio::process::Child,
     program: &str,
     args: &[String],
+    cause: StopCause,
 ) -> ExecutorError {
     let secs = action_timeout().as_secs();
+    let why = cause.describe(secs);
     let Some(pgid) = child.id().map(|pid| pid as i32) else {
         // Already reaped: the child exited between the deadline and here, so the
         // work is done and there is nothing to signal.
-        eprintln!(
-            "[sysknife-daemon] {program} exceeded the {secs}s action timeout; already exited"
-        );
-        return timed_out(program, secs);
+        eprintln!("[sysknife-daemon] {program} {why}; already exited");
+        return cause.into_error(program, secs);
     };
 
     // A pid-targeted floor. `start_kill` (SIGKILL to the direct child) always
@@ -464,16 +464,13 @@ async fn kill_and_reap(
 
     match probe_group(pgid) {
         GroupState::Gone => {
-            eprintln!(
-                "[sysknife-daemon] {program} exceeded the {secs}s action timeout; \
-                 process group {pgid} stopped"
-            );
-            timed_out(program, secs)
+            eprintln!("[sysknife-daemon] {program} {why}; process group {pgid} stopped");
+            cause.into_error(program, secs)
         }
         state => {
             eprintln!(
-                "[sysknife-daemon] {program} exceeded the {secs}s action timeout and \
-                 process group {pgid} could not be confirmed stopped ({state:?})"
+                "[sysknife-daemon] {program} {why} and process group {pgid} \
+                 could not be confirmed stopped ({state:?})"
             );
             ExecutorError::ActionNotStopped {
                 program: program.to_string(),
@@ -484,12 +481,44 @@ async fn kill_and_reap(
     }
 }
 
-/// The plain timeout error, for the path where the work is confirmed stopped.
-fn timed_out(program: &str, secs: u64) -> ExecutorError {
-    ExecutorError::Io(io::Error::new(
-        io::ErrorKind::TimedOut,
-        format!("{program} exceeded the {secs}s action timeout and was stopped"),
-    ))
+/// Why the executor is tearing down a still-running privileged child.
+///
+/// Both causes must stop the process group — a root child left running after the
+/// executor has reported failure defeats the rollback interlock and the
+/// one-privileged-action-at-a-time guarantee — but they are not the same event,
+/// and reporting a read failure as a timeout would send an operator hunting a
+/// deadline that never fired.
+enum StopCause {
+    /// The action's own deadline elapsed.
+    Timeout,
+    /// The daemon lost the ability to read the child (a non-UTF-8 line, a broken
+    /// pipe, a `wait` that failed). Carries the error to surface once the group
+    /// is confirmed stopped.
+    Unreadable(io::Error),
+}
+
+impl StopCause {
+    /// The operator-log fragment, e.g. `exceeded the 900s action timeout`.
+    fn describe(&self, secs: u64) -> String {
+        match self {
+            StopCause::Timeout => format!("exceeded the {secs}s action timeout"),
+            StopCause::Unreadable(err) => format!("could not be read ({err})"),
+        }
+    }
+
+    /// The error to return once the group is confirmed gone. A group that
+    /// survives reports [`ExecutorError::ActionNotStopped`] instead, whatever the
+    /// cause — the caller needs to know work is still running far more than it
+    /// needs to know why the executor gave up on it.
+    fn into_error(self, program: &str, secs: u64) -> ExecutorError {
+        match self {
+            StopCause::Timeout => ExecutorError::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("{program} exceeded the {secs}s action timeout and was stopped"),
+            )),
+            StopCause::Unreadable(err) => ExecutorError::Io(err),
+        }
+    }
 }
 
 async fn execute_command_with_progress(
@@ -532,8 +561,19 @@ async fn execute_command_with_progress(
         // The deadline covers the whole action, not each read: a process that
         // emits one progress line an hour must still be cut off.
         let next = match tokio::time::timeout_at(deadline, lines.next_line()).await {
-            Ok(result) => result.map_err(ExecutorError::Io)?,
-            Err(_) => return Err(kill_and_reap(&mut child, program, args).await),
+            Ok(Ok(line)) => line,
+            // Losing the read is not a reason to walk away from a running root
+            // child. `lines()` fails with `InvalidData` on non-UTF-8 output, so
+            // this is reachable from any action whose stdout carries a byte
+            // sequence outside UTF-8 — one oddly-encoded filename is enough.
+            Ok(Err(err)) => {
+                return Err(
+                    kill_and_reap(&mut child, program, args, StopCause::Unreadable(err)).await,
+                )
+            }
+            Err(_) => {
+                return Err(kill_and_reap(&mut child, program, args, StopCause::Timeout).await)
+            }
         };
         let Some(line) = next else { break };
         if !line.is_empty() {
@@ -544,8 +584,13 @@ async fn execute_command_with_progress(
     }
 
     let exit_status = match tokio::time::timeout_at(deadline, child.wait()).await {
-        Ok(status) => status.map_err(ExecutorError::Io)?,
-        Err(_) => return Err(kill_and_reap(&mut child, program, args).await),
+        Ok(Ok(status)) => status,
+        // A failed `wait` leaves the child's fate unknown, which is the one state
+        // the dispatcher must never treat as "stopped".
+        Ok(Err(err)) => {
+            return Err(kill_and_reap(&mut child, program, args, StopCause::Unreadable(err)).await)
+        }
+        Err(_) => return Err(kill_and_reap(&mut child, program, args, StopCause::Timeout).await),
     };
     let stderr_bytes = stderr_task
         .await
@@ -591,6 +636,11 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             // mechanisms or give unauthenticated root access on next boot.
             for arg in add.iter() {
                 validated_safe_kernel_arg(arg, "add")?;
+            }
+            // Removal is screened too: stripping a protective arg reaches the
+            // same end state as adding its weakening counterpart.
+            for arg in remove.iter() {
+                validated_safe_kernel_arg_removal(arg, "remove")?;
             }
             let add_refs: Vec<&str> = add.iter().map(String::as_str).collect();
             let remove_refs: Vec<&str> = remove.iter().map(String::as_str).collect();
@@ -1517,15 +1567,16 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             // CSV injection into the helper's comma-separated list) *and* the
             // kernel-arg denylist, so a bare `single`/`s`/`1` cannot boot the
             // host into a single-user root shell — parity with
-            // SetKernelArguments. `delete` only removes existing args, so the
-            // charset check alone is sufficient (removing a dangerous arg is
-            // always safe).
+            // SetKernelArguments. `delete` gets the charset check plus the
+            // removal screen: dropping `module.sig_enforce=1` or `lockdown=`
+            // weakens the next boot exactly as adding its counterpart would.
             for a in &append {
                 validated_safe_arg(a, "append")?;
                 validated_safe_kernel_arg(a, "append")?;
             }
             for d in &delete {
                 validated_safe_arg(d, "delete")?;
+                validated_safe_kernel_arg_removal(d, "delete")?;
             }
             // The constructor itself enforces "at least one of append/delete
             // non-empty" — this is the single source of truth for the invariant.
@@ -1848,8 +1899,22 @@ pub async fn execute_spec(spec: &ActionSpec) -> Result<ExecutionOutput, Executor
             });
 
             let status = match tokio::time::timeout(action_timeout(), child.wait()).await {
-                Ok(status) => status?,
-                Err(_) => return Err(kill_and_reap(&mut child, program, args).await),
+                Ok(Ok(status)) => status,
+                // Same rule as the streaming path: a `wait` that fails leaves a
+                // privileged child in an unknown state, so stop the group before
+                // reporting the failure upward.
+                Ok(Err(err)) => {
+                    return Err(kill_and_reap(
+                        &mut child,
+                        program,
+                        args,
+                        StopCause::Unreadable(err),
+                    )
+                    .await)
+                }
+                Err(_) => {
+                    return Err(kill_and_reap(&mut child, program, args, StopCause::Timeout).await)
+                }
             };
             let join =
                 |e| ExecutorError::Io(io::Error::other(format!("reader task panicked: {e}")));
@@ -2155,6 +2220,80 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
     if BLOCKED_EXACT.contains(&base) {
         return Err(ExecutorError::InvalidParam(param));
     }
+    Ok(())
+}
+
+/// Validate a kernel argument that is about to be **removed** from the boot line.
+///
+/// [`validated_safe_kernel_arg`] screens additions. Removal was left unscreened
+/// on the premise that "removing a dangerous arg is always safe", which inverts
+/// the risk: the dangerous move is removing a *protective* arg. Deleting
+/// `module.sig_enforce=1` or `lockdown=confidentiality` reaches the same end
+/// state as adding its weakening counterpart, which the add-path refuses — so
+/// leaving `remove` open handed back every guarantee the add-path buys.
+///
+/// The prefixes below are the KSPP-recommended boot parameters plus the LSM
+/// selectors; each is a protection the host loses the moment the token leaves
+/// the boot line. `WEAKENING` is the escape hatch that keeps the screen from
+/// collapsing into "no removals at all": an argument that is itself a downgrade
+/// must stay removable, or SysKnife could never harden a host that already boots
+/// with `mitigations=off`.
+fn validated_safe_kernel_arg_removal(arg: &str, param: &'static str) -> Result<(), ExecutorError> {
+    /// Removing one of these hardens the host, so removal stays allowed even
+    /// though the token matches a protective prefix below.
+    const WEAKENING: &[&str] = &[
+        "selinux=0",
+        "enforcing=0",
+        "apparmor=0",
+        "mitigations=off",
+        "pti=off",
+        "lockdown=none",
+        "debugfs=on",
+        "iommu=off",
+        "intel_iommu=off",
+        "module.sig_enforce=0",
+        "init_on_alloc=0",
+        "init_on_free=0",
+        "randomize_kstack_offset=off",
+        "page_alloc.shuffle=0",
+    ];
+    const PROTECTIVE_PREFIXES: &[&str] = &[
+        "lockdown=",
+        "module.sig_enforce=",
+        "security=",
+        "selinux=",
+        "enforcing=",
+        "apparmor=",
+        "pti=",
+        "mitigations=",
+        "init_on_alloc=",
+        "init_on_free=",
+        "page_alloc.shuffle=",
+        "randomize_kstack_offset=",
+        "slub_debug=",
+        "page_poison=",
+        "vsyscall=",
+        "debugfs=",
+        "iommu=",
+        "intel_iommu=",
+        "amd_iommu=",
+    ];
+    const PROTECTIVE_EXACT: &[&str] = &["slab_nomerge", "nosmt", "kaslr"];
+
+    let lower = arg.to_lowercase();
+    if WEAKENING.contains(&lower.as_str()) {
+        return Ok(());
+    }
+    // Protective wins over the add-path inversion below. `security=` is refused
+    // by BOTH screens: adding it picks an LSM, removing it drops the one in use.
+    if PROTECTIVE_PREFIXES.iter().any(|p| lower.starts_with(p))
+        || PROTECTIVE_EXACT.contains(&lower.as_str())
+    {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    // Everything else — ordinary boot arguments, and the add-path's own denylist
+    // (`init=`, a bare `single`, an emergency `systemd.unit=`, all weakenings the
+    // host is better off without) — stays removable.
     Ok(())
 }
 
@@ -2592,7 +2731,7 @@ mod tests {
             .expect("spawn");
         SUDO_INVOCATIONS.store(0, std::sync::atomic::Ordering::SeqCst);
         let started = tokio::time::Instant::now();
-        let err = kill_and_reap(&mut child, "sh", &[]).await;
+        let err = kill_and_reap(&mut child, "sh", &[], StopCause::Timeout).await;
         let elapsed = started.elapsed();
 
         assert!(
@@ -2610,6 +2749,45 @@ mod tests {
             SUDO_INVOCATIONS.load(std::sync::atomic::Ordering::SeqCst),
             0,
             "a killable group must not escalate to the privileged reaper"
+        );
+    }
+
+    /// Losing the ability to READ a privileged child must stop it, exactly as a
+    /// timeout does. `lines()` fails with `InvalidData` on non-UTF-8 stdout —
+    /// reachable from any action whose output carries a byte sequence that is not
+    /// valid UTF-8 (a filename in a foreign encoding is enough). Returning that
+    /// error without reaping leaves a root process group running while the
+    /// executor reports the action failed, so the dispatcher's rollback starts a
+    /// second privileged transaction on top of the first.
+    #[tokio::test]
+    async fn a_child_that_outlives_a_stdout_read_failure_is_stopped_not_orphaned() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pgid_file = dir.path().join("pgid");
+        // `process_group(0)` makes the shell its own group leader, so `$$` IS the
+        // pgid. It prints one good line, then a lone \377 (never valid UTF-8),
+        // then outlives the read failure unless the executor stops it.
+        let script = format!(
+            "echo $$ > {}; echo started; printf '\\377\\n'; sleep 3600",
+            pgid_file.display()
+        );
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let err = execute_command_with_progress("sh", &["-c".to_string(), script], tx)
+            .await
+            .expect_err("non-UTF-8 stdout must fail the action");
+        assert!(
+            matches!(&err, ExecutorError::Io(e) if e.kind() == io::ErrorKind::InvalidData),
+            "the read failure itself must be surfaced, got: {err:?}"
+        );
+
+        let pgid: i32 = std::fs::read_to_string(&pgid_file)
+            .expect("the shell must have recorded its pgid")
+            .trim()
+            .parse()
+            .expect("pgid");
+        assert!(
+            probe_group(pgid).is_gone(),
+            "process group {pgid} survived the read failure; \
+             the privileged child was orphaned"
         );
     }
 
@@ -3272,6 +3450,87 @@ mod tests {
             validated_safe_kernel_arg("module_blacklist=dm_crypt", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
+    }
+
+    // ── validated_safe_kernel_arg_removal ─────────────────────────────────
+    //
+    // "Removing an argument is always safe" was the stated premise for exempting
+    // `remove`/`delete` from any policy check. It is false: several arguments
+    // protect the host by being PRESENT, so deleting one lands the same end state
+    // as adding its weakening counterpart, which the add-path already refuses.
+
+    #[test]
+    fn kernel_arg_removal_blocks_stripping_a_hardening_arg() {
+        // KSPP-recommended boot parameters plus the LSM selectors. Each is a
+        // protection the host loses the moment the token leaves the boot line.
+        for arg in [
+            "lockdown=confidentiality",
+            "module.sig_enforce=1",
+            "selinux=1",
+            "enforcing=1",
+            "apparmor=1",
+            "security=selinux",
+            "pti=on",
+            "mitigations=auto,nosmt",
+            "init_on_alloc=1",
+            "init_on_free=1",
+            "slab_nomerge",
+            "page_alloc.shuffle=1",
+            "randomize_kstack_offset=on",
+            "slub_debug=FZP",
+            "vsyscall=none",
+            "debugfs=off",
+            "iommu=force",
+            "intel_iommu=on",
+            "amd_iommu=force_isolation",
+        ] {
+            assert!(
+                matches!(
+                    validated_safe_kernel_arg_removal(arg, "remove"),
+                    Err(ExecutorError::InvalidParam("remove"))
+                ),
+                "removing {arg} is a boot-security downgrade and must be refused"
+            );
+        }
+    }
+
+    /// The screen must not turn into "no removals at all" — an argument that is
+    /// itself a weakening (the add-path refuses it) has to stay removable, or
+    /// SysKnife could never undo `mitigations=off` on a host that already has it.
+    #[test]
+    fn kernel_arg_removal_allows_undoing_a_weakening_arg() {
+        for arg in [
+            "mitigations=off",
+            "selinux=0",
+            "enforcing=0",
+            "apparmor=0",
+            "pti=off",
+            "lockdown=none",
+            "debugfs=on",
+            "init=/bin/sh",
+            "single",
+        ] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_ok(),
+                "{arg} weakens the host, so removing it must stay allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn kernel_arg_removal_allows_ordinary_args() {
+        for arg in [
+            "quiet",
+            "splash",
+            "nomodeset",
+            "console=ttyS0,115200",
+            "rd.driver.blacklist=nouveau",
+        ] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_ok(),
+                "{arg} carries no boot-security meaning and must stay removable"
+            );
+        }
     }
 
     #[test]

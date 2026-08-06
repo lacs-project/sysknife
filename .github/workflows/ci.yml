@@ -62,6 +62,15 @@ jobs:
       - name: Check mount-edit refuses symlinked mountpoints
         run: bash tests/release/mount-edit.test.sh
 
+      - name: Check rmswap only removes known swap files
+        run: bash tests/release/rmswap.test.sh
+
+      - name: Check log-edit confines rotation to the log root
+        run: bash tests/release/log-edit.test.sh
+
+      - name: Check grub-kargs-edit screens karg deletions
+        run: bash tests/release/grub-kargs-edit.test.sh
+
       - name: Check provider parity across E2E entry points
         run: bash tests/e2e/provider-parity.test.sh
 

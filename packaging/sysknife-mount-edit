@@ -23,6 +23,10 @@
 #     and the op fails — so a broken entry never persists.
 #   - Critical system mountpoints (/, /boot, /etc, /usr, /var, /home, …) are
 #     refused; SysKnife will not remount or shadow them.
+#   - rmswap only unlinks a path the host already reports as a swap FILE, via
+#     /proc/swaps or an /etc/fstab swap entry, and never a symlink. A charset
+#     check alone made this a root arbitrary-deletion primitive: every step
+#     before the unlink tolerates a non-swap path.
 #   - fstype is an allowlist; device/mountpoint/options are charset-validated;
 #     fstab is rewritten atomically (temp file + os.replace).
 
@@ -34,6 +38,7 @@ import sys
 import tempfile
 
 FSTAB = "/etc/fstab"
+PROC_SWAPS = "/proc/swaps"
 MOUNT = "/usr/bin/mount"
 UMOUNT = "/usr/bin/umount"
 MKSWAP = "/usr/sbin/mkswap"
@@ -300,10 +305,51 @@ def op_addswap(args) -> None:
         write_fstab(lines)
 
 
+def known_swap_files() -> set:
+    """Absolute paths this host actually knows as swap FILES.
+
+    Two sources, union: `/proc/swaps` rows whose Type is `file` (swap that is
+    live right now) and `/etc/fstab` rows whose fstype is `swap` (swap the host
+    is configured to have). Swap *partitions* are excluded from both — they are
+    block devices, never something to unlink — as are commented-out fstab lines.
+    """
+    known = set()
+    try:
+        with open(PROC_SWAPS, "r") as fh:
+            next(fh, None)  # header: Filename Type Size Used Priority
+            for line in fh:
+                fields = line.split()
+                if len(fields) >= 2 and fields[1] == "file":
+                    known.add(fields[0])
+    except OSError:
+        # No /proc/swaps (a container, a test harness): fstab alone decides.
+        pass
+    for line in read_fstab():
+        if line.lstrip().startswith("#"):
+            continue
+        fields = line.split()
+        if len(fields) >= 3 and fields[2] == "swap":
+            known.add(fields[0])
+    return known
+
+
 def op_rmswap(args) -> None:
     path = args.file
     if not path.startswith("/") or ".." in path or not MOUNTPOINT_RE.match(path):
         die(f"invalid swap file path {path!r}")
+    # A root unlink gated only by a charset check is an arbitrary-deletion
+    # primitive. Every step between the check and the unlink tolerates a
+    # non-swap path — swapoff runs with check=False, and the fstab rewrite is a
+    # no-op when nothing matches — so `--file /etc/shadow` used to reach
+    # os.unlink and delete the shadow file. Removal is confined to paths the
+    # host itself reports as swap files.
+    if path not in known_swap_files():
+        die(f"{path!r} is not a known swap file (absent from {PROC_SWAPS} and {FSTAB})")
+    # Even a declared path must not be a symlink: that would let whoever can
+    # write an fstab line choose what root deletes, and `swapon` would never
+    # have accepted the link as swap in the first place.
+    if os.path.islink(path):
+        die(f"{path!r} is a symlink, not a swap file; refusing to remove it")
     subprocess.run([SWAPOFF, path], check=False, stderr=subprocess.DEVNULL)
     lines = read_fstab()
     kept = [ln for ln in lines if fstab_field1(ln) != path]

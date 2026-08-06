@@ -21,7 +21,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `RebootSystem` | `sudo systemctl reboot` | High | All | ✓ | – | reboot the machine into the current or staged deployment |
 | `RollbackDeployment` | `sudo rpm-ostree rollback` | High | Fedora | ✓ | – | roll back to the previous booted deployment |
 | `GetKernelArguments` | `rpm-ostree kargs` | Low | Fedora | – | – | list current kernel command-line arguments (kargs) |
-| `SetKernelArguments` | `sudo rpm-ostree kargs` | High | Fedora | ✓ | ✓ | add/remove kernel command-line args — params: add (string\[\]), remove (string\[\]) — either may be \[\] |
+| `SetKernelArguments` | `sudo rpm-ostree kargs` | High | Fedora | ✓ | ✓ | add/remove kernel command-line args — params: add (string\[\]), remove (string\[\]) — either may be \[\]; both lists are screened: no weakening arg may be added, and no protective one (lockdown=, module.sig_enforce=1, pti=on, mitigations=, selinux=1, slab_nomerge, …) removed |
 
 ## Package layering (rpm-ostree)
 
@@ -127,7 +127,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `AddMount` | `sudo /usr/lib/sysknife/mount-edit --op mount --device /dev/sdb1 --mountpoint /mnt/data --fstype ext4 --options defaults` | High | All | – | – | mount a device and persist it to /etc/fstab with nofail — params: device\* (/dev/.., UUID=.., LABEL=.., //host/share, or host:/export), mountpoint\* (absolute; not a system dir), fstype\* (ext4/xfs/btrfs/vfat/nfs/cifs/…), options (csv, optional); High risk |
 | `RemoveMount` | `sudo /usr/lib/sysknife/mount-edit --op unmount --mountpoint /mnt/data` | High | All | – | – | unmount and drop the /etc/fstab entry for a mountpoint — param: mountpoint\*; High risk |
 | `AddSwap` | `sudo /usr/lib/sysknife/mount-edit --op addswap --file /swapfile --size-mb 2048` | High | All | – | – | create a swap file, enable it, and persist to /etc/fstab — params: file\* (absolute path), size_mb\* (integer MB); High risk |
-| `RemoveSwap` | `sudo /usr/lib/sysknife/mount-edit --op rmswap --file /swapfile` | High | All | – | – | disable a swap file, remove it, and drop its /etc/fstab entry — param: file\*; High risk |
+| `RemoveSwap` | `sudo /usr/lib/sysknife/mount-edit --op rmswap --file /swapfile` | High | All | – | – | disable a swap file, remove it, and drop its /etc/fstab entry — param: file\* (must already be a swap file per /proc/swaps or /etc/fstab, and not a symlink); High risk |
 
 ## Log management
 
@@ -363,7 +363,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GrubGetKargs` | `grep -E ^GRUB_CMDLINE_LINUX /etc/default/grub` | Low | Ubuntu | – | – | read current GRUB_CMDLINE_LINUX from /etc/default/grub — no params; Ubuntu only; read-only |
-| `GrubSetKargs` | `sudo /usr/lib/sysknife/grub-kargs-edit --append quiet --delete splash` | High | Ubuntu | ✓ | – | modify GRUB kernel arguments and run update-grub — params: append (list), delete (list); Ubuntu only; High risk; requires reboot |
+| `GrubSetKargs` | `sudo /usr/lib/sysknife/grub-kargs-edit --append quiet --delete splash` | High | Ubuntu | ✓ | – | modify GRUB kernel arguments and run update-grub — params: append (list), delete (list), bare tokens only (no '='); both lists are screened for boot-security downgrades; Ubuntu only; High risk; requires reboot |
 
 ## Ubuntu release upgrade
 

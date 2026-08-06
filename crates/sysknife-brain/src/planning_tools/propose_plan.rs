@@ -56,7 +56,7 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
     ("RebaseSystem",
      "switch to a different OSTree ref/remote — param: target_ref (string, e.g. fedora/40/x86_64/silverblue)"),
     ("SetKernelArguments",
-     "add/remove kernel command-line args — params: add (string[]), remove (string[]) — either may be []"),
+     "add/remove kernel command-line args — params: add (string[]), remove (string[]) — either may be []; both lists are screened: no weakening arg may be added, and no protective one (lockdown=, module.sig_enforce=1, pti=on, mitigations=, selinux=1, slab_nomerge, …) removed"),
     // Flatpak — NOTE: all user-scoped ops require username (NOT 'user')
     ("InstallFlatpak",
      "install a Flatpak app — params: username* (Linux user), app_id* (e.g. org.mozilla.firefox), remote* (e.g. flathub)"),
@@ -184,7 +184,7 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
     ("AddSwap",
      "create a swap file, enable it, and persist to /etc/fstab — params: file* (absolute path), size_mb* (integer MB); High risk"),
     ("RemoveSwap",
-     "disable a swap file, remove it, and drop its /etc/fstab entry — param: file*; High risk"),
+     "disable a swap file, remove it, and drop its /etc/fstab entry — param: file* (must already be a swap file per /proc/swaps or /etc/fstab, and not a symlink); High risk"),
     // apt pinning (preferences.d) — Ubuntu/Debian only
     ("GetAptPins",
      "show apt pin priorities (apt-cache policy) — param: package (optional); Ubuntu only; read-only"),
@@ -369,7 +369,7 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
     ("GrubGetKargs",
      "read current GRUB_CMDLINE_LINUX from /etc/default/grub — no params; Ubuntu only; read-only"),
     ("GrubSetKargs",
-     "modify GRUB kernel arguments and run update-grub — params: append (list), delete (list); Ubuntu only; High risk; requires reboot"),
+     "modify GRUB kernel arguments and run update-grub — params: append (list), delete (list), bare tokens only (no '='); both lists are screened for boot-security downgrades; Ubuntu only; High risk; requires reboot"),
     // ── Ubuntu / reboot ───────────────────────────────────────────────────────
     ("CheckPendingReboot",
      "check whether a reboot is pending (/var/run/reboot-required) — no params; Ubuntu/Debian only; read-only"),
