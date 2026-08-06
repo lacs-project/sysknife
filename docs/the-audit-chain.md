@@ -297,6 +297,22 @@ current chain distinguishes three outcomes:
 `sysknife audit checkpoint` refuses to anchor a chain that does not already
 verify — it never launders a tampered chain into a signed checkpoint.
 
+`sysknife audit verify` performs the same cross-check, read-only, whenever
+`SYSKNIFE_CHECKPOINT_DB` is set. It previously reported only that an anchor was
+*configured* and verified the chain against itself, which is the one thing a
+truncated chain also passes: an operator who had done the work to set anchoring
+up got a verdict no stronger than one who had not, and without the caveat that
+warns the unanchored case. The cross-check now runs, its result appears beside
+the chain verdict, and a `Truncated` or rewritten verdict fails the command
+(exit 1) rather than printing under an `OK`.
+
+Two boundary cases are deliberate. An anchor holding **no** checkpoints reports
+`cannot_verify`, not `consistent` — zero checkpoints trivially satisfy "every
+checkpoint agrees", and calling that success would attest to a chain nothing has
+ever committed to. And because anchoring itself is implemented for the SQLite
+backend only, a Postgres deployment with `SYSKNIFE_CHECKPOINT_DB` set is told so
+explicitly rather than being silently skipped.
+
 ```admonish warning title="Checkpoints require an external sink"
 The anti-truncation guarantee only holds if the checkpoint sink is actually
 external to the host being audited. Anchoring checkpoints into the same
