@@ -8,6 +8,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [0.7.0] — 2026-08-06
+
+A security release. Five privileged paths that a bounded action could ride into
+an unbounded root effect, the operator approval prompt, and an audit verify that
+reported a check it never ran.
+
+### Security
+
+- **The `npx` installer no longer stages a root-installed binary at a guessable
+  path.** ([#180](https://github.com/lacs-project/sysknife/pull/180))
+  `writeBinary`'s sudo fallback wrote the payload to
+  `${tmpdir}/sysknife-install-${pid}-sysknife` at mode 0644, then ran
+  `sudo install` from it. A predictable name in a world-writable directory means
+  any local user could pre-create the file, let the installer write through it,
+  and replace the contents before the copy — landing a root-owned 0755 binary at
+  `/usr/local/bin/sysknife`. Staging now goes through `mkdtemp`: an unguessable
+  0700 directory holding a 0600 payload, removed in a `finally`.
+
+- **`ConfigureLogRotation` is confined to `/var/log`.**
+  The `--path` argument becomes the stanza header of a config that root's
+  logrotate acts on, so any absolute path turned a Medium-risk, Dev-tier action
+  into scheduled root-level truncation, rename, or deletion of an arbitrary file
+  (`--path /etc/shadow` with `rotate 0`). Enforced in
+  `packaging/sysknife-log-edit` and in the daemon's `validated_log_path`.
+  `docs/action-reference.md` already documented this confinement; only the code
+  was missing it.
+
+- **`RemoveSwap` is no longer an arbitrary root unlink.**
+  The helper charset-checked its `--file` and then `os.unlink`ed it as root.
+  Every step in between tolerates a non-swap path — `swapoff` runs with
+  `check=False`, and the fstab rewrite is a no-op when nothing matches — so
+  `--file /etc/shadow` reached the unlink and deleted the shadow file. Removal is
+  now confined to paths the host itself reports as swap files (`/proc/swaps` rows
+  of type `file`, or an `/etc/fstab` swap entry), and never a symlink.
+
+- **Removing a kernel argument is screened, not assumed safe.**
+  Both boot-line editors checked only the *add* list, on the stated premise that
+  "removing a dangerous arg is always safe". The premise inverts the risk: the
+  dangerous move is removing a *protective* arg. Deleting `module.sig_enforce=1`
+  reaches the same next-boot state as adding an unsigned-module loader, which the
+  add path already refuses. `SetKernelArguments` and `GrubSetKargs` now screen
+  removals against the KSPP-recommended boot parameters plus the LSM selectors,
+  with an explicit escape hatch so an argument that is itself a weakening
+  (`mitigations=off`, `selinux=0`) stays removable. `sysknife-grub-kargs-edit`
+  enforces the same list independently, since it is directly sudo-invocable.
+
+- **A privileged child is stopped when the daemon loses the ability to read it.**
+  A `next_line()` error — `InvalidData` on non-UTF-8 stdout, which one
+  oddly-encoded filename produces — or a failed `wait()` returned via `?` without
+  reaping, leaving a **root** process group running while the executor reported
+  the action failed and the dispatcher considered rollback. All three sites now
+  stop the group first. `kill_and_reap` takes a `StopCause` so a read failure is
+  not reported to the operator as a timeout.
+
+- **Untrusted text can no longer rewrite the approval prompt.**
+  The plan and step summaries are model-written, from a context full of
+  host-controlled strings; the preview and result summaries carry command output.
+  All were printed raw next to — and immediately before — the prompt. `\x1b[2K\r`
+  erases and rewrites its own line, `\x1b[1A` walks back over the risk badge, and
+  length alone scrolls the plan out of view before the operator answers. The new
+  `operator_text::operator_safe` drops C0, `DEL`, the C1 range (a terminal in
+  8-bit mode reads `U+009B` as CSI, so stripping only `ESC` is insufficient),
+  bidirectional overrides and isolates, and zero-width characters; collapses
+  whitespace; and caps the rendered length. It is applied to eight sites,
+  including the prompt string itself.
+
+- **The audit database is created owner-only.**
+  SQLite created it `0644 & ~umask`. The 0700 parent hides it in place, but the
+  file mode travels with a backup or a `cp`, and SQLite derives the `-wal`/`-shm`
+  modes from the main file, so the most recent transactions leaked through the
+  WAL too. Narrowed to 0600 at open — tightening only, and non-fatal, so a
+  `chmod` that fails on a file owned by another user cannot stop a daemon that
+  previously started.
+
+- **`sysknife audit verify` now reads the anchor it reports.**
+  `verify_chain` proves the chain is internally consistent and correctly signed.
+  It cannot prove the chain is *complete*: deleting the newest rows leaves a
+  shorter chain that still verifies. With no anchor configured, verify printed an
+  honest caveat saying so. With an anchor configured it printed
+  `audit_anchor: {configured: true}` and never read the anchor — leaving an
+  operator who had set anchoring up strictly worse informed than one who had not.
+  The cross-check now runs, its verdict appears beside the chain verdict, and a
+  truncation or rewrite reaches the exit code. An anchor holding no checkpoints
+  reports `cannot_verify` rather than `consistent`, because zero checkpoints
+  trivially satisfy "every checkpoint agrees".
+
+### Changed
+
+- `RUSTSEC-2026-0097` is no longer ignored in CI. `rand` 0.7.3 has left the
+  lockfile and `cargo audit` exits clean unignored; an ignore for a crate that is
+  not built protects nothing and would silently re-accept the advisory if a
+  future bump pulled it back in.
+- `client.rs` documented that *all* daemon string output was ANSI-stripped. Only
+  captured and streamed command output is; the envelopes deserialize straight
+  through. Corrected, and pointed at the render-boundary guard.
+
+### Fixed
+
+- The planner's action catalogue is scoped per distro, so a distro-agnostic tool
+  schema no longer produces plans the daemon will reject.
+  ([#176](https://github.com/lacs-project/sysknife/pull/176))
+- Published figures derive from `tests/evidence/` rather than being retyped.
+  ([#177](https://github.com/lacs-project/sysknife/pull/177))
+
+### Known limitations
+
+The `/usr/bin/sh` and `/usr/sbin/runuser` sudoers grants make the daemon
+root-capable. This is unchanged from 0.6.0 and documented in
+`packaging/sysknife-sudoers`; the security boundary is the daemon's own
+authorization, validation, and audit chain, not the sudoers file. Removing the
+grants requires `ConfigureFirewall` and the container/toolbox/ssh-key paths to
+move to root-owned helpers, and sudoers wildcards cannot substitute because
+sudo-rs permits `*` only as a final argument.
+
 ## [0.6.0] — 2026-07-31
 
 ### Security
