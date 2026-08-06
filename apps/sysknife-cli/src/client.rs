@@ -19,8 +19,15 @@
 //!
 //! ## ANSI stripping
 //!
-//! All string output received from the daemon passes through
-//! [`strip_ansi_escapes`] before being returned to callers.
+//! Captured and streamed *command output* passes through [`strip_ansi_escapes`]
+//! before being returned to callers.
+//!
+//! That is not the whole story, and used to be documented as if it were: the
+//! `PreviewEnvelope` / `ResultEnvelope` fields are deserialized straight from
+//! the response and reach callers exactly as the daemon sent them. Their
+//! summaries and warnings are neutralised where they are displayed, by
+//! [`crate::operator_text::operator_safe`], which also covers the model-written
+//! plan summaries this module never sees.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;

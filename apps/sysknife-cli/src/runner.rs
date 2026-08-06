@@ -474,7 +474,7 @@ pub async fn run_approve(
         "Action:  {}\nRisk:    {:?}\nSummary: {}\nProposed change:\n{}",
         details.action_name,
         details.preview.risk_level,
-        details.preview.summary,
+        crate::operator_text::operator_safe(&details.preview.summary),
         serde_json::to_string_pretty(&details.preview.proposed_change)
             .unwrap_or_else(|_| "<unavailable>".to_string())
     ));
@@ -1648,7 +1648,13 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
                 GateAction::Refuse(err) => return Err(err),
                 GateAction::AskOperator => {
                     let msg = if opts.json {
-                        format!("Execute {} ({})?", step.action_name(), step.summary())
+                        // The summary is model-written and this string IS the
+                        // approval question; it must not be able to redraw it.
+                        format!(
+                            "Execute {} ({})?",
+                            step.action_name(),
+                            crate::operator_text::operator_safe(step.summary())
+                        )
                     } else {
                         format!(
                             "Apply {} ({} risk) as previewed above?",

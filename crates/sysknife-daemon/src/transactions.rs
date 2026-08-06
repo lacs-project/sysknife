@@ -365,6 +365,7 @@ impl TransactionStore {
             audit_key: Some(audit_key),
         };
         store.initialize()?;
+        restrict_db_file_mode(&store.path);
         Ok(store)
     }
 
@@ -1236,6 +1237,57 @@ fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
         .create(dir)
 }
 
+/// Narrow the audit database (and its WAL sidecars) to mode `0o600`.
+///
+/// SQLite creates its files `0o644 & ~umask`. The 0700 parent directory hides
+/// them from other users today, but the file mode travels: a backup, a `cp`, or
+/// an operator who widens the directory exposes every action name, parameter,
+/// and approving principal the daemon has recorded. SQLite also derives the
+/// `-wal`/`-shm` modes from the main file, so leaving the main file permissive
+/// leaks the most recent (not-yet-checkpointed) transactions as well.
+///
+/// Tightening only, and never fatal: the directory is the primary control, and
+/// a `chmod` that fails because the file belongs to another user must not stop
+/// a daemon that previously started fine. It is loud, because a security
+/// property that quietly stops holding is worse than one that never held.
+fn restrict_db_file_mode(db_path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    // `-shm` is recreated per connection; `-wal` persists. Both inherit from the
+    // main file at creation, so fixing the main file covers the common case and
+    // these two cover a database that already exists with a wider mode.
+    let sidecars = [
+        db_path.to_path_buf(),
+        with_suffix(db_path, "-wal"),
+        with_suffix(db_path, "-shm"),
+    ];
+    for path in sidecars {
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue; // Absent sidecar: nothing to narrow.
+        };
+        let mode = metadata.permissions().mode() & 0o777;
+        if mode & 0o077 == 0 {
+            continue; // Already owner-only or tighter.
+        }
+        if let Err(err) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
+            eprintln!(
+                "[sysknife-daemon] WARNING: {} is mode {mode:o} and could not be \
+                 narrowed to 0600 ({err}); it is readable by anyone who can reach \
+                 it. The parent directory should be 0700 — check it.",
+                path.display()
+            );
+        }
+    }
+}
+
+/// `path` with `suffix` appended to the file name (not the extension), matching
+/// how SQLite names `daemon.sqlite-wal` beside `daemon.sqlite`.
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
 fn row_to_record(row: &rusqlite::Row) -> Result<TransactionRecord, TransactionStoreError> {
     Ok(TransactionRecord {
         transaction_id: row.get(0)?,
@@ -1988,6 +2040,46 @@ mod tests {
         assert!(target.is_dir());
         let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "leaf dir must be 0o700, got {mode:o}");
+    }
+
+    /// The audit database is the record of every privileged action taken on the
+    /// host: action names, parameters, and who approved them. SQLite creates it
+    /// `0644 & ~umask`, which the 0700 parent hides today — but only today. A
+    /// backup, a `cp`, or an operator who widens the directory carries the file
+    /// mode with it, and SQLite derives the `-wal`/`-shm` sidecar modes from the
+    /// main file, so a permissive main file leaks the most recent transactions
+    /// through the WAL too.
+    #[test]
+    fn the_audit_database_is_created_owner_only() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("daemon.sqlite");
+        let store = TransactionStore::open(&db).unwrap();
+        // Write a row so the WAL sidecar exists and can be checked as well.
+        store
+            .record(NewTransaction {
+                request_id: "mode-probe".to_string(),
+                request_hash: "hash-mode-probe".to_string(),
+                action_name: "GetSystemState".to_string(),
+                risk_level: RiskLevel::Low,
+                summary: "probe".to_string(),
+                warnings: vec![],
+                caller_role: CallerRole::Dev,
+                caller_principal: CallerPrincipal::Uid(3000),
+            })
+            .unwrap();
+
+        for path in [db.clone(), db.with_extension("sqlite-wal")] {
+            if !path.exists() {
+                continue;
+            }
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode,
+                0o600,
+                "{} must be owner-only, got {mode:o}",
+                path.display()
+            );
+        }
     }
 
     #[test]

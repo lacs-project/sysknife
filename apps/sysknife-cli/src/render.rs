@@ -4,6 +4,14 @@
 //! stderr directly.  Every call site is guarded by `if !opts.json`, so the
 //! JSON path is never affected.
 //!
+//! ## Untrusted text
+//!
+//! Model-written summaries and daemon-returned summaries/warnings pass through
+//! [`crate::operator_text::operator_safe`] before printing. They are shown next
+//! to (and immediately before) the approval prompt, so text that can move the
+//! cursor, forge a line, or reorder itself would let the host rewrite the plan
+//! the operator thinks they are approving.
+//!
 //! Color is emitted only when the target stream is a TTY and `NO_COLOR` is
 //! unset — `owo-colors` handles this automatically via
 //! `if_supports_color(Stream::…)`.  `indicatif` spinners auto-hide when
@@ -27,6 +35,7 @@ use owo_colors::{OwoColorize, Stream};
 use sysknife_brain::planner::{AuthorizedPlan, PlanRiskLevel};
 use sysknife_types::{JobState, PreviewEnvelope, ResultEnvelope};
 
+use crate::operator_text::operator_safe;
 use crate::runner::Logger;
 
 /// Spinner frame interval. Fast enough to read as motion, slow enough not to
@@ -91,10 +100,12 @@ pub fn risk_colored(risk: &PlanRiskLevel) -> String {
 /// authoritative `ActionSpec` risks, never the LLM's proposal.
 pub fn print_plan(plan: &AuthorizedPlan, log: &Logger) {
     log.println("");
+    // The summaries below are model-written, from a context full of
+    // host-controlled strings. This is the plan the operator is about to
+    // approve, so it must not be able to redraw itself. See `operator_text`.
     log.println(&format!(
         "  {}",
-        plan.summary()
-            .if_supports_color(Stream::Stdout, |t| t.bold())
+        operator_safe(plan.summary()).if_supports_color(Stream::Stdout, |t| t.bold())
     ));
     log.println(&format!(
         "  {}",
@@ -123,8 +134,7 @@ pub fn print_plan(plan: &AuthorizedPlan, log: &Logger) {
         ));
         log.println(&format!(
             "     {}",
-            step.summary()
-                .if_supports_color(Stream::Stdout, |t| t.dimmed())
+            operator_safe(step.summary()).if_supports_color(Stream::Stdout, |t| t.dimmed())
         ));
     }
     log.println("");
@@ -142,9 +152,7 @@ pub fn print_step_header(action: &str, preview: &PreviewEnvelope) {
         "\n  {} {}  {}",
         "▶".if_supports_color(Stream::Stderr, |t| t.cyan()),
         action.if_supports_color(Stream::Stderr, |t| t.bold()),
-        preview
-            .summary
-            .if_supports_color(Stream::Stderr, |t| t.dimmed()),
+        operator_safe(&preview.summary).if_supports_color(Stream::Stderr, |t| t.dimmed()),
     );
     if preview.reboot_required {
         eprintln!(
@@ -154,8 +162,9 @@ pub fn print_step_header(action: &str, preview: &PreviewEnvelope) {
     }
     for w in &preview.warnings {
         eprintln!(
-            "    {} {w}",
-            "!".if_supports_color(Stream::Stderr, |t| t.yellow())
+            "    {} {}",
+            "!".if_supports_color(Stream::Stderr, |t| t.yellow()),
+            operator_safe(w),
         );
     }
 }
@@ -193,7 +202,10 @@ pub fn print_step_done(result: &ResultEnvelope, log: &Logger) {
             "unknown",
         ),
     };
-    log.println(&format!("  {icon}  {} — {label}", result.summary));
+    log.println(&format!(
+        "  {icon}  {} — {label}",
+        operator_safe(&result.summary)
+    ));
     if result.needs_reboot {
         log.println(&format!(
             "    {} reboot required",
@@ -205,8 +217,9 @@ pub fn print_step_done(result: &ResultEnvelope, log: &Logger) {
     // them, so they are never silently dropped.
     for w in &result.warnings {
         log.println(&format!(
-            "    {} {w}",
-            "!".if_supports_color(Stream::Stdout, |t| t.yellow())
+            "    {} {}",
+            "!".if_supports_color(Stream::Stdout, |t| t.yellow()),
+            operator_safe(w),
         ));
     }
     if let Some(ref id) = result.job_id {
