@@ -103,7 +103,7 @@ pub fn append_pref(path: &Path, fact: &str) -> Result<(), io::Error> {
     // arrives in the *system* prompt as a multi-line block whose second line is
     // an unprefixed heading. Saved preferences are re-injected on every
     // subsequent plan, so that is a durable injection, not a one-shot one.
-    if fact.contains(|c| matches!(c, '\n' | '\r' | '\u{0085}' | '\u{2028}' | '\u{2029}')) {
+    if fact.contains(['\n', '\r', '\u{0085}', '\u{2028}', '\u{2029}']) {
         return Err(io::Error::other("preference must be a single line"));
     }
 
