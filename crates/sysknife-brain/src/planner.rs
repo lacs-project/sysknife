@@ -21,9 +21,11 @@ use crate::planning_tools::get_state::get_state_tool_def;
 use crate::planning_tools::propose_plan::{parse_proposed_plan, propose_plan_tool_def};
 use crate::planning_tools::query_tools::query_tools;
 use crate::prompt::build_system_prompt;
+use std::time::Duration;
+
 use crate::provider::{
-    ContentBlock, LlmProvider, Message, ProviderError, Role, StopReason, ToolDefinition,
-    ToolResultBlock,
+    Completion, ContentBlock, LlmProvider, Message, ProviderError, Role, StopReason,
+    ToolDefinition, ToolResultBlock,
 };
 use crate::providers::openai_adapter::AsyncOpenAiAdapter;
 use crate::providers::rig_adapter::RigCompletionAdapter;
@@ -67,6 +69,23 @@ pub const OLLAMA_NUM_PREDICT: u32 = 4096;
 /// buffer for multi-turn retries. 4096 is generous for all
 /// providers — well-behaved runs rarely exceed 1000.
 pub const PLANNING_MAX_TOKENS: u32 = 4096;
+
+/// How many times one turn's provider call may be re-attempted after a
+/// retryable failure (so at most `1 + PROVIDER_RETRY_LIMIT` attempts).
+///
+/// Small on purpose. This covers the momentary failures — a 502, a truncated
+/// payload, one 429 — and deliberately does not try to ride out a real outage:
+/// an operator waiting on a plan is better served by a clear failure than by a
+/// command that hangs for a minute and then fails anyway.
+const PROVIDER_RETRY_LIMIT: u32 = 2;
+
+/// First backoff before re-attempting a failed provider call; doubles per retry.
+const PROVIDER_RETRY_BACKOFF: Duration = Duration::from_millis(400);
+
+/// First backoff when the provider explicitly signalled rate limiting. Longer
+/// than [`PROVIDER_RETRY_BACKOFF`]: retrying a 429 on the same schedule as a 502
+/// is how a rate limit turns into a rate-limit loop.
+const PROVIDER_RETRY_RATE_LIMIT_BACKOFF: Duration = Duration::from_millis(2_000);
 
 /// Maximum byte length accepted for a natural-language intent.
 ///
@@ -852,6 +871,77 @@ impl LlmPlanner {
         }
     }
 
+    /// One turn's provider call, re-attempted on failures that could plausibly
+    /// succeed a moment later.
+    ///
+    /// The turn loop already retries the *model's* mistakes; a provider-level
+    /// failure used to end planning outright, so one 502 or one truncated payload
+    /// wasted an entire intent with most of the turn budget unused.
+    /// [`ProviderError::is_retryable`] draws the line — notably `Auth` and
+    /// `CassetteMiss` are attempted exactly once, because neither can change its
+    /// answer.
+    ///
+    /// Retries consume a rate-limiter token like any other request, rather than
+    /// slipping around the limiter: a retry storm during a provider outage is
+    /// precisely the traffic the limiter exists to cap. If the limiter declines,
+    /// the retry is abandoned and the original provider error is returned — the
+    /// operator needs to see what actually failed, not a rate-limit error that
+    /// only describes our own reaction to it.
+    async fn complete_with_retry(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<Completion, ProviderError> {
+        let mut attempt: u32 = 0;
+        loop {
+            let error = match self
+                .provider
+                .complete(system, messages, tools, PLANNING_MAX_TOKENS)
+                .await
+            {
+                Ok(completion) => return Ok(completion),
+                Err(e) => e,
+            };
+
+            if !error.is_retryable() || attempt >= PROVIDER_RETRY_LIMIT {
+                return Err(error);
+            }
+
+            if let Some(ref rl) = self.rate_limiter {
+                if std::sync::Arc::clone(rl)
+                    .check_and_consume_async()
+                    .await
+                    .is_err()
+                {
+                    return Err(error);
+                }
+            }
+
+            // Exponential, and longer when the provider has explicitly asked us
+            // to slow down: retrying a 429 on the same schedule as a 502 is how a
+            // rate limit becomes a rate-limit loop.
+            let base = if matches!(
+                error,
+                ProviderError::RateLimit(_) | ProviderError::Http { status: 429, .. }
+            ) {
+                PROVIDER_RETRY_RATE_LIMIT_BACKOFF
+            } else {
+                PROVIDER_RETRY_BACKOFF
+            };
+            let backoff = base * 2_u32.pow(attempt);
+            eprintln!(
+                "[sysknife-brain] provider call failed ({error}); \
+                 retrying in {:.1}s (attempt {}/{})",
+                backoff.as_secs_f32(),
+                attempt + 1,
+                PROVIDER_RETRY_LIMIT,
+            );
+            tokio::time::sleep(backoff).await;
+            attempt += 1;
+        }
+    }
+
     /// Run the planning loop for the given natural-language intent.
     ///
     /// Returns `Err(EmptyIntent)` immediately if the intent is blank.
@@ -905,8 +995,7 @@ impl LlmPlanner {
         for turn in 0..self.max_turns {
             self.emit(PlanEvent::Thinking);
             let completion = self
-                .provider
-                .complete(&effective_prompt, &messages, &tools, PLANNING_MAX_TOKENS)
+                .complete_with_retry(&effective_prompt, &messages, &tools)
                 .await
                 .map_err(PlanningError::from)?;
 

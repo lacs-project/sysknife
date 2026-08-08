@@ -140,7 +140,7 @@ flow.
 
 ## Status
 
-189 typed actions · 1,711 Rust tests + 72 frontend tests · MIT
+189 typed actions · 1,723 Rust tests + 72 frontend tests · MIT
 
 SysKnife is the reference implementation of the
 [LACS specification](https://github.com/lacs-project/specification) — a

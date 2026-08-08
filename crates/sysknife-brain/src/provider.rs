@@ -181,3 +181,91 @@ pub enum ProviderError {
     #[error("cassette miss: {0}")]
     CassetteMiss(String),
 }
+
+impl ProviderError {
+    /// Whether re-issuing the identical request could plausibly succeed.
+    ///
+    /// The planner's turn loop retries the *model's* mistakes — text where a tool
+    /// call belonged, a plan the safety fence rejected — but used to abandon
+    /// planning on the first provider-level failure, with most of its turn budget
+    /// unused. This is the classification that lets it retry the failures that
+    /// deserve it without retrying the ones that never will.
+    ///
+    /// The two `false` arms matter more than the `true` ones:
+    ///
+    /// - [`Auth`](Self::Auth) — a wrong key stays wrong. Retrying only delays the
+    ///   one message that tells the operator what to fix.
+    /// - [`CassetteMiss`](Self::CassetteMiss) — the cassette key is a hash of the
+    ///   call, so a retry issues the identical lookup and misses identically. It
+    ///   is deterministic by construction; retrying converts an immediate,
+    ///   well-explained hermetic-replay failure into a slow one, and under a
+    ///   replay-gated CI run it would consume the job timeout printing nothing new.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            // Truncated or malformed payloads are a transport/serialisation
+            // artefact, not a statement about the request.
+            ProviderError::Parse(_) => true,
+            // Connection reset, DNS blip, timeout.
+            ProviderError::Request(_) => true,
+            // 5xx is the provider's own fault and usually momentary; 429 means
+            // "later", which is exactly what a backoff provides. Every 4xx is a
+            // defect in the request just built, and building it again produces
+            // the same bytes.
+            ProviderError::Http { status, .. } => *status >= 500 || *status == 429,
+            ProviderError::RateLimit(_) => true,
+            ProviderError::Auth(_) => false,
+            ProviderError::CassetteMiss(_) => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod retryability_tests {
+    use super::*;
+
+    #[test]
+    fn transient_failures_are_retryable() {
+        assert!(ProviderError::Parse("truncated json".into()).is_retryable());
+        assert!(ProviderError::Request("connection reset".into()).is_retryable());
+        assert!(ProviderError::RateLimit("slow down".into()).is_retryable());
+        for status in [500, 502, 503, 504, 429] {
+            assert!(
+                ProviderError::Http {
+                    status,
+                    body: String::new()
+                }
+                .is_retryable(),
+                "HTTP {status} says nothing about the request and should be retried"
+            );
+        }
+    }
+
+    #[test]
+    fn a_client_error_is_not_retryable() {
+        // 4xx describes the request we just built. Building it again produces the
+        // same bytes, so a retry is guaranteed to fail the same way.
+        for status in [400, 401, 403, 404, 422] {
+            assert!(
+                !ProviderError::Http {
+                    status,
+                    body: String::new()
+                }
+                .is_retryable(),
+                "HTTP {status} is a request defect and must not be retried"
+            );
+        }
+    }
+
+    #[test]
+    fn auth_failure_is_not_retryable() {
+        assert!(!ProviderError::Auth("invalid api key".into()).is_retryable());
+    }
+
+    /// The one that does real damage if handled carelessly: the cassette key is a
+    /// hash of the call, so a retry issues the identical lookup and misses
+    /// identically — turning an immediate hermetic-replay failure into a slow one.
+    #[test]
+    fn a_cassette_miss_is_never_retryable() {
+        assert!(!ProviderError::CassetteMiss("no recorded output".into()).is_retryable());
+    }
+}
