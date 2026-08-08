@@ -5,13 +5,13 @@
   },
   "commit": {
     "frontend_tests": "656b399035ee5fc81bd949e871daee65b4a1f3c4",
-    "tests": "853054f5faf4f7ec463fe085696d3d9063c7eabe"
+    "tests": "c55987c8707dd4029ea4e044d94c75e9ab452f55"
   },
   "frontend_tests": 72,
   "measured_at": {
     "frontend_tests": "2026-08-05T09:23:15-06:00",
-    "tests": "2026-08-08T04:43:20-06:00"
+    "tests": "2026-08-08T13:36:56-06:00"
   },
-  "tests": 1723,
+  "tests": 1727,
   "version": 1
 }

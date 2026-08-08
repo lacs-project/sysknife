@@ -1309,6 +1309,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
 
         // ── System info ──────────────────────────────────────────────────
         "GetMemoryInfo" => Ok(system_info::get_memory_info_spec()),
+        "GetHostState" => Ok(system_info::get_host_state()),
 
         // ── Network ───────────────────────────────────────────────────────
         "GetFirewallState" => Ok(network::get_firewall_state()),

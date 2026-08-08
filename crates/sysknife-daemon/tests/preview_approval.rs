@@ -18,7 +18,7 @@ fn request(action_name: &str, request_id: &str, request_hash: &str) -> RequestEn
 #[test]
 fn low_risk_preview_is_read_only_and_requires_no_reboot() {
     let preview = preview_action(
-        &request("GetSystemState", "req-low", "hash-low"),
+        &request("GetMemoryInfo", "req-low", "hash-low"),
         json!({"host_name": "silverblue"}),
         json!({}),
     );

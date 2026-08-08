@@ -178,13 +178,13 @@ fn progress_lines(messages: &[Value]) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// Verify the full sequence of lifecycle events during execution of a
-/// command-type action (`GetSystemState` runs `rpm-ostree status --json`).
+/// command-type action (`GetMemoryInfo` runs `free -h`).
 ///
 /// Expected lifecycle progress events (in order, among potentially other
 /// stdout progress lines):
-///   1. "Authorization passed for GetSystemState"
-///   2. "Executing GetSystemState..."
-///   3. "GetSystemState completed with exit code ..."
+///   1. "Authorization passed for GetMemoryInfo"
+///   2. "Executing GetMemoryInfo..."
+///   3. "GetMemoryInfo completed with exit code ..."
 ///
 /// The command may succeed or fail depending on whether rpm-ostree is
 /// installed; the test only asserts on lifecycle event presence and order.
@@ -194,10 +194,10 @@ async fn command_action_streams_lifecycle_events() {
     let state = test_state(&dir);
     let mut framed = spawn_handler(state).await;
 
-    let (transaction_id, receipt) = preview_action(&mut framed, "GetSystemState", json!({})).await;
+    let (transaction_id, receipt) = preview_action(&mut framed, "GetMemoryInfo", json!({})).await;
     execute_action(
         &mut framed,
-        "GetSystemState",
+        "GetMemoryInfo",
         json!({}),
         &transaction_id,
         &receipt,
@@ -218,13 +218,13 @@ async fn command_action_streams_lifecycle_events() {
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("Authorization passed for GetSystemState")),
+            .any(|l| l.contains("Authorization passed for GetMemoryInfo")),
         "should have authorization passed event; got: {lines:?}"
     );
 
     // Verify executing event.
     assert!(
-        lines.iter().any(|l| l.contains("Executing GetSystemState")),
+        lines.iter().any(|l| l.contains("Executing GetMemoryInfo")),
         "should have executing event; got: {lines:?}"
     );
 
@@ -232,7 +232,7 @@ async fn command_action_streams_lifecycle_events() {
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("GetSystemState completed with")),
+            .any(|l| l.contains("GetMemoryInfo completed with")),
         "should have completed event; got: {lines:?}"
     );
 
@@ -243,11 +243,11 @@ async fn command_action_streams_lifecycle_events() {
         .unwrap();
     let exec_idx = lines
         .iter()
-        .position(|l| l.contains("Executing GetSystemState"))
+        .position(|l| l.contains("Executing GetMemoryInfo"))
         .unwrap();
     let done_idx = lines
         .iter()
-        .position(|l| l.contains("GetSystemState completed with"))
+        .position(|l| l.contains("GetMemoryInfo completed with"))
         .unwrap();
     assert!(
         auth_idx < exec_idx,

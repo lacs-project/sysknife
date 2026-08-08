@@ -341,7 +341,7 @@ async fn failed_rollback_leaves_status_as_failed() {
 }
 
 /// Actions without `rollback_available: true` must NOT trigger rollback,
-/// even if they fail. `GetSystemState` is a Low-risk read-only action.
+/// even if they fail. `GetMemoryInfo` is a Low-risk read-only action.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn non_rollbackable_action_does_not_trigger_rollback() {
     let dir = tempdir().unwrap();
@@ -351,11 +351,11 @@ async fn non_rollbackable_action_does_not_trigger_rollback() {
     let executor: Arc<dyn ActionExecutor> = Arc::new(FailBothExecutor);
     let mut framed = spawn_handler_with_executor(state, executor).await;
 
-    // Preview GetSystemState (Low risk, no rollback).
+    // Preview GetMemoryInfo (Low risk, no rollback).
     let preview_req = json!({
         "type": "preview",
         "request_id": "no-rollback-preview",
-        "action_name": "GetSystemState",
+        "action_name": "GetMemoryInfo",
         "params": {}
     });
     framed
@@ -385,7 +385,7 @@ async fn non_rollbackable_action_does_not_trigger_rollback() {
         "type": "execute",
         "request_id": "no-rollback-execute",
         "transaction_id": transaction_id,
-        "action_name": "GetSystemState",
+        "action_name": "GetMemoryInfo",
         "params": {},
         "approval_receipt": receipt
     });
@@ -397,9 +397,9 @@ async fn non_rollbackable_action_does_not_trigger_rollback() {
     let (_messages, completed) = drain_until_completed(&mut framed).await;
 
     let status = completed["result"]["status"].as_str().unwrap();
-    // GetSystemState uses `rpm-ostree status --json`. If rpm-ostree is not installed,
-    // the command fails. The point of this test is that rollback is NOT triggered.
-    // Accept either "succeeded" or "failed" — just not "rolled_back".
+    // GetMemoryInfo runs `free -h`, which is present on every host, so this
+    // normally succeeds. Either way the point of the test is that rollback is
+    // NOT triggered: accept "succeeded" or "failed", just not "rolled_back".
     assert_ne!(
         status, "rolled_back",
         "non-rollbackable action must never produce rolled_back status"

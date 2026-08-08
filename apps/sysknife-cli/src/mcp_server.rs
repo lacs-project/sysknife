@@ -1503,11 +1503,25 @@ mod tests {
         assert!(result.unwrap_err().contains("Debian-family"));
     }
 
+    /// `GetSystemState` used to stand in for "a generic action" here. It is not
+    /// one — it runs rpm-ostree and is now Fedora-fenced (#181) — so this test
+    /// needs an action that genuinely belongs to neither family, or it stops
+    /// testing what its name says.
     #[test]
     fn check_plan_steps_distro_allows_generic_action() {
-        let distro = sysknife_core::distro::DistroId::Fedora { version: 41 };
-        let result = check_plan_steps_distro(["GetSystemState"].into_iter(), Some(&distro));
+        let distro = sysknife_core::distro::DistroId::Ubuntu {
+            major: 24,
+            minor: 4,
+        };
+        let result = check_plan_steps_distro(["GetMemoryInfo"].into_iter(), Some(&distro));
         assert!(result.is_ok());
+
+        let atomic = sysknife_core::distro::DistroId::FedoraSilverblue { version: 41 };
+        let result = check_plan_steps_distro(["GetMemoryInfo"].into_iter(), Some(&atomic));
+        assert!(
+            result.is_ok(),
+            "a generic action is generic on both families"
+        );
     }
 
     #[test]

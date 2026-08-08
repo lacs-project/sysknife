@@ -240,19 +240,46 @@ mod tests {
     // Generic actions are allowed everywhere
     // -----------------------------------------------------------------------
 
+    /// Silverblue, not plain Fedora: `GetSystemState` runs `rpm-ostree status`,
+    /// which a dnf-based Fedora Workstation does not have — and plain Fedora is
+    /// `is_supported() == false` besides. The old fixture used `Fedora`, so it
+    /// asserted an rpm-ostree action was fine on a host without rpm-ostree.
     #[test]
-    fn get_system_state_allowed_on_fedora() {
-        let distro = DistroId::Fedora { version: 41 };
+    fn get_system_state_allowed_on_fedora_atomic() {
+        let distro = DistroId::FedoraSilverblue { version: 41 };
         assert!(check_action_distro("GetSystemState", Some(&distro)).is_ok());
     }
 
+    /// This pair used to assert that `GetSystemState` was "generic, allowed
+    /// everywhere". It is not: it runs `rpm-ostree status --json`, so on an apt
+    /// host it failed with `command not found` — *after* the operator had
+    /// approved it. The routing guard now refuses it up front, and `GetHostState`
+    /// is what Ubuntu answers the same question with (#181).
     #[test]
-    fn get_system_state_allowed_on_ubuntu() {
+    fn get_system_state_is_refused_on_ubuntu_before_approval() {
         let distro = DistroId::Ubuntu {
             major: 24,
             minor: 4,
         };
-        assert!(check_action_distro("GetSystemState", Some(&distro)).is_ok());
+        assert!(
+            check_action_distro("GetSystemState", Some(&distro)).is_err(),
+            "an rpm-ostree action must not reach an apt host's approval prompt"
+        );
+    }
+
+    #[test]
+    fn get_host_state_is_the_ubuntu_counterpart() {
+        let ubuntu = DistroId::Ubuntu {
+            major: 24,
+            minor: 4,
+        };
+        assert!(check_action_distro("GetHostState", Some(&ubuntu)).is_ok());
+
+        let fedora = DistroId::FedoraSilverblue { version: 41 };
+        assert!(
+            check_action_distro("GetHostState", Some(&fedora)).is_err(),
+            "the fence runs both ways: Fedora has GetSystemState"
+        );
     }
 
     #[test]

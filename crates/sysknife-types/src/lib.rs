@@ -127,6 +127,7 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     "ListProcesses",
     "SignalProcess",
     "GetMemoryInfo",
+    "GetHostState",
     // Observability / journald (cross-distro)
     "GetJournalLog",
     "VacuumJournal",

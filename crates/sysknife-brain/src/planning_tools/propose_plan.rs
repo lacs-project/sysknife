@@ -31,7 +31,9 @@ use sysknife_types::{DISTRO_FAMILY_DEBIAN, DISTRO_FAMILY_FEDORA, DISTRO_FAMILY_O
 pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
     // Deployment and boot — no params
     ("GetSystemState",
-     "full rpm-ostree deployment snapshot: layered packages, pinned/staged deployments, booted/pending OSTree refs"),
+     "full rpm-ostree deployment snapshot: layered packages, pinned/staged deployments, booted/pending OSTree refs — Fedora/atomic only; on Ubuntu use GetHostState"),
+    ("GetHostState",
+     "what this host is: OS release, kernel, architecture, virtualization, machine identity (hostnamectl) — Ubuntu/Debian counterpart to GetSystemState, which reports deployments an apt host does not have"),
     ("CollectDiagnostics",
      "recent system journal log (last 500 lines) for error diagnosis and troubleshooting"),
     ("GetDeploymentHistory",

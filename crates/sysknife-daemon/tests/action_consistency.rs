@@ -367,17 +367,16 @@ fn mentions_tool(text: &str, tool: &str) -> bool {
         .any(|word| word == tool)
 }
 
-/// The one action whose mechanism says Fedora but which is deliberately not
-/// fenced, with the reason, so the exception is visible and cannot grow.
+/// Actions whose mechanism says one family but which are deliberately not
+/// fenced, with the reason, so every exception is visible and cannot grow.
 ///
-/// `GetSystemState` runs `rpm-ostree status --json`, so on an apt host it fails —
-/// today at execution, with `command not found`. Fencing it is the right end
-/// state, but it appears in fifteen places across the *shared* prompt blocks as
-/// the state action every worked example reaches for, and Ubuntu has no
-/// equivalent to put in those places. Restructuring empirically-validated prompt
-/// examples requires an E2E story run to confirm, so it is tracked as its own
-/// change rather than smuggled into this one.
-const UNFENCED_BY_DECISION: &[&str] = &["GetSystemState"];
+/// **Empty, and meant to stay that way.** It last held `GetSystemState`, which
+/// ran `rpm-ostree status --json` on every host and so failed on apt *after* the
+/// operator had approved it (#181). It could not simply be fenced, because it
+/// appeared throughout the shared prompt blocks as the action every worked
+/// example reaches for and Ubuntu had nothing to put in its place. Ubuntu now
+/// has `GetHostState`, so the fence covers every action with no exemptions.
+const UNFENCED_BY_DECISION: &[&str] = &[];
 
 #[test]
 fn family_fence_agrees_with_each_action_s_mechanism() {

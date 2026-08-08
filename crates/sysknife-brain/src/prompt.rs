@@ -244,7 +244,7 @@ about what SysKnife has done, not about current system state.
    action: the update action differs per distro, and this example is shared by
    all of them.
 2. Call `propose_plan` with `ListJobHistory` if the user wants to see the full
-   log, or `GetSystemState` if the query answered the question and you just need
+   log, or `{STATE_ACTION}` if the query answered the question and you just need
    a plan to finish.
 
 Do NOT call `query_deployments` or `get_system_state` for this — those show
@@ -349,7 +349,7 @@ immediately, never a state query first.
 
 User: "what operating system and hardware am I running on?"
 
-This maps directly to `GetSystemState` — it returns an OS/hardware snapshot.
+This maps directly to `{STATE_ACTION}` — it returns an OS/hardware snapshot.
 Do NOT use `CollectDiagnostics`. That action gathers a support-level diagnostic
 bundle for when something is broken. It is the wrong tool for a general "show
 me my system" question.
@@ -363,10 +363,10 @@ me my system" question.
 ```json
 {
   "summary": "Show operating system and hardware information",
-  "explanation": "The user asked for an OS and hardware overview. GetSystemState returns exactly this. CollectDiagnostics is for support-level diagnostic bundles when something is broken — it is not the right action here.",
+  "explanation": "The user asked for an OS and hardware overview. {STATE_ACTION} returns exactly this. CollectDiagnostics is for support-level diagnostic bundles when something is broken — it is not the right action here.",
   "steps": [
     {
-      "action_name": "GetSystemState",
+      "action_name": "{STATE_ACTION}",
       "summary": "Get a snapshot of OS version, hardware, and overall system state",
       "risk_level": "low",
       "params": {}
@@ -378,9 +378,8 @@ me my system" question.
 ### Example F — date, time, timezone, and NTP queries
 
 **Key rule:** Any question about the current time, date, clock, or timezone →
-`GetDateTime`. Never `GetSystemState`. `GetSystemState` returns rpm-ostree
-deployment data (OS layers, pinned deployments, OSTree refs) — it does NOT
-return clock data.
+`GetDateTime`. Never `{STATE_ACTION}`. `{STATE_ACTION}` returns
+{STATE_RETURNS} — it does NOT return clock data.
 
 User: "what time is it?"
 User: "what is today's date?"
@@ -392,7 +391,7 @@ All four map directly to `GetDateTime`. Call `propose_plan` immediately:
 ```json
 {
   "summary": "Show the current date and time",
-  "explanation": "The user asked for the current time. GetDateTime runs timedatectl and returns the date, time, timezone, and NTP sync status. GetSystemState is for OS/deployment snapshots — not for clock queries.",
+  "explanation": "The user asked for the current time. GetDateTime runs timedatectl and returns the date, time, timezone, and NTP sync status. {STATE_ACTION} is for host/OS snapshots — not for clock queries.",
   "steps": [
     {
       "action_name": "GetDateTime",
@@ -405,7 +404,7 @@ All four map directly to `GetDateTime`. Call `propose_plan` immediately:
 ```
 
 **WRONG:**
-- use `GetSystemState` for a time query ← WRONG ACTION: it returns OSTree/rpm-ostree data, not clock data
+- use `{STATE_ACTION}` for a time query ← WRONG ACTION: it returns {STATE_RETURNS}, not clock data
 - call `get_system_state` (planning tool) first ← FORBIDDEN
 "#;
 
@@ -414,7 +413,7 @@ const CROSS_DISTRO_RISK_TABLES: &str = r#"
 
 ### Low risk — no approval required, always audited
 
-GetSystemState, CollectDiagnostics,
+{STATE_ACTION}, CollectDiagnostics,
 ListServices, GetServiceLogs, GetServiceStatus, ListTimers,
 GetNetworkStatus, GetDiskUsage, GetDateTime, ListProcesses, GetMemoryInfo,
 GetAuthorizedKeys, ListContainers, GetContainerInfo,
@@ -468,9 +467,9 @@ const CROSS_DISTRO_DISAMBIGUATION: &str = r#"
 - `GetDateTime` — returns the current date, time, timezone, and NTP sync
   status via `timedatectl`. Use for **any** question about the current time,
   date, clock, timezone, or NTP ("what time is it?", "what is today's date?",
-  "what timezone am I in?", "is NTP enabled?"). Do NOT use `GetSystemState`
+  "what timezone am I in?", "is NTP enabled?"). Do NOT use `{STATE_ACTION}`
   for time or date questions — it returns OS deployment data, not clock data.
-- `GetSystemState` — returns a high-level snapshot of OS version, kernel,
+- `{STATE_ACTION}` — returns a high-level snapshot of OS version, kernel,
   hardware, running service count, and overall health. Use for "what OS am I
   running?", "what hardware do I have?", "show me a system overview",
   "what is my system configuration?". This is the correct default for any
@@ -480,11 +479,11 @@ const CROSS_DISTRO_DISAMBIGUATION: &str = r#"
   service errors, hardware info, recent failures. Use ONLY when the user
   describes something broken ("something is wrong", "nothing is working",
   "generate a diagnostic report for support"). Do NOT use for general state
-  questions — `GetSystemState` is almost always the right choice there.
+  questions — `{STATE_ACTION}` is almost always the right choice there.
 
 **Decision rule:** if the user is asking *what time or date it is*, use
 `GetDateTime`. If the user is asking *what their system is*, use
-`GetSystemState`. If the user is asking *why something broke*, use
+`{STATE_ACTION}`. If the user is asking *why something broke*, use
 `CollectDiagnostics`.
 
 ## Service action disambiguation
@@ -503,7 +502,7 @@ const CROSS_DISTRO_PARAMS: &str = r#"
 These are the EXACT JSON param keys the daemon accepts. Use the key names
 below verbatim — the daemon rejects unknown or misspelled keys.
 
-**No params** — use `{}`: GetSystemState, CollectDiagnostics,
+**No params** — use `{}`: {STATE_ACTION}, CollectDiagnostics,
 ListServices, ListTimers, ReloadDaemon, GetDiskUsage, ListProcesses,
 GetMemoryInfo, GetDateTime, GetNetworkStatus,
 ListUsers, ListGroups.
@@ -623,7 +622,7 @@ Two additional tools let you manage user preferences:
 
 After calling `remember` or `forget`, you must still call `propose_plan` to
 finish. If the user's only intent was to save/remove a preference, propose a
-single `GetSystemState` low-risk step with a summary confirming the preference
+single `{STATE_ACTION}` low-risk step with a summary confirming the preference
 change.
 "#;
 
@@ -987,23 +986,61 @@ pub fn build_system_prompt(
 // Per-distro render functions
 // ---------------------------------------------------------------------------
 
+/// The action a given family answers "what is this host?" with.
+///
+/// The shared prompt blocks — the worked examples, the risk tables, the
+/// disambiguation rules — are empirically validated and must keep their wording.
+/// They also have to name an action that actually exists on the host. Fedora's
+/// `GetSystemState` reports rpm-ostree *deployments*, which an apt host does not
+/// have, so naming it in the Debian prompt is exactly what the family fence
+/// forbids (#181).
+///
+/// So the shared blocks carry placeholders and each renderer substitutes its own
+/// pair. `returns` is substituted as well as `name` because three of the
+/// occurrences justify their advice with rpm-ostree specifics — without it the
+/// Debian prompt would claim `GetHostState` "returns OSTree data".
+struct StateAction {
+    name: &'static str,
+    /// What it returns, phrased to drop into mid-sentence.
+    returns: &'static str,
+}
+
+const FEDORA_STATE_ACTION: StateAction = StateAction {
+    name: "GetSystemState",
+    returns: "rpm-ostree deployment data (OS layers, pinned deployments, OSTree refs)",
+};
+
+const DEBIAN_STATE_ACTION: StateAction = StateAction {
+    name: "GetHostState",
+    returns: "host identity data (OS release, kernel, architecture)",
+};
+
+/// Append a shared block with the per-family state action substituted in.
+fn push_shared(s: &mut String, block: &str, state: &StateAction) {
+    s.push_str(
+        &block
+            .replace("{STATE_ACTION}", state.name)
+            .replace("{STATE_RETURNS}", state.returns),
+    );
+}
+
 fn render_fedora_prompt(prefs: Option<&str>, hint: &sysknife_types::DistroHint) -> String {
     let version = hint.version.as_deref().unwrap_or("(version unknown)");
     let mut s = String::with_capacity(8192);
     s.push_str(PREAMBLE);
     s.push_str(SPOTLIGHTING_CLAUSE);
-    s.push_str(EXAMPLES);
-    s.push_str(CROSS_DISTRO_RISK_TABLES);
+    push_shared(&mut s, EXAMPLES, &FEDORA_STATE_ACTION);
+    push_shared(&mut s, CROSS_DISTRO_RISK_TABLES, &FEDORA_STATE_ACTION);
     s.push_str(FEDORA_RISK_TABLES);
-    s.push_str(CROSS_DISTRO_RISK_RULES);
+    push_shared(&mut s, CROSS_DISTRO_RISK_RULES, &FEDORA_STATE_ACTION);
     s.push_str(&FEDORA_HEADER.replacen("{}", version, 1));
     s.push_str(FEDORA_SELECTION_RULES);
     s.push_str(FEDORA_DISAMBIGUATION);
-    s.push_str(CROSS_DISTRO_DISAMBIGUATION);
-    s.push_str(CROSS_DISTRO_PARAMS);
+    push_shared(&mut s, CROSS_DISTRO_DISAMBIGUATION, &FEDORA_STATE_ACTION);
+    push_shared(&mut s, CROSS_DISTRO_PARAMS, &FEDORA_STATE_ACTION);
     s.push_str(FEDORA_PARAMS);
     s.push_str(CONSTRAINTS);
-    s.push_str(PREFERENCE_TOOLS);
+    push_shared(&mut s, PREFERENCE_TOOLS, &FEDORA_STATE_ACTION);
     append_prefs(&mut s, prefs);
     s
 }
@@ -1013,18 +1050,18 @@ fn render_debian_prompt(prefs: Option<&str>, hint: &sysknife_types::DistroHint) 
     let mut s = String::with_capacity(8192);
     s.push_str(PREAMBLE);
     s.push_str(SPOTLIGHTING_CLAUSE);
-    s.push_str(EXAMPLES);
-    s.push_str(CROSS_DISTRO_RISK_TABLES);
+    push_shared(&mut s, EXAMPLES, &DEBIAN_STATE_ACTION);
+    push_shared(&mut s, CROSS_DISTRO_RISK_TABLES, &DEBIAN_STATE_ACTION);
     s.push_str(DEBIAN_RISK_TABLES);
-    s.push_str(CROSS_DISTRO_RISK_RULES);
+    push_shared(&mut s, CROSS_DISTRO_RISK_RULES, &DEBIAN_STATE_ACTION);
     s.push_str(&DEBIAN_HEADER.replacen("{}", version, 1));
     s.push_str(DEBIAN_SELECTION_RULES);
     s.push_str(DEBIAN_COUNTERINTUITIVE);
-    s.push_str(CROSS_DISTRO_DISAMBIGUATION);
-    s.push_str(CROSS_DISTRO_PARAMS);
+    push_shared(&mut s, CROSS_DISTRO_DISAMBIGUATION, &DEBIAN_STATE_ACTION);
+    push_shared(&mut s, CROSS_DISTRO_PARAMS, &DEBIAN_STATE_ACTION);
     s.push_str(DEBIAN_PARAMS);
     s.push_str(CONSTRAINTS);
-    s.push_str(PREFERENCE_TOOLS);
+    push_shared(&mut s, PREFERENCE_TOOLS, &DEBIAN_STATE_ACTION);
     append_prefs(&mut s, prefs);
     s
 }
@@ -1033,14 +1070,14 @@ fn render_generic_prompt(prefs: Option<&str>) -> String {
     let mut s = String::with_capacity(4096);
     s.push_str(PREAMBLE);
     s.push_str(SPOTLIGHTING_CLAUSE);
-    s.push_str(EXAMPLES);
-    s.push_str(CROSS_DISTRO_RISK_TABLES);
-    s.push_str(CROSS_DISTRO_RISK_RULES);
+    push_shared(&mut s, EXAMPLES, &FEDORA_STATE_ACTION);
+    push_shared(&mut s, CROSS_DISTRO_RISK_TABLES, &FEDORA_STATE_ACTION);
+    push_shared(&mut s, CROSS_DISTRO_RISK_RULES, &FEDORA_STATE_ACTION);
     s.push_str(GENERIC_HEADER);
-    s.push_str(CROSS_DISTRO_DISAMBIGUATION);
-    s.push_str(CROSS_DISTRO_PARAMS);
+    push_shared(&mut s, CROSS_DISTRO_DISAMBIGUATION, &FEDORA_STATE_ACTION);
+    push_shared(&mut s, CROSS_DISTRO_PARAMS, &FEDORA_STATE_ACTION);
     s.push_str(CONSTRAINTS);
-    s.push_str(PREFERENCE_TOOLS);
+    push_shared(&mut s, PREFERENCE_TOOLS, &FEDORA_STATE_ACTION);
     append_prefs(&mut s, prefs);
     s
 }
@@ -1204,6 +1241,47 @@ mod tests {
             leaked.is_empty(),
             "the Debian prompt names Fedora-only actions: {leaked:?}"
         );
+    }
+
+    /// The shared blocks carry `{STATE_ACTION}` / `{STATE_RETURNS}` placeholders.
+    /// A renderer that forgot to substitute would ship the literal brace text to
+    /// the model, and every test above would still pass — none of them look for
+    /// it. This is the one that would catch it.
+    #[test]
+    fn no_rendered_prompt_leaks_an_unsubstituted_placeholder() {
+        let prompts = [
+            ("debian", build_system_prompt(None, Some(&debian_hint()))),
+            ("fedora", build_system_prompt(None, Some(&fedora_hint()))),
+            ("generic", build_system_prompt(None, None)),
+        ];
+        for (name, p) in prompts {
+            assert!(
+                !p.contains("{STATE_ACTION}") && !p.contains("{STATE_RETURNS}"),
+                "the {name} prompt shipped an unsubstituted placeholder"
+            );
+        }
+    }
+
+    /// Each family must name its own state action, and only its own. Fencing
+    /// GetSystemState is only half the fix — the Debian prompt has to positively
+    /// name the replacement, or the model is left with no way to answer "what is
+    /// this host?" at all (#181).
+    #[test]
+    fn each_family_prompt_names_its_own_state_action() {
+        let debian = build_system_prompt(None, Some(&debian_hint()));
+        assert!(
+            debian.contains("GetHostState"),
+            "the Debian prompt must name the action that replaces GetSystemState"
+        );
+        assert!(!debian.contains("GetSystemState"));
+        assert!(
+            !debian.contains("rpm-ostree deployment data"),
+            "the Debian prompt must not justify its state action with rpm-ostree semantics"
+        );
+
+        let fedora = build_system_prompt(None, Some(&fedora_hint()));
+        assert!(fedora.contains("GetSystemState"));
+        assert!(!fedora.contains("GetHostState"));
     }
 
     /// Same, for the planner-preference list: an action the Debian tool schema

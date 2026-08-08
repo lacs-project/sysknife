@@ -249,7 +249,7 @@ milestone.
 | Component | State |
 |---|---|
 | `sysknife-brain` — LLM planner, tool loop, safety fence | ✅ |
-| `sysknife-daemon` — 189 typed actions, auth, preview, transactions | ✅ |
+| `sysknife-daemon` — 190 typed actions, auth, preview, transactions | ✅ |
 | Live IPC + streaming + atomic-host rollback (rpm-ostree) | ✅ |
 | Terminal approval gate — one-time, TTL-bounded receipts | ✅ |
 | MCP server (Claude Code / Cursor / any MCP client) | ✅ |
@@ -260,7 +260,7 @@ milestone.
 | **Ubuntu 22.04 / 26.04 VM tooling** — smoke tests pass on all three LTSes | ✅ |
 | Telegram approval interface | 📋 roadmap |
 
-**1,723 Rust tests and 72 frontend tests** form the current deterministic
+**1,727 Rust tests and 72 frontend tests** form the current deterministic
 release baseline.
 
 ## Configure your LLM
