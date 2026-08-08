@@ -560,12 +560,24 @@ impl Cassette {
             .max();
 
         match deepest {
+            // Message 0 is the user's intent. Diverging there means this is a
+            // different conversation, not a broken one: nothing was ever
+            // recorded for it. Reporting it as a mid-run divergence sent the
+            // reader hunting a volatile tool result that does not exist — which
+            // is exactly what it did on the first replay after this landed.
+            Some(0) => format!(
+                "no recorded output for this intent in {}. The prompt and tools match, so \
+                 the cassette is current — this particular request was never recorded \
+                 (a call that errored during recording leaves no entry). Re-record with \
+                 {}=record if it should be covered.",
+                self.path.display(),
+                ENV_CASSETTE_MODE
+            ),
             Some(index) => format!(
-                "the conversation diverged at message {index}: turns before it replay, \
-                 this one does not. The recorded and replayed messages differ at that \
-                 index, which is what a volatile tool result looks like — a timestamp, \
-                 a transaction id, or live system state folded into the call key. \
-                 See issue #182."
+                "the conversation diverged at message {index}: the intent and the turns \
+                 before it replay, this one does not. That is the signature of a volatile \
+                 tool result — a timestamp, a transaction id, or live system state folded \
+                 into the call key. See issue #182."
             ),
             None => format!(
                 "no recorded output for this call in {}; the prompt and tools match, so \
@@ -1223,6 +1235,41 @@ mod miss_diagnosis_tests {
         assert!(
             diagnosis.to_lowercase().contains("turn"),
             "must say the conversation diverged mid-run, got: {diagnosis}"
+        );
+    }
+
+    /// Diverging at message 0 means a different *intent* — a conversation that
+    /// was never recorded, not one that broke partway. The first real replay
+    /// after this landed reported "diverged at message 0" for a story whose call
+    /// simply errored during recording, which sends the reader hunting a
+    /// volatile tool result that does not exist.
+    #[test]
+    fn an_unrecorded_intent_is_not_reported_as_a_mid_run_divergence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let rec = Cassette::open(path.clone(), CassetteMode::Record).unwrap();
+        let system = "SYSTEM";
+        let recorded = vec![Message::user_text("install vim")];
+        rec.store(
+            call_key("p/m", system, &recorded, &[], 100),
+            "p/m",
+            &sha256_hex(system.as_bytes()),
+            completion("out"),
+            Some(CallFingerprint::of(system, &recorded, &[], 100)),
+        )
+        .unwrap();
+
+        let replay = Cassette::open(path, CassetteMode::Replay).unwrap();
+        // A completely different first message: never recorded.
+        let other = vec![Message::user_text("list the snaps")];
+        let d = replay.diagnose_miss("p/m", system, &other, &[], 100);
+        assert!(
+            !d.contains("diverged at message"),
+            "an unrecorded intent must not read as a mid-run divergence: {d}"
+        );
+        assert!(
+            d.contains("never recorded"),
+            "it must say the request was never recorded: {d}"
         );
     }
 
