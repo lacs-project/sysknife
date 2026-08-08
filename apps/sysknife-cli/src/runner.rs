@@ -1629,7 +1629,15 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
 
     finish_spinner(&spinner);
 
-    let plan = plan_result.map_err(|e| CliError::PlanningFailed(e.to_string()))?;
+    let plan = plan_result.map_err(|e| match e {
+        // Not a failure: the planner understood the request and the answer is
+        // no. Carried as its own variant so the CLI renders a reason instead of
+        // "planning failed", and so scripts do not read it as a fault (#179).
+        sysknife_brain::planner::PlanningError::Refused { reason, suggestion } => {
+            CliError::Refused { reason, suggestion }
+        }
+        other => CliError::PlanningFailed(other.to_string()),
+    })?;
 
     // Before anything is displayed or approved: refuse a plan the daemon could
     // not run as written. A parameter the executor rejects is a planning

@@ -2018,3 +2018,116 @@ async fn retries_are_bounded_so_a_persistent_outage_still_terminates() {
         "a persistent outage must stop after a small bounded number of attempts, got {n}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Refusal (#179)
+//
+// The plan schema had no shape for "there is nothing valid to do", so a request
+// with no legitimate plan produced either an invented adjacent action or a
+// PlannerStuck crash. Observed live: "block port 0 in the firewall" was answered
+// with UfwStatus — a read-only query the user never asked for, with the refusal
+// surviving only in the explanation prose of a plan doing something else.
+// ---------------------------------------------------------------------------
+
+fn refuse(reason: &str, suggestion: Option<&str>) -> Result<Completion, ProviderError> {
+    let mut input = serde_json::json!({ "reason": reason });
+    if let Some(s) = suggestion {
+        input["suggestion"] = serde_json::json!(s);
+    }
+    Ok(Completion {
+        content: vec![ContentBlock::ToolUse {
+            id: "tu_refuse".into(),
+            call_id: None,
+            name: "refuse".into(),
+            input,
+        }],
+        stop_reason: StopReason::ToolUse,
+    })
+}
+
+#[tokio::test]
+async fn an_impossible_request_is_refused_with_its_reason() {
+    let planner = make_planner(MockProvider::new([refuse(
+        "Port 0 is not a valid port number; firewall rules require 1-65535.",
+        Some("Specify a port between 1 and 65535."),
+    )]));
+    let err = planner
+        .plan_intent("block port 0 in the firewall")
+        .await
+        .unwrap_err();
+    match err {
+        PlanningError::Refused { reason, suggestion } => {
+            assert!(
+                reason.contains("Port 0"),
+                "reason must be carried: {reason}"
+            );
+            assert_eq!(
+                suggestion.as_deref(),
+                Some("Specify a port between 1 and 65535.")
+            );
+        }
+        other => panic!("expected Refused, got {other:?}"),
+    }
+}
+
+/// A refusal must be distinguishable from the planner failing. Before this, both
+/// arrived as PlannerStuck, which reads as an internal fault rather than an
+/// answer.
+#[tokio::test]
+async fn a_refusal_is_not_reported_as_planner_stuck() {
+    let planner = make_planner(MockProvider::new([refuse("No action can do that.", None)]));
+    let err = planner.plan_intent("do the impossible").await.unwrap_err();
+    assert!(
+        !matches!(
+            err,
+            PlanningError::PlannerStuck | PlanningError::NoPlanProposed
+        ),
+        "a deliberate refusal must not masquerade as a planner failure: {err:?}"
+    );
+}
+
+/// The fence must NOT be relaxed by this change. An empty `steps` array is still
+/// how a model signals it gave up, and that is still rejected — the whole point
+/// of adding a separate tool rather than loosening propose_plan.
+#[tokio::test]
+async fn an_empty_plan_is_still_rejected_by_the_fence() {
+    let empty_plan = Ok(Completion {
+        content: vec![ContentBlock::ToolUse {
+            id: "tu_empty".into(),
+            call_id: None,
+            name: "propose_plan".into(),
+            input: serde_json::json!({
+                "summary": "Nothing to do",
+                "explanation": "There is nothing to do.",
+                "steps": []
+            }),
+        }],
+        stop_reason: StopReason::ToolUse,
+    });
+    // Single turn, so a rejected plan cannot be retried into success.
+    let planner = LlmPlanner::new(
+        Box::new(MockProvider::new([empty_plan])),
+        Box::new(MockStateClient::default()),
+        1,
+    );
+    let err = planner.plan_intent("do nothing").await.unwrap_err();
+    assert!(
+        !matches!(err, PlanningError::Refused { .. }),
+        "an empty steps array is a give-up, not a refusal: {err:?}"
+    );
+}
+
+/// A refusal with no reason is the give-up case wearing a different hat. It must
+/// be fed back for another attempt, not accepted.
+#[tokio::test]
+async fn a_reasonless_refusal_is_retried_rather_than_accepted() {
+    let planner = make_planner(MockProvider::new([
+        refuse("", None),
+        propose_plan("install vim", &[("AptInstall", "install vim", "medium")]),
+    ]));
+    let plan = planner
+        .plan_intent("install vim")
+        .await
+        .expect("the model must get another turn after an invalid refusal");
+    assert_eq!(plan.summary(), "install vim");
+}

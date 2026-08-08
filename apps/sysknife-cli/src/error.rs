@@ -14,6 +14,20 @@ pub enum CliError {
     #[error("planning failed: {0}")]
     PlanningFailed(String),
 
+    /// The planner declined: no valid action can satisfy the request.
+    ///
+    /// Separate from [`PlanningFailed`](Self::PlanningFailed) because it is not
+    /// a failure. The planner understood the request and answered; the answer is
+    /// no. Rendering it as "planning failed" would tell the operator something
+    /// broke, when in fact the one thing that could go wrong here — inventing an
+    /// adjacent action to satisfy the schema — is exactly what did NOT happen
+    /// (#179).
+    #[error("cannot satisfy that request: {reason}")]
+    Refused {
+        reason: String,
+        suggestion: Option<String>,
+    },
+
     #[error("config/daemon error: {0}")]
     ConfigOrDaemon(String),
 
@@ -58,7 +72,11 @@ pub enum CliError {
 impl CliError {
     pub fn exit_code(&self) -> i32 {
         match self {
+            // 1 is the "cannot proceed, and that is a legitimate outcome"
+            // bucket. A refusal belongs here with Rejected, not with the
+            // PlanningFailed fault bucket: nothing malfunctioned.
             Self::Rejected
+            | Self::Refused { .. }
             | Self::RiskCeilingExceeded { .. }
             | Self::NonInteractive
             | Self::ApprovalNeedsTerminal => 1,
@@ -73,6 +91,23 @@ impl CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A refusal shares the "legitimate no" bucket with Rejected. Scripts that
+    /// branch on exit code should not have to treat "that request is impossible"
+    /// as an internal fault.
+    #[test]
+    fn exit_code_refused_is_1_not_the_planning_fault_code() {
+        let refused = CliError::Refused {
+            reason: "Port 0 is not a valid port number.".into(),
+            suggestion: None,
+        };
+        assert_eq!(refused.exit_code(), 1);
+        assert_ne!(
+            refused.exit_code(),
+            CliError::PlanningFailed(String::new()).exit_code(),
+            "a refusal is not a planning failure"
+        );
+    }
 
     #[test]
     fn exit_code_rejected_is_1() {

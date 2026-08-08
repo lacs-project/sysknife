@@ -82,8 +82,22 @@ async fn run(cli: Cli, socket: crate::client::SocketTarget) {
         // `Exit` means the subcommand owns its own output and has already
         // printed a report (e.g. `doctor`, `audit verify`). Printing here too
         // showed the user the same failure twice.
-        if !matches!(e, crate::error::CliError::Exit(_)) {
-            eprintln!("sysknife: {e}");
+        match &e {
+            // The subcommand owns its own output and has already printed a
+            // report (e.g. `doctor`, `audit verify`).
+            crate::error::CliError::Exit(_) => {}
+            // A refusal is an answer, not a fault. It gets the reason on its own
+            // line and the suggested correction underneath, rather than being
+            // flattened into one "sysknife: ..." error line the way a genuine
+            // failure is (#179).
+            crate::error::CliError::Refused { reason, suggestion } => {
+                eprintln!("Cannot satisfy that request.");
+                eprintln!("  {}", crate::operator_text::operator_safe(reason));
+                if let Some(s) = suggestion {
+                    eprintln!("  Try: {}", crate::operator_text::operator_safe(s));
+                }
+            }
+            _ => eprintln!("sysknife: {e}"),
         }
         std::process::exit(e.exit_code());
     }
