@@ -9,6 +9,12 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
+# First, and cheapest: a credential in a commit is in the history whether or not
+# it is ever pushed, and rewriting published history is a far worse day than
+# being stopped here.
+echo "[pre-commit] scripts/check_no_secrets.sh --staged"
+scripts/check_no_secrets.sh --staged
+
 echo "[pre-commit] cargo fmt --all --check"
 cargo fmt --all --check
 

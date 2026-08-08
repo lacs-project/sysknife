@@ -62,6 +62,9 @@ jobs:
       - name: Check mount-edit refuses symlinked mountpoints
         run: bash tests/release/mount-edit.test.sh
 
+      - name: Check the secret scanner catches keys and ignores fixtures
+        run: bash tests/release/no-secrets.test.sh
+
       - name: Check rmswap only removes known swap files
         run: bash tests/release/rmswap.test.sh
 
