@@ -509,6 +509,24 @@ pub enum PlanningError {
     #[error("planner ended without proposing a plan")]
     NoPlanProposed,
 
+    /// The model declined: no valid action can satisfy the request.
+    ///
+    /// Deliberately distinct from [`PlannerStuck`](Self::PlannerStuck) and
+    /// [`NoPlanProposed`](Self::NoPlanProposed). Those mean the planner failed;
+    /// this means it succeeded and the answer is no. Before the `refuse` tool
+    /// existed the two were indistinguishable, so an impossible request either
+    /// crashed as PlannerStuck or came back as an adjacent action the user never
+    /// asked for (#179).
+    ///
+    /// It is an `Err` because the caller has no plan to execute, not because
+    /// anything went wrong — callers are expected to match it and render the
+    /// reason, never to print it as an internal failure.
+    #[error("{reason}")]
+    Refused {
+        reason: String,
+        suggestion: Option<String>,
+    },
+
     /// Carries the provider failure structurally.
     ///
     /// This used to be a `String` built from `ProviderError::to_string()`,
@@ -638,6 +656,7 @@ impl LlmPlanner {
         t.push(propose_plan_tool_def(
             self.distro_hint.as_ref().map(|h| h.family),
         ));
+        t.push(crate::planning_tools::refuse::refuse_tool_def());
         t
     }
 
@@ -1119,6 +1138,41 @@ impl LlmPlanner {
                                             content: format!(
                                                 "Plan rejected: {reason}. \
                                                  Correct the plan and call propose_plan again."
+                                            ),
+                                            is_error: true,
+                                        });
+                                    }
+                                }
+                            }
+                            "refuse" => {
+                                // A terminal state, like a valid propose_plan:
+                                // the model has answered, and the answer is no.
+                                match crate::planning_tools::refuse::parse_refusal(input) {
+                                    Ok(refusal) => {
+                                        return Err(PlanningError::Refused {
+                                            reason: refusal.reason,
+                                            suggestion: refusal.suggestion,
+                                        });
+                                    }
+                                    Err(reason) => {
+                                        // A refusal with no reason is the give-up
+                                        // case in disguise. Feed it back and let
+                                        // the model try again, exactly as a
+                                        // malformed propose_plan does — accepting
+                                        // it would reopen the hole `refuse` closes.
+                                        eprintln!(
+                                            "[SYSKNIFE SAFETY] refuse rejected (turn {}/{max}): \
+                                             {reason}",
+                                            turn + 1,
+                                            max = self.max_turns
+                                        );
+                                        tool_results.push(ToolResultBlock {
+                                            tool_use_id: id.clone(),
+                                            call_id: call_id.clone(),
+                                            content: format!(
+                                                "Refusal rejected: {reason}. Either call \
+                                                 `refuse` again with a concrete reason, or \
+                                                 propose a plan."
                                             ),
                                             is_error: true,
                                         });

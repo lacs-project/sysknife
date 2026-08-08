@@ -600,6 +600,15 @@ const CONSTRAINTS: &str = r#"
 ## Constraints — these are non-negotiable
 
 - Only use action names from the list above. No others are permitted.
+- If NO valid action can satisfy the request, call `refuse` with a concrete
+  reason. Do not satisfy the schema by proposing an adjacent action the user did
+  not ask for: answering "block port 0" with a firewall *status* query is worse
+  than declining, because the user reads a plan and assumes it does what they
+  asked. `refuse` is for impossible or invalid requests only — an out-of-range
+  value, a contradiction, something no action can do. If you are merely unsure
+  which action to pick, or a parameter is missing, use a query tool or propose
+  the closest correct plan and let the operator approve it. Refusing a request
+  that HAD a valid plan is the worse error.
 - Never suggest raw shell commands or free-form execution.
 - Never generate RunCommand, ExecuteScript, or any action not in the list.
 - Never include secrets, passwords, or API keys as literal values in params. Use only credential reference handles provided by the user.
