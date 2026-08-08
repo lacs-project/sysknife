@@ -62,6 +62,9 @@ jobs:
       - name: Check mount-edit refuses symlinked mountpoints
         run: bash tests/release/mount-edit.test.sh
 
+      - name: Check the secret scanner catches keys and ignores fixtures
+        run: bash tests/release/no-secrets.test.sh
+
       - name: Check rmswap only removes known swap files
         run: bash tests/release/rmswap.test.sh
 
@@ -106,7 +109,26 @@ jobs:
             docs/adr/0002-brain-provider-layer.md \
             docs/adr/0003-ipc-wire-protocol.md
           do
-            markdown-link-check --config .markdown-link-check.json "$file"
+            # Retry on transient network failure. `retryOn429` in the config only
+            # covers rate limiting, and the failures actually seen here were
+            # Status 0 — a connection/DNS blip on the runner against hosts that
+            # were serving 200 at the time. Twice in one day, each costing a
+            # full CI round-trip on an unrelated PR.
+            #
+            # This does not weaken the check: a genuinely dead link fails all
+            # three attempts. It only stops one dropped packet from failing a
+            # build.
+            for attempt in 1 2 3; do
+              if markdown-link-check --config .markdown-link-check.json "$file"; then
+                break
+              fi
+              if [ "$attempt" = 3 ]; then
+                echo "::error::dead link(s) in $file after 3 attempts"
+                exit 1
+              fi
+              echo "link check for $file failed (attempt $attempt/3); retrying in 10s"
+              sleep 10
+            done
           done
 
       - name: Lint GitHub issue templates
