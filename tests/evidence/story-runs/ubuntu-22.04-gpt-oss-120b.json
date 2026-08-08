@@ -5,9 +5,9 @@
     "verdict": "not-applicable"
   },
   "cassette_mode": "record",
-  "cassette_sha256": "819f72b67e5fa278c2b68a6758ffcc379ab3b529f022fdeb82f2eba3ccc8aa27",
+  "cassette_sha256": "45cdaab93d4e274319eca45c8636c663185242f477c2c41694ff108285f048ce",
   "distro_id": "ubuntu",
-  "ran_at": "2026-08-05T17:50:28+00:00",
+  "ran_at": "2026-08-08T20:12:22+00:00",
   "release": "22.04",
   "stories": {
     "100": {
@@ -16,7 +16,7 @@
     },
     "101": {
       "name": "Distrobox list alt phrasing",
-      "verdict": "FAIL"
+      "verdict": "PASS"
     },
     "102": {
       "name": "System-wide upgrade with alt phrasing",
@@ -28,7 +28,7 @@
     },
     "104": {
       "name": "Apply netplan after showing config",
-      "verdict": "PASS"
+      "verdict": "FAIL"
     },
     "55": {
       "name": "Refresh apt package index",
