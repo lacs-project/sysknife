@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
-## [0.7.0] — 2026-08-06
+## [0.7.0] — 2026-08-08
 
 A security release. Five privileged paths that a bounded action could ride into
 an unbounded root effect, the operator approval prompt, and an audit verify that
