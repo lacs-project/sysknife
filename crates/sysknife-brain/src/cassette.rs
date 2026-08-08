@@ -113,6 +113,53 @@ pub enum CassetteError {
 struct Entry {
     surface: String,
     output: Completion,
+    /// Per-component digests of the call this entry was recorded for.
+    ///
+    /// The key is a single hash over `(surface, system, messages, tools,
+    /// max_tokens)`, which is all a *lookup* needs and all a *miss* used to be
+    /// able to report: one 64-hex digest naming none of its inputs. That makes
+    /// the obvious diagnostic — diff what was recorded against what the replay
+    /// built — impossible, because nothing comparable is stored (#182).
+    ///
+    /// `Option` so cassettes recorded before this field stay loadable; a miss
+    /// against one of those simply falls back to the old, vaguer message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fingerprint: Option<CallFingerprint>,
+}
+
+/// Component digests of one call, enough to locate *where* two calls diverge
+/// without storing the prompts or the conversation itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CallFingerprint {
+    system: String,
+    tools: String,
+    max_tokens: u32,
+    /// One digest per message, in order, so a divergence can be reported as an
+    /// index rather than as "something differs".
+    messages: Vec<String>,
+}
+
+impl CallFingerprint {
+    fn of(system: &str, messages: &[Message], tools: &[ToolDefinition], max_tokens: u32) -> Self {
+        Self {
+            system: sha256_hex(system.as_bytes()),
+            tools: sha256_hex(serde_json::to_string(tools).unwrap_or_default().as_bytes()),
+            max_tokens,
+            messages: messages
+                .iter()
+                .map(|m| sha256_hex(serde_json::to_string(m).unwrap_or_default().as_bytes()))
+                .collect(),
+        }
+    }
+
+    /// Index of the first message that differs, or `None` if one is a prefix of
+    /// the other.
+    fn first_divergent_message(&self, other: &Self) -> Option<usize> {
+        self.messages
+            .iter()
+            .zip(&other.messages)
+            .position(|(a, b)| a != b)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -320,12 +367,15 @@ impl Cassette {
         !state.meta.system_prompt_sha256.contains(prompt_sha)
     }
 
+    /// Persist one recorded call, with the component digests that let a later
+    /// miss say which part of the call diverged. See [`CallFingerprint`].
     fn store(
         &self,
         key: String,
         surface: &str,
         prompt_sha: &str,
         output: Completion,
+        fingerprint: Option<CallFingerprint>,
     ) -> Result<(), CassetteError> {
         {
             let mut state = self.state.lock().expect("cassette state poisoned");
@@ -339,6 +389,7 @@ impl Cassette {
                 Entry {
                     surface: surface.to_string(),
                     output,
+                    fingerprint,
                 },
             );
         }
@@ -448,6 +499,85 @@ impl Cassette {
     }
 }
 
+impl Cassette {
+    /// Explain a replay miss by comparing the call against what was recorded.
+    ///
+    /// A miss is a hash mismatch, and a hash names none of its inputs — so the
+    /// bare message could only ever say "no recorded output", which is true and
+    /// useless. This walks the recorded entries for the same surface and reports
+    /// the most specific thing it can prove:
+    ///
+    /// - the system prompt changed (every call will miss; re-record);
+    /// - the tool schema changed (likewise);
+    /// - or the conversation matched up to message N and diverged there, which
+    ///   is the signature of a volatile tool result: turn 1 replays, turn 2
+    ///   cannot, because something in between differs run to run (#182).
+    fn diagnose_miss(
+        &self,
+        surface: &str,
+        system: &str,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        max_tokens: u32,
+    ) -> String {
+        let want = CallFingerprint::of(system, messages, tools, max_tokens);
+        let state = self.state.lock().expect("cassette state poisoned");
+
+        let recorded: Vec<&CallFingerprint> = state
+            .entries
+            .values()
+            .filter(|e| e.surface == surface)
+            .filter_map(|e| e.fingerprint.as_ref())
+            .collect();
+
+        if recorded.is_empty() {
+            return format!(
+                "no recorded output for surface {surface} in {}; re-record with {}=record",
+                self.path.display(),
+                ENV_CASSETTE_MODE
+            );
+        }
+
+        if !recorded.iter().any(|f| f.system == want.system) {
+            return format!(
+                "the system prompt changed, so every call will miss; re-record with {}=record",
+                ENV_CASSETTE_MODE
+            );
+        }
+        if !recorded.iter().any(|f| f.tools == want.tools) {
+            return format!(
+                "the tool schema changed, so every call will miss; re-record with {}=record",
+                ENV_CASSETTE_MODE
+            );
+        }
+
+        // Same prompt and tools: the conversation itself diverged. Report the
+        // deepest match, since that is the turn boundary where determinism broke.
+        let deepest = recorded
+            .iter()
+            .filter(|f| f.system == want.system && f.tools == want.tools)
+            .filter_map(|f| f.first_divergent_message(&want))
+            .max();
+
+        match deepest {
+            Some(index) => format!(
+                "the conversation diverged at message {index}: turns before it replay, \
+                 this one does not. The recorded and replayed messages differ at that \
+                 index, which is what a volatile tool result looks like — a timestamp, \
+                 a transaction id, or live system state folded into the call key. \
+                 See issue #182."
+            ),
+            None => format!(
+                "no recorded output for this call in {}; the prompt and tools match, so \
+                 the conversation reached a turn that was never recorded. Re-record with \
+                 {}=record",
+                self.path.display(),
+                ENV_CASSETTE_MODE
+            ),
+        }
+    }
+}
+
 /// The stable key for one call.
 ///
 /// Field order is fixed by construction and every nested type serialises in
@@ -520,6 +650,9 @@ impl LlmProvider for CassetteProvider {
         if self.cassette.mode == CassetteMode::Replay {
             self.cassette.note("miss", &self.surface, &key);
             let prompt_sha = sha256_hex(system.as_bytes());
+            // The prompt check first: it is provable from `meta` alone and
+            // explains every call missing at once, which no per-call comparison
+            // should be allowed to contradict.
             let detail = if self.cassette.prompt_is_unknown(&prompt_sha) {
                 format!(
                     "the system prompt changed (sha256 {prompt_sha} was never recorded in {}), \
@@ -527,12 +660,8 @@ impl LlmProvider for CassetteProvider {
                     self.cassette.path.display()
                 )
             } else {
-                format!(
-                    "no recorded output for surface {} in {}; re-record with {}=record",
-                    self.surface,
-                    self.cassette.path.display(),
-                    ENV_CASSETTE_MODE
-                )
+                self.cassette
+                    .diagnose_miss(&self.surface, system, messages, tools, max_tokens)
             };
             return Err(ProviderError::CassetteMiss(detail));
         }
@@ -544,7 +673,13 @@ impl LlmProvider for CassetteProvider {
             .await?;
         let prompt_sha = sha256_hex(system.as_bytes());
         self.cassette
-            .store(key, &self.surface, &prompt_sha, output.clone())
+            .store(
+                key,
+                &self.surface,
+                &prompt_sha,
+                output.clone(),
+                Some(CallFingerprint::of(system, messages, tools, max_tokens)),
+            )
             .map_err(|e| ProviderError::CassetteMiss(format!("cannot write cassette: {e}")))?;
         Ok(output)
     }
@@ -1021,5 +1156,103 @@ mod tests {
         let err = Cassette::open(dir.path().join("absent.json"), CassetteMode::Replay)
             .expect_err("replay cannot invent a cassette");
         assert!(matches!(err, CassetteError::Missing(_)));
+    }
+}
+
+#[cfg(test)]
+mod miss_diagnosis_tests {
+    use super::*;
+    use crate::provider::{ContentBlock, Message, StopReason};
+
+    fn completion(text: &str) -> Completion {
+        Completion {
+            content: vec![ContentBlock::Text { text: text.into() }],
+            stop_reason: StopReason::EndTurn,
+        }
+    }
+
+    /// A replay miss used to report a 64-hex digest and nothing else, which is
+    /// unactionable: the key is a hash of `(surface, system, messages, tools,
+    /// max_tokens)` and the message identifying it names none of them. Issue #182
+    /// asks to "diff the recorded messages against what a replay builds" — that is
+    /// not possible against a file that stores only hashes, so the first fix is to
+    /// make a miss say which component diverged.
+    #[test]
+    fn a_miss_caused_by_a_later_turn_names_the_diverging_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+
+        // Record a two-turn conversation.
+        let rec = Cassette::open(path.clone(), CassetteMode::Record).unwrap();
+        let system = "SYSTEM";
+        let turn1 = vec![Message::user_text("install vim; rm -rf /")];
+        let turn2 = vec![
+            Message::user_text("install vim; rm -rf /"),
+            Message::user_text("Plan rejected: injected metacharacters."),
+        ];
+        for (msgs, out) in [(&turn1, "turn one"), (&turn2, "turn two")] {
+            rec.store(
+                call_key("p/m", system, msgs, &[], 100),
+                "p/m",
+                &sha256_hex(system.as_bytes()),
+                completion(out),
+                Some(CallFingerprint::of(system, msgs, &[], 100)),
+            )
+            .unwrap();
+        }
+
+        // Replay: turn 1 matches, turn 2's second message differs by one word —
+        // the shape a volatile tool result produces.
+        let replay = Cassette::open(path, CassetteMode::Replay).unwrap();
+        assert!(
+            replay
+                .lookup(&call_key("p/m", system, &turn1, &[], 100))
+                .is_some(),
+            "turn 1 must still replay"
+        );
+
+        let drifted = vec![
+            Message::user_text("install vim; rm -rf /"),
+            Message::user_text("Plan rejected: injected metacharacter."),
+        ];
+        let diagnosis = replay.diagnose_miss("p/m", system, &drifted, &[], 100);
+        assert!(
+            diagnosis.contains("message 1"),
+            "must name the diverging message index, got: {diagnosis}"
+        );
+        assert!(
+            diagnosis.to_lowercase().contains("turn"),
+            "must say the conversation diverged mid-run, got: {diagnosis}"
+        );
+    }
+
+    /// The other shape: nothing about the conversation matches, because the
+    /// system prompt or tools changed. That must NOT be reported as a mid-turn
+    /// divergence — it is a re-record, not a volatile field.
+    #[test]
+    fn a_miss_caused_by_a_changed_prompt_is_not_blamed_on_a_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let rec = Cassette::open(path.clone(), CassetteMode::Record).unwrap();
+        let msgs = vec![Message::user_text("hello")];
+        rec.store(
+            call_key("p/m", "OLD SYSTEM", &msgs, &[], 100),
+            "p/m",
+            &sha256_hex(b"OLD SYSTEM"),
+            completion("out"),
+            Some(CallFingerprint::of("OLD SYSTEM", &msgs, &[], 100)),
+        )
+        .unwrap();
+
+        let replay = Cassette::open(path, CassetteMode::Replay).unwrap();
+        let diagnosis = replay.diagnose_miss("p/m", "NEW SYSTEM", &msgs, &[], 100);
+        assert!(
+            diagnosis.contains("system prompt"),
+            "a changed prompt must be named as such, got: {diagnosis}"
+        );
+        assert!(
+            !diagnosis.contains("message 0"),
+            "must not blame a message when the prompt is what changed: {diagnosis}"
+        );
     }
 }
