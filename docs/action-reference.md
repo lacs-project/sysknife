@@ -9,7 +9,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `GetSystemState` | `rpm-ostree status --json` | Low | All | – | – | full rpm-ostree deployment snapshot: layered packages, pinned/staged deployments, booted/pending OSTree refs |
+| `GetSystemState` | `rpm-ostree status --json` | Low | Fedora | – | – | full rpm-ostree deployment snapshot: layered packages, pinned/staged deployments, booted/pending OSTree refs — Fedora/atomic only; on Ubuntu use GetHostState |
 | `CollectDiagnostics` | `journalctl -b -n 500 --no-pager` | Low | All | – | – | recent system journal log (last 500 lines) for error diagnosis and troubleshooting |
 | `GetDeploymentHistory` | `rpm-ostree status --json` | Low | Fedora | – | – | rpm-ostree deployment history: past and current OSTree commits with timestamps |
 | `ListDeployments` | `rpm-ostree status --json` | Low | Fedora | – | – | list all currently staged, pending, and booted deployments |
@@ -239,6 +239,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GetMemoryInfo` | `free -h` | Low | All | – | – | show RAM and swap usage (free -h) — no params |
+| `GetHostState` | `hostnamectl status` | Low | Ubuntu | – | – | what this host is: OS release, kernel, architecture, virtualization, machine identity (hostnamectl) — Ubuntu/Debian counterpart to GetSystemState, which reports deployments an apt host does not have |
 
 ## Containers
 
@@ -395,4 +396,4 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 ---
 
-_188 actions have an `ActionSpec` and are tabled above. The full catalogue (`KNOWN_ACTION_NAMES`) also includes `ListJobHistory`, which the dispatcher handles before the executor, for **189** total._
+_189 actions have an `ActionSpec` and are tabled above. The full catalogue (`KNOWN_ACTION_NAMES`) also includes `ListJobHistory`, which the dispatcher handles before the executor, for **190** total._

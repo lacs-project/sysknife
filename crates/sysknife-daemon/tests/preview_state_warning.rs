@@ -58,7 +58,7 @@ async fn preview_warns_when_state_collection_fails() {
     let req = json!({
         "type": "preview",
         "request_id": "preview-warn-1",
-        "action_name": "GetSystemState",
+        "action_name": "GetMemoryInfo",
         "params": {},
     });
     framed

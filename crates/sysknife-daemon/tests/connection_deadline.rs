@@ -119,7 +119,7 @@ async fn a_served_connection_still_accepts_a_second_request() {
         let req = json!({
             "type": "preview",
             "request_id": request_id,
-            "action_name": "GetSystemState",
+            "action_name": "GetMemoryInfo",
             "params": {},
         });
         client

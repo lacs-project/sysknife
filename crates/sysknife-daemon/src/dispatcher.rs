@@ -3922,7 +3922,7 @@ mod tests {
                 &serde_json::to_vec(&json!({
                     "type": "preview",
                     "request_id": "details-preview",
-                    "action_name": "GetSystemState",
+                    "action_name": "GetMemoryInfo",
                     "params": {}
                 }))
                 .unwrap(),
@@ -3946,7 +3946,7 @@ mod tests {
         let details: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
         assert_eq!(details["type"], "approval_details_response");
         assert_eq!(details["transaction_id"], transaction_id);
-        assert_eq!(details["action_name"], "GetSystemState");
+        assert_eq!(details["action_name"], "GetMemoryInfo");
         assert_eq!(details["preview"]["risk_level"], "low");
         assert!(!details["preview"]["summary"].as_str().unwrap().is_empty());
     }
@@ -3986,7 +3986,7 @@ mod tests {
         });
         let mut framed = FramedStream::new(client);
         let (transaction_id, _) =
-            preview_and_approve(&mut framed, "GetSystemState", json!({})).await;
+            preview_and_approve(&mut framed, "GetMemoryInfo", json!({})).await;
 
         framed
             .send(
@@ -4031,7 +4031,7 @@ mod tests {
                 &serde_json::to_vec(&json!({
                     "type": "preview",
                     "request_id": "preview-forge",
-                    "action_name": "GetSystemState",
+                    "action_name": "GetMemoryInfo",
                     "params": {},
                 }))
                 .unwrap(),
@@ -4091,7 +4091,7 @@ mod tests {
                 &serde_json::to_vec(&json!({
                     "type": "preview",
                     "request_id": "preview-hist",
-                    "action_name": "GetSystemState",
+                    "action_name": "GetMemoryInfo",
                     "params": {},
                 }))
                 .unwrap(),
@@ -4116,7 +4116,7 @@ mod tests {
         assert_eq!(response["type"], "history_response");
         let entries = response["entries"].as_array().expect("entries array");
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0]["action_name"], "GetSystemState");
+        assert_eq!(entries[0]["action_name"], "GetMemoryInfo");
         assert!(
             !entries[0]["created_at"].as_str().unwrap_or("").is_empty(),
             "created_at must be populated over the structured IPC"
@@ -4196,7 +4196,7 @@ mod tests {
                 &serde_json::to_vec(&json!({
                     "type": "preview",
                     "request_id": "preview-cancel",
-                    "action_name": "GetSystemState",
+                    "action_name": "GetMemoryInfo",
                     "params": {},
                 }))
                 .unwrap(),
@@ -4249,7 +4249,7 @@ mod tests {
         });
         let mut framed = FramedStream::new(client);
         let (transaction_id, receipt) =
-            preview_and_approve(&mut framed, "GetSystemState", json!({})).await;
+            preview_and_approve(&mut framed, "GetMemoryInfo", json!({})).await;
         // Claim it (Queued -> Running) so it is in-flight from the store's view.
         assert!(state
             .audit
@@ -4324,7 +4324,7 @@ mod tests {
                 &serde_json::to_vec(&json!({
                     "type": "preview",
                     "request_id": "preview-undelivered",
-                    "action_name": "GetSystemState",
+                    "action_name": "GetMemoryInfo",
                     "params": {},
                 }))
                 .unwrap(),
@@ -4380,7 +4380,7 @@ mod tests {
         });
         let mut framed = FramedStream::new(client);
         let (transaction_id, receipt) =
-            preview_and_approve(&mut framed, "GetSystemState", json!({})).await;
+            preview_and_approve(&mut framed, "GetMemoryInfo", json!({})).await;
         assert!(state
             .audit
             .claim_approved_for_execution(&transaction_id, &receipt_digest(&receipt))
@@ -4487,7 +4487,7 @@ mod tests {
             vec![json!({
                 "type": "preview",
                 "request_id": "r-principal",
-                "action_name": "GetSystemState",
+                "action_name": "GetMemoryInfo",
                 "params": {}
             })],
             1,
@@ -4520,7 +4520,7 @@ mod tests {
             vec![json!({
                 "type": "preview",
                 "request_id": "r1",
-                "action_name": "GetSystemState",
+                "action_name": "GetMemoryInfo",
                 "params": {}
             })],
             1,
@@ -4743,7 +4743,7 @@ mod tests {
             vec![json!({
                 "type": "preview",
                 "request_id": "r1",
-                "action_name": "GetSystemState",
+                "action_name": "GetMemoryInfo",
                 "params": {}
             })],
             1,
@@ -4970,7 +4970,7 @@ mod tests {
                 "type": "execute",
                 "request_id": "r1",
                 "transaction_id": "missing-transaction",
-                "action_name": "GetSystemState",
+                "action_name": "GetMemoryInfo",
                 "params": {},
                 "approval_receipt": "unissued-receipt"
             })],
@@ -5057,7 +5057,7 @@ mod tests {
         });
         let mut framed = FramedStream::new(client);
         let (transaction_id, receipt) =
-            preview_and_approve(&mut framed, "GetSystemState", json!({})).await;
+            preview_and_approve(&mut framed, "GetMemoryInfo", json!({})).await;
 
         framed
             .send(
@@ -5178,7 +5178,7 @@ mod tests {
         let preview_req = json!({
             "type": "preview",
             "request_id": "r1",
-            "action_name": "GetSystemState",
+            "action_name": "GetMemoryInfo",
             "params": {}
         });
         framed
@@ -5197,7 +5197,7 @@ mod tests {
             "type": "execute",
             "request_id": "r2",
             "transaction_id": transaction_id,
-            "action_name": "GetSystemState",
+            "action_name": "GetMemoryInfo",
             "params": {},
             "approval_receipt": receipt
         });
@@ -5393,7 +5393,7 @@ mod tests {
                 &serde_json::to_vec(&json!({
                     "type": "preview",
                     "request_id": "r1",
-                    "action_name": "GetSystemState",
+                    "action_name": "GetMemoryInfo",
                     "params": {}
                 }))
                 .unwrap(),
@@ -5410,7 +5410,7 @@ mod tests {
                     "type": "execute",
                     "request_id": "r2",
                     "transaction_id": transaction_id,
-                    "action_name": "GetSystemState",
+                    "action_name": "GetMemoryInfo",
                     "params": {},
                     "approval_receipt": receipt
                 }))
@@ -5483,7 +5483,7 @@ mod tests {
                 &serde_json::to_vec(&json!({
                     "type": "preview",
                     "request_id": "preview-once",
-                    "action_name": "GetSystemState",
+                    "action_name": "GetMemoryInfo",
                     "params": {}
                 }))
                 .unwrap(),
@@ -5518,7 +5518,7 @@ mod tests {
                     "type": "execute",
                     "request_id": request_id,
                     "transaction_id": transaction_id,
-                    "action_name": "GetSystemState",
+                    "action_name": "GetMemoryInfo",
                     "params": {},
                     "approval_receipt": approval_receipt
                 }))
@@ -5630,7 +5630,7 @@ mod tests {
                 &serde_json::to_vec(&json!({
                     "type": "preview",
                     "request_id": "r1",
-                    "action_name": "GetSystemState",
+                    "action_name": "GetMemoryInfo",
                     "params": {}
                 }))
                 .unwrap(),
@@ -5651,7 +5651,7 @@ mod tests {
                     "type": "execute",
                     "request_id": "r2",
                     "transaction_id": transaction_id,
-                    "action_name": "GetSystemState",
+                    "action_name": "GetMemoryInfo",
                     "params": {},
                     "approval_receipt": approval_receipt
                 }))
@@ -5680,7 +5680,7 @@ mod tests {
                     "type": "execute",
                     "request_id": "r3-replay",
                     "transaction_id": transaction_id,
-                    "action_name": "GetSystemState",
+                    "action_name": "GetMemoryInfo",
                     "params": {},
                     "approval_receipt": approval_receipt
                 }))
@@ -5823,14 +5823,14 @@ mod tests {
         });
         let mut framed = FramedStream::new(client);
         let (transaction_id, receipt) =
-            preview_and_approve(&mut framed, "GetSystemState", json!({})).await;
+            preview_and_approve(&mut framed, "GetMemoryInfo", json!({})).await;
         framed
             .send(
                 &serde_json::to_vec(&json!({
                     "type": "execute",
                     "request_id": "execute-fast-progress",
                     "transaction_id": transaction_id,
-                    "action_name": "GetSystemState",
+                    "action_name": "GetMemoryInfo",
                     "params": {},
                     "approval_receipt": receipt,
                 }))

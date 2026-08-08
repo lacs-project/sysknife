@@ -115,6 +115,7 @@ pub fn gate_risk(action_name: &str) -> RiskLevel {
 fn preview_profile(action_name: &str) -> PreviewProfile {
     match action_name {
         "GetSystemState"
+        | "GetHostState"
         | "CollectDiagnostics"
         | "GetDeploymentHistory"
         | "ListDeployments"

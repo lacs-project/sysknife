@@ -30,17 +30,20 @@
 /// `rpm-ostree` and is missing from this list fails the build rather than being
 /// quietly offered to an apt host.
 ///
-/// One documented exception: `GetSystemState` also runs `rpm-ostree status`, but
-/// it is woven through fifteen places in the shared, empirically-validated prompt
-/// blocks as *the* state action, with no Ubuntu equivalent to put in its place.
-/// Fencing it needs a prompt restructure validated against the story suite, so it
-/// is tracked separately rather than done blind.
+/// There are no exceptions. `GetSystemState` was the last one: it runs
+/// `rpm-ostree status --json` and was reachable from every host because it was
+/// woven through the shared prompt blocks as *the* state action, with nothing on
+/// the Ubuntu side to put in its place. `GetHostState` is now that counterpart,
+/// so the fence is complete and `UNFENCED_BY_DECISION` is empty (#181).
 ///
 /// Flatpak is deliberately NOT in here: the un-prefixed `InstallFlatpak` family
 /// covers remotes, search, and app info, which the `Ubuntu*Flatpak` actions do
 /// not, so scoping it to Fedora would remove capability from Ubuntu rather than
 /// redirect it.
 pub const FEDORA_ONLY_ACTIONS: &[&str] = &[
+    // Reports rpm-ostree *deployments*, which an apt host does not have. Its
+    // Debian counterpart is `GetHostState`.
+    "GetSystemState",
     "AddLayeredPackage",
     "RemoveLayeredPackage",
     "ReplaceLayeredPackage",
@@ -107,6 +110,9 @@ pub const NON_CANONICAL_ON_DEBIAN: &[&str] = &[
 /// Grouped by underlying tool: apt, snap, ufw, distrobox, netplan, grub, plus
 /// the Ubuntu-only tiers (AppArmor, cloud-init, flatpak, fail2ban, Pro, …).
 pub const DEBIAN_ONLY_ACTIONS: &[&str] = &[
+    // The Debian answer to "what is this host?" — counterpart to Fedora's
+    // `GetSystemState`, which describes deployments an apt host has none of.
+    "GetHostState",
     "AptUpdate",
     "AptUpgrade",
     "AptInstall",
