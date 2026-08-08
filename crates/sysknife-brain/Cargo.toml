@@ -43,4 +43,6 @@ tracing = "0.1"
 unicode-normalization = "0.1"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+# `test-util` provides the paused clock, so the provider-retry tests assert the
+# backoff schedule without actually sleeping through it.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "test-util"] }

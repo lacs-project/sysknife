@@ -412,12 +412,18 @@ async fn plan_step_carries_params() {
 // Error paths
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+/// A *persistent* 500 still propagates as a 500. 5xx is retryable, so one
+/// scripted error would be followed by MockProvider's exhaustion fallback and
+/// this would assert the fixture's variant instead of the failure's.
+#[tokio::test(start_paused = true)]
 async fn provider_error_propagates() {
-    let planner = make_planner(MockProvider::new([Err(ProviderError::Http {
-        status: 500,
-        body: "internal server error".into(),
-    })]));
+    let http_500 = || {
+        Err(ProviderError::Http {
+            status: 500,
+            body: "internal server error".into(),
+        })
+    };
+    let planner = make_planner(MockProvider::new([http_500(), http_500(), http_500()]));
 
     assert!(matches!(
         planner.plan_intent("do something").await.unwrap_err(),
@@ -1797,11 +1803,17 @@ async fn provider_parse_error_propagates() {
     ));
 }
 
-#[tokio::test]
+/// A *persistent* rate limit surfaces as `RateLimit`. Scripted three times
+/// because the call is now retried: one scripted error would be followed by
+/// MockProvider's exhaustion fallback, and the test would assert the variant of
+/// the fixture rather than of the failure.
+#[tokio::test(start_paused = true)]
 async fn rate_limit_error_propagates() {
-    let planner = make_planner(MockProvider::new([Err(ProviderError::RateLimit(
-        "429 slow down".into(),
-    ))]));
+    let planner = make_planner(MockProvider::new([
+        Err(ProviderError::RateLimit("429 slow down".into())),
+        Err(ProviderError::RateLimit("429 slow down".into())),
+        Err(ProviderError::RateLimit("429 slow down".into())),
+    ]));
 
     assert!(matches!(
         planner.plan_intent("do something").await.unwrap_err(),
@@ -1809,14 +1821,200 @@ async fn rate_limit_error_propagates() {
     ));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn transport_request_error_propagates() {
-    let planner = make_planner(MockProvider::new([Err(ProviderError::Request(
-        "connection reset".into(),
-    ))]));
+    let planner = make_planner(MockProvider::new([
+        Err(ProviderError::Request("connection reset".into())),
+        Err(ProviderError::Request("connection reset".into())),
+        Err(ProviderError::Request("connection reset".into())),
+    ]));
 
     assert!(matches!(
         planner.plan_intent("do something").await.unwrap_err(),
         PlanningError::Provider(ProviderError::Request(_))
     ));
+}
+
+// ---------------------------------------------------------------------------
+// Provider retry (#178)
+//
+// The turn loop retried the model's own mistakes — text instead of a tool call,
+// a plan the safety fence rejected — but a provider-level failure ended planning
+// on its first occurrence, with nine turns still unused. One 502, one truncated
+// payload, one rate-limit response and the whole request was over.
+//
+// Retrying is not universally right, which is the point of these tests: two
+// classes must still fail immediately, and one of them (CassetteMiss) would turn
+// a fast, well-explained hermetic-replay failure into a slow one.
+// ---------------------------------------------------------------------------
+
+/// A provider that counts every call, so a test can assert how many attempts a
+/// failure class actually produced rather than inferring it from the outcome.
+struct CountingProvider {
+    turns: Mutex<VecDeque<Result<Completion, ProviderError>>>,
+    calls: Arc<AtomicUsize>,
+    /// Returned once the scripted turns run out, so "retried forever" shows up
+    /// as a bounded count rather than a hang.
+    exhausted: Box<dyn Fn() -> Result<Completion, ProviderError> + Send + Sync>,
+}
+
+impl CountingProvider {
+    fn new(
+        turns: impl IntoIterator<Item = Result<Completion, ProviderError>>,
+        exhausted: impl Fn() -> Result<Completion, ProviderError> + Send + Sync + 'static,
+    ) -> (Self, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        (
+            Self {
+                turns: Mutex::new(turns.into_iter().collect()),
+                calls: Arc::clone(&calls),
+                exhausted: Box::new(exhausted),
+            },
+            calls,
+        )
+    }
+}
+
+#[async_trait]
+impl LlmProvider for CountingProvider {
+    async fn complete(
+        &self,
+        _system: &str,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+        _max_tokens: u32,
+    ) -> Result<Completion, ProviderError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let next = self.turns.lock().unwrap().pop_front();
+        next.unwrap_or_else(|| (self.exhausted)())
+    }
+}
+
+fn counting_planner(provider: CountingProvider) -> LlmPlanner {
+    LlmPlanner::new(Box::new(provider), Box::new(MockStateClient::default()), 5)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_transient_provider_failure_is_retried_rather_than_ending_planning() {
+    // A 502 from the provider says nothing about the request; the identical call
+    // a moment later usually works.
+    let (provider, calls) = CountingProvider::new(
+        [
+            Err(ProviderError::Http {
+                status: 502,
+                body: "bad gateway".into(),
+            }),
+            propose_plan("install vim", &[("AptInstall", "install vim", "medium")]),
+        ],
+        || Err(ProviderError::Parse("exhausted".into())),
+    );
+    let plan = counting_planner(provider)
+        .plan_intent("install vim")
+        .await
+        .expect("a 502 must not end planning");
+    assert_eq!(plan.summary(), "install vim");
+    assert_eq!(calls.load(Ordering::Relaxed), 2, "must have retried once");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_truncated_provider_payload_is_retried() {
+    let (provider, calls) = CountingProvider::new(
+        [
+            Err(ProviderError::Parse("unexpected end of JSON".into())),
+            propose_plan("list services", &[("ListServices", "list", "low")]),
+        ],
+        || Err(ProviderError::Parse("exhausted".into())),
+    );
+    assert!(counting_planner(provider)
+        .plan_intent("list services")
+        .await
+        .is_ok());
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+async fn an_auth_failure_fails_fast_and_is_never_retried() {
+    // A wrong key stays wrong. Retrying only delays the one message that tells
+    // the operator what to fix.
+    let (provider, calls) = CountingProvider::new(
+        [
+            Err(ProviderError::Auth("invalid api key".into())),
+            propose_plan("install vim", &[("AptInstall", "install vim", "medium")]),
+        ],
+        || Err(ProviderError::Parse("exhausted".into())),
+    );
+    assert!(counting_planner(provider)
+        .plan_intent("install vim")
+        .await
+        .is_err());
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "auth failure must be attempted exactly once"
+    );
+}
+
+#[tokio::test]
+async fn a_cassette_miss_is_attempted_exactly_once() {
+    // The cassette key is a hash of the call, so a retry issues the identical
+    // lookup and misses identically. Retrying it would burn a replay-gated CI
+    // job's timeout while printing nothing new.
+    let (provider, calls) = CountingProvider::new(
+        [
+            Err(ProviderError::CassetteMiss("no recorded output".into())),
+            propose_plan("install vim", &[("AptInstall", "install vim", "medium")]),
+        ],
+        || Err(ProviderError::Parse("exhausted".into())),
+    );
+    assert!(counting_planner(provider)
+        .plan_intent("install vim")
+        .await
+        .is_err());
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "a cassette miss is deterministic; retrying it is pure delay"
+    );
+}
+
+#[tokio::test]
+async fn a_client_error_is_not_retried() {
+    // 4xx is a defect in the request we just built; building it again produces
+    // the same bytes.
+    let (provider, calls) = CountingProvider::new(
+        [
+            Err(ProviderError::Http {
+                status: 400,
+                body: "bad request".into(),
+            }),
+            propose_plan("install vim", &[("AptInstall", "install vim", "medium")]),
+        ],
+        || Err(ProviderError::Parse("exhausted".into())),
+    );
+    assert!(counting_planner(provider)
+        .plan_intent("install vim")
+        .await
+        .is_err());
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn retries_are_bounded_so_a_persistent_outage_still_terminates() {
+    // Without a ceiling, a provider that is simply down turns one intent into an
+    // unbounded retry loop.
+    let (provider, calls) = CountingProvider::new([], || {
+        Err(ProviderError::Http {
+            status: 503,
+            body: "service unavailable".into(),
+        })
+    });
+    assert!(counting_planner(provider)
+        .plan_intent("install vim")
+        .await
+        .is_err());
+    let n = calls.load(Ordering::Relaxed);
+    assert!(
+        (2..=4).contains(&n),
+        "a persistent outage must stop after a small bounded number of attempts, got {n}"
+    );
 }
