@@ -24,6 +24,10 @@ on:
     branches: [main]
     paths:
       - "tests/e2e/**"
+      # This job shellchecks tests/release too, so a change there has to be
+      # able to trigger it. It could not: the release-gate scripts were linted
+      # only when something else in the list happened to change alongside them.
+      - "tests/release/**"
       - "scripts/**"
       - "assets/demo/**"
       - "apps/sysknife-cli/**"
@@ -31,6 +35,10 @@ on:
   pull_request:
     paths:
       - "tests/e2e/**"
+      # This job shellchecks tests/release too, so a change there has to be
+      # able to trigger it. It could not: the release-gate scripts were linted
+      # only when something else in the list happened to change alongside them.
+      - "tests/release/**"
       - "scripts/**"
       - "assets/demo/**"
       - "apps/sysknife-cli/**"
