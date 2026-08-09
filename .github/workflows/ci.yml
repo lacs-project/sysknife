@@ -62,6 +62,9 @@ jobs:
       - name: Check mount-edit refuses symlinked mountpoints
         run: bash tests/release/mount-edit.test.sh
 
+      - name: Check a replay reproduces the run that recorded it
+        run: bash tests/release/cassette-replay-parity.test.sh
+
       - name: Check the secret scanner catches keys and ignores fixtures
         run: bash tests/release/no-secrets.test.sh
 
