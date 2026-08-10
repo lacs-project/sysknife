@@ -72,22 +72,20 @@ pub fn make_spinner(msg: impl Into<String>) -> ProgressBar {
 
 /// Return a colored `● low` / `● medium` / `● HIGH` badge string.
 pub fn risk_colored(risk: &PlanRiskLevel) -> String {
-    match risk {
-        PlanRiskLevel::Low => format!(
-            "● {}",
-            "low".if_supports_color(Stream::Stdout, |t| t.green())
-        ),
-        PlanRiskLevel::Medium => format!(
-            "● {}",
-            "medium".if_supports_color(Stream::Stdout, |t| t.yellow())
-        ),
-        PlanRiskLevel::High => format!(
-            "● {}",
-            // .bold() chained after .red() borrows a temporary inside the
-            // closure — materialise via .to_string() to avoid the lifetime error.
-            "HIGH".if_supports_color(Stream::Stdout, |t| t.red().bold().to_string())
-        ),
-    }
+    let label = match risk {
+        PlanRiskLevel::Low => "low"
+            .if_supports_color(Stream::Stdout, |t| t.green())
+            .to_string(),
+        PlanRiskLevel::Medium => "medium"
+            .if_supports_color(Stream::Stdout, |t| t.yellow())
+            .to_string(),
+        // .bold() chained after .red() borrows a temporary inside the
+        // closure — materialise via .to_string() to avoid the lifetime error.
+        PlanRiskLevel::High => "HIGH"
+            .if_supports_color(Stream::Stdout, |t| t.red().bold().to_string())
+            .to_string(),
+    };
+    format!("● {label}")
 }
 
 // ---------------------------------------------------------------------------

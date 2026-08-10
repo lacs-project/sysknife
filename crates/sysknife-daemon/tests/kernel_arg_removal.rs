@@ -86,3 +86,63 @@ fn grub_set_kargs_still_deletes_a_weakening_arg() {
         );
     }
 }
+
+/// Two lists encode the same idea — "units that hand back a root shell" — and
+/// they drifted. `validate.rs::ROOT_SHELL_UNITS` blocks activating
+/// `debug-shell` and `runlevel1`; `executor.rs::BLOCKED_UNIT_PREFIXES` did not
+/// block booting into them via `systemd.unit=`.
+///
+/// So `StartService debug-shell.service` was refused while
+/// `SetKernelArguments add=["systemd.unit=debug-shell.service"]` was accepted —
+/// and the second one is worse, because it persists across a reboot and hands
+/// out a root shell on tty9 before anyone logs in.
+#[test]
+fn no_root_shell_unit_can_be_reached_through_a_kernel_argument() {
+    for unit in [
+        "systemd.unit=emergency.target",
+        "systemd.unit=rescue.target",
+        "systemd.unit=single",
+        "systemd.unit=debug-shell.service",
+        "systemd.unit=runlevel1.target",
+        // Case must not launder it.
+        "systemd.unit=Debug-Shell.service",
+    ] {
+        let params = json!({ "add": [unit], "remove": [] });
+        let result = build_action_spec("SetKernelArguments", &params);
+        assert!(
+            matches!(result, Err(ExecutorError::InvalidParam("add"))),
+            "{unit} boots the host into a root shell and must be refused, got {result:?}"
+        );
+    }
+}
+
+/// The drift guard. Two screens refuse root-shell units from opposite
+/// directions: one refuses to START such a unit, the other refuses to BOOT into
+/// it via `systemd.unit=`. They are only as good as the weaker list, so this
+/// asserts every unit blocked on one path is blocked on the other.
+///
+/// Without this, the lists agree today and silently diverge the next time
+/// somebody adds a unit to one of them — which is exactly how `debug-shell` came
+/// to be refused by `StartService` and accepted by `SetKernelArguments`.
+#[test]
+fn the_two_root_shell_screens_cannot_drift_apart() {
+    for unit in ["debug-shell", "emergency", "rescue", "runlevel1", "single"] {
+        // Boot path: as a kernel argument.
+        let karg = json!({ "add": [format!("systemd.unit={unit}.target")], "remove": [] });
+        assert!(
+            build_action_spec("SetKernelArguments", &karg).is_err(),
+            "{unit} is reachable as a kernel argument"
+        );
+
+        // Activation path: as a unit to start. `single` is not a real unit, so
+        // it is exempt from this half — the shared list is a superset.
+        if unit == "single" {
+            continue;
+        }
+        let start = json!({ "unit": format!("{unit}.service") });
+        assert!(
+            build_action_spec("StartService", &start).is_err(),
+            "{unit} is startable as a service"
+        );
+    }
+}

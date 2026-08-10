@@ -1035,13 +1035,18 @@ fn push_shared(s: &mut String, block: &str, state: &StateAction) {
 
 fn render_fedora_prompt(prefs: Option<&str>, hint: &sysknife_types::DistroHint) -> String {
     let version = hint.version.as_deref().unwrap_or("(version unknown)");
-    let mut s = String::with_capacity(8192);
+    // Sized to the rendered prompt (measured ~35 KB) so the buffer doesn't have
+    // to grow-and-copy several times over on every `plan_intent()` call.
+    let mut s = String::with_capacity(36_864);
     s.push_str(PREAMBLE);
     s.push_str(SPOTLIGHTING_CLAUSE);
     push_shared(&mut s, EXAMPLES, &FEDORA_STATE_ACTION);
     push_shared(&mut s, CROSS_DISTRO_RISK_TABLES, &FEDORA_STATE_ACTION);
     s.push_str(FEDORA_RISK_TABLES);
-    push_shared(&mut s, CROSS_DISTRO_RISK_RULES, &FEDORA_STATE_ACTION);
+    // No {STATE_ACTION}/{STATE_RETURNS} placeholder appears in this block, so a
+    // plain push avoids two whole-string scans-and-allocations that `push_shared`
+    // would spend finding nothing to substitute.
+    s.push_str(CROSS_DISTRO_RISK_RULES);
     s.push_str(&FEDORA_HEADER.replacen("{}", version, 1));
     s.push_str(FEDORA_SELECTION_RULES);
     s.push_str(FEDORA_DISAMBIGUATION);
@@ -1056,13 +1061,16 @@ fn render_fedora_prompt(prefs: Option<&str>, hint: &sysknife_types::DistroHint) 
 
 fn render_debian_prompt(prefs: Option<&str>, hint: &sysknife_types::DistroHint) -> String {
     let version = hint.version.as_deref().unwrap_or("(version unknown)");
-    let mut s = String::with_capacity(8192);
+    // Sized to the rendered prompt (measured ~41 KB) — see the Fedora renderer
+    // above for why.
+    let mut s = String::with_capacity(43_008);
     s.push_str(PREAMBLE);
     s.push_str(SPOTLIGHTING_CLAUSE);
     push_shared(&mut s, EXAMPLES, &DEBIAN_STATE_ACTION);
     push_shared(&mut s, CROSS_DISTRO_RISK_TABLES, &DEBIAN_STATE_ACTION);
     s.push_str(DEBIAN_RISK_TABLES);
-    push_shared(&mut s, CROSS_DISTRO_RISK_RULES, &DEBIAN_STATE_ACTION);
+    // See the Fedora renderer above: this block has no placeholder to substitute.
+    s.push_str(CROSS_DISTRO_RISK_RULES);
     s.push_str(&DEBIAN_HEADER.replacen("{}", version, 1));
     s.push_str(DEBIAN_SELECTION_RULES);
     s.push_str(DEBIAN_COUNTERINTUITIVE);
@@ -1076,12 +1084,15 @@ fn render_debian_prompt(prefs: Option<&str>, hint: &sysknife_types::DistroHint) 
 }
 
 fn render_generic_prompt(prefs: Option<&str>) -> String {
-    let mut s = String::with_capacity(4096);
+    // Sized to the rendered prompt (measured ~29 KB) — see the Fedora renderer
+    // above for why.
+    let mut s = String::with_capacity(30_720);
     s.push_str(PREAMBLE);
     s.push_str(SPOTLIGHTING_CLAUSE);
     push_shared(&mut s, EXAMPLES, &FEDORA_STATE_ACTION);
     push_shared(&mut s, CROSS_DISTRO_RISK_TABLES, &FEDORA_STATE_ACTION);
-    push_shared(&mut s, CROSS_DISTRO_RISK_RULES, &FEDORA_STATE_ACTION);
+    // See the Fedora renderer above: this block has no placeholder to substitute.
+    s.push_str(CROSS_DISTRO_RISK_RULES);
     s.push_str(GENERIC_HEADER);
     push_shared(&mut s, CROSS_DISTRO_DISAMBIGUATION, &FEDORA_STATE_ACTION);
     push_shared(&mut s, CROSS_DISTRO_PARAMS, &FEDORA_STATE_ACTION);

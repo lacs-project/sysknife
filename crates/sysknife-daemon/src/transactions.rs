@@ -252,6 +252,24 @@ fn event_row_from_sqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRow> 
     })
 }
 
+/// Run `query_row`, treating "no row matched" as `Ok(None)` instead of an
+/// error. Three call sites used to spell out
+/// `.map(Some).or_else(|e| match e { QueryReturnedNoRows => Ok(None), other => Err(other) })`
+/// by hand; sharing this mapping means a future call site cannot drop the
+/// `QueryReturnedNoRows` arm and turn a routine "not found" into a hard error.
+fn query_optional<T>(
+    conn: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+    f: impl FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> rusqlite::Result<Option<T>> {
+    match conn.query_row(sql, params, f) {
+        Ok(v) => Ok(Some(v)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TransactionStore {
     path: PathBuf,
@@ -369,10 +387,19 @@ impl TransactionStore {
         Ok(store)
     }
 
-    pub fn record(
+    /// Shared body of [`record`](Self::record) and
+    /// [`record_previewed`](Self::record_previewed): check for a writable
+    /// store, open the write transaction, insert the transaction row, run
+    /// `in_tx` inside that same transaction (so e.g. a preview insert commits
+    /// atomically with its transaction row), commit, and emit the chain-tip
+    /// watermark. `in_tx` runs between the insert and the commit — never
+    /// after — so nothing it does can land outside the transaction it needs
+    /// to be atomic with.
+    fn record_with(
         &self,
         transaction: NewTransaction,
-    ) -> Result<TransactionRecord, TransactionStoreError> {
+        in_tx: impl FnOnce(&Connection, &InsertedTransaction) -> Result<(), TransactionStoreError>,
+    ) -> Result<InsertedTransaction, TransactionStoreError> {
         let key = self
             .audit_key
             .as_ref()
@@ -387,8 +414,17 @@ impl TransactionStore {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let transaction_id = Uuid::new_v4().to_string();
         let inserted = Self::insert_transaction(&tx, key, &transaction_id, transaction)?;
+        in_tx(&tx, &inserted)?;
         tx.commit()?;
         emit_chain_tip_watermark(inserted.seq, &inserted.chain_hash);
+        Ok(inserted)
+    }
+
+    pub fn record(
+        &self,
+        transaction: NewTransaction,
+    ) -> Result<TransactionRecord, TransactionStoreError> {
+        let inserted = self.record_with(transaction, |_, _| Ok(()))?;
         Ok(inserted.record)
     }
 
@@ -397,24 +433,9 @@ impl TransactionStore {
         transaction: NewTransaction,
         preview: PreviewEnvelope,
     ) -> Result<RecordedPreviewedTransaction, TransactionStoreError> {
-        let key = self
-            .audit_key
-            .as_ref()
-            .ok_or(TransactionStoreError::AuditChainMissing(
-                "this TransactionStore was opened read-only; cannot record",
-            ))?;
-        let mut conn = self.connection()?;
-        // IMMEDIATE acquires the write lock at BEGIN, so the read of
-        // `next_seq_and_prev_hash` is consistent with the eventual INSERT.
-        // Default DEFERRED would let two writers both read the same prev_hash
-        // and then race to INSERT — the loser hits SQLITE_BUSY.
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let transaction_id = Uuid::new_v4().to_string();
-        let inserted = Self::insert_transaction(&tx, key, &transaction_id, transaction)?;
-        Self::insert_preview(&tx, &inserted.record.transaction_id, &preview)?;
-        tx.commit()?;
-        emit_chain_tip_watermark(inserted.seq, &inserted.chain_hash);
-
+        let inserted = self.record_with(transaction, |conn, inserted| {
+            Self::insert_preview(conn, &inserted.record.transaction_id, &preview)
+        })?;
         Ok(RecordedPreviewedTransaction {
             transaction: inserted.record,
             preview,
@@ -597,18 +618,13 @@ impl TransactionStore {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         // Capture the digest before the DELETE: the event has to name which
         // receipt was retracted, and after the delete there is nothing to name.
-        let digest: Option<String> = tx
-            .query_row(
-                "SELECT receipt_digest FROM transaction_approvals \
-                 WHERE transaction_id = ?1 AND consumed_at IS NULL",
-                params![transaction_id],
-                |row| row.get(0),
-            )
-            .map(Some)
-            .or_else(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                other => Err(other),
-            })?;
+        let digest: Option<String> = query_optional(
+            &tx,
+            "SELECT receipt_digest FROM transaction_approvals \
+             WHERE transaction_id = ?1 AND consumed_at IS NULL",
+            params![transaction_id],
+            |row| row.get(0),
+        )?;
         let rows_affected = tx.execute(
             "DELETE FROM transaction_approvals \
              WHERE transaction_id = ?1 AND consumed_at IS NULL",
@@ -992,17 +1008,12 @@ impl TransactionStore {
     /// `chain_hash`. Caller must hold a transaction so the (seq, prev_hash)
     /// pair is consistent against concurrent writers.
     fn next_seq_and_prev_hash(conn: &Connection) -> Result<(u64, String), TransactionStoreError> {
-        let prev: Option<(i64, String)> = conn
-            .query_row(
-                "SELECT seq, chain_hash FROM transactions ORDER BY seq DESC LIMIT 1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .map(Some)
-            .or_else(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                other => Err(other),
-            })?;
+        let prev: Option<(i64, String)> = query_optional(
+            conn,
+            "SELECT seq, chain_hash FROM transactions ORDER BY seq DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
         Ok(match prev {
             Some((seq, hash)) => ((seq as u64) + 1, hash),
             None => (1, String::new()),
@@ -1012,16 +1023,12 @@ impl TransactionStore {
     /// `chain_hash` of the last approval event, or `None` when no event has
     /// ever been recorded.
     fn event_chain_tip(conn: &Connection) -> Result<Option<String>, TransactionStoreError> {
-        conn.query_row(
+        Ok(query_optional(
+            conn,
             "SELECT chain_hash FROM audit_events ORDER BY seq DESC LIMIT 1",
             [],
             |row| row.get(0),
-        )
-        .map(Some)
-        .or_else(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(other.into()),
-        })
+        )?)
     }
 
     /// Append one signed approval event. Must be called inside a DB

@@ -47,7 +47,7 @@ pub(crate) fn operator_safe(s: &str) -> String {
 
     for ch in s.chars() {
         let keep = match ch {
-            '\t' | '\n' | '\r' => {
+            '\t' | '\n' | '\r' | ' ' => {
                 pending_space = true;
                 continue;
             }
@@ -59,10 +59,6 @@ pub(crate) fn operator_safe(s: &str) -> String {
             '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => false,
             // Zero-width and byte-order marks — hide text in plain sight.
             '\u{200b}'..='\u{200f}' | '\u{feff}' => false,
-            ' ' => {
-                pending_space = true;
-                continue;
-            }
             _ => true,
         };
         if !keep {

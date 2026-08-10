@@ -2196,7 +2196,12 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
         "pti=off",
     ];
     const BLOCKED_EXACT: &[&str] = &["single", "s", "1", "nosmap", "nosmep"];
-    const BLOCKED_UNIT_PREFIXES: &[&str] = &["emergency", "rescue", "single"];
+    // Shared with `validated_activatable_unit`, deliberately: these two screens
+    // encode the same idea from opposite directions — one refuses to START a
+    // root-shell unit, the other refuses to BOOT into it — and keeping two lists
+    // let them drift until `debug-shell` and `runlevel1` were blocked on one path
+    // and reachable on the other.
+    use crate::actions::validate::ROOT_SHELL_UNITS as BLOCKED_UNIT_PREFIXES;
 
     let lower = arg.to_lowercase();
     // Strip optional value (e.g. "quiet=1" → "quiet") for exact matches.

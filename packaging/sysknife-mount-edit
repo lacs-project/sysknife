@@ -151,6 +151,18 @@ def fstab_field1(line: str) -> str:
     return parts[0] if len(parts) >= 1 else ""
 
 
+def append_fstab_entry(lines: list, entry: str) -> list:
+    """Return `lines` with `entry` appended, first appending a newline if the
+    last existing line lacks one. Shared by op_mount and op_addswap."""
+    return lines + ([] if (not lines or lines[-1].endswith("\n")) else ["\n"]) + [entry]
+
+
+def remove_fstab_lines(lines: list, field_fn, value: str) -> list:
+    """Return `lines` with rows where `field_fn(line) == value` dropped.
+    Shared by op_unmount (field2/mountpoint) and op_rmswap (field1/device)."""
+    return [ln for ln in lines if field_fn(ln) != value]
+
+
 def op_mount(args) -> None:
     if not DEVICE_RE.match(args.device):
         die(f"invalid device {args.device!r}")
@@ -206,8 +218,7 @@ def op_mount(args) -> None:
 
     # Persist to fstab only after the mount succeeds (no bad-line-then-rollback window).
     entry = f"{args.device}\t{args.mountpoint}\t{args.fstype}\t{options}\t0\t0\n"
-    new_lines = lines + ([] if (not lines or lines[-1].endswith("\n")) else ["\n"]) + [entry]
-    write_fstab(new_lines)
+    write_fstab(append_fstab_entry(lines, entry))
 
 
 def op_unmount(args) -> None:
@@ -226,7 +237,7 @@ def op_unmount(args) -> None:
     # Unmount if currently mounted (ignore "not mounted").
     subprocess.run([UMOUNT, args.mountpoint], check=False, stderr=subprocess.DEVNULL)
     lines = read_fstab()
-    kept = [ln for ln in lines if fstab_field2(ln) != args.mountpoint]
+    kept = remove_fstab_lines(lines, fstab_field2, args.mountpoint)
     if len(kept) != len(lines):
         write_fstab(kept)
 
@@ -301,8 +312,7 @@ def op_addswap(args) -> None:
     lines = read_fstab()
     if not any(fstab_field1(ln) == path for ln in lines):
         entry = f"{path}\tnone\tswap\tsw,nofail\t0\t0\n"
-        lines = lines + ([] if (not lines or lines[-1].endswith("\n")) else ["\n"]) + [entry]
-        write_fstab(lines)
+        write_fstab(append_fstab_entry(lines, entry))
 
 
 def known_swap_files() -> set:
@@ -352,7 +362,7 @@ def op_rmswap(args) -> None:
         die(f"{path!r} is a symlink, not a swap file; refusing to remove it")
     subprocess.run([SWAPOFF, path], check=False, stderr=subprocess.DEVNULL)
     lines = read_fstab()
-    kept = [ln for ln in lines if fstab_field1(ln) != path]
+    kept = remove_fstab_lines(lines, fstab_field1, path)
     if len(kept) != len(lines):
         write_fstab(kept)
     if os.path.exists(path):
