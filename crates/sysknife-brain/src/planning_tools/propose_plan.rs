@@ -507,12 +507,17 @@ pub fn propose_plan_tool_def(family: Option<&str>) -> ToolDefinition {
         .collect();
 
     // Build a compact catalogue so the model can match intent to action by
-    // purpose.  Format: "Name — description" on its own line.
-    let action_catalogue: String = offered
-        .iter()
-        .map(|(name, desc)| format!("{name} — {desc}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    // purpose.  Format: "Name — description" on its own line. Built in one pass
+    // rather than collecting a `Vec<String>` just to join and discard it.
+    let mut action_catalogue = String::new();
+    for (i, (name, desc)) in offered.iter().enumerate() {
+        if i > 0 {
+            action_catalogue.push('\n');
+        }
+        action_catalogue.push_str(name);
+        action_catalogue.push_str(" — ");
+        action_catalogue.push_str(desc);
+    }
 
     let action_name_description = format!(
         "SysKnife action name from the approved list. \

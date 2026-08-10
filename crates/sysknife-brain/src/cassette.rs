@@ -683,14 +683,18 @@ impl LlmProvider for CassetteProvider {
             .inner
             .complete(system, messages, tools, max_tokens)
             .await?;
-        let prompt_sha = sha256_hex(system.as_bytes());
+        // The fingerprint's `system` field is the same sha256 `prompt_sha` needs;
+        // compute it once and reuse it rather than hashing the (tens-of-KB)
+        // system prompt twice for one stored call.
+        let fingerprint = CallFingerprint::of(system, messages, tools, max_tokens);
+        let prompt_sha = fingerprint.system.clone();
         self.cassette
             .store(
                 key,
                 &self.surface,
                 &prompt_sha,
                 output.clone(),
-                Some(CallFingerprint::of(system, messages, tools, max_tokens)),
+                Some(fingerprint),
             )
             .map_err(|e| ProviderError::CassetteMiss(format!("cannot write cassette: {e}")))?;
         Ok(output)
@@ -770,13 +774,32 @@ mod tests {
 
     const SURFACE: &str = "groq/openai-gpt-oss-120b";
 
+    /// A `CassetteProvider` in `Record` mode against `SURFACE`. Most tests below
+    /// only vary the inner provider and the path; this and [`replayer`] collapse
+    /// that repeated four-line construction to one call.
+    fn recorder(inner: Box<dyn LlmProvider>, path: &Path) -> CassetteProvider {
+        CassetteProvider::new(
+            inner,
+            Cassette::open(path, CassetteMode::Record).unwrap(),
+            SURFACE,
+        )
+    }
+
+    /// A `CassetteProvider` in `Replay` mode against `SURFACE`. See [`recorder`].
+    fn replayer(inner: Box<dyn LlmProvider>, path: &Path) -> CassetteProvider {
+        CassetteProvider::new(
+            inner,
+            Cassette::open(path, CassetteMode::Replay).unwrap(),
+            SURFACE,
+        )
+    }
+
     #[tokio::test]
     async fn record_calls_through_and_persists() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.json");
         let (inner, calls) = counting();
-        let cass = Cassette::open(&path, CassetteMode::Record).unwrap();
-        let p = CassetteProvider::new(inner, cass, SURFACE);
+        let p = recorder(inner, &path);
 
         let out = p.complete("sys", &msgs("hi"), &[], 100).await.unwrap();
         assert_eq!(first_text(&out), "live#1:1");
@@ -789,19 +812,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.json");
         let (inner, _) = counting();
-        let rec = CassetteProvider::new(
-            inner,
-            Cassette::open(&path, CassetteMode::Record).unwrap(),
-            SURFACE,
-        );
+        let rec = recorder(inner, &path);
         rec.complete("sys", &msgs("hi"), &[], 100).await.unwrap();
         drop(rec);
 
-        let rep = CassetteProvider::new(
-            Box::new(Exploding),
-            Cassette::open(&path, CassetteMode::Replay).unwrap(),
-            SURFACE,
-        );
+        let rep = replayer(Box::new(Exploding), &path);
         let out = rep.complete("sys", &msgs("hi"), &[], 100).await.unwrap();
         assert_eq!(first_text(&out), "live#1:1", "must be the recorded answer");
         assert_eq!(rep.cassette().tally().hits, 1);
@@ -812,21 +827,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.json");
         let (inner, _) = counting();
-        let rec = CassetteProvider::new(
-            inner,
-            Cassette::open(&path, CassetteMode::Record).unwrap(),
-            SURFACE,
-        );
+        let rec = recorder(inner, &path);
         rec.complete("sys", &msgs("recorded"), &[], 100)
             .await
             .unwrap();
         drop(rec);
 
-        let rep = CassetteProvider::new(
-            Box::new(Exploding),
-            Cassette::open(&path, CassetteMode::Replay).unwrap(),
-            SURFACE,
-        );
+        let rep = replayer(Box::new(Exploding), &path);
         let err = rep
             .complete("sys", &msgs("never-recorded"), &[], 100)
             .await
@@ -843,11 +850,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.json");
         let (inner, calls) = counting();
-        let p = CassetteProvider::new(
-            inner,
-            Cassette::open(&path, CassetteMode::Record).unwrap(),
-            SURFACE,
-        );
+        let p = recorder(inner, &path);
 
         let a = p.complete("sys", &msgs("same"), &[], 100).await.unwrap();
         let b = p.complete("sys", &msgs("same"), &[], 100).await.unwrap();
@@ -887,19 +890,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.json");
         let (inner, _) = counting();
-        let rec = CassetteProvider::new(
-            inner,
-            Cassette::open(&path, CassetteMode::Record).unwrap(),
-            SURFACE,
-        );
+        let rec = recorder(inner, &path);
         rec.complete("sys", &msgs("hi"), &[], 100).await.unwrap();
         drop(rec);
 
-        let rep = CassetteProvider::new(
-            Box::new(Exploding),
-            Cassette::open(&path, CassetteMode::Replay).unwrap(),
-            SURFACE,
-        );
+        let rep = replayer(Box::new(Exploding), &path);
         rep.complete("sys", &msgs("hi"), &[], 999)
             .await
             .expect_err("a different max_tokens is a different call");
@@ -919,19 +914,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.json");
         let (inner, _) = counting();
-        let rec = CassetteProvider::new(
-            inner,
-            Cassette::open(&path, CassetteMode::Record).unwrap(),
-            SURFACE,
-        );
+        let rec = recorder(inner, &path);
         rec.complete("sys", &msgs("known"), &[], 100).await.unwrap();
         drop(rec);
 
-        let rep = CassetteProvider::new(
-            Box::new(Exploding),
-            Cassette::open(&path, CassetteMode::Replay).unwrap(),
-            SURFACE,
-        );
+        let rep = replayer(Box::new(Exploding), &path);
         rep.complete("sys", &msgs("known"), &[], 100).await.unwrap();
         let _ = rep.complete("sys", &msgs("unknown"), &[], 100).await; // swallowed
         let ledger = rep.cassette().ledger_path().to_path_buf();
@@ -964,21 +951,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.json");
         let (inner, _) = counting();
-        let rec = CassetteProvider::new(
-            inner,
-            Cassette::open(&path, CassetteMode::Record).unwrap(),
-            SURFACE,
-        );
+        let rec = recorder(inner, &path);
         rec.complete("prompt version one", &msgs("hi"), &[], 100)
             .await
             .unwrap();
         drop(rec);
 
-        let rep = CassetteProvider::new(
-            Box::new(Exploding),
-            Cassette::open(&path, CassetteMode::Replay).unwrap(),
-            SURFACE,
-        );
+        let rep = replayer(Box::new(Exploding), &path);
         let err = rep
             .complete("prompt version two", &msgs("hi"), &[], 100)
             .await
@@ -994,20 +973,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.json");
         let (inner, calls) = counting();
-        let first = CassetteProvider::new(
-            inner,
-            Cassette::open(&path, CassetteMode::Record).unwrap(),
-            SURFACE,
-        );
+        let first = recorder(inner, &path);
         first.complete("sys", &msgs("one"), &[], 100).await.unwrap();
         drop(first);
 
         let (inner2, calls2) = counting();
-        let second = CassetteProvider::new(
-            inner2,
-            Cassette::open(&path, CassetteMode::Record).unwrap(),
-            SURFACE,
-        );
+        let second = recorder(inner2, &path);
         // Already recorded: must be served from the file, not paid for again.
         second
             .complete("sys", &msgs("one"), &[], 100)
@@ -1026,11 +997,7 @@ mod tests {
             "only the new call is paid for"
         );
 
-        let rep = CassetteProvider::new(
-            Box::new(Exploding),
-            Cassette::open(&path, CassetteMode::Replay).unwrap(),
-            SURFACE,
-        );
+        let rep = replayer(Box::new(Exploding), &path);
         rep.complete("sys", &msgs("one"), &[], 100).await.unwrap();
         rep.complete("sys", &msgs("two"), &[], 100).await.unwrap();
         assert_eq!(
@@ -1096,11 +1063,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.json");
         let (inner, _) = counting();
-        let p = CassetteProvider::new(
-            inner,
-            Cassette::open(&path, CassetteMode::Record).unwrap(),
-            SURFACE,
-        );
+        let p = recorder(inner, &path);
         p.complete("sys", &msgs("hi"), &[], 100).await.unwrap();
 
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;

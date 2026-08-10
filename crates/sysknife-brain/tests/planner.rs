@@ -150,6 +150,43 @@ fn end_turn_text(text: &str) -> Result<Completion, ProviderError> {
     })
 }
 
+/// A single `ToolUse` completion for `name`, carrying `input` as the call's
+/// arguments. Covers everything the builders above don't: a specific tool
+/// name (`remember`, `forget`, ...) or a deliberately invalid `propose_plan`
+/// input, without hand-building the `Completion`/`ContentBlock` shape at each
+/// call site.
+fn tool_call(id: &str, name: &str, input: serde_json::Value) -> Result<Completion, ProviderError> {
+    Ok(Completion {
+        content: vec![ContentBlock::ToolUse {
+            id: id.into(),
+            call_id: None,
+            name: name.into(),
+            input,
+        }],
+        stop_reason: StopReason::ToolUse,
+    })
+}
+
+/// A `propose_plan` call naming the disallowed `RunShellCommand` action — the
+/// fixture every safety-fence-rejection test below builds, differing only in
+/// the step's `summary` text.
+fn bad_action_plan_call(step_summary: &str) -> Result<Completion, ProviderError> {
+    tool_call(
+        "tu_bad",
+        "propose_plan",
+        serde_json::json!({
+            "summary": "bad plan",
+            "explanation": "using a fake action",
+            "steps": [{
+                "action_name": "RunShellCommand",
+                "summary": step_summary,
+                "risk_level": "low",
+                "params": {}
+            }]
+        }),
+    )
+}
+
 fn make_planner(provider: MockProvider) -> LlmPlanner {
     LlmPlanner::new(Box::new(provider), Box::new(MockStateClient::default()), 5)
 }
@@ -384,24 +421,20 @@ async fn multi_step_plan_preserves_order_and_approval_flags() {
 
 #[tokio::test]
 async fn plan_step_carries_params() {
-    let planner = make_planner(MockProvider::new([Ok(Completion {
-        content: vec![ContentBlock::ToolUse {
-            id: "tu_p".into(),
-            call_id: None,
-            name: "propose_plan".into(),
-            input: serde_json::json!({
-                "summary": "Install vim",
-                "explanation": "Layers vim.",
-                "steps": [{
-                    "action_name": "InstallPackages",
-                    "summary": "Layer vim",
-                    "risk_level": "high",
-                    "params": { "packages": ["vim"] }
-                }]
-            }),
-        }],
-        stop_reason: StopReason::ToolUse,
-    })]));
+    let planner = make_planner(MockProvider::new([tool_call(
+        "tu_p",
+        "propose_plan",
+        serde_json::json!({
+            "summary": "Install vim",
+            "explanation": "Layers vim.",
+            "steps": [{
+                "action_name": "InstallPackages",
+                "summary": "Layer vim",
+                "risk_level": "high",
+                "params": { "packages": ["vim"] }
+            }]
+        }),
+    )]));
 
     let plan = planner.plan_intent("install vim").await.unwrap();
     let params = plan.steps()[0].params();
@@ -509,24 +542,9 @@ async fn invalid_plan_with_single_turn_returns_planner_stuck() {
     // turns to retry, so it returns PlannerStuck. This verifies that the KNOWN_ACTIONS
     // fence correctly rejects unknown action names.
     let planner = LlmPlanner::new(
-        Box::new(MockProvider::new([Ok(Completion {
-            content: vec![ContentBlock::ToolUse {
-                id: "tu_bad".into(),
-                call_id: None,
-                name: "propose_plan".into(),
-                input: serde_json::json!({
-                    "summary": "bad plan",
-                    "explanation": "using a fake action",
-                    "steps": [{
-                        "action_name": "RunShellCommand",
-                        "summary": "run arbitrary shell",
-                        "risk_level": "low",
-                        "params": {}
-                    }]
-                }),
-            }],
-            stop_reason: StopReason::ToolUse,
-        })])),
+        Box::new(MockProvider::new([bad_action_plan_call(
+            "run arbitrary shell",
+        )])),
         Box::new(MockStateClient::default()),
         1,
     );
@@ -545,24 +563,7 @@ async fn invalid_proposed_plan_is_retried_and_succeeds_on_second_call() {
     // This verifies symmetry with the unknown-tool retry path.
     let planner = LlmPlanner::new(
         Box::new(MockProvider::new([
-            Ok(Completion {
-                content: vec![ContentBlock::ToolUse {
-                    id: "tu_bad".into(),
-                    call_id: None,
-                    name: "propose_plan".into(),
-                    input: serde_json::json!({
-                        "summary": "bad plan",
-                        "explanation": "using a fake action",
-                        "steps": [{
-                            "action_name": "RunShellCommand",
-                            "summary": "run arbitrary shell",
-                            "risk_level": "low",
-                            "params": {}
-                        }]
-                    }),
-                }],
-                stop_reason: StopReason::ToolUse,
-            }),
+            bad_action_plan_call("run arbitrary shell"),
             propose_plan(
                 "Inspect system",
                 &[("GetSystemState", "Read current deployment", "low")],
@@ -583,19 +584,15 @@ async fn empty_steps_array_with_single_turn_returns_planner_stuck() {
     // A plan with zero steps is rejected by the safety fence and the error
     // is fed back as a tool result. With max_turns=1, no retry is possible.
     let planner = LlmPlanner::new(
-        Box::new(MockProvider::new([Ok(Completion {
-            content: vec![ContentBlock::ToolUse {
-                id: "tu_empty".into(),
-                call_id: None,
-                name: "propose_plan".into(),
-                input: serde_json::json!({
-                    "summary": "nothing to do",
-                    "explanation": "no steps",
-                    "steps": []
-                }),
-            }],
-            stop_reason: StopReason::ToolUse,
-        })])),
+        Box::new(MockProvider::new([tool_call(
+            "tu_empty",
+            "propose_plan",
+            serde_json::json!({
+                "summary": "nothing to do",
+                "explanation": "no steps",
+                "steps": []
+            }),
+        )])),
         Box::new(MockStateClient::default()),
         1,
     );
@@ -705,24 +702,7 @@ async fn rejected_plan_is_written_to_safety_audit_log() {
     // then corrects it on turn 2 (accepted). The rejection should be logged.
     let planner = LlmPlanner::new(
         Box::new(MockProvider::new([
-            Ok(Completion {
-                content: vec![ContentBlock::ToolUse {
-                    id: "tu_bad".into(),
-                    call_id: None,
-                    name: "propose_plan".into(),
-                    input: serde_json::json!({
-                        "summary": "bad plan",
-                        "explanation": "using a fake action",
-                        "steps": [{
-                            "action_name": "RunShellCommand",
-                            "summary": "run arbitrary shell",
-                            "risk_level": "low",
-                            "params": {}
-                        }]
-                    }),
-                }],
-                stop_reason: StopReason::ToolUse,
-            }),
+            bad_action_plan_call("run arbitrary shell"),
             propose_plan(
                 "Inspect system",
                 &[("GetSystemState", "Read current deployment", "low")],
@@ -771,24 +751,7 @@ async fn planner_without_audit_log_does_not_panic_on_rejection() {
     // Verify that the planner works correctly even without an audit log.
     let planner = LlmPlanner::new(
         Box::new(MockProvider::new([
-            Ok(Completion {
-                content: vec![ContentBlock::ToolUse {
-                    id: "tu_bad".into(),
-                    call_id: None,
-                    name: "propose_plan".into(),
-                    input: serde_json::json!({
-                        "summary": "bad plan",
-                        "explanation": "using a fake action",
-                        "steps": [{
-                            "action_name": "RunShellCommand",
-                            "summary": "run stuff",
-                            "risk_level": "low",
-                            "params": {}
-                        }]
-                    }),
-                }],
-                stop_reason: StopReason::ToolUse,
-            }),
+            bad_action_plan_call("run stuff"),
             propose_plan(
                 "Inspect system",
                 &[("GetSystemState", "Read deployment", "low")],
@@ -838,15 +801,11 @@ async fn remember_tool_saves_preference_and_planner_continues() {
 
     let planner = LlmPlanner::new(
         Box::new(MockProvider::new([
-            Ok(Completion {
-                content: vec![ContentBlock::ToolUse {
-                    id: "tu_rem".into(),
-                    call_id: None,
-                    name: "remember".into(),
-                    input: serde_json::json!({"fact": "prefer vim-enhanced over vim"}),
-                }],
-                stop_reason: StopReason::ToolUse,
-            }),
+            tool_call(
+                "tu_rem",
+                "remember",
+                serde_json::json!({"fact": "prefer vim-enhanced over vim"}),
+            ),
             propose_plan(
                 "Confirm preference saved",
                 &[("GetSystemState", "Confirm system is accessible", "low")],
@@ -877,15 +836,11 @@ async fn forget_tool_removes_preference() {
 
     let planner = LlmPlanner::new(
         Box::new(MockProvider::new([
-            Ok(Completion {
-                content: vec![ContentBlock::ToolUse {
-                    id: "tu_fgt".into(),
-                    call_id: None,
-                    name: "forget".into(),
-                    input: serde_json::json!({"fact": "prefer vim-enhanced over vim"}),
-                }],
-                stop_reason: StopReason::ToolUse,
-            }),
+            tool_call(
+                "tu_fgt",
+                "forget",
+                serde_json::json!({"fact": "prefer vim-enhanced over vim"}),
+            ),
             propose_plan(
                 "Preference removed",
                 &[("GetSystemState", "Confirm system", "low")],
@@ -912,15 +867,11 @@ async fn remember_rejects_sensitive_data() {
 
     let planner = LlmPlanner::new(
         Box::new(MockProvider::new([
-            Ok(Completion {
-                content: vec![ContentBlock::ToolUse {
-                    id: "tu_rem".into(),
-                    call_id: None,
-                    name: "remember".into(),
-                    input: serde_json::json!({"fact": "my password is hunter2"}),
-                }],
-                stop_reason: StopReason::ToolUse,
-            }),
+            tool_call(
+                "tu_rem",
+                "remember",
+                serde_json::json!({"fact": "my password is hunter2"}),
+            ),
             propose_plan(
                 "Cannot save sensitive data",
                 &[("GetSystemState", "System check", "low")],
@@ -945,15 +896,11 @@ async fn remember_without_prefs_path_returns_not_configured_error() {
     // When no prefs_path is set the planner must report "not configured"
     // with is_error=true so the LLM knows storage is unavailable.
     let provider = Box::new(MockProvider::new([
-        Ok(Completion {
-            content: vec![ContentBlock::ToolUse {
-                id: "tu_rem2".into(),
-                call_id: None,
-                name: "remember".into(),
-                input: serde_json::json!({"fact": "prefer dark theme"}),
-            }],
-            stop_reason: StopReason::ToolUse,
-        }),
+        tool_call(
+            "tu_rem2",
+            "remember",
+            serde_json::json!({"fact": "prefer dark theme"}),
+        ),
         propose_plan(
             "Storage not configured",
             &[("GetSystemState", "fallback", "low")],
@@ -976,15 +923,11 @@ async fn remember_without_prefs_path_returns_not_configured_error() {
 async fn forget_without_prefs_path_returns_not_configured_error() {
     // Same as above but for the `forget` path.
     let provider = Box::new(MockProvider::new([
-        Ok(Completion {
-            content: vec![ContentBlock::ToolUse {
-                id: "tu_fgt2".into(),
-                call_id: None,
-                name: "forget".into(),
-                input: serde_json::json!({"fact": "prefer dark theme"}),
-            }],
-            stop_reason: StopReason::ToolUse,
-        }),
+        tool_call(
+            "tu_fgt2",
+            "forget",
+            serde_json::json!({"fact": "prefer dark theme"}),
+        ),
         propose_plan(
             "Storage not configured",
             &[("GetSystemState", "fallback", "low")],
@@ -1013,15 +956,11 @@ async fn forget_returns_not_found_when_preference_absent() {
 
     let planner = LlmPlanner::new(
         Box::new(MockProvider::new([
-            Ok(Completion {
-                content: vec![ContentBlock::ToolUse {
-                    id: "tu_fgt3".into(),
-                    call_id: None,
-                    name: "forget".into(),
-                    input: serde_json::json!({"fact": "prefer vim-enhanced over vim"}),
-                }],
-                stop_reason: StopReason::ToolUse,
-            }),
+            tool_call(
+                "tu_fgt3",
+                "forget",
+                serde_json::json!({"fact": "prefer vim-enhanced over vim"}),
+            ),
             propose_plan(
                 "Nothing to forget",
                 &[("GetSystemState", "fallback", "low")],
@@ -1057,15 +996,11 @@ async fn remember_io_error_is_reported_to_llm() {
 
     let planner = LlmPlanner::new(
         Box::new(MockProvider::new([
-            Ok(Completion {
-                content: vec![ContentBlock::ToolUse {
-                    id: "tu_rem3".into(),
-                    call_id: None,
-                    name: "remember".into(),
-                    input: serde_json::json!({"fact": "prefer dark theme"}),
-                }],
-                stop_reason: StopReason::ToolUse,
-            }),
+            tool_call(
+                "tu_rem3",
+                "remember",
+                serde_json::json!({"fact": "prefer dark theme"}),
+            ),
             propose_plan(
                 "Preference save failed",
                 &[("GetSystemState", "fallback", "low")],

@@ -218,6 +218,12 @@ impl PlanRiskLevel {
     }
 }
 
+/// Shared by [`PlanStep::approval_required`] and [`AuthorizedStep::approval_required`]:
+/// any risk above `Low` requires approval.
+fn requires_approval(risk: &PlanRiskLevel) -> bool {
+    !matches!(risk, PlanRiskLevel::Low)
+}
+
 // ---------------------------------------------------------------------------
 // PlanStep
 // ---------------------------------------------------------------------------
@@ -280,7 +286,7 @@ impl PlanStep {
     /// Derived from the *proposed* risk level: `true` for Medium and High,
     /// `false` for Low. For gating, prefer [`AuthorizedStep::approval_required`].
     pub fn approval_required(&self) -> bool {
-        !matches!(self.risk_level, PlanRiskLevel::Low)
+        requires_approval(&self.risk_level)
     }
 
     pub fn params(&self) -> &serde_json::Value {
@@ -459,7 +465,7 @@ impl<'a> AuthorizedStep<'a> {
 
     /// Derived from the authoritative risk: `true` for Medium and High.
     pub fn approval_required(&self) -> bool {
-        !matches!(self.0.risk_level, PlanRiskLevel::Low)
+        requires_approval(&self.0.risk_level)
     }
 }
 
@@ -676,6 +682,37 @@ impl LlmPlanner {
         self
     }
 
+    /// Shared prelude for the `remember`/`forget` tool-call handlers: extract
+    /// the `fact` string and run the checks common to both — non-empty, then a
+    /// caller-supplied extra check (`remember` rejects sensitive data; `forget`
+    /// has none), then confirm preference storage is configured. Returns
+    /// `Err((message, is_error))` in the same shape both callers push into a
+    /// `ToolResultBlock` on failure, so only the differing async operation and
+    /// its success/failure formatting stay in each match arm.
+    fn prepare_pref_op<'a>(
+        &self,
+        input: &'a serde_json::Value,
+        extra_check: impl FnOnce(&str) -> Option<String>,
+    ) -> Result<(&'a str, std::path::PathBuf), (String, bool)> {
+        let fact = input.get("fact").and_then(|v| v.as_str()).unwrap_or("");
+        if fact.is_empty() {
+            return Err((
+                "Error: 'fact' parameter must not be empty.".to_string(),
+                true,
+            ));
+        }
+        if let Some(msg) = extra_check(fact) {
+            return Err((msg, true));
+        }
+        match self.prefs_path.clone() {
+            Some(p) => Ok((fact, p)),
+            None => Err((
+                "Error: preference storage is not configured.".to_string(),
+                true,
+            )),
+        }
+    }
+
     /// Send a [`PlanEvent`] to the progress channel, if one is attached.
     ///
     /// A closed or absent channel is silently ignored — progress events are
@@ -835,19 +872,19 @@ impl LlmPlanner {
         self.state_client.curated_state()
     }
 
-    /// Generate a plain-language summary of a short prompt, bypassing the
-    /// tool-use loop. Used for post-execution review.
-    ///
-    /// Returns the raw text content from the LLM. No tools are provided, so
-    /// the LLM is constrained to text-only output.
-    pub async fn summarize(&self, prompt: &str) -> Result<String, PlanningError> {
-        if prompt.len() > INTENT_MAX_BYTES {
+    /// Length, sensitive-data, and rate-limit checks shared by every entry point
+    /// that forwards free text to the LLM provider. `plan_intent` and
+    /// `summarize` used to repeat this three-step gate independently; keeping it
+    /// in one place means a future change to the sequence (e.g. an added scan)
+    /// can't be made at one call site and forgotten at the other.
+    async fn admit_request(&self, text: &str) -> Result<(), PlanningError> {
+        if text.len() > INTENT_MAX_BYTES {
             return Err(PlanningError::IntentTooLong {
-                len: prompt.len(),
+                len: text.len(),
                 max: INTENT_MAX_BYTES,
             });
         }
-        if crate::prefs::contains_sensitive(prompt) {
+        if crate::prefs::contains_sensitive(text) {
             return Err(PlanningError::IntentContainsSensitiveData);
         }
         if let Some(ref rl) = self.rate_limiter {
@@ -856,6 +893,16 @@ impl LlmPlanner {
                 return Err(PlanningError::RateLimitExceeded { retry_after_secs });
             }
         }
+        Ok(())
+    }
+
+    /// Generate a plain-language summary of a short prompt, bypassing the
+    /// tool-use loop. Used for post-execution review.
+    ///
+    /// Returns the raw text content from the LLM. No tools are provided, so
+    /// the LLM is constrained to text-only output.
+    pub async fn summarize(&self, prompt: &str) -> Result<String, PlanningError> {
+        self.admit_request(prompt).await?;
 
         let messages = vec![Message::user_text(prompt)];
         let completion = self
@@ -971,21 +1018,7 @@ impl LlmPlanner {
         if intent.is_empty() {
             return Err(PlanningError::EmptyIntent);
         }
-        if intent.len() > INTENT_MAX_BYTES {
-            return Err(PlanningError::IntentTooLong {
-                len: intent.len(),
-                max: INTENT_MAX_BYTES,
-            });
-        }
-        if crate::prefs::contains_sensitive(intent) {
-            return Err(PlanningError::IntentContainsSensitiveData);
-        }
-        if let Some(ref rl) = self.rate_limiter {
-            if let Err(retry_after_secs) = std::sync::Arc::clone(rl).check_and_consume_async().await
-            {
-                return Err(PlanningError::RateLimitExceeded { retry_after_secs });
-            }
-        }
+        self.admit_request(intent).await?;
 
         let mut messages: Vec<Message> = vec![Message::user_text(intent)];
 
@@ -1180,41 +1213,32 @@ impl LlmPlanner {
                                 }
                             }
                             "remember" => {
-                                let fact = input.get("fact").and_then(|v| v.as_str()).unwrap_or("");
-                                let (result_text, err) = if fact.is_empty() {
-                                    (
-                                        "Error: 'fact' parameter must not be empty.".to_string(),
-                                        true,
-                                    )
-                                } else if crate::prefs::contains_sensitive(fact) {
-                                    (
+                                let (result_text, err) = match self.prepare_pref_op(input, |fact| {
+                                    crate::prefs::contains_sensitive(fact).then(|| {
                                         "Error: preference rejected — it appears to contain \
                                          sensitive data (passwords, tokens, keys). Preferences \
                                          must not store secrets."
-                                            .to_string(),
-                                        true,
-                                    )
-                                } else if let Some(prefs_path) = self.prefs_path.clone() {
-                                    match crate::prefs::append_pref_async(
-                                        prefs_path.clone(),
-                                        fact.to_string(),
-                                    )
-                                    .await
-                                    {
-                                        Ok(()) => (format!("Preference saved: {fact}"), false),
-                                        Err(e) => {
-                                            eprintln!(
-                                                "[sysknife-brain] failed to save preference to {}: {e}",
-                                                prefs_path.display()
-                                            );
-                                            (format!("Error saving preference: {e}"), true)
+                                            .to_string()
+                                    })
+                                }) {
+                                    Ok((fact, prefs_path)) => {
+                                        match crate::prefs::append_pref_async(
+                                            prefs_path.clone(),
+                                            fact.to_string(),
+                                        )
+                                        .await
+                                        {
+                                            Ok(()) => (format!("Preference saved: {fact}"), false),
+                                            Err(e) => {
+                                                eprintln!(
+                                                    "[sysknife-brain] failed to save preference to {}: {e}",
+                                                    prefs_path.display()
+                                                );
+                                                (format!("Error saving preference: {e}"), true)
+                                            }
                                         }
                                     }
-                                } else {
-                                    (
-                                        "Error: preference storage is not configured.".to_string(),
-                                        true,
-                                    )
+                                    Err(pair) => pair,
                                 };
                                 tool_results.push(ToolResultBlock {
                                     tool_use_id: id.clone(),
@@ -1224,36 +1248,31 @@ impl LlmPlanner {
                                 });
                             }
                             "forget" => {
-                                let fact = input.get("fact").and_then(|v| v.as_str()).unwrap_or("");
-                                let (result_text, err) = if fact.is_empty() {
-                                    (
-                                        "Error: 'fact' parameter must not be empty.".to_string(),
-                                        true,
-                                    )
-                                } else if let Some(prefs_path) = self.prefs_path.clone() {
-                                    match crate::prefs::remove_pref_async(
-                                        prefs_path.clone(),
-                                        fact.to_string(),
-                                    )
-                                    .await
-                                    {
-                                        Ok(true) => (format!("Preference removed: {fact}"), false),
-                                        Ok(false) => {
-                                            (format!("Preference not found: {fact}"), false)
-                                        }
-                                        Err(e) => {
-                                            eprintln!(
-                                                "[sysknife-brain] failed to remove preference from {}: {e}",
-                                                prefs_path.display()
-                                            );
-                                            (format!("Error removing preference: {e}"), true)
+                                let (result_text, err) = match self.prepare_pref_op(input, |_| None)
+                                {
+                                    Ok((fact, prefs_path)) => {
+                                        match crate::prefs::remove_pref_async(
+                                            prefs_path.clone(),
+                                            fact.to_string(),
+                                        )
+                                        .await
+                                        {
+                                            Ok(true) => {
+                                                (format!("Preference removed: {fact}"), false)
+                                            }
+                                            Ok(false) => {
+                                                (format!("Preference not found: {fact}"), false)
+                                            }
+                                            Err(e) => {
+                                                eprintln!(
+                                                    "[sysknife-brain] failed to remove preference from {}: {e}",
+                                                    prefs_path.display()
+                                                );
+                                                (format!("Error removing preference: {e}"), true)
+                                            }
                                         }
                                     }
-                                } else {
-                                    (
-                                        "Error: preference storage is not configured.".to_string(),
-                                        true,
-                                    )
+                                    Err(pair) => pair,
                                 };
                                 tool_results.push(ToolResultBlock {
                                     tool_use_id: id.clone(),

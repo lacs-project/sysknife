@@ -170,7 +170,20 @@ pub fn validated_unit_name(s: &str, param: &'static str) -> Result<String, Execu
 /// the same root maintenance shell. A name-based denylist cannot catch every
 /// alias a site might add; the residual risk is documented in issue #144, and
 /// the operator note there recommends masking these units outright.
-const ROOT_SHELL_UNITS: &[&str] = &["debug-shell", "emergency", "rescue", "runlevel1"];
+///
+/// **Shared with the kernel-argument screen.** `executor.rs` kept its own copy of
+/// this idea for `systemd.unit=` boot arguments, and the two drifted: it had
+/// `single` but was missing `debug-shell` and `runlevel1`, so
+/// `StartService debug-shell.service` was refused while
+/// `SetKernelArguments add=["systemd.unit=debug-shell.service"]` was accepted —
+/// the worse of the two, since it persists across a reboot and hands out a root
+/// shell before anyone logs in. One list now, so they cannot drift again.
+///
+/// `single` is not a real unit name, but it is accepted here so the shared list
+/// is a superset of both original lists; refusing to activate a unit that does
+/// not exist costs nothing.
+pub(crate) const ROOT_SHELL_UNITS: &[&str] =
+    &["debug-shell", "emergency", "rescue", "runlevel1", "single"];
 
 /// Validate a unit name that an action will **activate** (start, restart, enable,
 /// unmask), refusing units that would yield a root shell.
@@ -269,12 +282,13 @@ pub fn validated_locale(s: &str, param: &'static str) -> Result<String, Executor
 /// `add-apt-repository` command string — any shell-special character in either
 /// component would allow command injection.
 pub fn validated_ppa_name(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    // Must contain exactly one slash.
-    let parts: Vec<&str> = s.splitn(3, '/').collect();
-    if parts.len() != 2 {
+    // Split on the first slash. A second slash inside `ppa` still enforces
+    // "exactly one slash overall": the charset check below has no `/` in its
+    // allowlist, so a `ppa` half that itself contains a slash is rejected
+    // there instead of here — same outcome, no Vec needed to count pieces.
+    let Some((user, ppa)) = s.split_once('/') else {
         return Err(ExecutorError::InvalidParam(param));
-    }
-    let (user, ppa) = (parts[0], parts[1]);
+    };
     if user.is_empty() || ppa.is_empty() {
         return Err(ExecutorError::InvalidParam(param));
     }
@@ -729,10 +743,19 @@ pub fn validated_mount_device(s: &str, param: &'static str) -> Result<String, Ex
     }
 }
 
-/// Validate a mountpoint: absolute, no `..`, safe charset, and not a critical
-/// system mountpoint. Mirrors `valid_mountpoint` in the helper.
-pub fn validated_mount_point(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if !s.starts_with('/') || s.len() > MAX_FSTAB_FIELD_LEN || s.contains("..") {
+/// Shared charset/traversal check for a bare absolute filesystem path: must
+/// start with `/`, must not contain `..`, and must consist only of
+/// `[A-Za-z0-9/._-]`. `validated_mount_point`, `validated_swap_path`, and
+/// `validated_audit_path` are this exact check with three different,
+/// independently-documented length ceilings layered on top — factored out so
+/// the charset itself (the security-relevant half) cannot drift between the
+/// three call sites the way their length bounds are allowed to.
+fn validated_absolute_path(
+    s: &str,
+    param: &'static str,
+    max_len: usize,
+) -> Result<String, ExecutorError> {
+    if !s.starts_with('/') || s.len() > max_len || s.contains("..") {
         return Err(ExecutorError::InvalidParam(param));
     }
     if !s
@@ -741,10 +764,17 @@ pub fn validated_mount_point(s: &str, param: &'static str) -> Result<String, Exe
     {
         return Err(ExecutorError::InvalidParam(param));
     }
-    if CRITICAL_MOUNTPOINTS.contains(&s) {
+    Ok(s.to_string())
+}
+
+/// Validate a mountpoint: absolute, no `..`, safe charset, and not a critical
+/// system mountpoint. Mirrors `valid_mountpoint` in the helper.
+pub fn validated_mount_point(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    let s = validated_absolute_path(s, param, MAX_FSTAB_FIELD_LEN)?;
+    if CRITICAL_MOUNTPOINTS.contains(&s.as_str()) {
         return Err(ExecutorError::InvalidParam(param));
     }
-    Ok(s.to_string())
+    Ok(s)
 }
 
 /// Validate a filesystem type against the mount allowlist.
@@ -773,16 +803,7 @@ pub fn validated_mount_options(s: &str, param: &'static str) -> Result<String, E
 
 /// Validate an absolute file path for a swap file (no `..`, safe charset).
 pub fn validated_swap_path(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if !s.starts_with('/') || s.len() > MAX_FSTAB_FIELD_LEN || s.contains("..") {
-        return Err(ExecutorError::InvalidParam(param));
-    }
-    if !s
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '.' | '-'))
-    {
-        return Err(ExecutorError::InvalidParam(param));
-    }
-    Ok(s.to_string())
+    validated_absolute_path(s, param, MAX_FSTAB_FIELD_LEN)
 }
 
 /// Validate a SysKnife sudoers drop-in name: `^[a-z0-9][a-z0-9_-]{0,63}$`.
@@ -931,11 +952,11 @@ pub fn validated_sudo_commands(s: &str, param: &'static str) -> Result<String, E
     if s.is_empty() || s.len() > MAX_SUDO_COMMANDS_LEN {
         return Err(ExecutorError::InvalidParam(param));
     }
-    let cmds: Vec<&str> = s.split(',').filter(|c| !c.is_empty()).collect();
-    if cmds.is_empty() {
-        return Err(ExecutorError::InvalidParam(param));
-    }
-    for c in cmds {
+    // No Vec needed just to detect "zero non-empty commands" — track it
+    // while validating each one instead of collecting first.
+    let mut saw_command = false;
+    for c in s.split(',').filter(|c| !c.is_empty()) {
+        saw_command = true;
         if !c.starts_with('/')
             || c.contains("..")
             || c.contains('*')
@@ -945,6 +966,9 @@ pub fn validated_sudo_commands(s: &str, param: &'static str) -> Result<String, E
         {
             return Err(ExecutorError::InvalidParam(param));
         }
+    }
+    if !saw_command {
+        return Err(ExecutorError::InvalidParam(param));
     }
     Ok(s.to_string())
 }
@@ -980,16 +1004,7 @@ pub fn validated_pro_service(s: &str, param: &'static str) -> Result<String, Exe
 /// (no `*` — audit watches a concrete file/dir), 1..=255. Mirrors `PATH_RE` in
 /// `packaging/sysknife-audit-edit`.
 pub fn validated_audit_path(s: &str, param: &'static str) -> Result<String, ExecutorError> {
-    if !s.starts_with('/') || s.len() > MAX_ABSOLUTE_PATH_LEN || s.contains("..") {
-        return Err(ExecutorError::InvalidParam(param));
-    }
-    if !s
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
-    {
-        return Err(ExecutorError::InvalidParam(param));
-    }
-    Ok(s.to_string())
+    validated_absolute_path(s, param, MAX_ABSOLUTE_PATH_LEN)
 }
 
 /// Validate auditd watch permissions: a subset of `r`/`w`/`x`/`a`, 1..=4 chars,
