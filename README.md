@@ -191,11 +191,13 @@ SysKnife, not an afterthought. See the [CLI guide](docs/cli.md).
   <img src="assets/demo/demo.gif" alt="sysknife CLI — plan, approve, and execute in the terminal" width="900"/>
 </p>
 
-> **Also: a desktop GUI — a distant third option.** An experimental Tauri
-> desktop app (`sysknife-shell`) wraps the same plan → approve → execute loop in
-> a window. It is the least frequently maintained surface, well behind the MCP
-> integration and the CLI, so reach for it only if you specifically want a
-> graphical approval flow.
+> **Also: a desktop GUI — development paused.** An experimental Tauri desktop
+> app (`sysknife-shell`) wraps the same plan → approve → execute loop in a
+> window. **Its development is paused for now**, and effort is going to Ubuntu
+> across its supported versions instead. The code stays in the tree and still
+> builds, but it is not being reviewed, tested, or extended, so reach for it
+> only if you specifically want a graphical approval flow and can live with
+> that. The MCP integration and the CLI are the maintained surfaces.
 
 ## How it works
 
