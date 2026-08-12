@@ -4,6 +4,22 @@ This repository is for SysKnife, the Linux Agent Control Standard.
 Work here must preserve the trust boundary between the planner,
 the shell, and the privileged daemon.
 
+## Current Focus — Ubuntu; GUI Paused
+
+**GUI development is temporarily paused.** Do not review, test, refactor, or
+extend `apps/sysknife-shell/**` (the Tauri desktop app). It stays in the tree
+and must keep building, so workspace-wide gates still cover it, but it is not
+where effort goes. Merging a dependency bump that only touches its lockfile is
+fine — that is maintenance, not development.
+
+**Analysis and development focus on Ubuntu**, across its versions (22.04,
+24.04, 26.04). Live-VM evidence, action coverage, and security review target
+the Debian-family path first.
+
+Fedora is deprioritized, **not** dropped. The rpm-ostree action family, the
+atomic story family, and the `FEDORA_ONLY_ACTIONS` safety fence all stay
+intact and must keep passing; nothing here licenses deleting them.
+
 ## Pre-Commit Gate
 
 **`cargo nextest run --workspace --locked` must pass with zero failures before
