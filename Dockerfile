@@ -16,7 +16,7 @@ COPY apps/sysknife-cli ./apps/sysknife-cli
 COPY apps/sysknife-shell/src-tauri ./apps/sysknife-shell/src-tauri
 RUN cargo build --locked --release --package sysknife-cli
 
-FROM docker.io/library/debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS runtime
+FROM docker.io/library/debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS runtime
 
 RUN apt-get update \
     && apt-get install --no-install-recommends --yes ca-certificates \
