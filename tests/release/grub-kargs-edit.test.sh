@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Guards sysknife-grub-kargs-edit's --delete against boot-security downgrades.
+# Guards sysknife-grub-kargs-edit against boot-security downgrades, in both
+# directions, and guards the two directions against drifting apart.
 #
 # The helper screened --append only, on the stated premise that "removing an arg
 # is always safe". The premise inverts the risk: the dangerous move is removing a
@@ -100,6 +101,60 @@ for tok in ORDINARY:
     if refused(tok):
         failures.append(f"--delete {tok!r} was refused, but it carries no security meaning")
 
+# 3b. DRIFT GUARD between the two screens. The --delete screen lets WEAKENING
+#     through on the stated grounds that each one IS the downgrade, so removing
+#     it hardens the host. That reasoning binds the other direction: if removing
+#     X hardens, then adding X weakens, and --append must refuse every one of
+#     them. The two lists were written separately and drifted -- --delete knew
+#     about apparmor=, mitigations= and module.sig_enforce=, --append did not --
+#     so `--append apparmor=0` disabled Ubuntu's MAC on the next boot while
+#     `--delete apparmor=1` was correctly refused. Deriving this list from
+#     WEAKENING rather than retyping it is the point: a token added to one
+#     screen cannot be forgotten in the other.
+append_guard = getattr(mod, "reject_dangerous_append", None)
+if append_guard is None:
+    print("FAIL: reject_dangerous_append() missing from sysknife-grub-kargs-edit")
+    sys.exit(1)
+
+
+def refused_append(tok):
+    try:
+        append_guard([tok])
+    except SystemExit as exc:
+        return exc.code != 0
+    return False
+
+
+for tok in WEAKENING:
+    if not refused_append(tok):
+        failures.append(
+            f"--append {tok!r} was accepted, but --delete treats it as a weakening; "
+            "the two screens have drifted"
+        )
+
+# 3c. The debug shell, by its own name rather than through systemd.unit=.
+#     `systemd.unit=debug-shell.service` is refused via DENY_UNIT_TARGETS, but
+#     systemd-debug-generator also honours systemd.debug_shell, which reaches
+#     the identical end state: debug-shell.service pulled into the boot
+#     transaction, root shell on tty9, no login. Underscore is the real spelling
+#     (verified against systemd-debug-generator(8) on Ubuntu 24.04); the hyphen
+#     forms are screened too so a near-miss cannot creep back.
+DEBUG_SHELL = [
+    "systemd.debug_shell=1",
+    "systemd.debug_shell",
+    "rd.systemd.debug_shell=1",
+    "systemd.debug-shell=1",
+    "SYSTEMD.DEBUG_SHELL=1",
+]
+for tok in DEBUG_SHELL:
+    if not refused_append(tok):
+        failures.append(f"--append {tok!r} was accepted; it boots into a root shell on tty9")
+
+# 3d. Ordinary appends must survive, or the screen has eaten the feature.
+for tok in ["quiet", "splash", "nomodeset", "console=ttyS0", "transparent_hugepage=madvise"]:
+    if refused_append(tok):
+        failures.append(f"--append {tok!r} was refused, but it carries no security meaning")
+
 # 4. WIRING: main() must call the screen. Drive it end to end with a protective
 #    --delete and assert it exits non-zero before reading /etc/default/grub.
 argv = sys.argv[:]
@@ -135,5 +190,8 @@ if failures:
     sys.exit(1)
 print("ok: sysknife-grub-kargs-edit refuses to delete protective kernel arguments")
 print("ok: weakening and ordinary arguments stay deletable")
+print("ok: every arg the delete screen calls a weakening is refused on --append")
+print("ok: --append refuses systemd.debug_shell in all its spellings")
+print("ok: ordinary arguments stay appendable")
 print("ok: main() screens --delete before touching /etc/default/grub")
 PY

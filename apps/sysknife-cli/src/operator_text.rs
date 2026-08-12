@@ -27,6 +27,48 @@ const MAX_RENDERED_LEN: usize = 512;
 /// never be mistaken for the whole one.
 const TRUNCATION_MARKER: &str = "… [truncated]";
 
+/// Most lines of a multi-line block rendered above a prompt.
+///
+/// [`MAX_RENDERED_LEN`] bounds one line; nothing bounded how many. A preview
+/// whose parameters serialise to a thousand lines scrolls the prompt — and the
+/// risk level and action name printed above it — off the screen just as
+/// effectively as one very long line.
+const MAX_RENDERED_LINES: usize = 40;
+
+/// Marker appended when [`operator_safe_block`] drops lines.
+const LINE_TRUNCATION_MARKER: &str = "… [truncated: block too long to display]";
+
+/// Return a multi-line block rendered safe to print above a prompt.
+///
+/// [`operator_safe`] collapses newlines, which is right for a one-line summary
+/// and wrong for structured text: pretty-printed JSON flattened to a single line
+/// is unreadable, and unreadable is its own approval hazard. So each line is
+/// neutralised individually and the line structure is kept, with the number of
+/// lines bounded.
+///
+/// This exists because `serde_json` is not a sanitiser. It escapes C0 controls
+/// and quotes, so raw pretty-printed JSON looks safe, but it emits U+202E and
+/// U+200B as literal UTF-8 — the two classes that reorder and hide text. A
+/// preview dumped straight from `to_string_pretty` therefore carries exactly the
+/// characters [`operator_safe`] exists to remove.
+pub(crate) fn operator_safe_block(s: &str) -> String {
+    let mut lines: Vec<String> = s
+        .lines()
+        .take(MAX_RENDERED_LINES)
+        .map(|line| {
+            // Keep leading indentation: it carries the JSON's structure, and
+            // `operator_safe` would trim it away as collapsible whitespace.
+            let indent_len = line.len() - line.trim_start().len();
+            format!("{}{}", &line[..indent_len], operator_safe(line))
+        })
+        .collect();
+
+    if s.lines().count() > MAX_RENDERED_LINES {
+        lines.push(LINE_TRUNCATION_MARKER.to_string());
+    }
+    lines.join("\n")
+}
+
 /// Return `s` rendered safe to print on one line of the operator's terminal.
 ///
 /// - `\t`, `\n`, `\r` collapse to a single space: benign in origin, but a
@@ -38,6 +80,12 @@ const TRUNCATION_MARKER: &str = "… [truncated]";
 ///   dropped. These reorder or hide text while leaving the bytes intact — the
 ///   "trojan source" class, which here would let a summary read
 ///   `remove nothing` while naming a different target.
+/// - Every other invisible formatting character goes too: U+061C (a bidi
+///   control alongside the U+200E/U+200F already covered), soft hyphen, the
+///   combining grapheme joiner, the word joiner and invisible operators, the
+///   deprecated format controls, and the TAG block used for ASCII smuggling.
+///   The set is meant to be complete; a partial one reads as neutralised
+///   without being so.
 /// - Runs of whitespace collapse and the result is trimmed, so the layout an
 ///   attacker can produce is bounded.
 /// - The result is capped at [`MAX_RENDERED_LEN`] and marked when cut.
@@ -59,6 +107,23 @@ pub(crate) fn operator_safe(s: &str) -> String {
             '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => false,
             // Zero-width and byte-order marks — hide text in plain sight.
             '\u{200b}'..='\u{200f}' | '\u{feff}' => false,
+            // U+061C ARABIC LETTER MARK is a bidi control in exactly the way
+            // U+200E/200F above are; dropping those two and keeping this one
+            // left the set incomplete rather than strict.
+            '\u{061c}' => false,
+            // The rest of the invisible formatting characters. Each renders as
+            // nothing and can therefore split a word the operator reads as
+            // whole, or pad a summary that looks short.
+            '\u{00ad}'                  // SOFT HYPHEN
+            | '\u{034f}'                // COMBINING GRAPHEME JOINER
+            | '\u{180b}'..='\u{180e}'   // Mongolian selectors + vowel separator
+            | '\u{2060}'..='\u{2064}'   // WORD JOINER + invisible operators
+            | '\u{206a}'..='\u{206f}'   // deprecated bidi/format controls
+            | '\u{fff9}'..='\u{fffb}'   // interlinear annotation
+            // TAG characters. These mirror ASCII invisibly and are the vehicle
+            // for "ASCII smuggling": a tagged copy of a different target rides
+            // along in a summary that displays as innocuous text.
+            | '\u{e0000}'..='\u{e007f}' => false,
             _ => true,
         };
         if !keep {
@@ -82,6 +147,87 @@ pub(crate) fn operator_safe(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `sysknife approve` printed the proposed change straight from
+    /// `serde_json::to_string_pretty`, immediately above the approval prompt,
+    /// while the summary beside it went through `operator_safe`. JSON escaping
+    /// covers C0 controls and stops there, so a bidi override inside a string
+    /// value reached the terminal intact and could reorder the very target the
+    /// operator was being asked to confirm.
+    #[test]
+    fn a_json_block_cannot_smuggle_bidi_or_zero_width_past_the_prompt() {
+        let hostile = serde_json::to_string_pretty(&serde_json::json!({
+            "path": "/etc/\u{202e}gnc.d/passwd\u{202c}",
+            "note": "safe\u{200b}ish",
+        }))
+        .expect("json");
+
+        // Precondition: serde_json really does leave these in place, so the
+        // test fails for the stated reason rather than a vacuous one.
+        assert!(
+            hostile.contains('\u{202e}'),
+            "serde_json escaped the override"
+        );
+
+        let safe = operator_safe_block(&hostile);
+        assert!(
+            !safe.contains('\u{202e}'),
+            "bidi override survived: {safe:?}"
+        );
+        assert!(!safe.contains('\u{200b}'), "zero-width survived: {safe:?}");
+        // Structure must survive, or the operator cannot read what they approve.
+        assert!(safe.lines().count() > 1, "block was flattened: {safe:?}");
+        assert!(safe.contains("passwd"), "visible text was lost: {safe:?}");
+    }
+
+    /// One long line was bounded; a block of many lines was not, and scrolls the
+    /// action name and risk level off the screen just as effectively.
+    #[test]
+    fn a_tall_block_is_bounded_and_says_so() {
+        let tall = (0..500)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let safe = operator_safe_block(&tall);
+        assert_eq!(safe.lines().count(), MAX_RENDERED_LINES + 1);
+        assert!(
+            safe.ends_with(LINE_TRUNCATION_MARKER),
+            "truncation unmarked: {safe:?}"
+        );
+    }
+
+    /// The invisible-formatting set has to be complete, not merely started.
+    /// U+200E/200F were dropped and U+061C was not, though all three are bidi
+    /// controls; the zero-width block was dropped and U+2060 WORD JOINER was
+    /// not, though both render as nothing. A partial set is an operator who
+    /// believes the text was neutralised when it was not.
+    #[test]
+    fn every_invisible_formatting_character_is_dropped() {
+        for ch in [
+            '\u{061c}',  // ARABIC LETTER MARK — bidi control
+            '\u{00ad}',  // SOFT HYPHEN
+            '\u{034f}',  // COMBINING GRAPHEME JOINER
+            '\u{180e}',  // MONGOLIAN VOWEL SEPARATOR
+            '\u{2060}',  // WORD JOINER
+            '\u{2064}',  // INVISIBLE PLUS
+            '\u{206f}',  // NOMINAL DIGIT SHAPES
+            '\u{fffb}',  // INTERLINEAR ANNOTATION TERMINATOR
+            '\u{e0041}', // TAG LATIN CAPITAL LETTER A — ASCII smuggling
+        ] {
+            let hostile = format!("AptRemove{ch}Everything");
+            let safe = operator_safe(&hostile);
+            assert!(
+                !safe.chars().any(|c| c == ch),
+                "U+{:04X} survived operator_safe: {safe:?}",
+                ch as u32
+            );
+            assert_eq!(
+                safe, "AptRemoveEverything",
+                "U+{:04X} must vanish without disturbing the visible text",
+                ch as u32
+            );
+        }
+    }
 
     /// The headline case: a summary that erases and rewrites its own line.
     #[test]
