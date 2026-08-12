@@ -513,8 +513,15 @@ pub async fn run_approve(
         details.action_name,
         details.preview.risk_level,
         crate::operator_text::operator_safe(&details.preview.summary),
-        serde_json::to_string_pretty(&details.preview.proposed_change)
-            .unwrap_or_else(|_| "<unavailable>".to_string())
+        // `to_string_pretty` is not a sanitiser: it escapes C0 controls but
+        // emits U+202E and U+200B literally. This is the last thing printed
+        // before the operator is asked to approve, and the proposed change is
+        // the authoritative statement of what will happen — the one string on
+        // screen that must not be able to lie about its own target.
+        crate::operator_text::operator_safe_block(
+            &serde_json::to_string_pretty(&details.preview.proposed_change)
+                .unwrap_or_else(|_| "<unavailable>".to_string())
+        )
     ));
     let approved = if details.preview.risk_level == RiskLevel::High {
         prompt_exact(

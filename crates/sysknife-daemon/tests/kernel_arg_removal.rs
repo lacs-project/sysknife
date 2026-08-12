@@ -116,6 +116,34 @@ fn no_root_shell_unit_can_be_reached_through_a_kernel_argument() {
     }
 }
 
+/// The same root shell, reached by a different name. `systemd.unit=` is not the
+/// only way to ask systemd for `debug-shell.service`: systemd-debug-generator
+/// also honours `systemd.debug_shell`, which pulls the unit into the boot
+/// transaction and spawns a root shell on tty9 before anyone logs in. Screening
+/// only the `systemd.unit=` spelling closed one door and left this one open.
+///
+/// Underscore is the real spelling, verified against systemd-debug-generator(8)
+/// on Ubuntu 24.04; `rd.` is the initrd-honoured variant. The hyphen forms are
+/// screened too so a near-miss cannot creep back in.
+#[test]
+fn the_debug_shell_cannot_be_reached_by_its_own_kernel_argument() {
+    for arg in [
+        "systemd.debug_shell=1",
+        "systemd.debug_shell",
+        "rd.systemd.debug_shell=1",
+        "systemd.debug-shell=1",
+        // Case must not launder it.
+        "SYSTEMD.DEBUG_SHELL=1",
+    ] {
+        let params = json!({ "add": [arg], "remove": [] });
+        let result = build_action_spec("SetKernelArguments", &params);
+        assert!(
+            matches!(result, Err(ExecutorError::InvalidParam("add"))),
+            "{arg} spawns a root shell on tty9 at boot and must be refused, got {result:?}"
+        );
+    }
+}
+
 /// The drift guard. Two screens refuse root-shell units from opposite
 /// directions: one refuses to START such a unit, the other refuses to BOOT into
 /// it via `systemd.unit=`. They are only as good as the weaker list, so this

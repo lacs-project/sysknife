@@ -2183,6 +2183,8 @@ fn str_array_or_empty(params: &Value, key: &'static str) -> Result<Vec<String>, 
 /// - `pti=off`         — disables Page Table Isolation (Meltdown mitigation)
 /// - `nosmap` / `nosmep` — disable SMAP/SMEP, CPU features that block a large
 ///   class of kernel-exploitation techniques
+/// - `systemd.debug_shell` — the same root shell as `systemd.unit=debug-shell`,
+///   asked for by a different name
 fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), ExecutorError> {
     const BLOCKED_PREFIXES: &[&str] = &[
         "init=",
@@ -2194,6 +2196,18 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
         "mitigations=off",
         "lockdown=",
         "pti=off",
+        // `systemd.unit=` is not the only way to ask for `debug-shell.service`.
+        // systemd-debug-generator also honours `systemd.debug_shell`, which
+        // pulls the unit into the boot transaction and spawns a root shell on
+        // tty9 before anyone logs in — the identical end state the
+        // `BLOCKED_UNIT_PREFIXES` screen below exists to prevent. Underscore is
+        // the real spelling per systemd-debug-generator(8); `rd.` is the
+        // initrd-honoured variant, and the hyphen forms are listed so a
+        // near-miss cannot creep back.
+        "systemd.debug_shell",
+        "systemd.debug-shell",
+        "rd.systemd.debug_shell",
+        "rd.systemd.debug-shell",
     ];
     const BLOCKED_EXACT: &[&str] = &["single", "s", "1", "nosmap", "nosmep"];
     // Shared with `validated_activatable_unit`, deliberately: these two screens

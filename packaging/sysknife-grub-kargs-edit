@@ -52,8 +52,21 @@ KARG_PATTERN = re.compile(r"^[A-Za-z0-9_.+@:/=-]+$")
 # selinux=0, enforcing=0, security=, module_blacklist=) or drop to a single-user
 # root shell (bare single/s/1, or systemd.unit= pointing at emergency/rescue/
 # single).
-DENY_APPEND_PREFIXES = ("init=", "selinux=0", "enforcing=0", "security=", "module_blacklist=")
-DENY_APPEND_EXACT = ("single", "s", "1")
+#
+# systemd.debug_shell is the same root shell reached by a different name:
+# systemd-debug-generator pulls debug-shell.service into the boot transaction
+# and spawns a root shell on tty9 with no login, so screening only
+# systemd.unit=debug-shell.service left the front door open. Underscore is the
+# real spelling per systemd-debug-generator(8); the hyphen forms are listed so a
+# near-miss cannot creep back, and rd.* covers the initrd-honoured variant.
+DENY_APPEND_PREFIXES = (
+    "init=", "selinux=0", "enforcing=0", "security=", "module_blacklist=",
+    "systemd.debug_shell", "systemd.debug-shell",
+    "rd.systemd.debug_shell", "rd.systemd.debug-shell",
+)
+# nosmap/nosmep disable SMAP/SMEP enforcement; they are in the executor's
+# BLOCKED_EXACT and were missing here.
+DENY_APPEND_EXACT = ("single", "s", "1", "nosmap", "nosmep")
 DENY_UNIT_TARGETS = ("emergency", "rescue", "single")
 
 # --delete is screened too. "Removing an arg is always safe" was the premise for
@@ -71,14 +84,28 @@ DENY_DELETE_PREFIXES = (
     "amd_iommu=",
 )
 DENY_DELETE_EXACT = ("slab_nomerge", "nosmt", "kaslr")
-# Escape hatch: these ARE the weakening, so removing one hardens the host. Without
-# it the screen would collapse into "no deletions at all" and SysKnife could never
-# undo `mitigations=off` on a host that already boots with it.
-ALLOW_DELETE_EXACT = (
+
+# One list, read in both directions. Each of these IS the downgrade, which
+# settles both screens at once:
+#
+#   --delete X  → ALLOWED. Removing the downgrade hardens the host. Without this
+#                 escape hatch the delete screen collapses into "no deletions at
+#                 all" and SysKnife could never undo `mitigations=off` on a host
+#                 that already boots with it.
+#   --append X  → REFUSED. Adding the downgrade weakens the next boot, and it is
+#                 the exact end state the delete screen exists to protect.
+#
+# Deriving the append refusal from this set rather than retyping it is the whole
+# point. The two screens were written separately and drifted: --delete knew
+# about apparmor=, mitigations=, pti= and module.sig_enforce=, --append did not,
+# so `--append apparmor=0` silently disabled Ubuntu's MAC on the next boot while
+# `--delete apparmor=1` was correctly refused. A token added here now lands on
+# both screens or neither.
+WEAKENING_KARGS = (
     "selinux=0", "enforcing=0", "apparmor=0", "mitigations=off", "pti=off",
     "lockdown=none", "debugfs=on", "iommu=off", "intel_iommu=off",
     "module.sig_enforce=0", "init_on_alloc=0", "init_on_free=0",
-    "randomize_kstack_offset=off", "page_alloc.shuffle=0",
+    "randomize_kstack_offset=off", "page_alloc.shuffle=0", "nokaslr",
 )
 
 UPDATE_GRUB = "/usr/sbin/update-grub"
@@ -112,6 +139,9 @@ def reject_dangerous_append(tokens: list[str]) -> None:
             or lower in DENY_APPEND_EXACT
             or base in DENY_APPEND_EXACT
             or any(unit_val.startswith(u) for u in DENY_UNIT_TARGETS)
+            # Adding a known downgrade is the end state the --delete screen
+            # exists to prevent; see WEAKENING_KARGS.
+            or lower in WEAKENING_KARGS
         )
         if blocked:
             print(
@@ -126,7 +156,7 @@ def reject_dangerous_delete(tokens: list[str]) -> None:
     """Raise SystemExit(1) if removing any --delete token would weaken the boot."""
     for tok in tokens:
         lower = tok.lower()
-        if lower in ALLOW_DELETE_EXACT:
+        if lower in WEAKENING_KARGS:
             continue
         blocked = (
             any(lower.startswith(p) for p in DENY_DELETE_PREFIXES)

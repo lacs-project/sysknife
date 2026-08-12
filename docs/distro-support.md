@@ -53,7 +53,7 @@ apt and a read-only root, so the Debian-family action set cannot apply.
 | **Other Fedora Atomic 41+ variants** | rpm-ostree family | Detection and shared action tests | **Experimental** (eligible, awaiting a fresh VM run) |
 | **Fedora Workstation / Server** | `dnf` family incomplete | Detection tests only | **Experimental** |
 
-The deterministic workspace baseline is 1,739 Rust tests plus 72 frontend
+The deterministic workspace baseline is 1,743 Rust tests plus 72 frontend
 tests. Those tests verify action construction, policy, approval, storage, and
 UI behavior, but they do not replace a real distribution VM run.
 
