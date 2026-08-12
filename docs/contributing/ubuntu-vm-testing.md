@@ -5,11 +5,16 @@ Ubuntu environments using QEMU/KVM.
 
 Supported Ubuntu LTSes:
 
-| Release | Codename | SSH port | Status |
-|---|---|---|---|
-| 22.04 | jammy | 2222 | smoke-tested |
-| 24.04 | noble | 2223 | release-validated (default) |
-| 26.04 | resolute | 2224 | smoke-tested |
+| Release | Codename | SSH port | Live suite | Status |
+|---|---|---|---|---|
+| 22.04 | jammy | 2222 | 49/50 | validated |
+| 24.04 | noble | 2223 | 49/50 | validated (default) |
+| 26.04 | resolute | 2224 | 50/50 | validated |
+
+Each release has a record run and a `.replay.json` twin in
+`tests/evidence/story-runs/`, and `tests/release/cassette-replay-parity.test.sh`
+checks every pair it finds. The one story missing from 22.04 and 24.04 is the
+same one, 101, and it passed on 26.04 — see [Story 101](#story-101-is-flaky).
 
 The Ubuntu path uses `qemu-system-x86_64` directly with a cloud-init seed
 ISO — no quickemu, no interactive installer, no GUI window. The base image
@@ -328,3 +333,27 @@ Open an issue with:
 - The failing step log
 - `UBUNTU_RELEASE=<codename> ./tests/e2e/ubuntu-vm.sh ssh 'sudo journalctl -u sysknife-daemon -n 200'`
 - `lsb_release -a` from inside the VM
+
+## Story 101 is flaky
+
+Story 101 (`DistroboxList alt phrasing`) is the one story that has failed a
+committed run, and it has failed on 22.04 and on 24.04 while passing on 26.04.
+It is not a distro difference. The failure is provider-side: the model returns a
+malformed tool call, the planner exhausts its retries, and the story gets no plan
+at all — its log contains the header line and nothing else, where a passing
+story's log contains the plan JSON.
+
+Two things follow, both worth knowing before reading a run:
+
+- **A single run is not a pass rate.** The first 24.04 record run came in at
+  46/50. Re-running the four failures individually passed three of them
+  (65, 66, 71) and failed 101 again, so those three were transient provider
+  errors rather than a 24.04 regression. The committed 24.04 run is a later
+  full-suite recording, and 101 is the only story that reproduces as a failure.
+- **A miss on replay is correct for a story that errored live.** Nothing was
+  recorded for it, so there is nothing to serve. The parity gate allows exactly
+  as many misses as there were live failures and no more, which is why the 26.04
+  pair shows zero misses and the other two show one each.
+
+If you are chasing a story that fails once, re-run that story alone before
+changing anything.

@@ -269,6 +269,75 @@ def check_bare_story_counts(
     return problems
 
 
+def replay_verified_releases(root: Path) -> set[str]:
+    """Releases with a committed record run AND its replay twin.
+
+    That pair is what `tests/release/cassette-replay-parity.test.sh` proves
+    reproduces: the record run says what happened live, the replay says the
+    cassette reproduces it. A release with only a record run has a pass rate
+    nothing has re-derived; a release with neither has nothing at all.
+    """
+    directory = root / STORY_RUNS
+    if not directory.is_dir():
+        return set()
+
+    records: dict[str, Path] = {}
+    replays: set[str] = set()
+    for path in sorted(directory.glob("*.json")):
+        try:
+            release = str(json.loads(path.read_text()).get("release", ""))
+        except json.JSONDecodeError as exc:
+            raise Failure(f"{path.name} is not readable JSON: {exc}") from exc
+        if not release:
+            continue
+        if path.name.endswith(".replay.json"):
+            replays.add(release)
+        else:
+            records[release] = path
+    return set(records) & replays
+
+
+def check_validated_tiers(texts: dict[str, str], root: Path) -> list[str]:
+    """A release may be tiered "Validated" only where the evidence says so.
+
+    This replaced a hardcoded `reject_pattern` naming 22.04 and 26.04 as
+    "smoke-tested, not launch-validated". That was the same hand-maintained
+    blacklist the numeric guards were rewritten to remove, and it aged the same
+    way — but worse than stale: it began forbidding the truth. 22.04 accumulated
+    five live runs and a committed replay pair, so the honest tier for it became
+    unwritable, and the only ways to satisfy the guard were to understate the
+    evidence or to switch the guard off.
+
+    So the permitted set is derived. A table row whose FIRST cell names an Ubuntu
+    version may end in a "Validated" tier cell if and only if that release has a
+    replay-verified artifact pair on disk. Aspiration still cannot be published
+    as fact, which is the point of the original rule, and a release earns the
+    tier by having a run committed rather than by someone editing this file.
+    """
+    verified = replay_verified_releases(root)
+    row = re.compile(
+        r"^\|[^|]*?(?P<release>\d\d\.\d\d)[^|]*\|.*\|\s*\*{0,2}validated\*{0,2}\s*\|\s*$",
+        re.IGNORECASE,
+    )
+
+    problems = []
+    for rel, text in texts.items():
+        for line in text.splitlines():
+            match = row.match(line.strip())
+            if not match:
+                continue
+            release = match.group("release")
+            if release in verified:
+                continue
+            known = ", ".join(sorted(verified)) or "none"
+            problems.append(
+                f"{rel}: tiers Ubuntu {release} as Validated, but no replay-verified "
+                f"run is committed for it (replay-verified: {known}). Record one into "
+                f"{STORY_RUNS}/ or use a weaker tier."
+            )
+    return problems
+
+
 def main() -> int:
     root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     try:
@@ -299,6 +368,7 @@ def main() -> int:
         story_runs = load_story_runs(root)
         problems += check_story_claims(texts, story_runs)
         problems += check_bare_story_counts(texts, story_runs, root)
+        problems += check_validated_tiers(texts, root)
 
         expected_tests = f"{baseline['tests']:,} Rust tests"
         for rel in REQUIRE_TEST_COUNT:

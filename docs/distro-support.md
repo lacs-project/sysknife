@@ -45,9 +45,9 @@ apt and a read-only root, so the Debian-family action set cannot apply.
 
 | Distro | Action backend | Evidence | Launch tier |
 |---|---|---|---|
-| **Ubuntu 24.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite; the committed run in `tests/evidence/story-runs/` is 22.04, 24.04 not yet re-recorded | **Validated** |
-| **Ubuntu 22.04 LTS** | Ubuntu/apt family | VM bootstrap and smoke tests | **Smoke-tested** |
-| **Ubuntu 26.04 LTS** | Ubuntu/apt family | VM bootstrap, smoke tests, and sudo-rs sudoers verification (26.04 ships sudo-rs 0.2.x; `visudo -cf` parses the SysKnife sudoers and every grant — including the trailing-`*` wildcard grants — is honoured) | **Smoke-tested** |
+| **Ubuntu 24.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, 49/50, recorded in `ubuntu-24.04-gpt-oss-120b.json` and reproduced by its `.replay.json` twin | **Validated** |
+| **Ubuntu 22.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, 49/50, recorded in `ubuntu-22.04-gpt-oss-120b.json` and reproduced by its `.replay.json` twin | **Validated** |
+| **Ubuntu 26.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, 50/50, recorded in `ubuntu-26.04-gpt-oss-120b.json` and reproduced by its `.replay.json` twin; plus sudo-rs sudoers verification (26.04 ships sudo-rs 0.2.x; `visudo -cf` parses the SysKnife sudoers and every grant — including the trailing-`*` wildcard grants — is honoured) | **Validated** |
 | **Every other Ubuntu 20.04+ release** (20.04, 20.10, 21.x, 23.x, 25.x, 26.10, …) | Ubuntu/apt family | Eligible by release family; no per-release VM run | **Smoke-tested** |
 | **Fedora Silverblue 44** | rpm-ostree, Flatpak, toolbox, firewalld, systemd, containers | Harness and fixture coverage; no current live-VM run | **Experimental** (eligible, awaiting a fresh VM run) |
 | **Other Fedora Atomic 41+ variants** | rpm-ostree family | Detection and shared action tests | **Experimental** (eligible, awaiting a fresh VM run) |
