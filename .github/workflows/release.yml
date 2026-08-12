@@ -91,7 +91,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: ${{ matrix.target }}
 
@@ -125,14 +125,14 @@ jobs:
           upload-release-assets: false
 
       - name: Attest build provenance
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d  # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4
         with:
           subject-path: |
             sysknife-${{ github.ref_name }}-linux-${{ matrix.arch }}
             sysknife-daemon-${{ github.ref_name }}-linux-${{ matrix.arch }}
 
       - name: Attest SBOM
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d  # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4
         with:
           subject-path: |
             sysknife-${{ github.ref_name }}-linux-${{ matrix.arch }}

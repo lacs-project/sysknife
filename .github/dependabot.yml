@@ -52,6 +52,22 @@ updates:
       - "dependencies"
     # Actions are already SHA-pinned; a short cooldown still avoids racing to
     # adopt a tag that was re-pointed at a bad commit moments earlier.
+    #
+    # This only works for pins that sit ON a release tag. Dependabot derives an
+    # action's current version from the tag containing the pinned SHA; pin an
+    # untagged commit and it has no version to reason about, so it follows the
+    # default branch instead — and cooldown, which ages *releases*, never fires.
+    #
+    # Two pins track a branch deliberately, because that is how those actions
+    # ship: `dtolnay/rust-toolchain` (comment `stable`) and
+    # `trufflesecurity/trufflehog` (comment `main`). Their comments name a
+    # branch, not a version, so the absent cooldown is visible on the line.
+    #
+    # Every other pin must carry an exact version comment (`# v2.9.2`) and the
+    # SHA must be that tag's commit. `Swatinem/rust-cache` was pinned to an
+    # untagged commit while its comment claimed `# v2`, so it silently tracked
+    # `master` HEAD across all six call sites, cooldown included nowhere. A
+    # comment that names a version the SHA is not on is the tell.
     cooldown:
       default-days: 5
     # Action bumps are low-risk; keep them in one grouped PR.
