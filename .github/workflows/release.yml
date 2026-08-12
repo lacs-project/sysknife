@@ -91,7 +91,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e  # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: ${{ matrix.target }}
 
