@@ -23,7 +23,7 @@
 <p align="center">
   <strong>Distros</strong>&nbsp;
   <img src="https://img.shields.io/badge/Ubuntu%2020.04%2B-supported-2f855a?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu 20.04 and later supported">
-  <img src="https://img.shields.io/badge/Ubuntu%2024.04-VM%20validated-2f855a?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu 24.04 VM validated">
+  <img src="https://img.shields.io/badge/Ubuntu%2022.04%20%7C%2024.04%20%7C%2026.04-VM%20validated-2f855a?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu 22.04, 24.04 and 26.04 VM validated">
   <img src="https://img.shields.io/badge/Fedora%20Atomic%2041%2B-eligible%2C%20unvalidated-b7791f?style=flat-square&logo=fedora&logoColor=white" alt="Fedora Atomic 41 and later eligible but not VM validated">
 </p>
 
@@ -160,9 +160,10 @@ newgrp sysknife                       # or log out and back in
 npx sysknife-setup --no-binary --daemon-mode=skip
 ```
 
-Ubuntu 22.04 records 49/50 stories on a live VM; the run that produced that
-figure is in `tests/evidence/story-runs/`. Ubuntu 24.04 and
-26.04 have passed bootstrap and smoke tests but not the full story suite.
+All three Ubuntu LTS releases record a live-VM run of the 50-story suite, and
+each run has a replay twin that reproduces it: 22.04 at 49/50, 24.04 at 49/50,
+26.04 at 50/50. The runs are in `tests/evidence/story-runs/`. The one story
+missing from 22.04 and 24.04 is the same one, and it passed on 26.04.
 Fedora Atomic is the rpm-ostree target; record a current Silverblue 44 VM run
 before treating a release as current-validated. Plain Fedora Workstation and
 Server remain experimental until the `dnf` action family ships. See the
@@ -259,7 +260,7 @@ milestone.
 | RFC 5424 syslog forwarding (Splunk / Sentinel / QRadar) | ✅ |
 | Postgres backend (RDS / Cloud SQL / Neon / Supabase) | ✅ |
 | **Ubuntu support** — 49/50 stories on a live 22.04 VM, recorded in `tests/evidence/story-runs/` | ✅ |
-| **Ubuntu 22.04 / 26.04 VM tooling** — smoke tests pass on all three LTSes | ✅ |
+| **Every Ubuntu LTS validated** — 22.04 at 49/50, 24.04 at 49/50, 26.04 at 50/50, each with a replay twin | ✅ |
 | Telegram approval interface | 📋 roadmap |
 
 **1,743 Rust tests and 72 frontend tests** form the current deterministic
@@ -309,7 +310,7 @@ All config files that may contain API keys are created with `chmod 0600`.
 See [ROADMAP.md](ROADMAP.md) for the full milestone breakdown.
 
 - ✅ **Ubuntu 22.04** — 49/50 stories on a live VM (recorded in `tests/evidence/story-runs/`)
-- ✅ **Ubuntu 22.04 / 26.04** — VM tooling complete; smoke tests pass on all three LTSes
+- ✅ **Ubuntu 24.04 and 26.04** — 49/50 and 50/50 on live VMs; every LTS run has a replay twin
 - 📋 Telegram inline-button approvals
 - 📋 `sysknife audit export` (CEF / NDJSON for SIEM ingest)
 - 📋 Fleet plan/execute (one plan, N targets, parallel approval)

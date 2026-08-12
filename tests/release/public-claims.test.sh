@@ -33,11 +33,16 @@ fixture_files=(
     # every assert_rejected below would pass for the wrong reason.
     "tests/evidence/workspace-tests.json"
     "crates/sysknife-brain/src/planning_tools/propose_plan.rs"
-    # The committed story run that backs the published pass rate. Without it the
-    # pristine fixture fails, because README's figure would have no evidence — the
-    # guard working, but on the fixture rather than on a real claim.
-    "tests/evidence/story-runs/ubuntu-22.04-gpt-oss-120b.json"
 )
+
+# The committed story runs that back the published pass rates and decide which
+# releases may be tiered "Validated". Copied as a set rather than named one by
+# one: naming them meant the fixture held 22.04's record run and not its replay,
+# so the tier rule — which requires a record AND a replay — saw no verified
+# release at all, and a doc stating the accurate tier would have failed the
+# pristine check for a reason that had nothing to do with the doc.
+mkdir -p "$fixture/tests/evidence/story-runs"
+cp "$repo_root"/tests/evidence/story-runs/*.json "$fixture/tests/evidence/story-runs/"
 for rel in "${fixture_files[@]}"; do
     mkdir -p "$fixture/$(dirname "$rel")"
     cp "$repo_root/$rel" "$fixture/$rel"
@@ -199,11 +204,26 @@ if ! "$checker" "$fixture" >/dev/null 2>&1; then
 fi
 cp "$repo_root/docs/introduction.md" "$fixture/docs/introduction.md"
 
-# Flip the bolded 22.04 launch-matrix tier to Validated — the guard must reject
-# it even in distro-support.md's `**Ubuntu 22.04 LTS** … **Validated**` shape.
-sed -i '/Ubuntu 22\.04 LTS/ s/\*\*Smoke-tested\*\*/**Validated**/' \
-    "$fixture/docs/distro-support.md"
-assert_rejected 'Ubuntu 22.04 marked validated in bolded launch matrix'
+# The tier rule, in both directions. Which releases may be called "Validated" is
+# derived from the replay-verified pairs on disk, so the mutations have to attack
+# the derivation rather than a hardcoded release name.
+#
+# 1. A release with no committed run at all. 20.04 is named in the install docs
+#    as supported, which is exactly the kind of release someone would promote to
+#    Validated by hand.
+printf '\n| **Ubuntu 20.04 LTS** | apt family | full | **Validated** |\n' \
+    >> "$fixture/docs/distro-support.md"
+assert_rejected 'a release with no committed run tiered Validated'
 cp "$repo_root/docs/distro-support.md" "$fixture/docs/distro-support.md"
+
+# 2. A release whose record run is committed but whose replay is not. The pass
+#    rate exists, nothing has reproduced it, and the parity gate never sees it —
+#    so the tier is not earned. Deleting the replay twin must take the tier away
+#    from a release the pristine fixture accepts, which also proves the rule is
+#    reading the replay and not merely the presence of a file named for the
+#    release.
+rm -f "$fixture"/tests/evidence/story-runs/ubuntu-22.04-*.replay.json
+assert_rejected 'a release tiered Validated with its record run but no replay'
+cp "$repo_root"/tests/evidence/story-runs/*.json "$fixture/tests/evidence/story-runs/"
 
 printf 'Public claims contract passed.\n'

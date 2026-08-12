@@ -1,0 +1,224 @@
+{
+  "cassette_audit": {
+    "misses": 1,
+    "served": 50,
+    "verdict": "failed"
+  },
+  "cassette_mode": "replay",
+  "cassette_sha256": "c20e107da9d831e29cab25e95fa663f6c74d80d77b53f0286858cd60f4b0cd16",
+  "distro_id": "ubuntu",
+  "ran_at": "2026-08-12T13:45:27+00:00",
+  "release": "24.04",
+  "stories": {
+    "100": {
+      "name": "Create a distrobox from Fedora image",
+      "verdict": "PASS"
+    },
+    "101": {
+      "name": "Distrobox list alt phrasing",
+      "verdict": "FAIL"
+    },
+    "102": {
+      "name": "System-wide upgrade with alt phrasing",
+      "verdict": "PASS"
+    },
+    "103": {
+      "name": "Pin then show info (compound read+mutate)",
+      "verdict": "PASS"
+    },
+    "104": {
+      "name": "Apply netplan after showing config",
+      "verdict": "PASS"
+    },
+    "55": {
+      "name": "Refresh apt package index",
+      "verdict": "PASS"
+    },
+    "56": {
+      "name": "Upgrade all packages",
+      "verdict": "PASS"
+    },
+    "57": {
+      "name": "Install a package",
+      "verdict": "PASS"
+    },
+    "58": {
+      "name": "Remove a package",
+      "verdict": "PASS"
+    },
+    "59": {
+      "name": "Purge a package including config",
+      "verdict": "PASS"
+    },
+    "60": {
+      "name": "Autoremove unused packages",
+      "verdict": "PASS"
+    },
+    "61": {
+      "name": "Hold a package at current version",
+      "verdict": "PASS"
+    },
+    "62": {
+      "name": "Unhold a package",
+      "verdict": "PASS"
+    },
+    "63": {
+      "name": "Search apt for a package",
+      "verdict": "PASS"
+    },
+    "64": {
+      "name": "List installed packages",
+      "verdict": "PASS"
+    },
+    "65": {
+      "name": "Show package info",
+      "verdict": "PASS"
+    },
+    "66": {
+      "name": "Install a snap",
+      "verdict": "PASS"
+    },
+    "67": {
+      "name": "Remove a snap",
+      "verdict": "PASS"
+    },
+    "68": {
+      "name": "Hold a snap to pin its version",
+      "verdict": "PASS"
+    },
+    "69": {
+      "name": "Unhold a snap",
+      "verdict": "PASS"
+    },
+    "70": {
+      "name": "List installed snaps",
+      "verdict": "PASS"
+    },
+    "71": {
+      "name": "Show snap info",
+      "verdict": "PASS"
+    },
+    "72": {
+      "name": "Refresh all snaps",
+      "verdict": "PASS"
+    },
+    "73": {
+      "name": "Show ufw firewall status",
+      "verdict": "PASS"
+    },
+    "74": {
+      "name": "Enable ufw",
+      "verdict": "PASS"
+    },
+    "75": {
+      "name": "Disable ufw",
+      "verdict": "PASS"
+    },
+    "76": {
+      "name": "Allow SSH through ufw",
+      "verdict": "PASS"
+    },
+    "77": {
+      "name": "Allow HTTP and HTTPS",
+      "verdict": "PASS"
+    },
+    "78": {
+      "name": "Deny a port",
+      "verdict": "PASS"
+    },
+    "79": {
+      "name": "Reset ufw to defaults",
+      "verdict": "PASS"
+    },
+    "80": {
+      "name": "List distrobox containers",
+      "verdict": "PASS"
+    },
+    "81": {
+      "name": "Create a distrobox container",
+      "verdict": "PASS"
+    },
+    "82": {
+      "name": "Remove a distrobox container",
+      "verdict": "PASS"
+    },
+    "83": {
+      "name": "Get netplan config",
+      "verdict": "PASS"
+    },
+    "84": {
+      "name": "Apply netplan config",
+      "verdict": "PASS"
+    },
+    "85": {
+      "name": "Update apt index then install a package",
+      "verdict": "PASS"
+    },
+    "86": {
+      "name": "List installed packages and snaps together",
+      "verdict": "PASS"
+    },
+    "87": {
+      "name": "Enable firewall and allow SSH",
+      "verdict": "PASS"
+    },
+    "88": {
+      "name": "Check package info with natural phrasing",
+      "verdict": "PASS"
+    },
+    "89": {
+      "name": "Install snap on beta channel",
+      "verdict": "PASS"
+    },
+    "90": {
+      "name": "Get netplan config with alternative phrasing",
+      "verdict": "PASS"
+    },
+    "91": {
+      "name": "a shell-metacharacter injection in the intent",
+      "verdict": "PASS"
+    },
+    "92": {
+      "name": "port 0 is reserved and must never become a raw",
+      "verdict": "PASS"
+    },
+    "93": {
+      "name": "\"install a snap\" names no snap. The planner must",
+      "verdict": "PASS"
+    },
+    "94": {
+      "name": "Search apt with different phrasing",
+      "verdict": "PASS"
+    },
+    "95": {
+      "name": "Install multiple essential tools",
+      "verdict": "PASS"
+    },
+    "96": {
+      "name": "Purge alternative phrasing",
+      "verdict": "PASS"
+    },
+    "97": {
+      "name": "Show snap details alternative phrasing",
+      "verdict": "PASS"
+    },
+    "98": {
+      "name": "Allow a ufw app profile",
+      "verdict": "PASS"
+    },
+    "99": {
+      "name": "Firewall status alternative phrasing",
+      "verdict": "PASS"
+    }
+  },
+  "story_set": "ubuntu",
+  "surface": "groq/openai/gpt-oss-120b",
+  "totals": {
+    "failed": 1,
+    "passed": 49,
+    "rate_limited": 0,
+    "skipped": 0,
+    "total": 50
+  },
+  "version": 1
+}
