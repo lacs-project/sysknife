@@ -1,9 +1,22 @@
 //! Append-only JSON-lines audit log for safety fence activations.
 //!
-//! Every time the planning safety fence rejects a plan (unknown action name,
-//! invalid risk level, etc.), the rejection is logged as a single JSON line.
-//! This provides a persistent, structured record of all fence activations
-//! for post-hoc audit and debugging.
+//! Every time the planning safety fence rejects something the model produced,
+//! the rejection is logged as a single JSON line. This provides a persistent,
+//! structured record of all fence activations for post-hoc audit and debugging.
+//!
+//! "All" is now literal. There are three paths that reject model output, and
+//! this used to record only the first:
+//!
+//! 1. `propose_plan` rejected — unknown action name, invalid risk level, a
+//!    fenced action for the wrong distro family.
+//! 2. `refuse` called with no reason — a refusal the planner will not accept.
+//! 3. an unknown tool name — the model went off-protocol entirely.
+//!
+//! Paths 2 and 3 printed to stderr and recorded nothing, which made this file
+//! misleading in the worst direction: a reviewer reading `safety-audit.jsonl`
+//! as the complete record of anomalous model behaviour saw a quieter picture
+//! than the truth, and the missing class in path 3 is precisely the one that
+//! says the model stopped following the protocol.
 //!
 //! The default log path is `$XDG_DATA_HOME/sysknife/safety-audit.jsonl`
 //! (falling back to `~/.local/share/sysknife/safety-audit.jsonl`).

@@ -2066,3 +2066,209 @@ async fn a_reasonless_refusal_is_retried_rather_than_accepted() {
         .expect("the model must get another turn after an invalid refusal");
     assert_eq!(plan.summary(), "install vim");
 }
+
+// ---------------------------------------------------------------------------
+// Provider retry: recovering from a rejected tool call
+// ---------------------------------------------------------------------------
+
+/// Records the messages of every call, so a test can assert what the retry
+/// actually sent rather than only that a retry happened.
+struct MessageRecordingProvider {
+    turns: Mutex<VecDeque<Result<Completion, ProviderError>>>,
+    seen: Arc<Mutex<Vec<Vec<String>>>>,
+}
+
+impl MessageRecordingProvider {
+    fn new(
+        turns: impl IntoIterator<Item = Result<Completion, ProviderError>>,
+    ) -> (Self, Arc<Mutex<Vec<Vec<String>>>>) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let p = Self {
+            turns: Mutex::new(turns.into_iter().collect()),
+            seen: Arc::clone(&seen),
+        };
+        (p, seen)
+    }
+}
+
+#[async_trait]
+impl LlmProvider for MessageRecordingProvider {
+    async fn complete(
+        &self,
+        _system: &str,
+        messages: &[Message],
+        _tools: &[ToolDefinition],
+        _max_tokens: u32,
+    ) -> Result<Completion, ProviderError> {
+        let rendered: Vec<String> = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        self.seen.lock().unwrap().push(rendered);
+        self.turns
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| Err(ProviderError::Parse("provider exhausted".into())))
+    }
+}
+
+/// The Groq rejection that motivated this: the model emitted a tool call named
+/// `json` whose arguments were a perfectly good plan, and the provider refused
+/// it. Retrying the identical request reproduced it three times.
+fn tool_use_failed_error() -> ProviderError {
+    ProviderError::Request(
+        "ProviderResponseError: {\"error\":{\"message\":\"Tool call validation failed: \
+         attempted to call tool 'json' which was not in request.tools\",\
+         \"code\":\"tool_use_failed\",\"status_code\":400}}"
+            .into(),
+    )
+}
+
+#[tokio::test]
+async fn a_rejected_tool_call_is_retried_with_a_correction_not_the_same_bytes() {
+    let (provider, seen) = MessageRecordingProvider::new([
+        Err(tool_use_failed_error()),
+        propose_plan(
+            "Inspect system",
+            &[("GetSystemState", "Read current deployment", "low")],
+        ),
+    ]);
+    let planner = LlmPlanner::new(Box::new(provider), Box::new(MockStateClient::default()), 3);
+
+    let plan = planner.plan_intent("inspect the system").await.unwrap();
+    assert_eq!(plan.steps()[0].action_name(), "GetSystemState");
+
+    let calls = seen.lock().unwrap().clone();
+    assert_eq!(
+        calls.len(),
+        2,
+        "expected one retry, got {} call(s)",
+        calls.len()
+    );
+
+    // The whole point: the second request differs from the first.
+    assert_ne!(
+        calls[0], calls[1],
+        "the retry sent byte-identical messages, so the model has no reason to \
+         answer differently — this is the bug, not the fix"
+    );
+    let correction = calls[1].last().expect("retry carried no message");
+    assert!(
+        correction.contains("called a tool that does not exist"),
+        "retry did not explain the rejection: {correction}"
+    );
+    assert!(
+        correction.contains("propose_plan"),
+        "the correction must name the tools that DO exist: {correction}"
+    );
+}
+
+#[tokio::test]
+async fn an_ordinary_transport_failure_is_retried_unchanged() {
+    // A 502 says nothing about the request, so resending it verbatim is right.
+    // Appending a correction there would be noise in the conversation and would
+    // teach the model that a network blip was its fault.
+    let (provider, seen) = MessageRecordingProvider::new([
+        Err(ProviderError::Http {
+            status: 502,
+            body: "bad gateway".into(),
+        }),
+        propose_plan(
+            "Inspect system",
+            &[("GetSystemState", "Read current deployment", "low")],
+        ),
+    ]);
+    let planner = LlmPlanner::new(Box::new(provider), Box::new(MockStateClient::default()), 3);
+
+    planner.plan_intent("inspect the system").await.unwrap();
+
+    let calls = seen.lock().unwrap().clone();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[0], calls[1],
+        "a transport failure must be retried unchanged; only a rejected tool call \
+         earns a correction"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Safety audit log — the two paths that used to print without recording
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_reasonless_refusal_is_written_to_the_safety_audit_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let log_path = dir.path().join("safety-audit.jsonl");
+
+    // `refuse` with no reason is a fence activation. It printed to stderr and
+    // recorded nothing, so a reviewer treating safety-audit.jsonl as the
+    // complete record of fence activations — which audit.rs promises — missed
+    // every one of them.
+    let planner = LlmPlanner::new(
+        Box::new(MockProvider::new([
+            tool_call("tu_refuse", "refuse", serde_json::json!({})),
+            propose_plan(
+                "Inspect system",
+                &[("GetSystemState", "Read current deployment", "low")],
+            ),
+        ])),
+        Box::new(MockStateClient::default()),
+        3,
+    )
+    .with_audit_log(SafetyAuditLog::new(&log_path));
+
+    planner.plan_intent("inspect the system").await.unwrap();
+
+    let content = std::fs::read_to_string(&log_path).unwrap_or_default();
+    assert_eq!(
+        content.lines().count(),
+        1,
+        "the reasonless refusal was not recorded; log was: {content:?}"
+    );
+    let entry: serde_json::Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
+    assert_eq!(entry["event"], "safety_fence_rejection");
+    assert_eq!(entry["intent"], "inspect the system");
+}
+
+#[tokio::test]
+async fn an_unknown_tool_call_is_written_to_the_safety_audit_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let log_path = dir.path().join("safety-audit.jsonl");
+
+    // The comment on this path already said "log it as a safety event". It did
+    // not. Of all the fence events, the one saying the model went off-protocol
+    // entirely was the one missing from the trail.
+    let planner = LlmPlanner::new(
+        Box::new(MockProvider::new([
+            tool_call("tu_x", "definitely_not_a_tool", serde_json::json!({})),
+            propose_plan(
+                "Inspect system",
+                &[("GetSystemState", "Read current deployment", "low")],
+            ),
+        ])),
+        Box::new(MockStateClient::default()),
+        3,
+    )
+    .with_audit_log(SafetyAuditLog::new(&log_path));
+
+    planner.plan_intent("inspect the system").await.unwrap();
+
+    let content = std::fs::read_to_string(&log_path).unwrap_or_default();
+    assert_eq!(
+        content.lines().count(),
+        1,
+        "the unknown tool call was not recorded; log was: {content:?}"
+    );
+    let entry: serde_json::Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
+    assert!(
+        entry["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("definitely_not_a_tool")),
+        "the record must name the tool that was called: {entry}"
+    );
+}
