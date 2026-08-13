@@ -180,7 +180,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `SetDnsServers` | `sudo resolvectl dns wlp1s0 1.1.1.1 8.8.8.8` | High | All | – | – | set DNS servers for an interface — params: interface\* (e.g. wlp1s0), servers\* (string\[\]) |
 | `ConfigureFirewall` | `sudo sh -c "firewall-cmd --permanent --zone='public' --add-service='ssh' && firewall-cmd --reload"` | High | All | – | – | add/remove a service in a firewalld zone — params: zone\*, service\*, enabled\* (bool) |
 | `GetFirewallState` | `firewall-cmd --list-all` | Low | All | – | – | show current firewalld zones, open services, and port rules — no params |
-| `GetNetworkStatus` | `ip -brief addr` | Low | All | – | – | show network interfaces, IP addresses, and connection state — no params |
+| `GetNetworkStatus` | `ip -brief addr` | Low | All | – | – | show LIVE network state: interfaces, IP addresses, and connection state — no params; this is runtime status, NOT the saved configuration; on Ubuntu the saved config is NetplanGetConfig |
 | `GetListeningPorts` | `ss -tulpnH` | Low | All | – | – | show listening TCP/UDP sockets and the process bound to each (ss -tulpn) — no params; read-only; use for "what is listening on port X?" |
 
 ## resolvectl
@@ -346,7 +346,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `NetplanGetConfig` | `find /etc/netplan -maxdepth 1 -name *.yaml -print -exec cat {} +` | Low | Ubuntu | – | – | read current netplan YAML config from /etc/netplan/ — no params; Ubuntu only; read-only |
+| `NetplanGetConfig` | `find /etc/netplan -maxdepth 1 -name *.yaml -print -exec cat {} +` | Low | Ubuntu | – | – | read the SAVED network configuration: the netplan YAML in /etc/netplan/ — no params; Ubuntu only; read-only; on Ubuntu this is what "the network config" means, as opposed to GetNetworkStatus which reports live interface state |
 | `NetplanApply` | `sudo netplan apply` | High | Ubuntu | – | – | apply netplan network configuration immediately — no params; Ubuntu only; High risk; can disconnect SSH |
 | `NetplanSet` | `sudo netplan set ethernets.eth0.dhcp4=true` | High | Ubuntu | – | – | set a single netplan key to a value — params: key\* (e.g. 'ethernets.eth0.dhcp4'), value\*; Ubuntu only; High risk; run NetplanApply to activate |
 | `NetplanGenerate` | `sudo netplan generate` | Medium | Ubuntu | – | – | regenerate netplan backend config without applying — no params; Ubuntu only; Medium risk; dry-run before NetplanApply |
