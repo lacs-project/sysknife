@@ -292,6 +292,11 @@ run_story() {
   local start_time
   start_time=$(date +%s.%N)
 
+  # The story's own `2>` truncates this, but only once it reaches its first
+  # `sysknife` call. A story that fails before that would otherwise have last
+  # run's stderr folded into its log and read as this run's explanation.
+  rm -f "/tmp/sysknife-story-${n}-stderr.log"
+
   if timeout "$STORY_TIMEOUT" bash "$script" > "$log" 2>&1; then
     local last_line
     last_line=$(grep -E '^(PASS|SKIP)' "$log" | tail -1 || true)
@@ -324,6 +329,18 @@ run_story() {
       echo "RATELIMIT"
       return
     fi
+    # Fold the CLI's own stderr into the story log. Every story redirects it to
+    # `/tmp/sysknife-story-<n>-stderr.log`, so a failing story's log held its
+    # opening `echo` and nothing else — while the one line that explains the
+    # failure (a cassette miss naming the diverging message, a refusal, a
+    # provider error) sat in a file nobody collects. Diagnosing a miss meant
+    # re-running the release with a hand-written tar of /tmp.
+    if [[ -s "/tmp/sysknife-story-${n}-stderr.log" ]]; then
+      {
+        printf -- '--- sysknife stderr ---\n'
+        cat "/tmp/sysknife-story-${n}-stderr.log"
+      } >> "$log"
+    fi
     RESULTS[$n]="FAIL"
     MESSAGES[$n]=$(tail -n 5 "$log" | grep -v '^$' | tail -n 1)
     if [[ $exit_code -eq 124 ]]; then
@@ -346,7 +363,36 @@ echo "Destructive: $ALLOW_DESTRUCTIVE"
 echo "Timeout:     ${STORY_TIMEOUT}s per story"
 echo ""
 
+# Pace a recording so the run does not out-run the provider's token budget.
+#
+# The ceiling that bit us is TOKENS per minute, not requests: one planning call
+# carries the whole system prompt, measured at ~17 kB in, against a 250 k TPM
+# org limit. That is ~14 calls a minute, and an unpaced record run of this suite
+# issues them roughly every three seconds — ~20 a minute — so it overruns and
+# the stories that land past the line come back as provider 429s. Serialising
+# the releases (the remedy the comment on `story_was_rate_limited` gives) fixes
+# three suites racing each other, but not one suite racing itself.
+#
+# Only recording pays for calls, so only recording waits. A replay serves from
+# disk and is left at full speed, which is the whole point of having one.
+STORY_DELAY_SECS="${SYSKNIFE_STORY_DELAY_SECS:-}"
+if [[ -z "$STORY_DELAY_SECS" ]]; then
+  if [[ "${SYSKNIFE_CASSETTE_MODE:-}" == "record" || -z "${SYSKNIFE_CASSETTE:-}" ]]; then
+    STORY_DELAY_SECS=4
+  else
+    STORY_DELAY_SECS=0
+  fi
+fi
+if [[ "$STORY_DELAY_SECS" != "0" ]]; then
+  echo "Pacing:      ${STORY_DELAY_SECS}s between stories (live calls cost tokens)"
+fi
+
+_first_story=1
 for n in "${STORIES[@]}"; do
+  if [[ $_first_story -eq 0 && "$STORY_DELAY_SECS" != "0" ]]; then
+    sleep "$STORY_DELAY_SECS"
+  fi
+  _first_story=0
   run_story "$n"
 done
 

@@ -45,15 +45,15 @@ apt and a read-only root, so the Debian-family action set cannot apply.
 
 | Distro | Action backend | Evidence | Launch tier |
 |---|---|---|---|
-| **Ubuntu 24.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, **50/50**, recorded in `ubuntu-24.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — zero misses, `cassette_audit.verdict` `ok` | **Validated** |
-| **Ubuntu 22.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, 49/50, recorded in `ubuntu-22.04-gpt-oss-120b.json`; its `.replay.json` twin replays every story that had a recording. The one story short is 101, whose call the provider rejected, so nothing was recorded for it and the twin reports one miss and `cassette_audit.verdict` `failed` | **Validated** |
-| **Ubuntu 26.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, 50/50, recorded in `ubuntu-26.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — zero misses, `cassette_audit.verdict` `ok`; plus sudo-rs sudoers verification (26.04 ships sudo-rs 0.2.x; `visudo -cf` parses the SysKnife sudoers and every grant — including the trailing-`*` wildcard grants — is honoured) | **Validated** |
+| **Ubuntu 24.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, **79/79**, recorded in `ubuntu-24.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — zero misses, `cassette_audit.verdict` `ok` | **Validated** |
+| **Ubuntu 22.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, **79/79**, recorded in `ubuntu-22.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — zero misses, `cassette_audit.verdict` `ok`. This is the release whose twin exercises the recorded-rejection path: story 101's first call was refused by the provider (`tool_use_failed`), and the replay serves the refusal, the correction and the answer, 81 calls for 79 stories | **Validated** |
+| **Ubuntu 26.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, **79/79**, recorded in `ubuntu-26.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — zero misses, `cassette_audit.verdict` `ok`; plus sudo-rs sudoers verification (26.04 ships sudo-rs 0.2.x; `visudo -cf` parses the SysKnife sudoers and every grant — including the trailing-`*` wildcard grants — is honoured) | **Validated** |
 | **Every other Ubuntu 20.04+ release** (20.04, 20.10, 21.x, 23.x, 25.x, 26.10, …) | Ubuntu/apt family | Eligible by release family; no per-release VM run | **Smoke-tested** |
 | **Fedora Silverblue 44** | rpm-ostree, Flatpak, toolbox, firewalld, systemd, containers | Harness and fixture coverage; no current live-VM run | **Experimental** (eligible, awaiting a fresh VM run) |
 | **Other Fedora Atomic 41+ variants** | rpm-ostree family | Detection and shared action tests | **Experimental** (eligible, awaiting a fresh VM run) |
 | **Fedora Workstation / Server** | `dnf` family incomplete | Detection tests only | **Experimental** |
 
-The deterministic workspace baseline is 1,750 Rust tests plus 72 frontend
+The deterministic workspace baseline is 1,758 Rust tests plus 72 frontend
 tests. Those tests verify action construction, policy, approval, storage, and
 UI behavior, but they do not replace a real distribution VM run.
 

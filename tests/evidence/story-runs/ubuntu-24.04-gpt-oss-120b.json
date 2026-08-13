@@ -5,9 +5,9 @@
     "verdict": "not-applicable"
   },
   "cassette_mode": "record",
-  "cassette_sha256": "95d2a780bc1e3b1db966ec27fe32baf0ef3d53662815ba83b2966e1ce97dd8bd",
+  "cassette_sha256": "903ec0a918fc250fbd02066494582dee90f3548d8973656beb029364f96a9450",
   "distro_id": "ubuntu",
-  "ran_at": "2026-08-13T12:02:33+00:00",
+  "ran_at": "2026-08-13T16:59:18+00:00",
   "release": "24.04",
   "stories": {
     "100": {
@@ -28,6 +28,122 @@
     },
     "104": {
       "name": "Apply netplan after showing config",
+      "verdict": "PASS"
+    },
+    "105": {
+      "name": "Identify the host",
+      "verdict": "PASS"
+    },
+    "106": {
+      "name": "Recent apt transactions",
+      "verdict": "PASS"
+    },
+    "107": {
+      "name": "Pending reboot check",
+      "verdict": "PASS"
+    },
+    "108": {
+      "name": "cloud-init provisioning result",
+      "verdict": "PASS"
+    },
+    "109": {
+      "name": "GRUB kernel command line",
+      "verdict": "PASS"
+    },
+    "110": {
+      "name": "Apt pin priority for one package",
+      "verdict": "PASS"
+    },
+    "111": {
+      "name": "Remove a named apt pin",
+      "verdict": "PASS"
+    },
+    "112": {
+      "name": "AppArmor profile inventory",
+      "verdict": "PASS"
+    },
+    "113": {
+      "name": "Enforce an AppArmor profile",
+      "verdict": "PASS"
+    },
+    "114": {
+      "name": "Put an AppArmor profile in complain mode",
+      "verdict": "PASS"
+    },
+    "115": {
+      "name": "Ubuntu Pro subscription state",
+      "verdict": "PASS"
+    },
+    "116": {
+      "name": "A Pro token never reaches the provider",
+      "verdict": "PASS"
+    },
+    "117": {
+      "name": "Detach from Ubuntu Pro",
+      "verdict": "PASS"
+    },
+    "118": {
+      "name": "Enable one Pro service",
+      "verdict": "PASS"
+    },
+    "119": {
+      "name": "Disable one Pro service",
+      "verdict": "PASS"
+    },
+    "120": {
+      "name": "Livepatch state",
+      "verdict": "PASS"
+    },
+    "121": {
+      "name": "Multipass VM inventory",
+      "verdict": "PASS"
+    },
+    "122": {
+      "name": "Revert a snap",
+      "verdict": "PASS"
+    },
+    "123": {
+      "name": "Add a Launchpad PPA",
+      "verdict": "PASS"
+    },
+    "124": {
+      "name": "Remove a Launchpad PPA",
+      "verdict": "PASS"
+    },
+    "125": {
+      "name": "Delete a numbered ufw rule",
+      "verdict": "PASS"
+    },
+    "126": {
+      "name": "Turn on automatic security updates",
+      "verdict": "PASS"
+    },
+    "127": {
+      "name": "Regenerate netplan without applying",
+      "verdict": "PASS"
+    },
+    "128": {
+      "name": "Set a netplan key without applying",
+      "verdict": "PASS"
+    },
+    "129": {
+      "name": "Distribution upgrade, not apt upgrade",
+      "verdict": "PASS"
+    },
+    "130": {
+      "name": "List a user's flatpaks on Ubuntu",
+      "verdict": "PASS"
+    },
+    "131": {
+      "name": "Install a flatpak on Ubuntu",
+      "verdict": "PASS"
+    },
+    "132": {
+      "name": "Remove a flatpak on Ubuntu",
+      "verdict": "PASS"
+    },
+    "133": {
+      "name": "Update every flatpak for a user on Ubuntu",
       "verdict": "PASS"
     },
     "55": {
@@ -215,10 +331,10 @@
   "surface": "groq/openai/gpt-oss-120b",
   "totals": {
     "failed": 0,
-    "passed": 50,
+    "passed": 79,
     "rate_limited": 0,
     "skipped": 0,
-    "total": 50
+    "total": 79
   },
   "version": 1
 }

@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "meta": {
     "surfaces": [
       "groq/openai/gpt-oss-120b"
@@ -9,6 +9,76 @@
     ]
   },
   "entries": {
+    "groq/openai/gpt-oss-120b:00617aecfd0f6e036b090b57e252c4e7bdd856cabc6585b1979bba8018957591": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_a57f12a1-e70f-46fe-b590-98006799ea46",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to turn on the 'esm-apps' service provided by Ubuntu Pro. This action will enable the service, allowing access to extended security maintenance for applications. It is a high-risk operation requiring approval before execution.",
+                "steps": [
+                  {
+                    "action_name": "EnableProService",
+                    "params": "{\"service\":\"esm-apps\"}",
+                    "risk_level": "high",
+                    "summary": "Enable the esm-apps service in Ubuntu Pro"
+                  }
+                ],
+                "summary": "Enable the esm-apps Ubuntu Pro service"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "f64c19dd259abd4bb674841b44b5e773ced96a22da8f31b5486c06c77988831c"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:02bc16395814e641ad6482463900313da0e4142f55ddd27738f00155e8ae35a6": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_cd7053d9-649d-4d81-95b2-a36ae4f68054",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants the AppArmor profile for nginx to be in complain mode, which logs violations without enforcing them. Using the AppArmorComplain action will change the profile's mode accordingly. This operation is high risk because it temporarily disables enforcement for the nginx service, so it should be reviewed carefully.",
+                "steps": [
+                  {
+                    "action_name": "AppArmorComplain",
+                    "params": "{\"profile_path\":\"/etc/apparmor.d/usr.sbin.nginx\"}",
+                    "risk_level": "high",
+                    "summary": "Set the nginx AppArmor profile to complain mode so violations are logged but not blocked"
+                  }
+                ],
+                "summary": "Set nginx AppArmor profile to complain mode"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "42fa9993263625d62a8ea858cf0993e2e3f6f4e0d86c3bc859d494cb31d128a4"
+        ]
+      }
+    },
     "groq/openai/gpt-oss-120b:0445b57c8fb65266dc4be9efa89c0f7a80c7903f2534fb17c1f2f5bbc7dee8d4": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -161,6 +231,41 @@
         ]
       }
     },
+    "groq/openai/gpt-oss-120b:0e179744ac9ff07f0d1a556062550673d31c7ab4c55f036cb6f6ed4bad2021a7": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_350fd1d6-afbf-47df-a256-8a10bb9b9289",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to roll back the Firefox snap to the earlier version. SnapRevert will revert the specified snap to its prior revision, which is a reversible operation.",
+                "steps": [
+                  {
+                    "action_name": "SnapRevert",
+                    "params": "{\"name\":\"firefox\"}",
+                    "risk_level": "medium",
+                    "summary": "Revert the Firefox snap to its previous revision"
+                  }
+                ],
+                "summary": "Revert the Firefox snap to its previous revision"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "3f1f883ed054ebaf22ba7f3327b5fb30ea657e8493ff6e540e5cd12a14936e8b"
+        ]
+      }
+    },
     "groq/openai/gpt-oss-120b:0ea6203f2b5ffb865bcb91fb6422307d2a6d6f61ef63b0af35d70b1405e7061f": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -182,6 +287,42 @@
         "max_tokens": 4096,
         "messages": [
           "6809a8a69524bbd52686c99bb064c220bc879b4262ec4a1da7e28024a75abe02"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:12c1e3b7d76e90c78b2c8d1194b0cb0536d1d2ec2f3670f50f3982c2b1d0cbd7": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_ab682c6a-53da-4641-871b-c2372a21cbd4",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested removal of a specific ufw rule identified by its index. This plan will delete rule number 3 from the ufw firewall configuration.",
+                "steps": [
+                  {
+                    "action_name": "UfwDeleteRule",
+                    "params": "{\"rule_number\":3}",
+                    "risk_level": "high",
+                    "summary": "Delete ufw rule number 3"
+                  }
+                ],
+                "summary": "Delete ufw firewall rule number 3"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "dc793434faa9d16b446cccba11443c39830e53631051648dc967ae90b1dd88e8",
+          "4b50f28030656b9aac1a21188698ff3933fb3589d2f2879ddd4e907d315b3548"
         ]
       }
     },
@@ -217,6 +358,111 @@
         "max_tokens": 4096,
         "messages": [
           "5396a02b28162d480e8a3a3045e3d0a2ef44e2f253a26d08f15bcc93bc5547f8"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:15574be142bf0c718b0459ee01716d4f9be56aaea250fd52b44cd501f1b0ff2e": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_d1f19e72-032a-4370-a0f0-6ff2da63b548",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to put the AppArmor profile /etc/apparmor.d/usr.bin.firefox into enforce mode. This requires the AppArmorEnforce action, which switches the profile from complain or disabled to enforcement, providing stronger security for Firefox.",
+                "steps": [
+                  {
+                    "action_name": "AppArmorEnforce",
+                    "params": "{\"profile_path\":\"/etc/apparmor.d/usr.bin.firefox\"}",
+                    "risk_level": "high",
+                    "summary": "Set the Firefox AppArmor profile to enforce mode"
+                  }
+                ],
+                "summary": "Enable enforcement for the Firefox AppArmor profile"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "6a832dc12d26adbc61c3c7503e3b97980aa6d7b0935a09f8dd122949aa0f6bf8"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:1b1a14de97f3ffbda50ca7f68a4569f4c9617834c24107b2ef035e69558c8ff8": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_27320485-4c4d-4caf-8d92-7181a2aae3a9",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants unattended security updates to be turned on. Configuring unattended-upgrades will enable the system's automatic security update mechanism, ensuring future security patches are installed without manual intervention. This is a high‑risk change because it modifies system configuration and will affect future package management.",
+                "steps": [
+                  {
+                    "action_name": "ConfigureUnattendedUpgrades",
+                    "params": "{\"enabled\":true}",
+                    "risk_level": "high",
+                    "summary": "Enable unattended security updates"
+                  }
+                ],
+                "summary": "Enable automatic security updates"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "1224bb349f17ba23b876bee6423b5d16c757c0948a9cfc7d4193754e4af261c7"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:1d429f09195512327298693cf41414e73cc763a6632cc5ad5a8f5e9e8a16c7d5": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_81dac638-4435-4dd2-a6ae-139c87e1bccf",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to know the kernel command line that GRUB passes to the kernel. GrubGetKargs reads the current GRUB_CMDLINE_LINUX setting from /etc/default/grub without modifying anything, so it safely provides this information.",
+                "steps": [
+                  {
+                    "action_name": "GrubGetKargs",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Read the current GRUB kernel command line arguments"
+                  }
+                ],
+                "summary": "Show the GRUB kernel command line arguments used at boot"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "460f146ccfaf1de8ca80af93cad516ae8eb54f44997942c969c4f708f3559d88"
         ]
       }
     },
@@ -325,6 +571,146 @@
         ]
       }
     },
+    "groq/openai/gpt-oss-120b:22666e8b195a28899a5bb0720505caebb9984c8da0869751d061917c5b321bf7": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_90e07400-6823-4f8f-9cdd-06e023984317",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to delete the APT pin called 'freeze-nginx'. This action will remove the corresponding pin file from /etc/apt/preferences.d, stopping the pin from affecting future package operations. No additional steps are needed.",
+                "steps": [
+                  {
+                    "action_name": "RemoveAptPin",
+                    "params": "{\"name\":\"freeze-nginx\"}",
+                    "risk_level": "medium",
+                    "summary": "Delete the APT pin named freeze-nginx"
+                  }
+                ],
+                "summary": "Remove the APT pin named freeze-nginx"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "598d6852d030a1f4fed0246e19e4904623501e30f40a7b504f2c6396fdeb369e"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:2ad35bf887d3c48e2e766fdc988ef9326bad6c9603c0f92940b8e0819e9d463d": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_37ac6d15-30e4-4746-988c-f56b61d7dee2",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to see every loaded AppArmor profile and whether it is in enforce or complain mode. The AppArmorStatus action provides a read‑only overview of all loaded profiles and their modes, satisfying the request with low risk.",
+                "steps": [
+                  {
+                    "action_name": "AppArmorStatus",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Retrieve a list of all loaded AppArmor profiles and indicate their mode (enforce or complain)"
+                  }
+                ],
+                "summary": "List all loaded AppArmor profiles and their current mode"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "73909f9fdea175a410c1d0780939fd3654b7d2b94cc51391079ad79d8e12bd93"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:2d1917730f9b902ee0ab88aa5d6f72a96e8fcdfadd466e5bd13e8a58886786b5": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_f51ca801-2926-4952-8d47-07c7e0d050a6",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to remove the Ubuntu Pro subscription from this system. The ProDetach action will delete the attached subscription, stopping any Pro services and clearing subscription data. This is a high‑risk operation because it permanently removes the subscription state.",
+                "steps": [
+                  {
+                    "action_name": "ProDetach",
+                    "params": "{}",
+                    "risk_level": "high",
+                    "summary": "Remove the attached Ubuntu Pro subscription from the system"
+                  }
+                ],
+                "summary": "Detach this machine from its Ubuntu Pro subscription"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "e590d5c98f47b2db1031bb50eb29f01bf623a132124227c3824ae795af21fa16"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:2d5f7c85379a43208fe476f30bfd81ea96c4554cca5aec0cacaf1e663e8cf2a3": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_c1d821a1-3a8b-4196-994b-7bbf9280021e",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested an upgrade to the next Ubuntu version. This action will perform a full distribution upgrade using Ubuntu's release upgrade tool, which may take 20–45 minutes, modify many packages, and require a reboot to complete. The operator should ensure backups are in place and be prepared for possible service interruptions.",
+                "steps": [
+                  {
+                    "action_name": "UbuntuReleaseUpgrade",
+                    "params": "{}",
+                    "risk_level": "high",
+                    "summary": "Execute the Ubuntu release upgrade to move to the next version"
+                  }
+                ],
+                "summary": "Upgrade the system to the next Ubuntu release"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "7c6827883b21c104c84658845904e65c4aad9fc595efbb3729b230b51340f066"
+        ]
+      }
+    },
     "groq/openai/gpt-oss-120b:333c96f35709a3bca339f4c74713b96b24f0ba92545c7fbf5043b9c9809c1f8a": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -395,6 +781,41 @@
         ]
       }
     },
+    "groq/openai/gpt-oss-120b:337932daa368ced11348e785f0d06a903df4a2ae59919098443e4d06ff9b113b": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_f717ea51-4c45-4776-bbc6-76f2b9030c4d",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to see the apt pin priority (apt-cache policy) for nginx. GetAptPins returns pin priorities, optionally filtered by package name. This is a low‑risk read‑only query.",
+                "steps": [
+                  {
+                    "action_name": "GetAptPins",
+                    "params": "{\"package\":\"nginx\"}",
+                    "risk_level": "low",
+                    "summary": "Retrieve apt pin priorities, focusing on the nginx package"
+                  }
+                ],
+                "summary": "Show apt pin priority for the nginx package"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "1e8ad878e47dc632d9a3d9bc95a4c7f62fff43830790de9a2b131e0c19f18cfe"
+        ]
+      }
+    },
     "groq/openai/gpt-oss-120b:3383fd3932278026181246c496717c26cf9de0185556f6c9be2edcb955714054": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -430,6 +851,41 @@
         ]
       }
     },
+    "groq/openai/gpt-oss-120b:35864e80f842e418d5e8cfc5ec7573bc4774540f1524aa73ada3ea5a67795b5b": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_647d8c6c-add3-4cb9-91c0-37ccab4ba6e7",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to know whether Ubuntu Pro is active on this machine. The ProStatus action provides the current subscription state without making any changes.",
+                "steps": [
+                  {
+                    "action_name": "ProStatus",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Retrieve the Ubuntu Pro subscription status"
+                  }
+                ],
+                "summary": "Check Ubuntu Pro subscription status"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "a4b1a2d70753a15ee0ece91cfd980dc3fe8f0050f132a1b38702b7bfe6b3f1f6"
+        ]
+      }
+    },
     "groq/openai/gpt-oss-120b:38d3e1fff1b3e4910c9c09112d2331c6992cf019159cadc8b51d04e9bdbdf768": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -462,6 +918,41 @@
         "max_tokens": 4096,
         "messages": [
           "764b89917271bda5a446e7ce58122aa6c04f126a9c2e00e47f7ae414bdd57326"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:3c91d766781d45df4db2994d775e92a671c1f8ee017e1850f31c9c7c88b202ee": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_dcf79223-5132-4df0-a14d-da992f14b026",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to know whether the Canonical Livepatch service is applying kernel patches. Running LivepatchStatus will report the current livepatch state, including whether it is active and any recent patch activity.",
+                "steps": [
+                  {
+                    "action_name": "LivepatchStatus",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Retrieve the Livepatch service status to see if kernel patches are being applied"
+                  }
+                ],
+                "summary": "Check Canonical Livepatch status"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "dac870efbf448b09cb163a2b71dc0ff65c14a1ad5ed4db6d873460307422501a"
         ]
       }
     },
@@ -532,6 +1023,76 @@
         "max_tokens": 4096,
         "messages": [
           "103fa9bb3d53462fd3fdbea8d7fffcfa958eea2055ad448623fe69bdcd0451a9"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:50ab0cc54cc49a70ed51af29563b4bd3de1d4be5b3c3dd1ec9d427c9565122ff": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_64b4c22e-92d0-45a7-81a8-16ff20540605",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested a list of Multipass VMs and their status. MultipassList provides this read‑only information without modifying the system.",
+                "steps": [
+                  {
+                    "action_name": "MultipassList",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Retrieve a list of all Multipass instances and their state"
+                  }
+                ],
+                "summary": "List Multipass virtual machines and their current state"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "23148ed87213ed1a2f619acf2aff63dced33e4e445995b1afb5df327ce134fb8"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:50ad61d27c0b888da28c2085a3b9bf751323de44f6ed929b3be5f94c100c811d": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_7cccffe1-ec85-424e-a155-69efd697e4d2",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to modify the netplan configuration to enable DHCP on interface eth0 but defer applying the changes. NetplanSet updates the netplan YAML accordingly; the changes will take effect when NetplanApply is run later.",
+                "steps": [
+                  {
+                    "action_name": "NetplanSet",
+                    "params": "{\"key\":\"network.ethernets.eth0.dhcp4\",\"value\":\"true\"}",
+                    "risk_level": "high",
+                    "summary": "Set eth0 to obtain its IP via DHCP in the netplan configuration"
+                  }
+                ],
+                "summary": "Configure eth0 to use DHCP via netplan without applying changes"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "582b5858367be4255a6f06fcb855a93abe695d3d44a10b9ece540eb018e71c13"
         ]
       }
     },
@@ -608,6 +1169,41 @@
         "max_tokens": 4096,
         "messages": [
           "e685dcd493b55ea55fb1d63bf88f9feb956b6d131096a36491b85197976b69f9"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:5b44aef323f4d769bb4e84d2c2487e7d2d3025b43ff5697903ba203df42d662b": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_44221d8e-2a84-4c25-85d9-a0b9183dea86",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to see which packages have been installed or removed via apt recently. AptHistoryList reads the apt transaction log and provides this information without making any changes.",
+                "steps": [
+                  {
+                    "action_name": "AptHistoryList",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Retrieve recent apt install/remove entries from the transaction log"
+                  }
+                ],
+                "summary": "Show recent apt package installation and removal history"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "9650dcf7669beaf381f3c04970691f5712cabd937a398f69db03b0535271b390"
         ]
       }
     },
@@ -728,6 +1324,41 @@
         ]
       }
     },
+    "groq/openai/gpt-oss-120b:6b311fe13b07bb314f2e69dd9e3a9253d0098dda971501f315cd562c3c607f5e": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_fdf38548-3669-47c0-b301-2efa291d2a06",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested updating all installed Flatpak apps for the specified user. UpdateFlatpak will refresh each Flatpak to its latest version for that user. This is a low‑risk, read‑only operation.",
+                "steps": [
+                  {
+                    "action_name": "UpdateFlatpak",
+                    "params": "{\"username\":\"alice\"}",
+                    "risk_level": "low",
+                    "summary": "Refresh all Flatpak apps for user alice"
+                  }
+                ],
+                "summary": "Update all Flatpak applications for user alice"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "4d0d5a01dd80a55d1254b72fdb2d6d9b53478c80c9e876bd0ddb23d628323f9e"
+        ]
+      }
+    },
     "groq/openai/gpt-oss-120b:7568b9298a97e41dd420ec7828f33f1b3ad129be721a4a54be0399702b0c277f": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -760,6 +1391,41 @@
         "max_tokens": 4096,
         "messages": [
           "65ddb1730ca6ac2435fc22798b501a277d4fd69f42b8b2ed067997ac0e84a425"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:7bf0e4ecb922ba65fbb356185e94e838eee12b361f0572b0f7484f19c71ea3c1": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_abfd53af-3605-4b4d-b3fe-1024c3751b99",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to update the netplan configuration files on disk without affecting the currently active network interfaces. NetplanGenerate rewrites the backend files based on the saved netplan YAML but does not apply them, satisfying this request safely.",
+                "steps": [
+                  {
+                    "action_name": "NetplanGenerate",
+                    "params": "{}",
+                    "risk_level": "medium",
+                    "summary": "Regenerate netplan backend configuration files"
+                  }
+                ],
+                "summary": "Regenerate netplan backend configuration files without applying changes"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "0b2a536f120201f7159d43fb11b17ebab393d01a0f59b9d543fde377cb157d71"
         ]
       }
     },
@@ -941,6 +1607,41 @@
         "max_tokens": 4096,
         "messages": [
           "2a8c3e89caae87c5c4e9bd67ecbc3ab54a830555cbc8b75c3f623d04667564ae"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:87168ccc9587aa6016fc6759347f156b1d53332850a834925fec56854a33ce07": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_f31255f8-4816-4a8c-a629-12c8d6cb62d6",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to know whether cloud-init completed its provisioning without errors. CloudInitStatus provides a read‑only report of the cloud‑init run, including any error messages, satisfying the request.",
+                "steps": [
+                  {
+                    "action_name": "CloudInitStatus",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Retrieve cloud-init provisioning status and any error information"
+                  }
+                ],
+                "summary": "Check cloud-init provisioning status"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "16158a41b0bd4d3ef09315a655f064b8c31c88fc7c6c28f9f106ad81eefa0884"
         ]
       }
     },
@@ -1257,6 +1958,33 @@
         ]
       }
     },
+    "groq/openai/gpt-oss-120b:a2cf3dffa5d46081e26ae264d4fc0ffc3eb79963c5a62de681de6fb89acefe4c": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_cc2ce7dd-7ad7-48dd-8e5a-bbf5b6edabca",
+              "call_id": null,
+              "name": "refuse",
+              "input": {
+                "reason": "ProAttach requires an Ubuntu Pro subscription token, which was not provided.",
+                "suggestion": "Please provide the token using the parameter 'token' to attach the subscription."
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "036e068017c7490135c5a4ddf9d0d5e070c737dba97b7a92f5b1a54e3eec2f76"
+        ]
+      }
+    },
     "groq/openai/gpt-oss-120b:a491313fbee48cca7c0785b78a88ca1c33b00f9ff38cf822b03ea4e33f19c7c6": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -1324,6 +2052,76 @@
         "max_tokens": 4096,
         "messages": [
           "9f136799a23967e82b0b033cb56213c66b08fa19ef571eb0b6bb8a2919d20aa7"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:aa2820973553ca821dd26dc3500a41aae1e5dbe247d458d852a7a45e07a529ba": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_6af55e15-f434-43ee-843b-c30372916c25",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants basic host identification details. GetHostState returns the OS release, kernel version, and hardware architecture in a low‑risk read‑only query.",
+                "steps": [
+                  {
+                    "action_name": "GetHostState",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Retrieve OS release, kernel version, and architecture information"
+                  }
+                ],
+                "summary": "Show operating system release, kernel version, and architecture"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "36a31243b6d594e82530e21e5ba8d22bede4e185bbc97517cd12ea2562971ae1"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:aafa689f73a1e60763d18b2cc663919a74e1ac574d43de056f2227b0ae59e3b1": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_7ca38fb7-3b46-4e22-8bd7-9e5515e6ab9e",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user asked to turn off the Livepatch service provided by Ubuntu Pro. Disabling this service removes automatic kernel livepatching, which may affect system security but fulfills the request. This requires the DisableProService action with the service set to livepatch, which is classified as high risk.",
+                "steps": [
+                  {
+                    "action_name": "DisableProService",
+                    "params": "{\"service\":\"livepatch\"}",
+                    "risk_level": "high",
+                    "summary": "Disable the Livepatch service in Ubuntu Pro"
+                  }
+                ],
+                "summary": "Disable the Livepatch Ubuntu Pro service"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "e8f2462358f2f6a76406fcc44ae913e6df2f33bfcd76b8c3b7076732604f20f0"
         ]
       }
     },
@@ -1499,6 +2297,76 @@
         "max_tokens": 4096,
         "messages": [
           "73e4ad5af69e18afa1ac9c29a894e26bedced399076cc6bc20c6e971ada55a85"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:c294c5ede4332a6ed5fe53848fa609bcb091c740f30da0862da0fac8c92e8cbd": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_875d874b-645d-4f91-9c6d-bde0d22b7fac",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to know whether the machine requires a reboot. The CheckPendingReboot action reads the system's reboot-required flag without making any changes.",
+                "steps": [
+                  {
+                    "action_name": "CheckPendingReboot",
+                    "params": "{}",
+                    "risk_level": "low",
+                    "summary": "Read the reboot-required status flag"
+                  }
+                ],
+                "summary": "Check if a system reboot is pending"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "badf780f4098f9a9c08e6accc9bd78b6463864a5bc522774d1ca5824ac0c557a"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:c44ea3c8eaabdba732c2dd51ba178a0c027b1a7b1ec67141fbd458b050f52a36": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_b74d306c-0777-416e-8204-a52d3d83683b",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested to add the deadsnakes/ppa Launchpad PPA to the system. This action adds a third‑party apt source, which is a high‑risk change because it expands the package trust store. The plan will execute AddPpa with the specified name.",
+                "steps": [
+                  {
+                    "action_name": "AddPpa",
+                    "params": "{\"name\":\"deadsnakes/ppa\"}",
+                    "risk_level": "high",
+                    "summary": "Add the deadsnakes/ppa Launchpad PPA to the system"
+                  }
+                ],
+                "summary": "Add the deadsnakes/ppa Launchpad PPA"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "ecd6730854bc2eaa5d921aefa68bd7a0267418a5cbd8798aa0294012e76cefdf"
         ]
       }
     },
@@ -1745,6 +2613,77 @@
         ]
       }
     },
+    "groq/openai/gpt-oss-120b:dd5ea196318d71f128991c6eefa0bf77b8eb8b2d7db7c2a6e7e98a53c769a88a": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_8e2925a5-f93c-4597-ac93-e21c817d6dfc",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested installing the org.mozilla.firefox Flatpak from the flathub remote for the user alice. This can be fulfilled with the UbuntuInstallFlatpak action, which installs a Flatpak app for a specific user. The action is medium risk because it modifies the user's Flatpak installations.",
+                "steps": [
+                  {
+                    "action_name": "UbuntuInstallFlatpak",
+                    "params": "{\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\",\"remote\":\"flathub\"}",
+                    "risk_level": "medium",
+                    "summary": "Install the Firefox Flatpak from Flathub for alice"
+                  }
+                ],
+                "summary": "Install the Firefox Flatpak from Flathub for user alice"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "d85c0e426bfd71bfcbd0aee48b95a359c63672bcb2ca7af8d91c12d07b7f973c"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:ddb4bedd62153dfb0a751a197ca138a188ee5c394f863011317096ec6c46da72": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_4501f536-08bc-411c-bf1a-ac487a611729",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested a list of Flatpak applications installed for the specified user. ListInstalledFlatpaks returns exactly this information in a low-risk, read‑only operation.",
+                "steps": [
+                  {
+                    "action_name": "ListInstalledFlatpaks",
+                    "params": "{\"username\":\"alice\"}",
+                    "risk_level": "low",
+                    "summary": "Retrieve the list of installed Flatpak apps for alice"
+                  }
+                ],
+                "summary": "List Flatpak apps installed for user alice"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "e8d4845c99a13c5d9c55da540c38357cc3539ce43ac1f108aece4684903a9b67",
+          "4b50f28030656b9aac1a21188698ff3933fb3589d2f2879ddd4e907d315b3548"
+        ]
+      }
+    },
     "groq/openai/gpt-oss-120b:e0e9fca0780c078e50c1ab5c0132f3e1658ef13ab082d386a417abc64a112427": {
       "surface": "groq/openai/gpt-oss-120b",
       "output": {
@@ -1812,6 +2751,146 @@
         "max_tokens": 4096,
         "messages": [
           "bfdd970791317f4145873c38f0836dd9e774c9a75d04e14235ed9c796a536f39"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:f393e3d7f4d6b27bd541c08651db1338079c857b4e8e1e1234b95387ac60786c": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_30f10793-80d6-47fb-9160-7e202988d034",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested removal of the specified PPA. The RemovePpa action deletes the PPA repository entry from the system, which is a medium‑risk change because it alters package source configuration.",
+                "steps": [
+                  {
+                    "action_name": "RemovePpa",
+                    "params": "{\"name\":\"deadsnakes/ppa\"}",
+                    "risk_level": "medium",
+                    "summary": "Delete the deadsnakes/ppa Launchpad PPA from the system's package sources"
+                  }
+                ],
+                "summary": "Remove the deadsnakes/ppa Launchpad PPA"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "e1c4eda44f192f041ee4b5c43a1efedeb7dbd3ab14490ee0783535eb60557aa3"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:f4ceaf6f3a2611b780b7736722e63ed3b9850b6c6e3a02ee36fffc7ed5dd49e8": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_8a40f975-4008-42ae-b502-97d1dc3f65e0",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested removal of a specific ufw rule identified by its rule number. This plan uses the UfwDeleteRule action to delete rule number 3 from the firewall configuration. Deleting a rule is a high‑risk operation because it modifies firewall settings and could affect connectivity, so approval is required before execution.",
+                "steps": [
+                  {
+                    "action_name": "UfwDeleteRule",
+                    "params": "{\"rule_number\":3}",
+                    "risk_level": "high",
+                    "summary": "Remove the ufw rule with index 3"
+                  }
+                ],
+                "summary": "Delete ufw firewall rule number 3"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "dc793434faa9d16b446cccba11443c39830e53631051648dc967ae90b1dd88e8"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:fac5ba8c602ef678a7caa123bb87f5b6ed832525cbdae89cd2dcd4bb506b0cf0": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_60d6657d-ef08-454e-8518-87fe9d9fea2a",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user requested removal of the Firefox Flatpak application for the specified user. UbuntuRemoveFlatpak will delete the app from alice's Flatpak installations.",
+                "steps": [
+                  {
+                    "action_name": "UbuntuRemoveFlatpak",
+                    "params": "{\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\"}",
+                    "risk_level": "medium",
+                    "summary": "Remove the org.mozilla.firefox Flatpak for user alice"
+                  }
+                ],
+                "summary": "Uninstall the org.mozilla.firefox Flatpak for user alice"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "5c2b08f0a62952dc4ef832496a51d58f579d6f5334f420ac4cb4cf2616c07fce"
+        ]
+      }
+    },
+    "groq/openai/gpt-oss-120b:fc23db9050b1ca308299502f54cb7c92138b2dba6983e4e6790333bd5e41ca79": {
+      "surface": "groq/openai/gpt-oss-120b",
+      "output": {
+        "content": [
+          {
+            "ToolUse": {
+              "id": "fc_a527ee13-45dd-449d-be29-3ebd4928640e",
+              "call_id": null,
+              "name": "propose_plan",
+              "input": {
+                "explanation": "The user wants to see which Flatpak apps are installed for the specified user. ListInstalledFlatpaks provides this information in a read‑only manner without requiring any changes.",
+                "steps": [
+                  {
+                    "action_name": "ListInstalledFlatpaks",
+                    "params": "{\"username\":\"alice\"}",
+                    "risk_level": "low",
+                    "summary": "Retrieve the list of Flatpak apps installed for alice"
+                  }
+                ],
+                "summary": "List installed Flatpak applications for user alice"
+              }
+            }
+          }
+        ],
+        "stop_reason": "ToolUse"
+      },
+      "fingerprint": {
+        "system": "f03f78d885deda96e12b4354bd1d558f8032112a58f43e89900e97e4f18cba8f",
+        "tools": "8c267cb1654abcbe95c7d70d94341a070d2864d9365500a860f9163aeb4bfb52",
+        "max_tokens": 4096,
+        "messages": [
+          "e8d4845c99a13c5d9c55da540c38357cc3539ce43ac1f108aece4684903a9b67"
         ]
       }
     }

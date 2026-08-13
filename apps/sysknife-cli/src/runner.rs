@@ -1594,8 +1594,15 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     }
 
     // Layer 1: spinner — auto-hidden by indicatif when stderr is not a TTY.
-    let spinner =
-        (!opts.json).then(|| crate::render::make_spinner(format!("Planning \"{intent}\"…")));
+    // Same redaction as the notice below: the spinner is transient on a TTY, but
+    // it is the same string and there is no reason to hold the two to different
+    // standards.
+    let spinner = (!opts.json).then(|| {
+        crate::render::make_spinner(format!(
+            "Planning \"{}\"…",
+            sysknife_brain::prefs::loggable_intent(&intent)
+        ))
+    });
 
     // …and because it is hidden there, a piped or ssh'd run would otherwise
     // print nothing at all while the provider thinks. Say it once instead.

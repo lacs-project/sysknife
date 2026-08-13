@@ -48,10 +48,17 @@ use sha2::{Digest, Sha256};
 
 use crate::provider::{Completion, LlmProvider, Message, ProviderError, ToolDefinition};
 
-/// On-disk format version. Bump when the entry shape changes; an unknown value
-/// is refused rather than guessed at, so a newer cassette cannot be silently
-/// half-read by an older binary.
-pub const CASSETTE_VERSION: u32 = 1;
+/// On-disk format version. Bump when the entry shape changes.
+///
+/// A *newer* file is refused rather than guessed at, so a shape this binary does
+/// not understand cannot be silently half-read. An *older* one is read: every
+/// version so far has only added optional fields, and refusing v1 would have
+/// thrown away three committed recordings to gain nothing.
+///
+/// - v1 — entries carry `output` only.
+/// - v2 — an entry may instead carry `rejection`, so a call the provider refused
+///   is reproducible. See `RecordedRejection` in this module.
+pub const CASSETTE_VERSION: u32 = 2;
 
 /// Environment variable naming the cassette file.
 pub const ENV_CASSETTE: &str = "SYSKNIFE_CASSETTE";
@@ -109,10 +116,21 @@ pub enum CassetteError {
 
 /// One recorded call. The key already carries the surface; it is repeated here
 /// so a human reading the file can tell entries apart without hashing anything.
+///
+/// Exactly one of `output` and `rejection` is present. A cassette that stored
+/// only successes could not reproduce a retry: the planner appends a correction
+/// and re-asks after a rejected tool call, so the only call recorded was the
+/// *second* one, and a replay starting from the first missed it and then missed
+/// the identical re-ask. Storing the rejection makes the whole exchange replay.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Entry {
     surface: String,
-    output: Completion,
+    /// The successful completion. Absent when the call was rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output: Option<Completion>,
+    /// The refusal, when the provider rejected the request. Absent on success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rejection: Option<RecordedRejection>,
     /// Per-component digests of the call this entry was recorded for.
     ///
     /// The key is a single hash over `(surface, system, messages, tools,
@@ -125,6 +143,67 @@ struct Entry {
     /// against one of those simply falls back to the old, vaguer message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fingerprint: Option<CallFingerprint>,
+}
+
+/// A provider refusal that is a property of the request, so replaying it is
+/// honest rather than a cached flake.
+///
+/// `kind` is the variant name, kept so the replayed error is the same shape the
+/// live one had. It matters: `is_retryable` and `is_invalid_tool_call` both
+/// branch on the error, and a replay that reproduced the message but not the
+/// variant would take a different path through the retry loop than the run it
+/// claims to reproduce.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecordedRejection {
+    kind: String,
+    message: String,
+}
+
+impl RecordedRejection {
+    fn of(error: &ProviderError) -> Option<Self> {
+        let kind = match error {
+            ProviderError::Request(_) => "request",
+            ProviderError::Parse(_) => "parse",
+            // Nothing else can carry an invalid-tool-call rejection: no adapter
+            // builds `Http`, and `Auth`/`RateLimit`/`CassetteMiss` are excluded
+            // by `is_invalid_tool_call` itself.
+            _ => return None,
+        };
+        Some(Self {
+            kind: kind.to_string(),
+            message: match error {
+                ProviderError::Request(m) | ProviderError::Parse(m) => m.clone(),
+                _ => return None,
+            },
+        })
+    }
+
+    fn to_error(&self) -> ProviderError {
+        match self.kind.as_str() {
+            "parse" => ProviderError::Parse(self.message.clone()),
+            // "request" and anything a newer writer invents. Falling back to the
+            // broader variant keeps an unknown kind replayable and retryable
+            // rather than turning it into a silent success.
+            _ => ProviderError::Request(self.message.clone()),
+        }
+    }
+}
+
+/// Whether a failure may be written to the cassette.
+///
+/// Exactly the failures the planner corrects and re-asks about — see
+/// [`ProviderError::is_invalid_tool_call`] for why the two sets are one set.
+/// Those are a deterministic function of the same bytes the key hashes, just
+/// like a success.
+///
+/// Everything else describes the moment rather than the request: a 429 is load,
+/// a timeout is timing, a 5xx is the far side having a bad day. Recording any of
+/// them would bake a flake into the file and hand it back for ever.
+fn recordable_rejection(error: &ProviderError) -> Option<RecordedRejection> {
+    if !error.is_invalid_tool_call() {
+        return None;
+    }
+    RecordedRejection::of(error)
 }
 
 /// Component digests of one call, enough to locate *where* two calls diverge
@@ -257,7 +336,7 @@ impl Cassette {
                     path: path.clone(),
                     source,
                 })?;
-            if probe.version != CASSETTE_VERSION {
+            if probe.version > CASSETTE_VERSION {
                 return Err(CassetteError::UnsupportedVersion {
                     path,
                     found: probe.version,
@@ -355,9 +434,22 @@ impl Cassette {
         Ok(tally)
     }
 
-    fn lookup(&self, key: &str) -> Option<Completion> {
+    /// The recorded outcome for `key`, which may be a refusal.
+    ///
+    /// `Some(Err(..))` is a hit, not a miss: the recording says this exact
+    /// request was rejected, and handing that back is what lets the caller's
+    /// retry take the same path it took live.
+    fn lookup(&self, key: &str) -> Option<Result<Completion, ProviderError>> {
         let state = self.state.lock().expect("cassette state poisoned");
-        state.entries.get(key).map(|e| e.output.clone())
+        let entry = state.entries.get(key)?;
+        match (&entry.output, &entry.rejection) {
+            (Some(output), _) => Some(Ok(output.clone())),
+            (None, Some(r)) => Some(Err(r.to_error())),
+            // An entry with neither is a file someone edited by hand. Treating it
+            // as a miss reports the divergence instead of serving an empty plan
+            // that would read as the model having nothing to say.
+            (None, None) => None,
+        }
     }
 
     /// True when this exact system prompt was never recorded, which is the usual
@@ -377,6 +469,30 @@ impl Cassette {
         output: Completion,
         fingerprint: Option<CallFingerprint>,
     ) -> Result<(), CassetteError> {
+        self.store_entry(key, surface, prompt_sha, Some(output), None, fingerprint)
+    }
+
+    /// Persist a provider refusal. See [`recordable_rejection`] for which ones.
+    fn store_rejection(
+        &self,
+        key: String,
+        surface: &str,
+        prompt_sha: &str,
+        rejection: RecordedRejection,
+        fingerprint: Option<CallFingerprint>,
+    ) -> Result<(), CassetteError> {
+        self.store_entry(key, surface, prompt_sha, None, Some(rejection), fingerprint)
+    }
+
+    fn store_entry(
+        &self,
+        key: String,
+        surface: &str,
+        prompt_sha: &str,
+        output: Option<Completion>,
+        rejection: Option<RecordedRejection>,
+        fingerprint: Option<CallFingerprint>,
+    ) -> Result<(), CassetteError> {
         {
             let mut state = self.state.lock().expect("cassette state poisoned");
             state.meta.surfaces.insert(surface.to_string());
@@ -384,11 +500,17 @@ impl Cassette {
                 .meta
                 .system_prompt_sha256
                 .insert(prompt_sha.to_string());
+            // A file this binary has written is a v2 file, even when it was
+            // opened from a v1 one. Leaving the stamp at 1 while writing an
+            // entry only v2 understands is the exact silent-half-read the
+            // version field exists to prevent.
+            state.version = CASSETTE_VERSION;
             state.entries.insert(
                 key.clone(),
                 Entry {
                     surface: surface.to_string(),
                     output,
+                    rejection,
                     fingerprint,
                 },
             );
@@ -567,8 +689,10 @@ impl Cassette {
             // is exactly what it did on the first replay after this landed.
             Some(0) => format!(
                 "no recorded output for this intent in {}. The prompt and tools match, so \
-                 the cassette is current — this particular request was never recorded \
-                 (a call that errored during recording leaves no entry). Re-record with \
+                 the cassette is current — this particular request was never recorded. A \
+                 recording made before cassette v2 is the usual reason: only successes \
+                 were kept, so an intent whose first call the provider rejected left the \
+                 corrected retry behind and nothing to start it from. Re-record with \
                  {}=record if it should be covered.",
                 self.path.display(),
                 ENV_CASSETTE_MODE
@@ -654,9 +778,12 @@ impl LlmProvider for CassetteProvider {
     ) -> Result<Completion, ProviderError> {
         let key = call_key(&self.surface, system, messages, tools, max_tokens);
 
-        if let Some(output) = self.cassette.lookup(&key) {
+        if let Some(outcome) = self.cassette.lookup(&key) {
+            // A recorded refusal is a hit. The caller's retry then takes the same
+            // path it took live, which is the only way an exchange that needed a
+            // retry replays at all.
             self.cassette.note("hit", &self.surface, &key);
-            return Ok(output);
+            return outcome;
         }
 
         if self.cassette.mode == CassetteMode::Replay {
@@ -679,25 +806,45 @@ impl LlmProvider for CassetteProvider {
         }
 
         // Record: pay for the call once, then keep it.
-        let output = self
+        let outcome = self
             .inner
             .complete(system, messages, tools, max_tokens)
-            .await?;
+            .await;
         // The fingerprint's `system` field is the same sha256 `prompt_sha` needs;
         // compute it once and reuse it rather than hashing the (tens-of-KB)
         // system prompt twice for one stored call.
         let fingerprint = CallFingerprint::of(system, messages, tools, max_tokens);
         let prompt_sha = fingerprint.system.clone();
-        self.cassette
-            .store(
-                key,
-                &self.surface,
-                &prompt_sha,
-                output.clone(),
-                Some(fingerprint),
-            )
-            .map_err(|e| ProviderError::CassetteMiss(format!("cannot write cassette: {e}")))?;
-        Ok(output)
+        let write_failed = |e| ProviderError::CassetteMiss(format!("cannot write cassette: {e}"));
+
+        match outcome {
+            Ok(output) => {
+                self.cassette
+                    .store(
+                        key,
+                        &self.surface,
+                        &prompt_sha,
+                        output.clone(),
+                        Some(fingerprint),
+                    )
+                    .map_err(write_failed)?;
+                Ok(output)
+            }
+            Err(error) => {
+                if let Some(rejection) = recordable_rejection(&error) {
+                    self.cassette
+                        .store_rejection(
+                            key,
+                            &self.surface,
+                            &prompt_sha,
+                            rejection,
+                            Some(fingerprint),
+                        )
+                        .map_err(write_failed)?;
+                }
+                Err(error)
+            }
+        }
     }
 }
 
@@ -947,6 +1094,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_cassette_from_an_older_format_still_replays() {
+        // v2 only added optional fields. Refusing v1 would have discarded three
+        // committed recordings — and the whole point of committing them is that
+        // they outlive the commit that made them.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let msgs = msgs("hi");
+        let key = call_key(SURFACE, "SYS", &msgs, &[], 100);
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "version": 1,
+                "meta": {"surfaces": [SURFACE], "system_prompt_sha256": [sha256_hex(b"SYS")]},
+                "entries": {key: {"surface": SURFACE, "output": text_completion("v1 answer")}},
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let rep = replayer(Box::new(Exploding), &path);
+        let out = rep.complete("SYS", &msgs, &[], 100).await.unwrap();
+        assert_eq!(
+            serde_json::to_string(&out).unwrap(),
+            serde_json::to_string(&text_completion("v1 answer")).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn writing_to_a_v1_cassette_restamps_it_as_v2() {
+        // The stamp has to move with the shape. A v1 header over an entry only v2
+        // can read is precisely the silent half-read the version field prevents.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({"version": 1, "meta": {}, "entries": {}}).to_string(),
+        )
+        .unwrap();
+
+        let (inner, _) = counting();
+        let rec = recorder(inner, &path);
+        rec.complete("SYS", &msgs("hi"), &[], 100).await.unwrap();
+
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["version"], 2, "a file this binary wrote is a v2 file");
+    }
+
+    #[tokio::test]
     async fn a_changed_system_prompt_misses_and_says_so() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.json");
@@ -1131,6 +1327,169 @@ mod tests {
         let err = Cassette::open(dir.path().join("absent.json"), CassetteMode::Replay)
             .expect_err("replay cannot invent a cassette");
         assert!(matches!(err, CassetteError::Missing(_)));
+    }
+
+    // ── Recording a rejection ────────────────────────────────────────────────
+    //
+    // The planner retries a rejected tool call with a correction appended, so a
+    // story that needs the retry records only the *second* call. A replay starts
+    // from the first, misses, and — because a `CassetteMiss` carries none of the
+    // markers that trigger a correction — retries the identical bytes and misses
+    // again. That is exactly how story 101 came back 79/79 live and 78/79 on its
+    // own twin, with two misses for one story.
+    //
+    // A cassette that stores only successes cannot reproduce any retry. These
+    // tests pin the other half.
+
+    /// Groq's rejection as it actually reaches us.
+    ///
+    /// Not `ProviderError::Http`: no adapter constructs that variant. A 400 is
+    /// classified `StatusClass::Other` and becomes `Request`. Building the test
+    /// double out of `Http` made every assertion below pass against a shape the
+    /// system cannot produce.
+    fn tool_use_failed() -> ProviderError {
+        ProviderError::Request(
+            "{\"error\":{\"message\":\"Failed to call a function. Please adjust your prompt.\",\
+             \"type\":\"invalid_request_error\",\"code\":\"tool_use_failed\"}}"
+                .into(),
+        )
+    }
+
+    /// A provider that rejects the first call the way Groq rejects a tool call
+    /// naming a tool that is not in the request, then answers.
+    struct RejectsThenAnswers {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for RejectsThenAnswers {
+        async fn complete(
+            &self,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _max_tokens: u32,
+        ) -> Result<Completion, ProviderError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(tool_use_failed());
+            }
+            Ok(text_completion("recovered"))
+        }
+    }
+
+    #[test]
+    fn the_recorder_keeps_exactly_what_the_retry_corrects() {
+        // The two sets have to be one set. A recorder narrower than the retrier
+        // leaves a retried run unreplayable — which is the bug this fixes; a
+        // recorder wider than it serves a transient failure back for ever.
+        let cases = [
+            tool_use_failed(),
+            ProviderError::Request(
+                "attempted to call tool 'json' which was not in request.tools".into(),
+            ),
+            ProviderError::Parse("tool_use_failed in a malformed payload".into()),
+            ProviderError::Request("connection reset by peer".into()),
+            ProviderError::RateLimit("Rate limit reached".into()),
+            ProviderError::Auth("bad key".into()),
+            ProviderError::Parse("truncated json".into()),
+            ProviderError::CassetteMiss("no recording for tool_use_failed".into()),
+        ];
+        for error in cases {
+            assert_eq!(
+                recordable_rejection(&error).is_some(),
+                error.is_invalid_tool_call(),
+                "recorder and retrier disagree about {error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rejected_request_is_recorded_and_replayed_as_the_same_rejection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        // Record: the provider rejects, and the rejection is kept.
+        let rec = recorder(
+            Box::new(RejectsThenAnswers {
+                calls: Arc::clone(&calls),
+            }),
+            &path,
+        );
+        let live = rec.complete("SYS", &msgs("hi"), &[], 100).await;
+        let live = live.expect_err("the double rejects the first call");
+        assert!(live.is_invalid_tool_call());
+
+        // Replay: the same rejection comes back, without touching the provider.
+        let rep = replayer(Box::new(Exploding), &path);
+        let replayed = rep
+            .complete("SYS", &msgs("hi"), &[], 100)
+            .await
+            .expect_err("the recording says this request was rejected");
+        assert!(
+            matches!(replayed, ProviderError::Request(_)),
+            "the variant must survive the round trip, not just the text: {replayed:?}"
+        );
+        assert!(
+            replayed.is_invalid_tool_call(),
+            "a replayed rejection must still trigger the correction: {replayed}"
+        );
+        assert!(
+            replayed.is_retryable(),
+            "…and must still be retryable, or the retry never happens: {replayed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn replaying_a_recorded_rejection_counts_as_a_hit_not_a_miss() {
+        // A miss fails the whole run by design. If a recorded rejection were
+        // tallied as a miss, recording it would swap one red run for another.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let rec = recorder(Box::new(RejectsThenAnswers { calls }), &path);
+        let _ = rec.complete("SYS", &msgs("hi"), &[], 100).await;
+
+        let rep = replayer(Box::new(Exploding), &path);
+        let _ = rep.complete("SYS", &msgs("hi"), &[], 100).await;
+        let tally = Cassette::read_ledger(ledger_path_for(&path)).unwrap();
+        assert_eq!(tally.hits, 1, "a recorded rejection is a hit");
+        assert_eq!(tally.misses, 0);
+    }
+
+    #[tokio::test]
+    async fn a_transient_failure_is_not_recorded() {
+        // A 429 or a timeout says something about the moment, not about the
+        // request. Recording one would bake a flake into the file and hand it
+        // back on every replay for ever.
+        struct AlwaysRateLimited;
+        #[async_trait]
+        impl LlmProvider for AlwaysRateLimited {
+            async fn complete(
+                &self,
+                _s: &str,
+                _m: &[Message],
+                _t: &[ToolDefinition],
+                _mt: u32,
+            ) -> Result<Completion, ProviderError> {
+                Err(ProviderError::RateLimit("Rate limit reached".into()))
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let rec = recorder(Box::new(AlwaysRateLimited), &path);
+        let _ = rec.complete("SYS", &msgs("hi"), &[], 100).await;
+
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_default())
+                .unwrap_or(serde_json::json!({"entries": {}}));
+        assert_eq!(
+            doc["entries"].as_object().map(|o| o.len()).unwrap_or(0),
+            0,
+            "a 429 must not be recorded: {doc}"
+        );
     }
 }
 

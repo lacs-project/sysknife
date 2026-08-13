@@ -93,3 +93,24 @@ prompt isolation — is unaffected, and was independently confirmed later: the t
 Fedora actions that still reached Ubuntu plans came from the *tool schema*, which
 this ADR did not cover, not from the prompt. Published figures now derive from
 `tests/evidence/` and are enforced by `scripts/check_evidence_claims.py`.
+
+## Follow-up (2026-08-13)
+
+The "50 stories" above was the family size at the time. It is 79 now: `GetHostState`
+— the action this ADR's fence *required* somebody to introduce, because naming
+Fedora's `GetSystemState` on an apt host is what the fence forbids — had no story
+at all, and neither did 28 other Debian-only actions. Every Debian-only action now
+has one, and the family runs 79/79 on all three LTSes.
+
+Two of the new stories say something about this decision that the fence itself
+does not:
+
+- The four `Ubuntu*Flatpak` actions build **byte-identical argv** to their
+  un-prefixed twins, which `action_family.rs` deliberately leaves unfenced. So
+  the Debian prompt names only the prefixed set while the tool schema offers
+  both, and the choice has no effect on the host. Measured: the model picks the
+  un-prefixed name 3 times in 4. Those stories accept either and log which,
+  because asserting a distinction the host cannot observe is not a gate.
+- `ConfigureUnattendedUpgrades` is described in the tool schema and named in
+  **none** of the Debian prose blocks. Story 126 is therefore a measurement of
+  whether the schema description alone is enough to steer. It is.

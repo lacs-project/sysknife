@@ -87,28 +87,17 @@ const PROVIDER_RETRY_BACKOFF: Duration = Duration::from_millis(400);
 /// is how a rate limit turns into a rate-limit loop.
 const PROVIDER_RETRY_RATE_LIMIT_BACKOFF: Duration = Duration::from_millis(2_000);
 
-/// Markers that identify "the model called a tool that does not exist".
-///
-/// Groq reports this as `code: "tool_use_failed"` with a message naming the tool
-/// it refused, e.g. `attempted to call tool 'json' which was not in
-/// request.tools`. Both halves are matched because providers word it
-/// differently and neither string is one we control; matching either is enough,
-/// and a false positive costs one extra sentence in a retry that was already
-/// going to happen.
-const INVALID_TOOL_CALL_MARKERS: &[&str] = &["tool_use_failed", "was not in request.tools"];
-
 /// The sentence to add before retrying a call the provider rejected because the
 /// model named a nonexistent tool.
 ///
 /// Returns `None` for every other error, so an ordinary 502 or timeout still
 /// retries the request unchanged — resending is the correct response when the
-/// request was never the problem.
+/// request was never the problem. The classification itself lives on
+/// [`ProviderError::is_invalid_tool_call`], because the cassette has to record
+/// exactly the failures this corrects — see its doc for why the two sets must
+/// be the same one.
 fn tool_call_correction(error: &ProviderError, tools: &[ToolDefinition]) -> Option<String> {
-    let text = error.to_string().to_lowercase();
-    if !INVALID_TOOL_CALL_MARKERS
-        .iter()
-        .any(|m| text.contains(&m.to_lowercase()))
-    {
+    if !error.is_invalid_tool_call() {
         return None;
     }
 

@@ -159,6 +159,17 @@ pub trait LlmProvider: Send + Sync {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProviderError {
+    /// **No adapter constructs this.** A provider HTTP status is classified by
+    /// `providers::classify_status` into [`Auth`](Self::Auth),
+    /// [`RateLimit`](Self::RateLimit), or — for every other 4xx and 5xx —
+    /// [`Request`](Self::Request). A Groq 400 carrying `tool_use_failed`
+    /// arrives as `Request`, and a 500 does too.
+    ///
+    /// Say so here because a test double built from this variant tests a shape
+    /// the system cannot produce. That is not hypothetical: the cassette's
+    /// rejection recorder was first written to match `Http { status: 400, .. }`
+    /// and passed three new tests while recording nothing at all on a real run.
+    /// Reach for `Request` when doubling a provider failure.
     #[error("http error {status}: {body}")]
     Http { status: u16, body: String },
 
@@ -216,6 +227,39 @@ impl ProviderError {
             ProviderError::Auth(_) => false,
             ProviderError::CassetteMiss(_) => false,
         }
+    }
+
+    /// Whether the provider rejected the *request* because the model named a
+    /// tool that does not exist.
+    ///
+    /// Two callers need this same answer and must never disagree:
+    ///
+    /// - `planner::tool_call_correction` — the only failure worth re-asking
+    ///   about with a correction appended, because resending the same bytes
+    ///   reproduces the same malformed answer.
+    /// - `cassette::recordable_rejection` — the only failure worth *recording*,
+    ///   because it is a deterministic function of the same bytes the cassette
+    ///   key hashes. If the recorder kept a smaller set than the retrier, a
+    ///   run that needed a retry could never replay; if it kept a larger one, a
+    ///   transient failure would be served back for ever.
+    ///
+    /// Matched on the message, not the variant: no adapter constructs
+    /// [`Http`](Self::Http), and Groq's 400 arrives as
+    /// [`Request`](Self::Request) via `StatusClass::Other`. Groq words it
+    /// `code: "tool_use_failed"` with a message naming the tool it refused —
+    /// `attempted to call tool 'json' which was not in request.tools`. Both
+    /// halves are matched because providers word it differently and neither
+    /// string is one we control.
+    pub fn is_invalid_tool_call(&self) -> bool {
+        const MARKERS: &[&str] = &["tool_use_failed", "was not in request.tools"];
+        // Auth and CassetteMiss are about this process, not the request, and a
+        // cassette-miss diagnostic can quote a recorded message verbatim — which
+        // would otherwise make a miss look like the rejection it is reporting.
+        if matches!(self, Self::Auth(_) | Self::CassetteMiss(_)) {
+            return false;
+        }
+        let text = self.to_string().to_lowercase();
+        MARKERS.iter().any(|m| text.contains(&m.to_lowercase()))
     }
 }
 

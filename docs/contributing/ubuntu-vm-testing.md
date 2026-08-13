@@ -7,17 +7,20 @@ Supported Ubuntu LTSes:
 
 | Release | Codename | SSH port | Live suite | Status |
 |---|---|---|---|---|
-| 22.04 | jammy | 2222 | 49/50 | validated |
-| 24.04 | noble | 2223 | 50/50 | validated (default) |
-| 26.04 | resolute | 2224 | 50/50 | validated |
+| 22.04 | jammy | 2222 | 79/79 | validated |
+| 24.04 | noble | 2223 | 79/79 | validated (default) |
+| 26.04 | resolute | 2224 | 79/79 | validated |
 
 Each release has a record run and a `.replay.json` twin in
 `tests/evidence/story-runs/`, and `tests/release/cassette-replay-parity.test.sh`
-checks every pair it finds. The story missing from 22.04 and 24.04 is the same
-one in both, and it passed on 26.04 — but *which* story that is changes between
-rounds, because two of them are nondeterministic. See
-[Story 101 is flaky; story 104 was fixed](#story-101-is-flaky-story-104-was-fixed) before reading any single run as a
-verdict on a release.
+checks every pair it finds. All three twins currently reproduce their run with
+zero misses.
+
+Do not read a single run as a verdict on a release. Which story comes back short
+moves between rounds, because the failure is a provider-side rejection of a
+correctly-planned call and it lands wherever the sampling puts it — 101 on
+22.04, 119 on 24.04, 125 and 130 on 26.04 across successive rounds. See
+[Story 101 is flaky; story 104 was fixed](#story-101-is-flaky-story-104-was-fixed).
 
 The Ubuntu path uses `qemu-system-x86_64` directly with a cloud-init seed
 ISO — no quickemu, no interactive installer, no GUI window. The base image
@@ -127,6 +130,19 @@ every LLM call once and answering from the file afterwards.
 The wrapper sits at the provider boundary, so a replay still exercises prompt
 assembly, the tool-use loop, the safety fence, the ActionSpec risk substitution
 and the daemon IPC. Only the network hop is served from disk.
+
+Recording is paced. The provider ceiling that has actually stopped a run here is
+**tokens** per minute, not requests: one planning call carries the whole system
+prompt, ~17 kB in, against a 250 k TPM org limit — about 14 calls a minute.
+Unpaced, this suite issues one roughly every three seconds and overruns, and the
+stories past the line come back as provider 429s. `run-stories.sh` therefore
+sleeps 4 s between stories whenever it is recording (or running with no cassette
+at all), and not at all on replay. Override with `SYSKNIFE_STORY_DELAY_SECS`.
+
+Recording is also incremental: a record run serves anything already in the
+cassette from disk and pays only for the calls that miss. Adding stories to an
+existing family costs the new stories, not the whole suite. What does invalidate
+every entry is a change to `prompt.rs`, the tool schema, or the model.
 
 ```sh
 # Record. Costs one live run; the cassette lands inside the VM.
@@ -348,15 +364,34 @@ contains exactly what was wanted:
 {"name": "json", "arguments": {"steps": [{"action_name": "ListContainers", ...}]}}
 ```
 
-Measured 2 failures in 6 runs. The story then gets no plan at all: its log holds
-the header line and nothing else, where a passing story's log holds plan JSON.
+Measured 2 failures in 6 runs.
 
-Note what the retry does here. `complete_with_retry` re-sends the identical
-`(system, messages, tools)`, and the model has locked onto the wrong tool name
-*for that exact input*, so all three attempts reproduce it — the three
-`failed_generation` payloads differ only in prose wording and all three say
-`"name": "json"`. Three API calls and ~8.6 s to fail the same way. A retry that
-does not change its input is not a retry against a formatting error.
+This is not specific to story 101 — it is a property of the model and the
+phrasing, and it has since been observed on 119 (24.04) and on 125 and 130
+(26.04). Any story can land on it.
+
+Two fixes, in order, because the second only became visible once the first
+worked:
+
+1. **The retry now changes its input.** It used to re-send the identical
+   `(system, messages, tools)`, and the model had locked onto the wrong tool name
+   *for that exact input*, so all three attempts reproduced it — the three
+   `failed_generation` payloads differed only in prose wording and all three said
+   `"name": "json"`. Three API calls and ~8.6 s to fail the same way. A retry
+   that does not change its input is not a retry against a formatting error, so
+   `complete_with_retry` now appends a correction naming the real tools before
+   re-asking.
+2. **The correction is now recordable.** The cassette stored only successes, so a
+   story that needed the retry recorded only the *second* call. A replay starts
+   from the first, misses, and — a `CassetteMiss` carrying none of the markers
+   that trigger a correction — re-sends identical bytes and misses again. That
+   one gap was the entire reason all three LTS replay twins reported
+   `cassette_audit.verdict` `failed`. Cassette v2 records the rejection, and a
+   replay takes the same path the live run took.
+
+So a story short on a replay is worth reading as a cassette-vintage question
+first. Re-record and it goes away; if it does not, the diagnostic in the story
+log names the diverging message.
 
 **Story 104 (`Apply netplan after showing config`) — fixed, and worth reading as
 a worked example.** It asked for "the network config and then apply it" and
@@ -385,4 +420,12 @@ Two rules, both learned the hard way:
   concurrent suites at `SYSKNIFE_MAX_RPM=120` produced HTTP 429
   `rate_limit_exceeded`, which the harness reported as two ordinary story
   failures on 22.04. Record one release at a time; replays are free and can run
-  in parallel, because they serve from the cassette and never call out.
+  in parallel, because they serve from the cassette and never call out. One
+  release racing *itself* overruns the same ceiling, which is why a record run
+  paces — see "Record once, replay for free".
+- **Read the story log, not just the verdict.** A failing story's log now carries
+  the CLI's stderr folded in under `--- sysknife stderr ---`. It used to hold the
+  story's opening `echo` and nothing else, because every story redirects stderr
+  to `/tmp/sysknife-story-<n>-stderr.log` and nothing collected it — so
+  diagnosing a cassette miss meant re-running the whole release with a
+  hand-written `tar` of `/tmp`.

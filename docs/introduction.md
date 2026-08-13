@@ -104,11 +104,10 @@ SysKnife, not an afterthought.
 
 > **ℹ️ Distro support**
 >
-> All three Ubuntu LTS releases have a committed live-VM run of the 50-story
-> Ubuntu suite, in `tests/evidence/story-runs/`: 22.04 at 49/50, 24.04 at 50/50,
-> 26.04 at 50/50. Each run has a replay twin that reproduces it. The one story
-> short on 22.04 is 101, whose call the provider rejected outright rather than a
-> planning mistake.
+> All three Ubuntu LTS releases have a committed live-VM run of the 79-story
+> Ubuntu suite, in `tests/evidence/story-runs/`: 22.04, 24.04 and 26.04 all at
+> 79/79. Each run has a replay twin that reproduces it, serving every call with
+> zero misses. Every Debian-only action has a story.
 > Fedora Atomic is supported by the rpm-ostree action family, but a current
 > Silverblue 44 VM run is a release gate. Plain Fedora remains experimental
 > until the `dnf` action family ships.
@@ -142,7 +141,7 @@ flow.
 
 ## Status
 
-190 typed actions · 1,750 Rust tests + 72 frontend tests · MIT
+190 typed actions · 1,758 Rust tests + 72 frontend tests · MIT
 
 SysKnife is the reference implementation of the
 [LACS specification](https://github.com/lacs-project/specification) — a

@@ -325,12 +325,20 @@ def check_action_figures(texts: dict[str, str], catalogue: int) -> list[str]:
 
 
 def replay_verified_releases(root: Path) -> set[str]:
-    """Releases with a committed record run AND its replay twin.
+    """Releases with a committed record run AND a replay twin that reproduced it.
 
     That pair is what `tests/release/cassette-replay-parity.test.sh` proves
     reproduces: the record run says what happened live, the replay says the
     cassette reproduces it. A release with only a record run has a pass rate
     nothing has re-derived; a release with neither has nothing at all.
+
+    The twin has to have *worked*. Merely existing was enough here for a while,
+    and the gap was not hypothetical: all three LTSes carried a twin whose
+    `cassette_audit.verdict` was `failed`, because the cassette stored only
+    successes and so could not reproduce any story whose first call the provider
+    rejected. Each release was tiered "Validated" on the strength of a file that
+    says, in its own fields, that it did not reproduce the run. A pass-rate
+    figure was already refused on those grounds; the tier was not.
     """
     directory = root / STORY_RUNS
     if not directory.is_dir():
@@ -340,13 +348,15 @@ def replay_verified_releases(root: Path) -> set[str]:
     replays: set[str] = set()
     for path in sorted(directory.glob("*.json")):
         try:
-            release = str(json.loads(path.read_text()).get("release", ""))
+            run = json.loads(path.read_text())
         except json.JSONDecodeError as exc:
             raise Failure(f"{path.name} is not readable JSON: {exc}") from exc
+        release = str(run.get("release", ""))
         if not release:
             continue
         if path.name.endswith(".replay.json"):
-            replays.add(release)
+            if str(run.get("cassette_audit", {}).get("verdict", "")) == "ok":
+                replays.add(release)
         else:
             records[release] = path
     return set(records) & replays

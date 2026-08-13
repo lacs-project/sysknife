@@ -266,7 +266,13 @@ pub fn print_doctor_ok(
 /// over ssh or in a log file is indistinguishable from a hung process. One line
 /// is enough to tell the two apart, and it goes to stderr so `--json` consumers
 /// reading stdout are unaffected.
+///
+/// This line is exactly the one a non-TTY run persists, so the intent goes
+/// through [`sysknife_brain::prefs::loggable_intent`]: an intent the planner is
+/// about to refuse for carrying a credential must not be written to whatever
+/// file stderr points at first.
 pub fn print_planning_notice(provider: &str, model: &str, intent: &str) {
+    let intent = sysknife_brain::prefs::loggable_intent(intent);
     eprintln!("→ planning \"{intent}\" with {provider}/{model}, this can take a minute…");
 }
 

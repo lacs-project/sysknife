@@ -213,6 +213,30 @@ pub fn contains_sensitive(fact: &str) -> bool {
     SENSITIVE_PREFIXES.iter().any(|p| lower.contains(p))
 }
 
+/// The intent as it may be written somewhere that outlives the terminal.
+///
+/// `Planner::admit_request` refuses any intent [`contains_sensitive`] flags, so
+/// the credential never reaches a provider. It did still reach disk: the CLI
+/// announces `→ planning "<intent>" …` on stderr *before* calling the planner,
+/// and both CI and the story harness run with stderr redirected to a file. The
+/// notice was therefore writing the one value the fence exists to contain, on
+/// its way to reporting that it had contained it.
+///
+/// For a flagged intent there is nothing to announce anyway — the request is
+/// about to be refused — so the text is replaced wholesale rather than
+/// scrubbed. A partial scrub would need to know where the secret ends, and
+/// [`contains_sensitive`] is a shape denylist that cannot say.
+///
+/// This is not a second gate. It asks [`contains_sensitive`] the same question
+/// the planner asks, so widening the denylist widens both.
+pub fn loggable_intent(intent: &str) -> std::borrow::Cow<'_, str> {
+    if contains_sensitive(intent) {
+        std::borrow::Cow::Borrowed("<withheld: intent matched the sensitive-data fence>")
+    } else {
+        std::borrow::Cow::Borrowed(intent)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -473,5 +497,31 @@ mod tests {
     fn contains_sensitive_detects_npm_and_pypi_tokens() {
         assert!(contains_sensitive("npm login with npm_abc123xyz"));
         assert!(contains_sensitive("publish with pypi-AgEIcHlwaS5vcmcAA"));
+    }
+
+    #[test]
+    fn an_intent_the_fence_will_refuse_is_not_loggable_verbatim() {
+        // The CLI announces the intent on stderr before planning. For an intent
+        // the fence is about to refuse, that line is the one thing that puts the
+        // credential on disk — `sysknife … 2>run.log` and every story harness
+        // redirect stderr to a file.
+        let leaky = "attach this machine to Ubuntu Pro using token C1aBcDeF0123456789";
+        let shown = loggable_intent(leaky);
+        assert!(
+            !shown.contains("C1aBcDeF0123456789"),
+            "the loggable form still carries the credential: {shown}"
+        );
+        assert!(
+            shown.contains("withheld"),
+            "the placeholder should say why the intent is not shown: {shown}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_intent_is_logged_verbatim() {
+        // The notice exists so a piped or ssh'd run is distinguishable from a
+        // hung one. Redacting every intent would take that back.
+        let ordinary = "install nginx and open port 80";
+        assert_eq!(loggable_intent(ordinary), ordinary);
     }
 }

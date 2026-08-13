@@ -235,4 +235,28 @@ rm -f "$fixture"/tests/evidence/story-runs/ubuntu-22.04-*.replay.json
 assert_rejected 'a release tiered Validated with its record run but no replay'
 cp "$repo_root"/tests/evidence/story-runs/*.json "$fixture/tests/evidence/story-runs/"
 
+# 3. A replay twin that exists but did not reproduce the run. This is the shape
+#    every LTS actually carried for a while: a `.replay.json` present and
+#    `cassette_audit.verdict` `failed`, because the cassette kept only successes
+#    and so could not reproduce a story whose first call the provider rejected.
+#    The file's own fields say it did not reproduce anything; the tier said
+#    Validated. Presence is not proof.
+python3 - "$fixture/tests/evidence/story-runs" <<'PY'
+import json, pathlib, sys
+path = next(pathlib.Path(sys.argv[1]).glob("ubuntu-22.04-*.replay.json"))
+run = json.loads(path.read_text())
+run["cassette_audit"]["verdict"] = "failed"
+run["cassette_audit"]["misses"] = 1
+path.write_text(json.dumps(run, indent=2, sort_keys=True) + "\n")
+PY
+# The mutation has to have landed. A glob that matched nothing, or a run file
+# that stopped carrying `cassette_audit`, would leave the fixture pristine and
+# the assertion below would be testing the unmutated tree.
+grep -q '"verdict": "failed"' "$fixture"/tests/evidence/story-runs/ubuntu-22.04-*.replay.json || {
+    printf 'FAIL: replay-verdict mutation did not apply; fixture would pass vacuously\n' >&2
+    exit 1
+}
+assert_rejected 'a release tiered Validated on a replay whose cassette audit failed'
+cp "$repo_root"/tests/evidence/story-runs/*.json "$fixture/tests/evidence/story-runs/"
+
 printf 'Public claims contract passed.\n'
