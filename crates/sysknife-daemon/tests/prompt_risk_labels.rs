@@ -134,6 +134,88 @@ fn prompt_risk_tables_match_the_action_specs() {
     );
 }
 
+/// The other place a risk level is written in prose: the doc comment above each
+/// action's spec.
+///
+/// `resolvectl.rs` said `/// Risk: Medium.` two lines above
+/// `risk_level: RiskLevel::High`, and the surrounding comment even justified
+/// High. Citing that doc line — the natural thing to do when writing a table or
+/// answering "how risky is this?" — understated a DNS-hijack primitive as
+/// Dev-accessible.
+///
+/// Each `Risk: <level>` doc line is paired with the next `risk_level:` in the
+/// same file. That pairing is what the convention already implies (the doc sits
+/// directly above the spec it describes) and it holds for all 68 of them, so a
+/// failure here means either the level is wrong or the doc line has drifted away
+/// from the spec it belongs to. Both are worth a human look.
+#[test]
+fn doc_comment_risk_levels_match_the_spec_below_them() {
+    const NEEDLE: &str = "Risk: ";
+    const SPEC: &str = "risk_level: RiskLevel::";
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/actions");
+    let mut wrong = Vec::new();
+    let mut checked = 0usize;
+
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .expect("actions dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .collect();
+    files.sort();
+
+    for path in files {
+        let src = std::fs::read_to_string(&path).expect("read action module");
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let lines: Vec<&str> = src.lines().collect();
+
+        for (i, line) in lines.iter().enumerate() {
+            if !line.trim_start().starts_with("///") {
+                continue;
+            }
+            let Some(rest) = line.split(NEEDLE).nth(1) else {
+                continue;
+            };
+            let claimed = ["Low", "Medium", "High"]
+                .into_iter()
+                .find(|lvl| rest.starts_with(lvl));
+            let Some(claimed) = claimed else { continue };
+            checked += 1;
+
+            // The spec this doc line sits above.
+            let actual = lines[i + 1..].iter().find_map(|l| {
+                l.split(SPEC).nth(1).and_then(|r| {
+                    ["Low", "Medium", "High"]
+                        .into_iter()
+                        .find(|l| r.starts_with(l))
+                })
+            });
+            if let Some(actual) = actual {
+                if actual != claimed {
+                    wrong.push(format!(
+                        "  {name}:{}: doc says Risk: {claimed}, the spec below says {actual}",
+                        i + 1
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        checked > 50,
+        "only {checked} doc risk lines were found; the comment convention must have \
+         changed and this guard is no longer looking at anything"
+    );
+    assert!(
+        wrong.is_empty(),
+        "{} doc comment(s) state a risk their own spec contradicts:\n{}\n\
+         The ActionSpec is the authority. If the pairing itself is wrong, move the \
+         doc line back above the spec it describes.",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
 /// The parse has to actually find the tables. Without this, a heading rename
 /// would silently reduce the guard above to asserting nothing — the failure mode
 /// where a green test proves only that it looked at an empty set.

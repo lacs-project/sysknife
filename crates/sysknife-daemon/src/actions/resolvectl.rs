@@ -48,8 +48,10 @@ pub fn resolvectl_status() -> ActionSpec {
 
 /// Set DNS servers for a network interface (`sudo resolvectl dns <iface> <server>…`).
 ///
-/// Risk: Medium. Changes DNS resolution for the named interface; affects all
+/// Risk: High. Changes DNS resolution for the named interface; affects all
 /// processes resolving names through systemd-resolved on that interface.
+/// Redirecting DNS is a MitM primitive, which is why the spec below gates it at
+/// High and Admin, matching `SetDnsServers`.
 /// Cross-distro: works on any systemd-resolved host.
 ///
 /// `interface` is the network interface name (e.g. `"eth0"`, `"wlp1s0"`).

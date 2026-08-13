@@ -91,9 +91,12 @@ pub enum Command {
 
     /// Start an MCP server over stdio.
     ///
-    /// Exposes `sysknife_plan` and `sysknife_execute` tools so Claude Code,
-    /// Claude Desktop, Cursor, and any other MCP-capable agent can plan and
-    /// execute Linux administration tasks via the SysKnife daemon.
+    /// Exposes five tools — `sysknife_plan`, `sysknife_execute`,
+    /// `sysknife_history`, `sysknife_doctor` and `sysknife_audit_verify` — so
+    /// Claude Code, Claude Desktop, Cursor, and any other MCP-capable agent can
+    /// plan and execute Linux administration tasks via the SysKnife daemon.
+    /// `tests/mcp_stdio.rs` pins that exact set; anyone building an allowlist or
+    /// reviewing the exposed surface should read it from there, not from prose.
     ///
     /// Add to `claude_desktop_config.json`:
     ///   { "mcpServers": { "sysknife": { "command": "sysknife", "args": ["mcp-server"] } } }

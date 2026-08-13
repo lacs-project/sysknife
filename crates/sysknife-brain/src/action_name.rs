@@ -1,11 +1,18 @@
 //! `ActionName` newtype — a string that is guaranteed to be in the
 //! approved SysKnife action catalogue.
 //!
-//! The type itself lives in `sysknife-types::ActionName` so the
-//! `RequestEnvelope` deserializer can validate at the IPC boundary (and
-//! so other crates do not have to depend on `sysknife-brain` just to
-//! talk about action names). This module re-exports the type so existing
+//! The type itself lives in `sysknife-types::ActionName` so other crates do
+//! not have to depend on `sysknife-brain` just to talk about action names.
+//! This module re-exports it so existing
 //! `use sysknife_brain::action_name::ActionName` imports continue to work.
+//!
+//! It does NOT validate at the IPC boundary, which this comment used to
+//! claim. `RequestEnvelope::action_name` is a plain `String` and is not
+//! checked at deserialization time — see the note on it in
+//! `sysknife-types`. Validation happens downstream, via `ActionName::parse`,
+//! which the daemon performs before acting on a request. The distinction
+//! matters: believing malformed names are already rejected on arrival is
+//! exactly the premise under which someone would weaken that later check.
 
 pub use sysknife_types::{ActionName, UnknownActionName, KNOWN_ACTION_NAMES};
 
