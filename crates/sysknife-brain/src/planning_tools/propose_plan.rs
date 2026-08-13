@@ -139,7 +139,8 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
     ("GetFirewallState",
      "show current firewalld zones, open services, and port rules — no params"),
     ("GetNetworkStatus",
-     "show network interfaces, IP addresses, and connection state — no params"),
+     "show LIVE network state: interfaces, IP addresses, and connection state — no params; \
+this is runtime status, NOT the saved configuration; on Ubuntu the saved config is NetplanGetConfig"),
     ("GetListeningPorts",
      "show listening TCP/UDP sockets and the process bound to each (ss -tulpn) — no params; read-only; use for \"what is listening on port X?\""),
     ("ConfigureWifi",
@@ -364,7 +365,9 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
      "remove a distrobox container — param: name*; Ubuntu only"),
     // ── Ubuntu / netplan — server network config ──────────────────────────────
     ("NetplanGetConfig",
-     "read current netplan YAML config from /etc/netplan/ — no params; Ubuntu only; read-only"),
+     "read the SAVED network configuration: the netplan YAML in /etc/netplan/ — no params; Ubuntu only; \
+read-only; on Ubuntu this is what \"the network config\" means, as opposed to GetNetworkStatus which \
+reports live interface state"),
     ("NetplanApply",
      "apply netplan network configuration immediately — no params; Ubuntu only; High risk; can disconnect SSH"),
     // ── Ubuntu / grub — kernel arguments ─────────────────────────────────────
