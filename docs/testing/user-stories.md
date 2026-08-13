@@ -1,8 +1,13 @@
 # SysKnife E2E User Stories
 
-Twenty scenarios for validating SysKnife on a real Fedora Atomic Desktop (Silverblue,
-Kinoite, Sway Atomic, Budgie Atomic, or COSMIC Atomic). Run inside a QEMU/KVM
-VM via `tests/e2e/atomic-vm.sh`, or on real hardware.
+Twenty worked scenarios, written out in full, for validating SysKnife on a real
+Fedora Atomic Desktop (Silverblue, Kinoite, Sway Atomic, Budgie Atomic, or
+COSMIC Atomic). Run inside a QEMU/KVM VM via `tests/e2e/atomic-vm.sh`, or on
+real hardware.
+
+These twenty are a readable subset, not the suite: the atomic family is 54
+stories and the Ubuntu family a further 50, all in `tests/e2e/stories/`. The
+harness runs the family; this file explains twenty of them in prose.
 
 Each story has:
 
@@ -483,7 +488,7 @@ by the manual QA checklist (see `demo-script.md`):
 
 ## Running the stories
 
-### Locally (real Silverblue VM, all 20 stories)
+### Locally (real Silverblue VM, all 54 atomic stories)
 
 ```sh
 # One-time: download the Fedora Silverblue ISO and install it in QEMU/KVM

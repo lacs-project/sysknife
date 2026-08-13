@@ -31,6 +31,11 @@ on:
       - "scripts/**"
       - "assets/demo/**"
       - "apps/sysknife-cli/**"
+      # scripts-lint builds sysknife-cli, which depends on every crate under
+      # crates/. Without this the job could not be triggered by a change to the
+      # code it compiles -- the same gap that once stopped tests/release/**
+      # changes from reaching the linter that lints them.
+      - "crates/**"
       - ".github/workflows/e2e.yml"
   pull_request:
     paths:
@@ -42,6 +47,11 @@ on:
       - "scripts/**"
       - "assets/demo/**"
       - "apps/sysknife-cli/**"
+      # scripts-lint builds sysknife-cli, which depends on every crate under
+      # crates/. Without this the job could not be triggered by a change to the
+      # code it compiles -- the same gap that once stopped tests/release/**
+      # changes from reaching the linter that lints them.
+      - "crates/**"
       - ".github/workflows/e2e.yml"
   workflow_dispatch:
 

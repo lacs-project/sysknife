@@ -21,9 +21,11 @@ Run these on the exact candidate commit and retain the CI links:
 
 ## Host validation
 
-- [ ] Ubuntu 24.04 LTS full story suite passes on a clean VM for this commit.
-- [ ] Ubuntu 22.04 and 26.04 bootstrap, install, daemon, doctor, and uninstall
-      smoke tests pass.
+- [ ] All three Ubuntu LTS releases (22.04, 24.04, 26.04) pass the full story
+      suite on a clean VM for this commit, and each run has a `.replay.json`
+      twin committed beside it in `tests/evidence/story-runs/`. A record run
+      without its replay does not count: it publishes a rate nothing has
+      reproduced, and `tests/release/cassette-replay-parity.test.sh` fails.
 - [ ] Fedora Silverblue 44 full atomic VM suite passes before the README badge
       is promoted from **current validation required**.
 - [ ] Clean install, preview, terminal approval, execution, audit verification,

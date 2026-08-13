@@ -32,12 +32,32 @@ from pathlib import Path
 # Files that carry public claims. Kept in step with claim_files in
 # check_public_claims.sh; a file listed there but not here is simply unchecked
 # for numbers, which is why the pristine-fixture guard in the test matters.
+#
+# The list started as "the files a visitor reads first" and that turned out to be
+# the wrong boundary: unchecked files drift, and they drift further precisely
+# because nothing complains. When this was widened, every newly covered file was
+# already wrong — three docs still said 189 actions against a 190-action
+# catalogue, one said the harness runs 10 stories against 104 on disk, and one
+# advertised a "we want 100+ stories" goal that had been passed four times over.
+# None of that was a subtle rounding error; it was simply never looked at again.
+#
+# So the rule is now: if a file states a figure about this project, it belongs
+# here. Adding a file is cheap; the guard only complains about numbers it can
+# derive an answer for.
 CLAIM_FILES = (
     "README.md",
     "ROADMAP.md",
+    "CONTRIBUTING.md",
+    "HACKING.md",
     "docs/introduction.md",
     "docs/quickstart.md",
     "docs/distro-support.md",
+    "docs/architecture.md",
+    "docs/typed-actions.md",
+    "docs/action-reference.md",
+    "docs/developer-guide.md",
+    "docs/release-readiness.md",
+    "docs/testing/user-stories.md",
     "docs/contributing/ubuntu-vm-testing.md",
     "docs/contributing/testing.md",
     "packages/setup/index.js",
@@ -269,6 +289,41 @@ def check_bare_story_counts(
     return problems
 
 
+def check_action_figures(texts: dict[str, str], catalogue: int) -> list[str]:
+    """Catch a bare "N actions" that is not the catalogue size.
+
+    `check_figure` only sees the exact noun it is given ("typed actions"), so
+    "the catalogue defines 189 actions" sailed past it in three documents while
+    the catalogue held 190. The count is not wrong by accident: 189 is the number
+    of actions carrying an `ActionSpec`, with `ListJobHistory` handled by the
+    dispatcher instead, so both figures are real and the difference is a genuine
+    distinction — one that was explained in exactly one file while three others
+    stated 189 as if it were the total.
+
+    So a bare "N actions" must be the catalogue size, UNLESS the line says which
+    subset it means by naming `ActionSpec`. That keeps the honest sub-count
+    writable, forces it to carry its qualifier, and still catches the count
+    drifting.
+    """
+    bare = re.compile(r"\b([0-9]{2,})\s+(?:typed\s+)?actions\b", re.IGNORECASE)
+
+    problems = []
+    for rel, text in texts.items():
+        for line in text.splitlines():
+            if "ActionSpec" in line:
+                continue
+            for match in bare.finditer(line):
+                count = int(match.group(1))
+                if count == catalogue:
+                    continue
+                problems.append(
+                    f"{rel}: says {count} actions, but the catalogue holds {catalogue}. "
+                    f"Either state {catalogue}, or name the subset by mentioning "
+                    "`ActionSpec` on the same line."
+                )
+    return problems
+
+
 def replay_verified_releases(root: Path) -> set[str]:
     """Releases with a committed record run AND its replay twin.
 
@@ -369,6 +424,7 @@ def main() -> int:
         problems += check_story_claims(texts, story_runs)
         problems += check_bare_story_counts(texts, story_runs, root)
         problems += check_validated_tiers(texts, root)
+        problems += check_action_figures(texts, count_actions(root))
 
         expected_tests = f"{baseline['tests']:,} Rust tests"
         for rel in REQUIRE_TEST_COUNT:

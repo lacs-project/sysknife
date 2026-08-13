@@ -6,6 +6,10 @@ on:
     paths:
       - "docs/**"
       - "book.toml"
+      # book.toml's additional-css points at theme/custom.css, which lives
+      # outside docs/. Without this the one file the build hard-depends on could
+      # be renamed or deleted without ever triggering the build that would fail.
+      - "theme/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 

@@ -71,7 +71,7 @@ component uses the same resolution order.
 
 Privileged. The only component that touches the system. Provides:
 
-- 189 typed actions (rpm-ostree, systemd, firewall, users, containers,
+- 190 typed actions (rpm-ostree, systemd, firewall, users, containers,
   flatpak, toolbox, SSH, kernel args, …)
 - Role-based authorization (`Observer` → `Dev` → `Admin`)
 - Policy enforcement: stale-approval detection, request hash validation
@@ -106,9 +106,16 @@ The daemon is trusted. The brain and shell are not trusted with raw
 privileged execution.
 
 ```text
-sysknife-brain  ──plan──►  sysknife-shell  ──approval──►  sysknife-daemon
- (planner)               (approval)                 (executor)
+sysknife-brain  ──plan──►  approval gate  ──receipt──►  sysknife-daemon
+ (planner)               (terminal, or the        (executor)
+                          paused Tauri shell)
 ```
+
+The middle box is whichever surface collects the human's approval and returns a
+one-time receipt. `sysknife approve` in a terminal is the maintained one, and
+the one MCP clients are required to use; `sysknife-shell` is a second
+implementation of the same gate whose development is paused. Neither is a
+component the other passes through.
 
 The daemon owns:
 
