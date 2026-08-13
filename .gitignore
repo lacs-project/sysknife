@@ -38,3 +38,10 @@ docs/local/
 # Python bytecode from packaging scripts (compiled when tests import them)
 __pycache__/
 *.pyc
+
+# Local agent-tool artifacts. The codex CLI writes these into the working tree
+# on every run: AGENTS.md as a byte-identical copy of CLAUDE.md (a duplicate that
+# would drift immediately), and .codex/config.toml with absolute local paths.
+# One of them reached a public commit via `git add -A`.
+AGENTS.md
+.codex/
