@@ -1,13 +1,13 @@
 {
   "cassette_audit": {
     "misses": 0,
-    "served": 52,
+    "served": 51,
     "verdict": "ok"
   },
   "cassette_mode": "replay",
-  "cassette_sha256": "889d4c3fa67759cc29936b2ee8e3e04689571551e701aacc1b77e8f8a41d7426",
+  "cassette_sha256": "879780fb8aef47bd0d5fb0ca250e4cd82e299f48cfbf8807a688b6214c6def90",
   "distro_id": "ubuntu",
-  "ran_at": "2026-08-12T14:46:08+00:00",
+  "ran_at": "2026-08-13T11:21:27+00:00",
   "release": "26.04",
   "stories": {
     "100": {
