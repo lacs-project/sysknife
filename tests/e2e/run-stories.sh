@@ -242,10 +242,36 @@ fi
 # (91 to 93) accept an empty plan, so a rate-limited run makes them pass while
 # proving nothing. Reporting that as PASS is how a throttled suite reads as a
 # healthy one.
+#
+# Two different limiters can stop a story, and only one of them was detected.
+# The pattern below used to be `rate limit exceeded` alone, which is SysKnife's
+# OWN limiter talking. The provider has its own ceiling and words it nothing
+# like that: Groq returns `429 Too Many Requests` with
+# `"code":"rate_limit_exceeded"` and a message beginning `Rate limit reached`.
+# So a provider 429 fell through as an ordinary story failure, and the summary
+# still printed `0 rate-limited` — which is how three suites recorded in
+# parallel produced a believable, wrong 48/50 on 22.04. The binding ceiling
+# there was TOKENS per minute, not requests, so no amount of SYSKNIFE_MAX_RPM
+# tuning would have avoided it; running one release at a time does.
 story_was_rate_limited() {
   local n="$1" log="$2"
-  grep -qi 'rate limit exceeded' "$log" 2>/dev/null && return 0
-  grep -qi 'rate limit exceeded' "/tmp/sysknife-story-${n}-stderr.log" 2>/dev/null
+  local pattern='rate limit exceeded|rate_limit_exceeded|rate limit reached|429 too many requests'
+  grep -qiE "$pattern" "$log" 2>/dev/null && return 0
+  grep -qiE "$pattern" "/tmp/sysknife-story-${n}-stderr.log" 2>/dev/null
+}
+
+# Which limiter it was, so the report names a remedy that exists. SysKnife's own
+# limiter is raised with SYSKNIFE_MAX_RPM; the provider's is not raisable from
+# here at all.
+story_rate_limit_source() {
+  local n="$1" log="$2"
+  local provider='rate_limit_exceeded|rate limit reached|429 too many requests'
+  if grep -qiE "$provider" "$log" 2>/dev/null ||
+    grep -qiE "$provider" "/tmp/sysknife-story-${n}-stderr.log" 2>/dev/null; then
+    printf 'provider'
+  else
+    printf 'planner'
+  fi
 }
 
 run_story() {
@@ -272,7 +298,7 @@ run_story() {
     if story_was_rate_limited "$n" "$log"; then
       # Overrides the story's own verdict on purpose. It never saw a plan.
       RESULTS[$n]="RATELIMIT"
-      MESSAGES[$n]="planner rate limit hit; this result is not evidence"
+      MESSAGES[$n]="$(story_rate_limit_source "$n" "$log") rate limit hit; this result is not evidence"
       DURATIONS[$n]="0.0"
       echo "RATELIMIT"
     elif [[ "$last_line" == SKIP* ]]; then
@@ -294,7 +320,7 @@ run_story() {
     DURATIONS[$n]=$(echo "$end_time - $start_time" | bc 2>/dev/null || echo "?")
     if story_was_rate_limited "$n" "$log"; then
       RESULTS[$n]="RATELIMIT"
-      MESSAGES[$n]="planner rate limit hit; this result is not evidence"
+      MESSAGES[$n]="$(story_rate_limit_source "$n" "$log") rate limit hit; this result is not evidence"
       echo "RATELIMIT"
       return
     fi
@@ -371,10 +397,17 @@ echo ""
 echo "Summary: $pass_count/$total passed, $fail_count failed, $skip_count skipped, $ratelimit_count rate-limited"
 if [[ $ratelimit_count -gt 0 ]]; then
   echo ""
-  echo "  $ratelimit_count story/stories never reached the model: the planner's own"
-  echo "  rate limit (DEFAULT_MAX_RPM, 20 requests/minute) rejected them. Those"
-  echo "  results say nothing about the model and must not be counted either way."
-  echo "  Raise it for a full-suite run, e.g. SYSKNIFE_MAX_RPM=120."
+  echo "  $ratelimit_count story/stories never reached the model, so those results"
+  echo "  say nothing about it and must not be counted either way. Each is labelled"
+  echo "  with which limiter stopped it:"
+  echo ""
+  echo "    planner  — SysKnife's own limiter (DEFAULT_MAX_RPM, 20/minute)."
+  echo "               Raise it for a full-suite run: SYSKNIFE_MAX_RPM=120."
+  echo "    provider — the API's ceiling, which SYSKNIFE_MAX_RPM cannot raise."
+  echo "               Groq's binding limit is TOKENS per minute, and one planning"
+  echo "               call carries the whole prompt plus the action catalogue, so"
+  echo "               concurrent suites exceed it long before the request rate"
+  echo "               looks high. Record one release at a time; replays are free."
 fi
 echo "Logs:    $LOG_DIR/"
 echo ""

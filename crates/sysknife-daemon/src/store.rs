@@ -19,14 +19,23 @@
 //!
 //! See `docs/storage-cloud.md` for the full table. Summary:
 //!
+//! These three rows said `require` until they were checked against the code.
+//! `pg_tls::require_tls_for_remote` REFUSES `sslmode=require` on any connection
+//! that crosses the network, because `require` completes TLS against any
+//! certificate and so authenticates nothing. An operator following the old table
+//! got a hard startup refusal, and the obvious way to "fix" that is to loosen the
+//! check — which reopens the MITM hole the check exists to close. Supabase and
+//! Neon both publish CA chains, so `verify-full` is what they support and what
+//! this daemon accepts.
+//!
 //! | Provider             | URL hint                                        | TLS mode      | Statement cache |
 //! |----------------------|-------------------------------------------------|---------------|-----------------|
 //! | AWS RDS / Aurora     | `*.rds.amazonaws.com:5432`                      | `verify-full` | default         |
 //! | GCP Cloud SQL        | via Cloud SQL Auth Proxy on `127.0.0.1`         | `disable`     | default         |
 //! | Azure Flexible       | `*.postgres.database.azure.com:5432`            | `verify-full` | default         |
-//! | Supabase (5432)      | `db.<ref>.supabase.co:5432`                     | `require`     | default         |
-//! | Supabase (pooler)    | `*.pooler.supabase.com:6543`                    | `require`     | **0**           |
-//! | Neon                 | `ep-*.neon.tech`                                | `require`     | default         |
+//! | Supabase (5432)      | `db.<ref>.supabase.co:5432`                     | `verify-full` | default         |
+//! | Supabase (pooler)    | `*.pooler.supabase.com:6543`                    | `verify-full` | **0**           |
+//! | Neon                 | `ep-*.neon.tech`                                | `verify-full` | default         |
 //! | Self-hosted          | (operator chooses)                              | as needed     | default         |
 
 use async_trait::async_trait;

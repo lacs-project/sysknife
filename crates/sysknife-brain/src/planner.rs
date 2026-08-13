@@ -87,6 +87,42 @@ const PROVIDER_RETRY_BACKOFF: Duration = Duration::from_millis(400);
 /// is how a rate limit turns into a rate-limit loop.
 const PROVIDER_RETRY_RATE_LIMIT_BACKOFF: Duration = Duration::from_millis(2_000);
 
+/// Markers that identify "the model called a tool that does not exist".
+///
+/// Groq reports this as `code: "tool_use_failed"` with a message naming the tool
+/// it refused, e.g. `attempted to call tool 'json' which was not in
+/// request.tools`. Both halves are matched because providers word it
+/// differently and neither string is one we control; matching either is enough,
+/// and a false positive costs one extra sentence in a retry that was already
+/// going to happen.
+const INVALID_TOOL_CALL_MARKERS: &[&str] = &["tool_use_failed", "was not in request.tools"];
+
+/// The sentence to add before retrying a call the provider rejected because the
+/// model named a nonexistent tool.
+///
+/// Returns `None` for every other error, so an ordinary 502 or timeout still
+/// retries the request unchanged — resending is the correct response when the
+/// request was never the problem.
+fn tool_call_correction(error: &ProviderError, tools: &[ToolDefinition]) -> Option<String> {
+    let text = error.to_string().to_lowercase();
+    if !INVALID_TOOL_CALL_MARKERS
+        .iter()
+        .any(|m| text.contains(&m.to_lowercase()))
+    {
+        return None;
+    }
+
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    Some(format!(
+        "Your previous response was rejected: it called a tool that does not exist. \
+         Call one of these tools by its exact name: {}. \
+         Emit a real tool call, not a JSON object describing one, and do not wrap \
+         the call in another name. If the plan you had in mind was correct, send \
+         the same plan through `propose_plan`.",
+        names.join(", ")
+    ))
+}
+
 /// Maximum byte length accepted for a natural-language intent.
 ///
 /// 2 KB covers any realistic user request. Values larger than this are
@@ -960,10 +996,13 @@ impl LlmPlanner {
         tools: &[ToolDefinition],
     ) -> Result<Completion, ProviderError> {
         let mut attempt: u32 = 0;
+        // Owned, because a retry may need to say something the first attempt did
+        // not. See `tool_call_correction` below.
+        let mut messages: Vec<Message> = messages.to_vec();
         loop {
             let error = match self
                 .provider
-                .complete(system, messages, tools, PLANNING_MAX_TOKENS)
+                .complete(system, &messages, tools, PLANNING_MAX_TOKENS)
                 .await
             {
                 Ok(completion) => return Ok(completion),
@@ -972,6 +1011,18 @@ impl LlmPlanner {
 
             if !error.is_retryable() || attempt >= PROVIDER_RETRY_LIMIT {
                 return Err(error);
+            }
+
+            // Some failures are the model's output being malformed rather than
+            // our request being wrong, and for those a plain retry is not a
+            // retry at all: the request is byte-identical, so the model
+            // reproduces the same malformed answer. Observed live on Groq, three
+            // attempts in a row naming a tool called `json` whose arguments were
+            // a perfectly good plan — the three `failed_generation` payloads
+            // differed only in prose wording. Changing the input is the whole
+            // point, so say what went wrong before asking again.
+            if let Some(correction) = tool_call_correction(&error, tools) {
+                messages.push(Message::user_text(correction));
             }
 
             if let Some(ref rl) = self.rate_limiter {
@@ -1199,6 +1250,20 @@ impl LlmPlanner {
                                             turn + 1,
                                             max = self.max_turns
                                         );
+                                        // audit.rs promises a record of ALL fence
+                                        // activations. This path printed and did not
+                                        // record, so a reviewer treating
+                                        // safety-audit.jsonl as complete silently
+                                        // missed every reasonless refusal.
+                                        if let Some(audit) = self.audit_log.clone() {
+                                            audit
+                                                .log_rejection_async(
+                                                    intent.to_string(),
+                                                    reason.clone(),
+                                                    input.to_string(),
+                                                )
+                                                .await;
+                                        }
                                         tool_results.push(ToolResultBlock {
                                             tool_use_id: id.clone(),
                                             call_id: call_id.clone(),
@@ -1346,7 +1411,10 @@ impl LlmPlanner {
                                         // An unknown tool call is a protocol violation — log
                                         // it as a safety event and feed the error back so the
                                         // LLM has a chance to recover within the remaining
-                                        // turns.
+                                        // turns. The logging half of that sentence was missing:
+                                        // this printed to stderr only, so the one fence event
+                                        // that says "the model went off-protocol" was the one
+                                        // absent from the audit trail.
                                         eprintln!(
                                             "[SYSKNIFE WARNING] LLM called unknown tool \
                                              '{other_name}' (turn {}/{max}); sending error \
@@ -1354,6 +1422,15 @@ impl LlmPlanner {
                                             turn + 1,
                                             max = self.max_turns
                                         );
+                                        if let Some(audit) = self.audit_log.clone() {
+                                            audit
+                                                .log_rejection_async(
+                                                    intent.to_string(),
+                                                    format!("unknown tool: {other_name}"),
+                                                    input.to_string(),
+                                                )
+                                                .await;
+                                        }
                                         tool_results.push(ToolResultBlock {
                                             tool_use_id: id.clone(),
                                             call_id: call_id.clone(),

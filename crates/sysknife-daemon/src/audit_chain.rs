@@ -46,8 +46,13 @@
 //! - **Status mutations are not in the chain.** The mutable `status` field
 //!   is intentionally excluded — the chain protects the *authorisation
 //!   decision* (immutable fields captured at insert time), not the live
-//!   execution state. A future append-only `audit_events` table will
-//!   chain status transitions if the threat model demands it.
+//!   execution state. Status transitions ARE chained, separately: the
+//!   append-only `audit_events` table exists (created by migration v2 in
+//!   `transactions.rs`) and `verify_event_chain` / `verify_event_binding`
+//!   below verify it. This paragraph described that as future work long
+//!   after it shipped, which is worse than saying nothing — a reader would
+//!   conclude the capability is missing and either duplicate it or assume
+//!   status history is unprotected.
 //!
 //! ## Key management
 //!
