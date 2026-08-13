@@ -205,14 +205,13 @@ run_frontend_group() {
         return
     fi
 
-    if [[ "$mode" == "full" ]]; then
-        printf '\n==> frontend: npm audit --omit=dev --audit-level=high (non-fatal)\n'
-        if frontend_audit; then
-            record PASS 'frontend: npm audit --omit=dev --audit-level=high'
-        else
-            record WARN 'frontend: npm audit --omit=dev --audit-level=high (non-fatal; review output above)'
-        fi
-    fi
+    # A hard gate in CI (.github/workflows/ci.yml runs it as a plain step, so a
+    # high-severity advisory fails the frontend job), therefore a hard gate here.
+    # It used to be full-mode-only AND non-fatal, which meant `--fast` -- the mode
+    # pre-push actually runs -- never checked it at all, and a full run reported
+    # the failure as a WARN and still exited 0. The local gate could not fail on
+    # the one thing the remote gate fails on.
+    run_step 'frontend: npm audit --omit=dev --audit-level=high' frontend_audit
 
     run_step 'frontend: tsc --noEmit' frontend_tsc
     run_step 'frontend: vitest run (+ test baseline)' frontend_vitest
@@ -313,10 +312,15 @@ run_hygiene_group() {
 run_security_group() {
     printf '\n### security\n'
     if have cargo-audit; then
-        # RUSTSEC-2026-0097 is ignored here too -- see the matching comment in
-        # .github/workflows/ci.yml for why (GUI-only transitive dep, no fix yet).
-        run_step 'security: cargo audit --ignore RUSTSEC-2026-0097' \
-            cargo audit --ignore RUSTSEC-2026-0097
+        # No advisory is ignored, exactly as .github/workflows/ci.yml runs it.
+        # This carried --ignore RUSTSEC-2026-0097 long after CI dropped it. The
+        # crate it covered (rand 0.7.3) had already left the lockfile, and CI's
+        # own comment spells out why the flag then had to go: "an --ignore for a
+        # crate that is no longer built does not protect anything, it only arms a
+        # silent re-acceptance if a future bump drags the crate back in." That is
+        # precisely what this file was doing -- arming that re-acceptance inside
+        # the tool contributors run to find out whether CI will pass.
+        run_step 'security: cargo audit' cargo audit
     else
         record WARN 'security: cargo audit -- SKIPPED (cargo-audit not found; install: cargo install cargo-audit --locked)'
     fi

@@ -15,8 +15,6 @@ later) because that is where the users are; Fedora Atomic 41+ is eligible and it
 rpm-ostree action families work, it just needs a fresh validation run. See
 [docs/distro-support.md](docs/distro-support.md).
 
-- Ubuntu 22.04 full action parity (every Ubuntu story)
-- Ubuntu 26.04 full action parity (every Ubuntu story)
 - record a current Fedora Silverblue 44 full VM run
 - dnf action family (Fedora Workstation non-atomic)
 - pacman action family (Arch/Manjaro)

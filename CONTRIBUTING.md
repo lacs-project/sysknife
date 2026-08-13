@@ -31,10 +31,10 @@ These are where contributions move the needle the most. Each links to a
 
 | Area | Why it matters | Difficulty |
 |---|---|---|
-| **Ubuntu LTS support** ([tracker](https://github.com/lacs-project/sysknife/issues?q=is%3Aopen+label%3Aubuntu)) | Ubuntu 24.04 (noble) is validated with the full story suite; 22.04 (jammy) and 26.04 (resolute) are smoke-tested with the same multi-LTS VM tooling but not yet run against the full suite. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: E2E exec stories, additional apt / snap / ufw actions. | Medium |
+| **Ubuntu LTS support** ([tracker](https://github.com/lacs-project/sysknife/issues?q=is%3Aopen+label%3Aubuntu)) | All three LTS releases are validated against the full story suite on a live VM, each with a committed replay twin: 22.04 at 49/50, 24.04 at 49/50, 26.04 at 50/50. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: story coverage for the ~30 Debian-only actions no story touches yet, starting with `GetHostState`. | Medium |
 | **Distro detection coverage** ([tracker](https://github.com/lacs-project/sysknife/issues?q=is%3Aopen+label%3Adistro-detection)) | Robust `/etc/os-release` parsing for every LTS we claim to support. Pure-function tests, no integration mocks. | Easy |
 | **Action catalogue gaps** | Add a typed action (e.g. `EnableFirewallZone`) — small, isolated, every PR includes the policy entry + risk level + tests. | Easy |
-| **E2E story coverage** | Real prompts, real LLM, real daemon. We have ~10 stories; we want 100+ across both distros. | Medium |
+| **E2E story coverage** | Real prompts, real LLM, real daemon. 104 stories exist (54 atomic + 50 Ubuntu); the gap is coverage, not count — ~30 Debian-only actions still have no story. | Medium |
 | **GUI polish (Tauri shell)** | TypeScript + React. Real OSS UX, not a thin wrapper around the daemon. | Medium |
 | **Demo recording on real hardware** | Replace the bundled demo GIF with a 30-second recording on real Silverblue / Ubuntu 26.04. | Easy (and visible) |
 | **Translations** | i18n for the shell. Spanish, German, Japanese, Mandarin in priority order. | Easy |

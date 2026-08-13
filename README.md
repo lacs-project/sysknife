@@ -203,12 +203,18 @@ SysKnife, not an afterthought. See the [CLI guide](docs/cli.md).
 ## How it works
 
 ```
-sysknife-brain   →   sysknife-shell   →   sysknife-daemon
-  (planner)         (approval gate)        (executor)
-   talks to LLM      shows the plan,        only privileged
-   never to OS       takes y/n              process; signs
-                                            every action
+sysknife-brain   →   approval gate    →   sysknife-daemon
+  (planner)         (you, in a         (executor)
+   talks to LLM      terminal)          only privileged
+   never to OS       shows the plan,    process; signs
+                     takes y/n          every action
 ```
+
+The approval gate is a surface, not a component. In the maintained paths it is
+`sysknife approve <transaction-id>` in your terminal — for the CLI and for MCP
+alike, which is why an AI client cannot approve its own plan. The paused Tauri
+GUI (`sysknife-shell`) is a third implementation of that same gate, not a step
+the other two route through.
 
 1. You type a natural-language request.
 2. The brain proposes a plan — each step is a **typed action** with

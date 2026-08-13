@@ -24,7 +24,13 @@ cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
 echo "[pre-commit] cargo doc --no-deps --workspace --locked"
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --locked
 
-echo "[pre-commit] cargo nextest run --workspace --locked"
-cargo nextest run --workspace --locked
+# scripts/test_baseline.sh, not a bare `cargo nextest run` -- because that is
+# what the CI job runs. It wraps the same nextest invocation and additionally
+# fails when the test count drifts from tests/evidence/workspace-tests.json.
+# Running nextest directly here made this hook a subset of CI after all: a commit
+# that added tests without regenerating the baseline passed pre-commit and then
+# failed at push, which is exactly the false green the header above warns about.
+echo "[pre-commit] scripts/test_baseline.sh (cargo nextest run --workspace --locked)"
+scripts/test_baseline.sh
 
 echo "[pre-commit] OK"

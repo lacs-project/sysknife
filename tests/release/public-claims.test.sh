@@ -16,17 +16,26 @@ trap 'rm -rf "$fixture"' EXIT
 
 # Copy the COMPLETE set of files the checker inspects. If any input is missing
 # the checker aborts on its existence check before evaluating claims, which
-# would make every assert_rejected below pass vacuously. Keep this list in sync
-# with claim_files/demo_source in check_public_claims.sh.
+# would make every assert_rejected below pass vacuously.
+#
+# The claim files are read out of check_evidence_claims.py rather than retyped.
+# They used to be a second hand-maintained copy of CLAIM_FILES, and the moment
+# that list grew, this one did not: the checker aborted on a file the fixture had
+# never heard of, and the whole contract test failed for a reason unrelated to
+# any claim. A guard whose fixture has to be edited in lockstep with the thing it
+# guards will eventually guard nothing.
+mapfile -t claim_files_from_checker < <(
+    python3 - "$repo_root/scripts/check_evidence_claims.py" <<'PYEOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("checker", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print("\n".join(mod.CLAIM_FILES))
+PYEOF
+)
+
 fixture_files=(
-    "README.md"
-    "ROADMAP.md"
-    "docs/introduction.md"
-    "docs/quickstart.md"
-    "docs/distro-support.md"
-    "docs/contributing/ubuntu-vm-testing.md"
-    "docs/contributing/testing.md"
-    "packages/setup/index.js"
+    "${claim_files_from_checker[@]}"
     "assets/demo/mcp-flow-mock.sh"
     # Evidence the numeric claims derive from, and the source the action count is
     # counted out of. Without these the checker aborts on its own input check and

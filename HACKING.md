@@ -630,7 +630,8 @@ chained to the previous one.
 - [`docs/contributing/testing.md`](docs/contributing/testing.md) — the
   short reference version of this file.
 - [`docs/testing/user-stories.md`](docs/testing/user-stories.md) — the
-  10 stories the harness runs and their pass criteria.
+  20 worked Atomic scenarios and their pass criteria (the atomic family itself
+  is 54 stories; the Ubuntu family is a further 50).
 - [`tests/e2e/atomic-vm.sh help`](tests/e2e/atomic-vm.sh) — the
   subcommand reference, kept in sync with the script itself.
 

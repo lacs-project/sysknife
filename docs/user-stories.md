@@ -5,6 +5,17 @@ Linux enthusiasts. Each story traces the request through every layer
 of the stack: shell UI → Tauri backend → brain (LLM) → daemon →
 system.
 
+> **Read this as one path through the stack, not the maintained one.** These
+> traces enter through the Tauri GUI, whose development is paused. The layers
+> below the entry point — brain, daemon, executor, audit chain — are identical
+> whichever surface you come in through, so the traces stay accurate for the CLI
+> and MCP paths from the planner downwards. Only the first hop differs.
+>
+> Code references name a file and a function rather than a line number. They
+> used to cite `file.rs:NNN`, and after a refactor every one of them pointed at
+> unrelated code — a line number is a claim that rots silently on any edit above
+> it.
+
 ---
 
 ## Story 1: Sysadmin layers vim on Silverblue
@@ -21,17 +32,17 @@ system.
 2. **daemonBridge** (`apps/sysknife-shell/src/daemonBridge.ts:10`)
    `requestPlan(intent)` → Tauri IPC `invoke("plan_intent", { intent })`.
 
-3. **Tauri command** (`apps/sysknife-shell/src-tauri/src/commands.rs:204`)
+3. **Tauri command** (`apps/sysknife-shell/src-tauri/src/commands.rs`)
    `plan_intent()` → `execute_plan_intent()` calls
    `state.planner.plan_intent(intent)`.
 
-4. **LLM planning loop** (`crates/sysknife-brain/src/planner.rs:318`)
+4. **LLM planning loop** (`crates/sysknife-brain/src/planner.rs` — `plan_intent()`)
    Turn 0: LLM receives system prompt (189-action catalogue, risk rules) +
    user message. LLM calls `get_system_state`.
 
-5. **State injection** (`crates/sysknife-brain/src/planner.rs:366`)
+5. **State injection** (`crates/sysknife-brain/src/planner.rs` — `plan_intent()`)
    `state_client.curated_state()` → daemon IPC → `collect_state()`
-   (`crates/sysknife-daemon/src/state_collector.rs:48`) runs `hostname`,
+   (`crates/sysknife-daemon/src/state_collector.rs` — `collect_state()`) runs `hostname`,
    `rpm-ostree status`, `systemctl list-units`, `flatpak list`,
    `toolbox list`. Returns JSON with host, deployment, services,
    flatpaks, toolboxes.
@@ -46,12 +57,12 @@ system.
                "params": {"packages": ["vim"]}}]}
    ```
 
-7. **Safety fence** (`crates/sysknife-brain/src/planning_tools/propose_plan.rs:204`)
+7. **Safety fence** (`crates/sysknife-brain/src/planning_tools/propose_plan.rs`)
    `ActionName::parse("InstallPackages")` → OK (in KNOWN\_ACTIONS).
    Risk "high" → `PlanRiskLevel::High`. `PlanStep::new()` succeeds.
 
 8. **Plan returned** to shell as `PlanResponse`
-   (`commands.rs:336` `plan_to_response()`).
+   (`commands.rs` `plan_to_response()`).
 
 9. **PlanPane** (`apps/sysknife-shell/src/components/PlanPane.tsx`)
    Shows step "InstallPackages" with red HIGH badge. Aggregate risk =
@@ -59,15 +70,15 @@ system.
 
 10. **Approval** → `requestApproval(steps)` → Tauri `approve_preview`.
 
-11. **Daemon preview** (`crates/sysknife-daemon/src/dispatcher.rs:440`)
+11. **Daemon preview** (`crates/sysknife-daemon/src/dispatcher.rs` — `handle_preview()`)
     `handle_preview("InstallPackages", params)` → calls
     `preview_action()` → returns risk=High, rollback\_available=true,
     side\_effects, request\_hash.
 
-12. **Daemon execute** (`crates/sysknife-daemon/src/dispatcher.rs:535`)
+12. **Daemon execute** (`crates/sysknife-daemon/src/dispatcher.rs` — `handle_execute()`)
     Validates approval\_hash == request\_hash. Calls
     `build_action_spec("InstallPackages", params)`
-    (`crates/sysknife-daemon/src/executor.rs:63`) → builds
+    (`crates/sysknife-daemon/src/executor.rs` — `build_action_spec()`) → builds
     `rpm-ostree install vim`. Executes via `execute_spec()`. Streams
     stdout lines as `JobProgress` frames.
 
@@ -293,7 +304,7 @@ forget" model — the LLM never sees what the commands produced.
    caller role and principal, and timestamps.
 
 **What works well:** The role-based authorization
-(`crates/sysknife-daemon/src/policy.rs:24`) ensures the caller has
+(`crates/sysknife-daemon/src/policy.rs` — `action_allowed()`) ensures the caller has
 Admin rights for `AddUserToGroup`. The input validation prevents
 injection (e.g., `ci-runner; rm -rf /`).
 
@@ -377,7 +388,7 @@ single-shot planning model prevents this.
 **E2E trace:**
 
 1. **App mount** (`apps/sysknife-shell/src/App.tsx`)
-   `checkSetupStatus()` → Tauri command → `commands.rs:363`
+   `checkSetupStatus()` → Tauri command → `commands.rs`
    `config_path_exists()` checks `~/.config/sysknife/config.toml`,
    `provider_is_configured()` checks env vars and config.
 
@@ -393,10 +404,10 @@ single-shot planning model prevents this.
 5. **Step 3:** "Restart the shell to apply."
 
 6. After restart, `BrainConfig::from_env()`
-   (`crates/sysknife-brain/src/config.rs:96`) auto-detects Ollama
+   (`crates/sysknife-brain/src/config.rs`) auto-detects Ollama
    (no `ANTHROPIC_API_KEY` → fallback to Ollama provider).
 
-7. `LlmPlanner::from_config()` (`crates/sysknife-brain/src/planner.rs:287`)
+7. `LlmPlanner::from_config()` (`crates/sysknife-brain/src/planner.rs`)
    constructs `OllamaProvider` with `http://localhost:11434` and
    model `llama3.2`.
 
