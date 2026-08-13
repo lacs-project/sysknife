@@ -1,0 +1,9 @@
+[mcp_servers.sysknife]
+command = "/home/entropia/Desktop/lacs/target/release/sysknife"
+args = ["mcp-server"]
+
+[mcp_servers.sysknife.env]
+SYSKNIFE_SOCKET = "/tmp/sysknife-vm.sock"
+SYSKNIFE_LLM_PROVIDER = "openai"
+OPENAI_API_KEY = "sk-proj-REPLACE_WITH_YOUR_ROTATED_KEY"
+SYSKNIFE_LLM_MODEL = "gpt-4.1"

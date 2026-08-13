@@ -105,9 +105,10 @@ SysKnife, not an afterthought.
 > **ℹ️ Distro support**
 >
 > All three Ubuntu LTS releases have a committed live-VM run of the 50-story
-> Ubuntu suite, in `tests/evidence/story-runs/`: 22.04 at 49/50, 24.04 at 49/50,
-> 26.04 at 50/50. Each run has a replay twin that reproduces it, and the one
-> story missing from 22.04 and 24.04 is the same one, which passed on 26.04.
+> Ubuntu suite, in `tests/evidence/story-runs/`: 22.04 at 49/50, 24.04 at 50/50,
+> 26.04 at 50/50. Each run has a replay twin that reproduces it. The one story
+> short on 22.04 is 101, whose call the provider rejected outright rather than a
+> planning mistake.
 > Fedora Atomic is supported by the rpm-ostree action family, but a current
 > Silverblue 44 VM run is a release gate. Plain Fedora remains experimental
 > until the `dnf` action family ships.

@@ -5,9 +5,9 @@
     "verdict": "ok"
   },
   "cassette_mode": "replay",
-  "cassette_sha256": "879780fb8aef47bd0d5fb0ca250e4cd82e299f48cfbf8807a688b6214c6def90",
+  "cassette_sha256": "25fab8bbf9f6a811485dba46cf65cc1865ea10e3fe39bc829e2f2266a2da9ab9",
   "distro_id": "ubuntu",
-  "ran_at": "2026-08-13T11:21:27+00:00",
+  "ran_at": "2026-08-13T12:07:34+00:00",
   "release": "26.04",
   "stories": {
     "100": {

@@ -5,9 +5,9 @@
     "verdict": "not-applicable"
   },
   "cassette_mode": "record",
-  "cassette_sha256": "6282300d29d2d0bb9f75ea5cd668411c2b0a751daaca1f976c370a0ec3e62052",
+  "cassette_sha256": "95d2a780bc1e3b1db966ec27fe32baf0ef3d53662815ba83b2966e1ce97dd8bd",
   "distro_id": "ubuntu",
-  "ran_at": "2026-08-13T11:18:25+00:00",
+  "ran_at": "2026-08-13T12:02:33+00:00",
   "release": "24.04",
   "stories": {
     "100": {
@@ -28,7 +28,7 @@
     },
     "104": {
       "name": "Apply netplan after showing config",
-      "verdict": "FAIL"
+      "verdict": "PASS"
     },
     "55": {
       "name": "Refresh apt package index",
@@ -214,8 +214,8 @@
   "story_set": "ubuntu",
   "surface": "groq/openai/gpt-oss-120b",
   "totals": {
-    "failed": 1,
-    "passed": 49,
+    "failed": 0,
+    "passed": 50,
     "rate_limited": 0,
     "skipped": 0,
     "total": 50

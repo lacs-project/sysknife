@@ -8,7 +8,7 @@ Supported Ubuntu LTSes:
 | Release | Codename | SSH port | Live suite | Status |
 |---|---|---|---|---|
 | 22.04 | jammy | 2222 | 49/50 | validated |
-| 24.04 | noble | 2223 | 49/50 | validated (default) |
+| 24.04 | noble | 2223 | 50/50 | validated (default) |
 | 26.04 | resolute | 2224 | 50/50 | validated |
 
 Each release has a record run and a `.replay.json` twin in
@@ -16,7 +16,7 @@ Each release has a record run and a `.replay.json` twin in
 checks every pair it finds. The story missing from 22.04 and 24.04 is the same
 one in both, and it passed on 26.04 — but *which* story that is changes between
 rounds, because two of them are nondeterministic. See
-[Two flaky stories](#two-flaky-stories) before reading any single run as a
+[Story 101 is flaky; story 104 was fixed](#story-101-is-flaky-story-104-was-fixed) before reading any single run as a
 verdict on a release.
 
 The Ubuntu path uses `qemu-system-x86_64` directly with a cloud-init seed
@@ -337,11 +337,7 @@ Open an issue with:
 - `UBUNTU_RELEASE=<codename> ./tests/e2e/ubuntu-vm.sh ssh 'sudo journalctl -u sysknife-daemon -n 200'`
 - `lsb_release -a` from inside the VM
 
-## Two flaky stories
-
-Two stories fail nondeterministically. They fail for unrelated reasons, and
-either can be the one that spoils a 50/50, which is why a single run is not a
-pass rate.
+## Story 101 is flaky; story 104 was fixed
 
 **Story 101 (`DistroboxList alt phrasing`) — the provider rejects the call.**
 The model produces a correct plan and mis-names the function carrying it, so
@@ -362,23 +358,31 @@ Note what the retry does here. `complete_with_retry` re-sends the identical
 `"name": "json"`. Three API calls and ~8.6 s to fail the same way. A retry that
 does not change its input is not a retry against a formatting error.
 
-**Story 104 (`Apply netplan after showing config`) — the model picks the other
-plausible action.** For "show me the network config" it sometimes proposes
-`GetNetworkStatus` (interfaces and addresses) instead of `NetplanGetConfig` (the
-netplan YAML). Both are defensible readings, and the prompt has no rule
-disambiguating them, so the choice is left to sampling. Measured 7/8 correct.
+**Story 104 (`Apply netplan after showing config`) — fixed, and worth reading as
+a worked example.** It asked for "the network config and then apply it" and
+sometimes proposed `GetNetworkStatus` (live interfaces) instead of
+`NetplanGetConfig` (the saved netplan YAML). Neither action's description claimed
+the phrase the user typed, so the choice fell to sampling: 39 of 40 runs chose
+correctly, which is exactly the rate that fails twice in one round and then
+passes every time you go looking for it.
 
-The two differ in a way that matters to the replay gate:
+The fix was not a keyword. The model never got the *second* step wrong — it
+proposed `NetplanApply` every time — and what `NetplanApply` applies is precisely
+what `NetplanGetConfig` reads, so the pairing settles the ambiguity. The two
+descriptions now say live-state versus saved-config explicitly, and a selection
+rule states the coherence argument. After: 20 of 20.
 
-- 101 **errors**, so nothing is recorded for it, and a miss on replay is correct.
-- 104 **succeeds and returns a wrong plan**, so the call is recorded and replays
-  fine — reaching the same wrong verdict, which is exactly what a faithful
-  replay should do.
+## Reading a run
 
-That is why some committed replays show a miss and others show none, without
-either being a problem.
+Two rules, both learned the hard way:
 
-**Before changing anything, re-run the one story alone.** The first 24.04
-recording came in at 46/50; re-running its four failures individually passed
-three of them (65, 66, 71) and failed 101 again, so those three were transient
-provider errors rather than a 24.04 regression.
+- **Re-run one story alone before changing anything.** The first 24.04 recording
+  came in at 46/50; re-running its four failures individually passed three of
+  them (65, 66, 71), so those were transient provider errors, not a regression.
+- **Do not record all three releases at once.** Groq's limit that bites is
+  tokens per minute, not requests per minute — the org ceiling is 250k TPM and a
+  single planning call carries the whole prompt plus the action catalogue. Three
+  concurrent suites at `SYSKNIFE_MAX_RPM=120` produced HTTP 429
+  `rate_limit_exceeded`, which the harness reported as two ordinary story
+  failures on 22.04. Record one release at a time; replays are free and can run
+  in parallel, because they serve from the cassette and never call out.
