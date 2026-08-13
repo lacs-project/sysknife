@@ -13,8 +13,11 @@ Supported Ubuntu LTSes:
 
 Each release has a record run and a `.replay.json` twin in
 `tests/evidence/story-runs/`, and `tests/release/cassette-replay-parity.test.sh`
-checks every pair it finds. The one story missing from 22.04 and 24.04 is the
-same one, 101, and it passed on 26.04 — see [Story 101](#story-101-is-flaky).
+checks every pair it finds. The story missing from 22.04 and 24.04 is the same
+one in both, and it passed on 26.04 — but *which* story that is changes between
+rounds, because two of them are nondeterministic. See
+[Two flaky stories](#two-flaky-stories) before reading any single run as a
+verdict on a release.
 
 The Ubuntu path uses `qemu-system-x86_64` directly with a cloud-init seed
 ISO — no quickemu, no interactive installer, no GUI window. The base image
@@ -334,26 +337,48 @@ Open an issue with:
 - `UBUNTU_RELEASE=<codename> ./tests/e2e/ubuntu-vm.sh ssh 'sudo journalctl -u sysknife-daemon -n 200'`
 - `lsb_release -a` from inside the VM
 
-## Story 101 is flaky
+## Two flaky stories
 
-Story 101 (`DistroboxList alt phrasing`) is the one story that has failed a
-committed run, and it has failed on 22.04 and on 24.04 while passing on 26.04.
-It is not a distro difference. The failure is provider-side: the model returns a
-malformed tool call, the planner exhausts its retries, and the story gets no plan
-at all — its log contains the header line and nothing else, where a passing
-story's log contains the plan JSON.
+Two stories fail nondeterministically. They fail for unrelated reasons, and
+either can be the one that spoils a 50/50, which is why a single run is not a
+pass rate.
 
-Two things follow, both worth knowing before reading a run:
+**Story 101 (`DistroboxList alt phrasing`) — the provider rejects the call.**
+The model produces a correct plan and mis-names the function carrying it, so
+Groq refuses it server-side with `code: "tool_use_failed"`. The rejected payload
+contains exactly what was wanted:
 
-- **A single run is not a pass rate.** The first 24.04 record run came in at
-  46/50. Re-running the four failures individually passed three of them
-  (65, 66, 71) and failed 101 again, so those three were transient provider
-  errors rather than a 24.04 regression. The committed 24.04 run is a later
-  full-suite recording, and 101 is the only story that reproduces as a failure.
-- **A miss on replay is correct for a story that errored live.** Nothing was
-  recorded for it, so there is nothing to serve. The parity gate allows exactly
-  as many misses as there were live failures and no more, which is why the 26.04
-  pair shows zero misses and the other two show one each.
+```json
+{"name": "json", "arguments": {"steps": [{"action_name": "ListContainers", ...}]}}
+```
 
-If you are chasing a story that fails once, re-run that story alone before
-changing anything.
+Measured 2 failures in 6 runs. The story then gets no plan at all: its log holds
+the header line and nothing else, where a passing story's log holds plan JSON.
+
+Note what the retry does here. `complete_with_retry` re-sends the identical
+`(system, messages, tools)`, and the model has locked onto the wrong tool name
+*for that exact input*, so all three attempts reproduce it — the three
+`failed_generation` payloads differ only in prose wording and all three say
+`"name": "json"`. Three API calls and ~8.6 s to fail the same way. A retry that
+does not change its input is not a retry against a formatting error.
+
+**Story 104 (`Apply netplan after showing config`) — the model picks the other
+plausible action.** For "show me the network config" it sometimes proposes
+`GetNetworkStatus` (interfaces and addresses) instead of `NetplanGetConfig` (the
+netplan YAML). Both are defensible readings, and the prompt has no rule
+disambiguating them, so the choice is left to sampling. Measured 7/8 correct.
+
+The two differ in a way that matters to the replay gate:
+
+- 101 **errors**, so nothing is recorded for it, and a miss on replay is correct.
+- 104 **succeeds and returns a wrong plan**, so the call is recorded and replays
+  fine — reaching the same wrong verdict, which is exactly what a faithful
+  replay should do.
+
+That is why some committed replays show a miss and others show none, without
+either being a problem.
+
+**Before changing anything, re-run the one story alone.** The first 24.04
+recording came in at 46/50; re-running its four failures individually passed
+three of them (65, 66, 71) and failed 101 again, so those three were transient
+provider errors rather than a 24.04 regression.

@@ -1,13 +1,13 @@
 {
   "cassette_audit": {
-    "misses": 1,
-    "served": 50,
-    "verdict": "failed"
+    "misses": 0,
+    "served": 52,
+    "verdict": "ok"
   },
   "cassette_mode": "replay",
-  "cassette_sha256": "c20e107da9d831e29cab25e95fa663f6c74d80d77b53f0286858cd60f4b0cd16",
+  "cassette_sha256": "6282300d29d2d0bb9f75ea5cd668411c2b0a751daaca1f976c370a0ec3e62052",
   "distro_id": "ubuntu",
-  "ran_at": "2026-08-12T13:45:27+00:00",
+  "ran_at": "2026-08-13T11:21:15+00:00",
   "release": "24.04",
   "stories": {
     "100": {
@@ -16,7 +16,7 @@
     },
     "101": {
       "name": "Distrobox list alt phrasing",
-      "verdict": "FAIL"
+      "verdict": "PASS"
     },
     "102": {
       "name": "System-wide upgrade with alt phrasing",
@@ -28,7 +28,7 @@
     },
     "104": {
       "name": "Apply netplan after showing config",
-      "verdict": "PASS"
+      "verdict": "FAIL"
     },
     "55": {
       "name": "Refresh apt package index",

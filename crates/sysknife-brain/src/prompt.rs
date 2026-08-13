@@ -424,26 +424,32 @@ GetLogrotateStatus, GetPasswordAging
 
 ### Medium risk — cross-distro (approval required before execution)
 
-ResolvectlSetDns, VacuumJournal, ConfigureLogRotation, RemoveLogRotation
+ConfigureLogRotation, RemoveLogRotation
+
+### High risk — cross-distro (approval required before execution)
+
+ResolvectlSetDns, VacuumJournal
 "#;
 
 const CROSS_DISTRO_RISK_RULES: &str = r#"
 ### Medium risk — approval required before execution
 
 StartService, StopService, RestartService, ReloadService, ReloadDaemon,
-SetServiceEnabled, MaskService, UnmaskService,
-ConfigureWifi, SetDnsServers,
+SetServiceEnabled, UnmaskService,
 SetHostname, SetTimezone, SetLocale, SetNtp,
 CreateContainer, StartContainer, StopContainer, RemoveContainer,
-CreateUser
+CreateLogicalVolume, CreateLvSnapshot, SetServiceResourceLimits
 
 ### High risk — approval required, may require reboot
 
 RebootSystem,
+MaskService,
+ConfigureWifi, SetDnsServers,
+CreateUser,
 AddUserToGroup, RemoveUserFromGroup, DeleteUser,
 AddAuthorizedKey, RemoveAuthorizedKey,
-ExtendLogicalVolume, CreateLogicalVolume, CreateLvSnapshot,
-SetSysctl, SetServiceResourceLimits,
+ExtendLogicalVolume,
+SetSysctl,
 AddMount, RemoveMount, AddSwap, RemoveSwap,
 GrantSudoAccess, RevokeSudoAccess,
 ConfigureRemoteSyslog, RemoveRemoteSyslog,
@@ -453,7 +459,7 @@ SetPasswordAging, SetPasswordPolicy, SetAccountLockout
 
 - LOW: read-only queries, state inspection, log retrieval — no mutation, no approval needed.
 - MEDIUM: reversible changes to user-space configuration (services, apps, network, containers) — approval required.
-- HIGH: irreversible access-control changes (deleting accounts, changing group membership, modifying SSH keys), package layering, deployment lifecycle changes, kernel arguments, reboots — approval required. Note: CreateUser is MEDIUM (creates a blank account with no privileges); DeleteUser is HIGH (permanently removes access).
+- HIGH: irreversible access-control changes (deleting accounts, changing group membership, modifying SSH keys), package layering, deployment lifecycle changes, kernel arguments, reboots — approval required. Note: CreateUser and DeleteUser are both HIGH. Creating an account is a persistence primitive (MITRE T1136.001) even when the account starts with no privileges, which is why the daemon gates it at Admin; DeleteUser is HIGH because it permanently removes access.
 
 When in doubt, assign the higher risk level. Do not infer risk from whether an action sounds harmless — always use the table above.
 
@@ -657,11 +663,11 @@ ListFlatpakRemotes, GetFlatpakAppInfo, GetFirewallState
 ### Medium risk (Fedora-specific)
 
 CreateToolbox, RemoveToolbox,
-InstallFlatpak, RemoveFlatpak, UpdateFlatpak, AddFlatpakRemote, RemoveFlatpakRemote,
-ConfigureFirewall
+InstallFlatpak, RemoveFlatpak, UpdateFlatpak, AddFlatpakRemote, RemoveFlatpakRemote
 
 ### High risk (Fedora-specific)
 
+ConfigureFirewall,
 UpdateSystem,
 PinDeployment, UnpinDeployment, RebaseSystem, CleanupDeployments, RollbackDeployment,
 SetKernelArguments,
@@ -781,7 +787,7 @@ This system runs a Debian-family distribution (Ubuntu or Debian).
 const DEBIAN_RISK_TABLES: &str = r#"
 ### Low risk (Debian-specific)
 
-AptUpdate, AptSearch, AptListInstalled, AptShow, AptAutoremove,
+AptUpdate, AptSearch, AptListInstalled, AptShow,
 AptListUpgradable, AptHistoryList, GetAptPins,
 CheckPendingReboot,
 SnapList, SnapInfo,
@@ -795,13 +801,12 @@ ProStatus, LivepatchStatus, MultipassList
 
 ### Medium risk (Debian-specific)
 
-AptInstall, AptRemove, AptPurge, AptHold, AptUnhold,
+AptInstall, AptRemove, AptPurge, AptHold, AptUnhold, AptAutoremove,
 SnapInstall, SnapRemove, SnapRefresh, SnapHold, SnapUnhold,
 SnapRevert, SnapClassicInstall,
-AddPpa, RemovePpa,
+RemovePpa,
 SetAptPin, RemoveAptPin,
 DistroboxCreate, DistroboxRemove,
-AppArmorComplain,
 UbuntuInstallFlatpak, UbuntuRemoveFlatpak, UbuntuUpdateFlatpak,
 Fail2banUnbanIp,
 NetplanGenerate
@@ -833,7 +838,7 @@ const DEBIAN_SELECTION_RULES: &str = r#"
   `AptInstall` does not lift a hold and `AptUpgrade` skips held packages, so proposing either for "let nginx be upgraded again" leaves the hold in place and does nothing the user asked for. This is the same pair as `SnapHold` / `SnapUnhold`, one package manager over.
   Pinning to a *named* version or release is a different action — `SetAptPin` — because it writes an apt preferences rule rather than a hold flag.
 - `CheckPendingReboot` checks `/var/run/reboot-required` — LOW, read-only. Use for "do I need to reboot?", "is a reboot pending?".
-- `AddPpa` / `RemovePpa` add or remove a Launchpad PPA — MEDIUM. Param: `name` in `<user>/<ppa>` format (e.g. `"deadsnakes/ppa"`). Requires `software-properties-common` at runtime.
+- `AddPpa` adds a Launchpad PPA — HIGH: it adds a third-party signing key and package source, so everything installed afterwards is trusted from it. `RemovePpa` removes one — MEDIUM. Param: `name` in `<user>/<ppa>` format (e.g. `"deadsnakes/ppa"`). Requires `software-properties-common` at runtime.
 - `GrubGetKargs` reads the current GRUB kernel command line — LOW, read-only.
 - `GrubSetKargs` edits `GRUB_CMDLINE_LINUX_DEFAULT` and runs `update-grub` — HIGH. Requires reboot. Use params `append` (list of args to add) and/or `delete` (list of args to remove).
 - `SnapRevert` rolls a snap back to its previous revision — MEDIUM.
@@ -872,7 +877,7 @@ const DEBIAN_COUNTERINTUITIVE: &str = r#"
 - `CheckPendingReboot` is LOW — reads a sentinel file, no system mutation.
 - `GrubGetKargs` is LOW — read-only file inspection, no changes.
 - `GrubSetKargs` is HIGH — modifies the GRUB kernel command line; incorrect args can prevent boot.
-- `AddPpa` / `RemovePpa` are MEDIUM — third-party apt source changes; reversible but a supply-chain vector.
+- `AddPpa` is HIGH and `RemovePpa` is MEDIUM — adding a third-party apt source is the supply-chain vector; removing one closes it.
 - `SnapRevert` is MEDIUM — rolls back a snap revision; reversible with a refresh.
 - `SnapClassicInstall` is MEDIUM — installs a snap with classic confinement (full system access).
 - `UfwAllow` / `UfwDeny` are HIGH — every firewall mutation can lock out active remote sessions.

@@ -45,15 +45,15 @@ apt and a read-only root, so the Debian-family action set cannot apply.
 
 | Distro | Action backend | Evidence | Launch tier |
 |---|---|---|---|
-| **Ubuntu 24.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, 49/50, recorded in `ubuntu-24.04-gpt-oss-120b.json`; its `.replay.json` twin replays every story that had a recording. The twin's own `cassette_audit.verdict` is `failed`, because the harness fails any run with a miss and this run has one: story 101 errored live, so nothing was recorded for it to serve | **Validated** |
-| **Ubuntu 22.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, 49/50, recorded in `ubuntu-22.04-gpt-oss-120b.json`; its `.replay.json` twin replays every story that had a recording. The twin's own `cassette_audit.verdict` is `failed`, because the harness fails any run with a miss and this run has one: story 101 errored live, so nothing was recorded for it to serve | **Validated** |
-| **Ubuntu 26.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, 50/50, recorded in `ubuntu-26.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — 52 calls served, zero misses, `cassette_audit.verdict` `ok`; plus sudo-rs sudoers verification (26.04 ships sudo-rs 0.2.x; `visudo -cf` parses the SysKnife sudoers and every grant — including the trailing-`*` wildcard grants — is honoured) | **Validated** |
+| **Ubuntu 24.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, 49/50, recorded in `ubuntu-24.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — zero misses, `cassette_audit.verdict` `ok`. The one story short is 104, which fails by choosing `GetNetworkStatus` over `NetplanGetConfig`; measured 7/8 correct, so it flaps between rounds | **Validated** |
+| **Ubuntu 22.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, 49/50, recorded in `ubuntu-22.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — zero misses, `cassette_audit.verdict` `ok`. The one story short is 104, which fails by choosing `GetNetworkStatus` over `NetplanGetConfig`; measured 7/8 correct, so it flaps between rounds | **Validated** |
+| **Ubuntu 26.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, 50/50, recorded in `ubuntu-26.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — zero misses, `cassette_audit.verdict` `ok`; plus sudo-rs sudoers verification (26.04 ships sudo-rs 0.2.x; `visudo -cf` parses the SysKnife sudoers and every grant — including the trailing-`*` wildcard grants — is honoured) | **Validated** |
 | **Every other Ubuntu 20.04+ release** (20.04, 20.10, 21.x, 23.x, 25.x, 26.10, …) | Ubuntu/apt family | Eligible by release family; no per-release VM run | **Smoke-tested** |
 | **Fedora Silverblue 44** | rpm-ostree, Flatpak, toolbox, firewalld, systemd, containers | Harness and fixture coverage; no current live-VM run | **Experimental** (eligible, awaiting a fresh VM run) |
 | **Other Fedora Atomic 41+ variants** | rpm-ostree family | Detection and shared action tests | **Experimental** (eligible, awaiting a fresh VM run) |
 | **Fedora Workstation / Server** | `dnf` family incomplete | Detection tests only | **Experimental** |
 
-The deterministic workspace baseline is 1,743 Rust tests plus 72 frontend
+The deterministic workspace baseline is 1,745 Rust tests plus 72 frontend
 tests. Those tests verify action construction, policy, approval, storage, and
 UI behavior, but they do not replace a real distribution VM run.
 

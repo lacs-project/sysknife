@@ -11,9 +11,11 @@
 # acceptance criteria:
 #
 #   * zero misses for every story that produced a successful live response.
-#     A story that FAILED live is excluded on purpose and only there: its call
-#     errored during recording, so nothing was ever stored for it, and a miss on
-#     replay is the correct and expected consequence. That is not the same as
+#     A story that FAILED live is excluded on purpose and only there, and only
+#     when its call actually errored: nothing was stored for it, so a miss on
+#     replay is the correct consequence. A story that fails by proposing the
+#     WRONG PLAN is different — the call succeeded and was recorded, so it must
+#     still replay, and it does; it simply reaches the same wrong verdict. That is not the same as
 #     excluding a story from the suite — it still runs, and it still fails.
 #   * every story that passed live also passes on replay. A replay that serves a
 #     recorded answer but reaches a different verdict means the recording does
@@ -152,7 +154,7 @@ if failures:
 for label, passed, total, served, misses, failed_live, cassette in checked:
     print(f"ok: [{label}] {passed}/{total} stories passed live and all of them replay")
     print(f"ok: [{label}] {served} call(s) served, {misses} miss(es), accounted for by "
-          f"{len(failed_live)} story/stories that errored live {failed_live}, "
+          f"{len(failed_live)} story/stories that did not pass live {failed_live}, "
           f"against committed {cassette}")
 print(f"ok: {len(checked)} release run(s) checked, each against the cassette it recorded")
 PY
