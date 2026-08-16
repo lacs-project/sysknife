@@ -5,8 +5,16 @@ pub mod rig_adapter;
 /// adapter that maps SDK errors onto [`crate::provider::ProviderError`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum StatusClass {
-    /// 401 Unauthorized / 403 Forbidden — credentials are missing or invalid.
+    /// 401 Unauthorized — the credential itself was rejected.
     Auth,
+    /// 403 Forbidden — the request was refused. Kept separate from
+    /// [`Auth`](Self::Auth) because "check your API key" is the wrong advice
+    /// about half the time: a 403 is just as often a blocked IP or region, or
+    /// an account without access to the requested model. Observed live, Groq
+    /// answering a planning call from a VPN exit with
+    /// `{"error":{"message":"Access denied. Please check your network
+    /// settings."}}` while SysKnife told the operator to check their key.
+    Forbidden,
     /// 429 Too Many Requests.
     RateLimit,
     /// Any other 4xx/5xx status — a generic request error.
@@ -20,7 +28,8 @@ pub(super) enum StatusClass {
 /// is available (e.g. a transport-level failure with no HTTP response).
 pub(super) fn classify_status(status: http::StatusCode) -> StatusClass {
     match status {
-        http::StatusCode::UNAUTHORIZED | http::StatusCode::FORBIDDEN => StatusClass::Auth,
+        http::StatusCode::UNAUTHORIZED => StatusClass::Auth,
+        http::StatusCode::FORBIDDEN => StatusClass::Forbidden,
         http::StatusCode::TOO_MANY_REQUESTS => StatusClass::RateLimit,
         _ => StatusClass::Other,
     }
@@ -123,7 +132,7 @@ pub(crate) const LOG_PREVIEW_CHARS: usize = 200;
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_error_msg;
+    use super::{classify_status, sanitize_error_msg, StatusClass};
 
     #[test]
     fn sanitize_error_msg_strips_key_param() {
@@ -212,5 +221,34 @@ mod tests {
         let input = "connection refused: https://api.example.com/v1";
         let result = sanitize_error_msg(input);
         assert_eq!(result, input);
+    }
+
+    #[test]
+    fn a_401_and_a_403_are_not_the_same_diagnosis() {
+        // 401 means the credential was rejected. 403 means the request was
+        // refused, which is just as often a blocked IP, a blocked region, or an
+        // account without access to the model.
+        //
+        // Folding both into "check your API key" sends someone with a perfectly
+        // good key to rotate it. Observed live: Groq answered a planning call
+        // from a VPN exit with `403 {"error":{"message":"Access denied. Please
+        // check your network settings."}}`, and SysKnife reported
+        // "provider authentication failed — check your API key".
+        assert_eq!(
+            classify_status(http::StatusCode::UNAUTHORIZED),
+            StatusClass::Auth
+        );
+        assert_eq!(
+            classify_status(http::StatusCode::FORBIDDEN),
+            StatusClass::Forbidden
+        );
+        assert_eq!(
+            classify_status(http::StatusCode::TOO_MANY_REQUESTS),
+            StatusClass::RateLimit
+        );
+        assert_eq!(
+            classify_status(http::StatusCode::INTERNAL_SERVER_ERROR),
+            StatusClass::Other
+        );
     }
 }

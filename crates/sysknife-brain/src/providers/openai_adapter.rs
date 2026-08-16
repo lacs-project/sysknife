@@ -389,6 +389,27 @@ fn map_openai_error(err: async_openai::error::OpenAIError) -> ProviderError {
                     "OpenAI authentication failed — check OPENAI_API_KEY".to_string(),
                 )
             }
+            // A 403 is refused-request, not rejected-credential: a blocked IP or
+            // region, an account without access to the model, or an org policy
+            // are all as likely as a bad key. Sending the reader to rotate a
+            // working key is the wrong advice, and it is the advice they got —
+            // observed live, Groq answering from a VPN exit with "Access denied.
+            // Please check your network settings." The provider's own text stays
+            // withheld for the same reason the Auth arm withholds it, and stays
+            // logged.
+            super::StatusClass::Forbidden => {
+                tracing::error!(
+                    target: "sysknife_brain::openai_adapter",
+                    "OpenAI refused the request (403): {}",
+                    msg
+                );
+                ProviderError::Auth(
+                    "provider refused the request (HTTP 403) — this is a rejected key, a blocked \
+                     IP or region, or an account without access to that model; the provider's \
+                     reason is in the log line above"
+                        .to_string(),
+                )
+            }
             super::StatusClass::RateLimit => {
                 tracing::warn!(
                     target: "sysknife_brain::openai_adapter",

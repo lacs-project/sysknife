@@ -386,6 +386,17 @@ fn from_rig_response(choice: OneOrMany<AssistantContent>) -> Result<Completion, 
 /// still logged for operator diagnostics. Mirrors `openai_adapter`.
 const AUTH_FAILURE_MSG: &str = "provider authentication failed — check your API key";
 
+/// What a 403 means, which is deliberately not "your key is wrong".
+///
+/// A 403 is refused-request, not rejected-credential: a blocked IP or region,
+/// an account without access to the model, or an org policy are all as likely
+/// as a bad key. Naming all of them costs one line and saves the reader from
+/// rotating a working key. The provider's own text is still withheld for the
+/// same reason [`AUTH_FAILURE_MSG`] withholds it, and still logged.
+const FORBIDDEN_MSG: &str = "provider refused the request (HTTP 403) — this is a rejected key, \
+     a blocked IP or region, or an account without access to that model; the provider's reason \
+     is in the log line above";
+
 fn map_rig_error(err: rig::completion::CompletionError) -> ProviderError {
     let msg = sanitize_error_msg(&err.to_string());
     // "Rig" is the name of a dependency, which means nothing to a user
@@ -399,6 +410,7 @@ fn map_rig_error(err: rig::completion::CompletionError) -> ProviderError {
     if let Some(status) = err.provider_response_status() {
         return match super::classify_status(status) {
             super::StatusClass::Auth => ProviderError::Auth(AUTH_FAILURE_MSG.to_string()),
+            super::StatusClass::Forbidden => ProviderError::Auth(FORBIDDEN_MSG.to_string()),
             super::StatusClass::RateLimit => ProviderError::RateLimit(msg),
             super::StatusClass::Other => ProviderError::Request(msg),
         };
