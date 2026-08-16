@@ -45,3 +45,7 @@ __pycache__/
 # One of them reached a public commit via `git add -A`.
 AGENTS.md
 .codex/
+
+# npm pack output — a build artifact, not a source file. One was committed by
+# an over-broad `git add -A` and would go stale on every version bump.
+packages/setup/*.tgz

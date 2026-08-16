@@ -41,7 +41,30 @@ a run can be reproduced finally reproduces the runs that needed a retry.
   recorder narrower than the retrier leaves a retried run unreplayable; a wider
   one serves a transient failure back for ever.
 
+### Added
+
+- **`sysknife-setup --uninstall`.** There was no way to remove what the wizard
+  installed. `make uninstall` covers the `sudo make install` footprint, which is
+  a different set of paths. The audit database, the safety-audit log and
+  `~/.config/sysknife` are kept and their paths printed, because removing the
+  software should not destroy the record of what it did; `--purge` removes them
+  and names each one first. A system service is never touched, since its sudoers
+  grants and polkit rules belong to the Makefile that installed them.
+
 ### Fixed
+
+- **`--no-binary` wrote a systemd unit pointing at a binary that does not
+  exist.** It returned a hardcoded `/usr/local/bin/sysknife` regardless of what
+  was installed, and the caller derives the daemon path from it, so anyone who
+  built from source into `~/.local/bin` got a unit that crash-looped on
+  `status=203/EXEC` every five seconds. It now runs the same probe the download
+  path already ran, and says so when it finds nothing.
+
+- **The installer reported a working install as broken.** `systemctl --user
+  start` returns once systemd has forked the service, not once it is listening,
+  and the wizard probed the socket once immediately afterwards. On a cold
+  install its final word was "Daemon socket not yet reachable" for a daemon that
+  bound a second later. It now polls for up to six seconds.
 
 - **Cassette v2 records provider rejections, so a retried exchange replays.**
   ([#206](https://github.com/lacs-project/sysknife/pull/206))

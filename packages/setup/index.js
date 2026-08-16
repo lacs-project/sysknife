@@ -179,6 +179,31 @@ function checkSocket(socket) {
   return result.status === 0;
 }
 
+/**
+ * Same probe, but give a daemon that was started a moment ago time to bind.
+ *
+ * `systemctl --user start` returns once systemd has forked the service, not
+ * once the service is listening. Probing once immediately afterwards raced the
+ * daemon and lost on a cold install: the wizard printed "Daemon socket not yet
+ * reachable" as its final word on an install that had in fact worked, and the
+ * socket appeared a second later. That reads as a failed install, and the
+ * obvious reaction is to run the installer again.
+ *
+ * Polls rather than sleeping a fixed interval, so a fast machine stays fast.
+ */
+function checkSocketWithRetry(socket, timeoutMs = 6000, intervalMs = 250) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const reachable = checkSocket(socket);
+    if (reachable !== false) return reachable; // true, or null for non-local
+    if (Date.now() >= deadline) return false;
+    // Synchronous sleep: this runs in the wizard's sequential flow, and an
+    // async wait here would mean threading a promise through the caller for no
+    // behavioural gain.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, intervalMs);
+  }
+}
+
 /** Escape a string for inclusion inside a TOML quoted string. */
 function tomlQuote(s) {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -871,11 +896,14 @@ async function main() {
 
   const firstLocalSocket = targets.find(t => !t.socket.startsWith('vsock://') && t.socket.startsWith('/'));
   if (firstLocalSocket) {
-    const reachable = checkSocket(firstLocalSocket.socket);
+    // Retrying, because the daemon was started seconds ago and systemd returns
+    // before it binds. See checkSocketWithRetry.
+    const reachable = checkSocketWithRetry(firstLocalSocket.socket);
     if (reachable === true) {
       ok(`Daemon socket reachable: ${firstLocalSocket.socket}`);
     } else if (reachable === false) {
-      warn(`Daemon socket not yet reachable: ${firstLocalSocket.socket}`);
+      warn(`Daemon socket not reachable after 6s: ${firstLocalSocket.socket}`);
+      step('Check it with:  systemctl --user status sysknife-daemon');
     }
   }
 
@@ -943,6 +971,34 @@ async function main() {
 // --help flag
 // ---------------------------------------------------------------------------
 
+// --uninstall runs here, beside --help, because everything below this point is
+// the wizard: it prompts, writes config and installs a service. Removing an
+// installation must not first perform one.
+if (process.argv.includes('--uninstall')) {
+  const { uninstall } = require('./uninstall.js');
+  const purge = process.argv.includes('--purge');
+  const dryRun = process.argv.includes('--dry-run');
+
+  console.log();
+  console.log(`  ${B}sysknife-setup --uninstall${X}${dryRun ? `  ${D}(dry run, nothing will change)${X}` : ''}`);
+
+  const { removed, kept } = uninstall({ purge, dryRun });
+
+  console.log();
+  for (const path_ of removed) ok(`${dryRun ? 'would remove' : 'removed'}  ${path_}`);
+  if (removed.length === 0) step('nothing to remove — no wizard installation found here.');
+
+  if (kept.length > 0) {
+    console.log();
+    warn('Left in place, because removing the software should not destroy the record');
+    warn('of what it did:');
+    for (const path_ of kept) step(`  ${path_}`);
+    step('Delete these too with:  sysknife-setup --uninstall --purge');
+  }
+  console.log();
+  process.exit(0);
+}
+
 if (process.argv.includes('--help') || process.argv.includes('-h')) {
   console.log(`
 \x1b[1msysknife-setup\x1b[0m
@@ -967,6 +1023,15 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
                 system  privileged service; required for mutating actions
                 user    runs as you, no sudo; read-only actions only
                 skip    install no service
+  --uninstall   Remove what this wizard installed: the user service, the
+                binaries in ~/.local/bin, and the MCP/agent config in this
+                directory. The audit database and your config are KEPT and
+                their paths printed. A system service installed by
+                \`sudo make install\` is not touched; use \`sudo make uninstall\`.
+  --purge       With --uninstall, also delete the audit database, the safety
+                audit log and ~/.config/sysknife. Each is named before it goes.
+  --dry-run     With --uninstall, print what would be removed and change
+                nothing.
   --help, -h    Show this help message and exit.
 
 \x1b[1mDESCRIPTION\x1b[0m

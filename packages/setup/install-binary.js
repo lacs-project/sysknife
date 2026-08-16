@@ -470,12 +470,55 @@ async function writeBinary(data, destPath) {
  *   installed — true if a binary was freshly installed
  *   path      — absolute path to the sysknife binary (existing or new)
  */
+/**
+ * Where a `sysknife` binary already lives, or null.
+ *
+ * PATH first, because that is what the user's shell would run, then the two
+ * locations the wizard and the Makefile install to. Used by the `--no-binary`
+ * path so the systemd unit names a binary that exists.
+ */
+function findInstalledBinary() {
+  try {
+    const onPath = execFileSync('which', ['sysknife'], { stdio: ['pipe', 'pipe', 'pipe'] })
+      .toString().trim();
+    if (onPath && fs.existsSync(onPath)) return onPath;
+  } catch {
+    // not on PATH; fall through to the well-known locations
+  }
+  for (const candidate of [
+    path.join(os.homedir(), '.local', 'bin', 'sysknife'),
+    '/usr/local/bin/sysknife',
+  ]) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
 async function installBinaryIfMissing(opts) {
   const { ask, noPrompts = false, noBinary = false } = opts;
 
-  // --no-binary skips the whole flow; caller provides the binary path manually.
+  // --no-binary skips the download, not the question of where the binary is.
+  //
+  // This used to return a hardcoded /usr/local/bin/sysknife regardless of what
+  // was installed. The caller derives the daemon path from it and writes it into
+  // the systemd unit, so anyone who built from source into ~/.local/bin — or who
+  // ran the wizard once without --no-binary and again with it — got
+  // `ExecStart=/usr/local/bin/sysknife-daemon` pointing at nothing, and a unit
+  // that crash-loops on `status=203/EXEC` every five seconds. Observed on a
+  // clean 24.04 VM with both binaries sitting in ~/.local/bin.
+  //
+  // The download path already probes for an existing install. Skipping the
+  // download is no reason to skip the probe.
   if (noBinary) {
-    step('--no-binary: skipping prebuilt download. Build from source and set the path manually.');
+    const found = findInstalledBinary();
+    if (found) {
+      step(`--no-binary: skipping prebuilt download; using the sysknife already at ${found}.`);
+      return { installed: false, path: found };
+    }
+    warn('--no-binary: skipping prebuilt download, and no sysknife was found on PATH,');
+    warn('in ~/.local/bin or in /usr/local/bin.');
+    step('Build from source and install it to /usr/local/bin, or the service will');
+    step('fail to start with status=203/EXEC.');
     return { installed: false, path: '/usr/local/bin/sysknife' };
   }
 

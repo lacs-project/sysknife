@@ -162,6 +162,37 @@ newgrp sysknife                       # or log out and back in
 npx sysknife-setup --no-binary --daemon-mode=skip
 ```
 
+### Uninstall
+
+Whichever way you installed, there is one command for it.
+
+```sh
+# Removes what the wizard installed: the user service, the binaries in
+# ~/.local/bin, and the MCP + agent config in the current directory.
+npx sysknife-setup --uninstall
+
+# See exactly what that would touch, without touching it.
+npx sysknife-setup --uninstall --dry-run
+```
+
+**Your audit history is kept by default.** Removing the software should not
+destroy the record of what it did, so the audit database, the safety-audit log
+and `~/.config/sysknife` are left in place and their paths printed. Delete those
+too, only if you mean to, with:
+
+```sh
+npx sysknife-setup --uninstall --purge   # names each file before deleting it
+```
+
+If you installed the **system** service with `sudo make install`, remove it with
+the Makefile that owns its sudoers grants, polkit rules and privileged helpers.
+`--uninstall` deliberately will not touch those, because half a removed
+privilege boundary is worse than none:
+
+```sh
+sudo make uninstall
+```
+
 All three Ubuntu LTS releases record a live-VM run of the 79-story Ubuntu
 suite, and each run has a replay twin that reproduces it: 22.04, 24.04 and 26.04
 all at 79/79, every twin serving every call with zero misses. The runs are in

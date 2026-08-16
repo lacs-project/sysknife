@@ -10,6 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
@@ -25,6 +26,7 @@ const {
   detectPlatform,
   isOnPath,
   stageForPrivilegedInstall,
+  installBinaryIfMissing,
 } = require('../install-binary.js');
 
 // ---------------------------------------------------------------------------
@@ -200,5 +202,38 @@ test('full mock install: download → verify → write binary', async () => {
     assert.ok(fakeDaemonContent.equals(daemonRead), 'daemon content mismatch');
   } finally {
     await fsp.rm(tmpDir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// --no-binary must still name a binary that exists
+// ---------------------------------------------------------------------------
+
+test('--no-binary uses an installed binary instead of a hardcoded path', async () => {
+  // It returned '/usr/local/bin/sysknife' unconditionally. The caller derives
+  // the daemon path from it and writes it into the systemd unit, so a user who
+  // built into ~/.local/bin got ExecStart pointing at nothing and a unit that
+  // crash-looped on status=203/EXEC. Reproduced on a clean 24.04 VM.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-nobin-'));
+  const fake = path.join(tmp, 'sysknife');
+  fs.writeFileSync(fake, '#!/bin/sh\n', { mode: 0o755 });
+
+  const prevPath = process.env.PATH;
+  process.env.PATH = `${tmp}:${prevPath}`;
+  try {
+    const result = await installBinaryIfMissing({
+      ask: async () => '',
+      noPrompts: true,
+      noBinary: true,
+    });
+    assert.equal(
+      result.path,
+      fake,
+      'the probe should find the binary on PATH rather than assuming /usr/local/bin',
+    );
+    assert.equal(result.installed, false, '--no-binary must not report an install');
+  } finally {
+    process.env.PATH = prevPath;
+    fs.rmSync(tmp, { recursive: true, force: true });
   }
 });

@@ -26,18 +26,37 @@ function localRequires(file) {
   return out;
 }
 
-test('every local module required by a bin entrypoint is in package.json files', () => {
+test('every local module reachable from a bin entrypoint is in package.json files', () => {
   const files = new Set(pkg.files);
-  const entrypoints = Object.values(pkg.bin); // index.js, mcp-launcher.js
-  for (const entry of entrypoints) {
+  // `bin` points at sysknife-setup.js, not index.js. This walk used to stop at
+  // the entrypoints' own requires, so index.js — reached one hop further, via
+  // `require('./index.js')` — had its entire require graph unchecked. A module
+  // added there and forgotten in `files` would crash the published package with
+  // "Cannot find module" while every test passed from the git checkout, which is
+  // exactly the failure this test exists to prevent. Walk it transitively.
+  const seen = new Set();
+  const queue = Object.values(pkg.bin);
+  for (const entry of queue) {
     assert.ok(files.has(entry), `bin entrypoint "${entry}" missing from files`);
-    for (const dep of localRequires(entry)) {
+  }
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (seen.has(current)) continue;
+    seen.add(current);
+    for (const dep of localRequires(current)) {
       assert.ok(
         files.has(dep),
-        `"${entry}" requires "./${dep}" but it is not in package.json files — the published package would crash`,
+        `"${current}" requires "./${dep}" but it is not in package.json files — the published package would crash`,
       );
+      queue.push(dep);
     }
   }
+  // The walk has to have actually gone past the entrypoints, or it proves
+  // nothing: index.js alone requires half a dozen local modules.
+  assert.ok(
+    seen.size > Object.values(pkg.bin).length,
+    `the require walk only visited ${seen.size} file(s); it is not following past the entrypoints`,
+  );
 });
 
 test('the extracted modules are packaged', () => {

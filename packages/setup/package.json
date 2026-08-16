@@ -25,7 +25,8 @@
     "mcp-launcher.js",
     "node-preflight.js",
     "providers.js",
-    "sysknife-setup.js"
+    "sysknife-setup.js",
+    "uninstall.js"
   ],
   "keywords": [
     "sysknife",
