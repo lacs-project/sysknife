@@ -42,7 +42,9 @@
 </p>
 
 <p align="center">
-  <em>Illustrative reproduction of the Claude Code MCP flow — same flow works in Cursor and Codex CLI.</em><br/>
+  <em>A deterministic reproduction of the Claude Code MCP flow, rendered offline by
+  <a href="assets/demo/mcp-flow-mock.sh">mcp-flow-mock.sh</a> so it replays identically from a
+  fresh checkout. The same flow works in Cursor and Codex CLI.</em><br/>
   <em>Looking for the standalone CLI? See <a href="docs/cli.md">the CLI guide</a>.</em>
 </p>
 
@@ -191,6 +193,13 @@ SysKnife, not an afterthought. See the [CLI guide](docs/cli.md).
 
 <p align="center">
   <img src="assets/demo/demo.gif" alt="sysknife CLI — plan, approve, and execute in the terminal" width="900"/>
+</p>
+
+<p align="center">
+  <em>A deterministic reproduction of a real planning and execution session, rendered offline by
+  <a href="assets/demo/demo-mock.sh">demo-mock.sh</a>. Live LLM calls are nondeterministic and the
+  tape has to render with no daemon or provider configured, so the recording is scripted rather
+  than captured; the output styling is generated from the same code paths as the real CLI.</em>
 </p>
 
 > **Also: a desktop GUI — development paused.** An experimental Tauri desktop
