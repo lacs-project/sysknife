@@ -8,6 +8,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [0.8.0] — 2026-08-16
+
+Every Debian-only action now has a live-VM story, and the recording that proves
+a run can be reproduced finally reproduces the runs that needed a retry.
+
+### Security
+
+- **A credential in an intent reached disk before the fence refused it.**
+  ([#206](https://github.com/lacs-project/sysknife/pull/206))
+  `Planner::admit_request` refuses any intent `prefs::contains_sensitive` flags,
+  so a Pro token or API key never reaches a provider. The CLI, however, printed
+  `→ planning "<intent>"` to stderr *before* calling the planner, and both CI and
+  the story harness run with stderr redirected to a file. The one value the fence
+  exists to contain was therefore written to disk on its way to being refused.
+  Both echo sites now go through `prefs::loggable_intent`, which asks
+  `contains_sensitive` the same question rather than keeping a second copy of it.
+
+### Added
+
+- **Twenty-nine user stories, 105 to 133, one per Debian-only action that had
+  none.** ([#206](https://github.com/lacs-project/sysknife/pull/206))
+  `GetHostState` first: the per-distro prompt split exists because naming
+  Fedora's `GetSystemState` on an apt host is what the family fence forbids, so
+  something had to answer "what is this host?" on Ubuntu, and nothing exercised
+  it end to end. Debian-only coverage is 63 of 63. The Ubuntu family runs 79/79
+  on 22.04, 24.04 and 26.04, each with a committed replay twin that reproduces
+  the run with zero misses.
+
+- **`ProviderError::is_invalid_tool_call`**, the single classification read by
+  both the planner's corrective retry and the cassette's rejection recorder. A
+  recorder narrower than the retrier leaves a retried run unreplayable; a wider
+  one serves a transient failure back for ever.
+
+### Fixed
+
+- **Cassette v2 records provider rejections, so a retried exchange replays.**
+  ([#206](https://github.com/lacs-project/sysknife/pull/206))
+  The planner appends a correction and re-asks when a provider rejects a tool
+  call, but the cassette stored only successes, so the only entry written was the
+  *second* call. A replay started from the first, missed, and re-sent identical
+  bytes. That single gap was why all three LTS replay twins reported
+  `cassette_audit.verdict` `failed`. v1 files are still read; new writes are v2.
+
+- **A failing story's log now carries the CLI's stderr.** It held the story's
+  opening line and nothing else, because every story redirects stderr to
+  `/tmp/sysknife-story-<n>-stderr.log` and nothing collected it.
+
+- **A record run paces itself.** The provider ceiling that bites is tokens per
+  minute, not requests: roughly 17 kB in per call against 250 k TPM is about 14
+  calls a minute, and unpaced the suite issues one every three seconds.
+
+### Changed
+
+- **"Validated" now requires a replay twin that actually reproduced the run.**
+  `check_evidence_claims.py` accepted any committed twin, including one whose own
+  `cassette_audit.verdict` said `failed`. A pass-rate figure was already refused
+  on those grounds; the tier was not.
+
 ## [0.7.0] — 2026-08-08
 
 A security release. Five privileged paths that a bounded action could ride into
