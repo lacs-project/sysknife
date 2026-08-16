@@ -76,10 +76,59 @@ function runtimeSocketPath() {
 // Unit file templates
 // ---------------------------------------------------------------------------
 
+/**
+ * Where the daemon's SQLite audit database lives.
+ *
+ * This MUST agree with `sysknife_core::default_database_path()`, which resolves
+ * `$SYSKNIFE_DATABASE_PATH`, then `$XDG_STATE_HOME/sysknife/daemon.sqlite`, then
+ * `~/.local/state/sysknife/daemon.sqlite`. It did not: the unit pinned
+ * `~/.local/share/...` while the binary's own default was `~/.local/state/...`,
+ * so the daemon opened one database under systemd and a different one when
+ * started any other way — including the way this installer's own "Next steps"
+ * suggests. Two audit chains, and `sysknife audit verify` only ever sees the one
+ * belonging to the daemon it is talking to.
+ *
+ * `docs/configuration.md` and `docs/developer-guide.md` both document the state
+ * path, so the installer was the single outlier. See `migrateLegacyDatabase`
+ * for what happens to a database left at the old location.
+ */
+function databasePath() {
+  const xdgState = process.env.XDG_STATE_HOME;
+  const stateDir = xdgState
+    ? path.join(xdgState, 'sysknife')
+    : path.join(os.homedir(), '.local', 'state', 'sysknife');
+  return path.join(stateDir, 'daemon.sqlite');
+}
+
+/**
+ * Move a database written by an installer older than this one.
+ *
+ * Only when the destination does not exist, so a live database is never
+ * overwritten, and the SQLite sidecars move with it or the chain is unreadable.
+ * If both exist the installer says so and touches neither: choosing which audit
+ * history to keep is not a decision an installer should make silently.
+ *
+ * Returns a human-readable note, or null when there was nothing to do.
+ */
+function migrateLegacyDatabase() {
+  const legacy = path.join(os.homedir(), '.local', 'share', 'sysknife', 'daemon.sqlite');
+  const current = databasePath();
+  if (!fs.existsSync(legacy)) return null;
+  if (fs.existsSync(current)) {
+    return `two audit databases exist: ${legacy} (older layout) and ${current}. `
+      + 'Neither was touched. Keep whichever history you need and delete the other.';
+  }
+  fs.mkdirSync(path.dirname(current), { recursive: true });
+  for (const suffix of ['', '-wal', '-shm']) {
+    if (fs.existsSync(legacy + suffix)) fs.renameSync(legacy + suffix, current + suffix);
+  }
+  return `moved the audit database from ${legacy} to ${current} (the path the daemon reads by default).`;
+}
+
 /** User-level service (no root, casual / dev use). */
 function userUnitContent(daemonBin) {
-  const stateDir = path.join(os.homedir(), '.local', 'share', 'sysknife');
-  const dbPath   = path.join(stateDir, 'daemon.sqlite');
+  const dbPath   = databasePath();
+  const stateDir = path.dirname(dbPath);
 
   return `[Unit]
 Description=SysKnife privileged daemon (user session)
@@ -242,7 +291,11 @@ async function installDaemonService(opts) {
     return await _installSystemService(daemonBinPath);
   }
 
-  // Default: choice === '1' or anything else → user service
+  // Default: choice === '1' or anything else → user service.
+  // Migrate before the unit is written and started, so the daemon opens the
+  // moved database rather than creating a fresh one beside it.
+  const migration = migrateLegacyDatabase();
+  if (migration) warn(migration);
   await _installUserService(daemonBinPath);
   warn(userModeCapabilityWarning());
   return { mode: 'user', daemonInstalled: true, manualSteps: [] };
@@ -354,6 +407,8 @@ async function _installSystemService(daemonBinPath) {
 
 module.exports = {
   installDaemonService,
+  databasePath,
+  migrateLegacyDatabase,
   userUnitContent,
   runtimeSocketPath,
   runtimeDir,

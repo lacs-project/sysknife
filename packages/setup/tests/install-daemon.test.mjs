@@ -86,14 +86,25 @@ test('userUnitContent does not reintroduce a resolved ~/.local/share socket', ()
   assert.doesNotMatch(unit, /SYSKNIFE_LISTEN_URI=unix:\/\/\$\{socketPath\}/);
 });
 
-test('userUnitContent still persists the SQLite database under ~/.local/share (state, not the socket, stays there)', () => {
+test('userUnitContent points the database at the path the daemon reads by default', () => {
+  // This used to pin ~/.local/share, which is where the unit put it while
+  // `sysknife_core::default_database_path()` resolved ~/.local/state. The
+  // daemon therefore opened one database under systemd and a different one
+  // when started any other way, splitting the audit chain in two. Both docs
+  // documented the state path, so the installer was the outlier.
   const unit = userUnitContent('/home/x/.local/bin/sysknife-daemon');
-  const expectedDb = path.join(os.homedir(), '.local', 'share', 'sysknife', 'daemon.sqlite');
+  const expectedDb = process.env.XDG_STATE_HOME
+    ? path.join(process.env.XDG_STATE_HOME, 'sysknife', 'daemon.sqlite')
+    : path.join(os.homedir(), '.local', 'state', 'sysknife', 'daemon.sqlite');
   // Plain substring assertion (no constructed RegExp) so a path containing
   // regex metacharacters can't break the match or the escaping.
   assert.ok(
     unit.includes(`SYSKNIFE_DATABASE_PATH=${expectedDb}`),
     `unit should contain SYSKNIFE_DATABASE_PATH=${expectedDb}`,
+  );
+  assert.ok(
+    !unit.includes('.local/share/sysknife/daemon.sqlite'),
+    'the unit must not reintroduce the ~/.local/share database path',
   );
 });
 
