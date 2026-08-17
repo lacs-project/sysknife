@@ -1,7 +1,7 @@
 # Contributing to SysKnife
 
 > **Want help. Want it loud, want it tested, want it shippable.** New
-> contributors are the lifeblood of this project — we'd rather merge a
+> contributors are the lifeblood of this project. We would rather merge a
 > small, well-tested PR than a giant one that needs three rounds of
 > review.
 
@@ -24,26 +24,43 @@ A PR that passes CI, has tests, and follows the
 
 ---
 
-## High-impact areas
+## Where the effort goes right now
 
-These are where contributions move the needle the most. Each links to a
-"good first issue" cluster on the issue tracker.
+**Ubuntu is the active target**, across 22.04, 24.04 and 26.04. Live-VM
+evidence, action coverage and security review all point at the Debian-family
+path first.
+
+Fedora Atomic 41+ stays eligible and its rpm-ostree, Flatpak and toolbox action
+families still pass. It is deprioritized, not dropped, and what it needs is a
+current validation run rather than new code. See
+[docs/distro-support.md](docs/distro-support.md).
+
+**GUI work is paused.** The Tauri shell under `apps/sysknife-shell/` stays in
+the tree and must keep building, so workspace gates still cover it, but it is
+not where contributions are wanted today. Please pick something else from the
+table below.
+
+## High-impact areas
 
 | Area | Why it matters | Difficulty |
 |---|---|---|
-| **Ubuntu LTS support** ([tracker](https://github.com/lacs-project/sysknife/issues?q=is%3Aopen+label%3Aubuntu)) | All three LTS releases are validated against the full story suite on a live VM, each with a committed replay twin that reproduces it: 22.04, 24.04 and 26.04 all at 79/79. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: story coverage for the cross-family actions — the Debian-only ones are all covered now. | Medium |
-| **Distro detection coverage** ([tracker](https://github.com/lacs-project/sysknife/issues?q=is%3Aopen+label%3Adistro-detection)) | Robust `/etc/os-release` parsing for every LTS we claim to support. Pure-function tests, no integration mocks. | Easy |
-| **Action catalogue gaps** | Add a typed action (e.g. `EnableFirewallZone`) — small, isolated, every PR includes the policy entry + risk level + tests. | Easy |
-| **E2E story coverage** | Real prompts, real LLM, real daemon. The suite is 133 stories: 54 atomic + 79 Ubuntu. Every Debian-only action now has one. What is left is the cross-family middle: of the action names available on both families, 57 are still untouched by any story, plus 8 Fedora-only ones. | Medium |
-| **GUI polish (Tauri shell)** | TypeScript + React. Real OSS UX, not a thin wrapper around the daemon. | Medium |
-| **Demo recording on real hardware** | Replace the bundled demo GIF with a 30-second recording on real Silverblue / Ubuntu 26.04. | Easy (and visible) |
-| **Translations** | i18n for the shell. Spanish, German, Japanese, Mandarin in priority order. | Easy |
+| **Ubuntu LTS support** | All three LTS releases are validated against the full story suite on a live VM, each with a committed replay twin that reproduces it: 22.04, 24.04 and 26.04 all at 79/79. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: story coverage for the cross-family actions. The Debian-only ones are all covered now. | medium |
+| **Distro detection coverage** | Robust `/etc/os-release` parsing for every release we claim to support. Pure-function tests against real fixture files, no integration mocks. The existing fixtures at the bottom of `crates/sysknife-core/src/distro.rs` show the shape. | easy |
+| **Action catalogue gaps** | Add a typed action (for example `EnableFirewallZone`). Small and isolated, and every PR carries the policy entry, the risk level and the tests. | easy |
+| **E2E story coverage** | Real prompts, real LLM, real daemon. The suite is 133 stories: 54 atomic + 79 Ubuntu. Every Debian-only action now has one. What is left is the cross-family middle: of the action names available on both families, 57 are still untouched by any story, plus 8 Fedora-only ones. | medium |
+| **Fedora Atomic validation** | The action families exist and `DistroId::is_supported()` returns true for Atomic 41 and up. Nobody has run `tests/e2e/atomic-vm.sh` against a current release. Needs Fedora Atomic hardware or a VM host. | tedious |
+| **Demo recording on real hardware** | Replace the bundled demo GIF with a 30-second recording on real Ubuntu 26.04 with rollback visible. | easy |
 
-Filter the issue tracker by
+## Finding something to work on
+
+Issues carry a difficulty label: `easy`, `medium`, `hard` or `tedious`. Filter
+the tracker by
 [`good first issue`](https://github.com/lacs-project/sysknife/labels/good%20first%20issue)
-or
-[`help wanted`](https://github.com/lacs-project/sysknife/labels/help%20wanted)
-to find something self-contained.
+or [`help wanted`](https://github.com/lacs-project/sysknife/labels/help%20wanted)
+to find something self-contained. If the tracker looks thin, open an issue
+describing what you want to work on and we will scope it with you.
+
+No CLA and no copyright waiver. The project is MIT.
 
 ## Workflow
 
@@ -78,14 +95,14 @@ fix(brain): retry on transient OpenAI 5xx
 docs(readme): replace demo GIF with 26.04 capture
 ```
 
-Bodies should explain *why*, not *what* — the diff already says what.
+Bodies should explain *why*. The diff already says what.
 
 ### 4. Pull request
 
 - One PR per logical change. Big multi-concern PRs get split.
 - Add or update tests for any behaviour change.
 - Update docs alongside the code, not in a follow-up.
-- Title in Conventional Commits style — the
+- Title in Conventional Commits style. The
   [`semantic-pull-request`](https://github.com/amannn/action-semantic-pull-request)
   CI check enforces this.
 - Sign off your commits if your employer asks for DCO; we don't require
@@ -111,7 +128,7 @@ These are non-negotiable. A PR that breaks them is rejected on principle.
    bytes.
 4. **Every privileged action ships with a risk level and a transaction-store
    row.** Any new D-Bus interaction it requires must be added to the
-   central polkit allowlist (`packaging/50-sysknife.rules`) — the daemon
+   central polkit allowlist (`packaging/50-sysknife.rules`). The daemon
    gates D-Bus actions through one allowlist file, not one polkit rule
    per action.
 5. **`validated_safe_arg` is the boundary validator.** Any new action that
@@ -120,8 +137,8 @@ These are non-negotiable. A PR that breaks them is rejected on principle.
 6. **Constant-time compares for any auth-sensitive bytes** (tokens,
    request hashes). The HI-1/HI-2/HI-19 work in PR #179 set the pattern.
 
-If your change touches any of these, expect deeper review. That's a good
-thing — it means the change is load-bearing.
+If your change touches any of these, expect deeper review. That means the
+change is load-bearing.
 
 ## Reporting security issues
 
@@ -138,8 +155,8 @@ Project enforces the
 
 ## Long-form
 
-The full contributing guide — every nuance, every edge case, every
-"why we do it this way" — lives at
+The full contributing guide, with every nuance and every "why we do it this
+way", lives at
 [`docs/contributing/CONTRIBUTING.md`](docs/contributing/CONTRIBUTING.md).
 
 Questions? Open a
