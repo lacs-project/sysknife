@@ -18,7 +18,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { footprint } = require('../uninstall.js');
-const { databasePath } = require('../install-daemon.js');
+const { databasePath, legacyDatabasePath } = require('../install-daemon.js');
 
 test('the footprint separates software from data, and the audit chain is data', () => {
   const fp = footprint('/tmp/project');
@@ -75,4 +75,28 @@ test('a dry run reports what exists and changes nothing on disk', async () => {
   assert.ok(result.removed.includes(mcp), 'dry run should report the file it found');
   assert.ok(fs.existsSync(mcp), 'dry run must not delete anything');
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('--purge can see a database the migration never moved', () => {
+  // The installer moves ~/.local/share/sysknife/daemon.sqlite to the XDG state
+  // path, but only in user mode and only when it runs. A system-mode install
+  // returns before the migration, and anyone who installed once and never
+  // re-ran the wizard still has the old file. footprint() derived the audit
+  // chain from databasePath() alone, so on those hosts `--purge` printed that it
+  // had removed "the signed audit chain of every action SysKnife executed" and
+  // left it on disk.
+  const legacy = legacyDatabasePath();
+  const paths = footprint('/tmp/project').data.map((e) => e.path);
+  for (const suffix of ['', '-wal', '-shm']) {
+    assert.ok(
+      paths.includes(legacy + suffix),
+      `footprint must list the legacy database${suffix}`,
+    );
+  }
+});
+
+test('the legacy entries are derived from install-daemon, not restated', () => {
+  const entry = footprint('/tmp/project').data.find((e) => e.path === legacyDatabasePath());
+  assert.ok(entry, 'legacy database is listed');
+  assert.match(entry.what, /audit chain/i, 'and it says what it is');
 });

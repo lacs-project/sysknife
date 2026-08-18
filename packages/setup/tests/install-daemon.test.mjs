@@ -13,11 +13,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
+import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { userUnitContent, runtimeSocketPath, runtimeDir } = require('../install-daemon.js');
+const {
+  userUnitContent, runtimeSocketPath, runtimeDir,
+  databasePath, migrateLegacyDatabase, legacyDatabasePath,
+} = require('../install-daemon.js');
 
 // ---------------------------------------------------------------------------
 // runtimeDir / runtimeSocketPath — the socket-mismatch regression guard
@@ -111,4 +115,89 @@ test('userUnitContent points the database at the path the daemon reads by defaul
 test('userUnitContent wires the given daemon binary path as ExecStart', () => {
   const unit = userUnitContent('/opt/sysknife/sysknife-daemon');
   assert.match(unit, /ExecStart=\/opt\/sysknife\/sysknife-daemon/);
+});
+
+// ---------------------------------------------------------------------------
+// migrateLegacyDatabase — the audit chain is the one thing that cannot be
+// re-derived, so a move that half-succeeds is worse than one that never starts
+// ---------------------------------------------------------------------------
+
+/** Run `fn` with $HOME pointed at a fresh tmpdir and XDG_STATE_HOME cleared. */
+function withFakeHome(fn) {
+  const prevHome = process.env.HOME;
+  const prevState = process.env.XDG_STATE_HOME;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-migrate-'));
+  process.env.HOME = home;
+  delete process.env.XDG_STATE_HOME;
+  try {
+    return fn(home);
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevState === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = prevState;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+function seedLegacy(home, suffixes = ['', '-wal', '-shm']) {
+  const legacy = path.join(home, '.local', 'share', 'sysknife', 'daemon.sqlite');
+  fs.mkdirSync(path.dirname(legacy), { recursive: true });
+  for (const s of suffixes) fs.writeFileSync(legacy + s, `contents${s}`);
+  return legacy;
+}
+
+test('migrateLegacyDatabase moves the database with both sidecars', () => {
+  withFakeHome((home) => {
+    const legacy = seedLegacy(home);
+    const note = migrateLegacyDatabase();
+    assert.match(note, /moved the audit database/);
+    for (const s of ['', '-wal', '-shm']) {
+      assert.equal(fs.existsSync(legacy + s), false, `legacy${s} should be gone`);
+      assert.equal(fs.readFileSync(databasePath() + s, 'utf8'), `contents${s}`);
+    }
+  });
+});
+
+test('a sidecar that cannot be moved leaves the whole chain where it was', () => {
+  withFakeHome((home) => {
+    const legacy = seedLegacy(home);
+    // Make the -wal destination un-renameable-onto by putting a directory there.
+    // Any mid-loop failure has the same shape: EXDEV across a bind mount, a
+    // read-only destination, a stale lock. The main file has already moved by
+    // then, so without a rollback the chain is split across two directories and
+    // the daemon opens a database whose write-ahead log is somewhere else.
+    fs.mkdirSync(path.dirname(databasePath()), { recursive: true });
+    fs.mkdirSync(`${databasePath()}-wal`, { recursive: true });
+
+    const note = migrateLegacyDatabase();
+
+    assert.match(note, /could not move/i, 'the operator has to be told it failed');
+    for (const s of ['', '-wal', '-shm']) {
+      assert.equal(
+        fs.existsSync(legacy + s), true,
+        `legacy${s} must still be there: a half-moved audit chain is unreadable`,
+      );
+    }
+    assert.equal(fs.existsSync(databasePath()), false, 'no orphan at the destination');
+  });
+});
+
+test('migrateLegacyDatabase touches neither database when both exist', () => {
+  withFakeHome((home) => {
+    const legacy = seedLegacy(home, ['']);
+    fs.mkdirSync(path.dirname(databasePath()), { recursive: true });
+    fs.writeFileSync(databasePath(), 'newer');
+    const note = migrateLegacyDatabase();
+    assert.match(note, /two audit databases exist/);
+    assert.equal(fs.readFileSync(legacy, 'utf8'), 'contents');
+    assert.equal(fs.readFileSync(databasePath(), 'utf8'), 'newer');
+  });
+});
+
+test('the legacy path is exported, so uninstall cannot restate it wrongly', () => {
+  withFakeHome((home) => {
+    assert.equal(
+      legacyDatabasePath(),
+      path.join(home, '.local', 'share', 'sysknife', 'daemon.sqlite'),
+    );
+  });
 });

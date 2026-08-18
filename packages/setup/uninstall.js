@@ -29,7 +29,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const { databasePath } = require('./install-daemon.js');
+const { databasePath, legacyDatabasePath, DB_SIDECARS } = require('./install-daemon.js');
 
 const SYSTEM_UNIT_PATH = '/etc/systemd/system/sysknife-daemon.service';
 
@@ -63,6 +63,21 @@ function footprint(cwd = process.cwd()) {
       { path: db, what: 'the signed audit chain of every action SysKnife executed' },
       { path: `${db}-wal`, what: 'its write-ahead log' },
       { path: `${db}-shm`, what: 'its shared-memory index' },
+      // The installer moves this to the XDG state path, but only in user mode
+      // and only when it runs. A system-mode install returns before the
+      // migration, and anyone who installed once and never re-ran the wizard
+      // still has it. Listing only `databasePath()` meant `--purge` claimed to
+      // have removed the audit chain and left this file behind. Absent paths are
+      // skipped when the footprint is reported, so naming it costs nothing on a
+      // host that has already migrated.
+      {
+        path: legacyDatabasePath(),
+        what: 'the signed audit chain from the older layout, if the installer never moved it',
+      },
+      ...DB_SIDECARS.filter((s) => s !== '').map((s) => ({
+        path: legacyDatabasePath() + s,
+        what: `the older layout's ${s === '-wal' ? 'write-ahead log' : 'shared-memory index'}`,
+      })),
       {
         path: path.join(home, '.local', 'share', 'sysknife', 'safety-audit.jsonl'),
         what: 'the record of every plan the safety fence rejected',

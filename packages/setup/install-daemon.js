@@ -110,8 +110,14 @@ function databasePath() {
  *
  * Returns a human-readable note, or null when there was nothing to do.
  */
+function legacyDatabasePath() {
+  return path.join(os.homedir(), '.local', 'share', 'sysknife', 'daemon.sqlite');
+}
+
+const DB_SIDECARS = ['', '-wal', '-shm'];
+
 function migrateLegacyDatabase() {
-  const legacy = path.join(os.homedir(), '.local', 'share', 'sysknife', 'daemon.sqlite');
+  const legacy = legacyDatabasePath();
   const current = databasePath();
   if (!fs.existsSync(legacy)) return null;
   if (fs.existsSync(current)) {
@@ -119,9 +125,41 @@ function migrateLegacyDatabase() {
       + 'Neither was touched. Keep whichever history you need and delete the other.';
   }
   fs.mkdirSync(path.dirname(current), { recursive: true });
-  for (const suffix of ['', '-wal', '-shm']) {
-    if (fs.existsSync(legacy + suffix)) fs.renameSync(legacy + suffix, current + suffix);
+
+  // All three move or none does. The loop used to rename them in sequence with
+  // no handling, so a failure on `-wal` left the database already moved and its
+  // write-ahead log behind: the daemon then opens a chain whose WAL is in
+  // another directory, which is the one state this function exists to avoid.
+  // EXDEV across a bind-mounted XDG_STATE_HOME, a read-only destination and a
+  // stale lock all produce it.
+  const moved = [];
+  try {
+    for (const suffix of DB_SIDECARS) {
+      if (fs.existsSync(legacy + suffix)) {
+        fs.renameSync(legacy + suffix, current + suffix);
+        moved.push(suffix);
+      }
+    }
+  } catch (err) {
+    const stranded = [];
+    for (const suffix of moved.reverse()) {
+      try {
+        fs.renameSync(current + suffix, legacy + suffix);
+      } catch {
+        stranded.push(current + suffix);
+      }
+    }
+    if (stranded.length > 0) {
+      return `could not move the audit database from ${legacy} to ${current}: ${err.message}. `
+        + `Rolling back also failed, so parts of one chain are now split across both `
+        + `locations: ${stranded.join(', ')}. Move them back beside ${legacy} before `
+        + 'starting the daemon, or it will open an incomplete chain.';
+    }
+    return `could not move the audit database from ${legacy} to ${current}: ${err.message}. `
+      + `Nothing was moved, so the old history is intact at ${legacy}. The daemon reads `
+      + `${current} and will start a new chain, so move it yourself to keep the old one.`;
   }
+
   return `moved the audit database from ${legacy} to ${current} (the path the daemon reads by default).`;
 }
 
@@ -408,6 +446,8 @@ async function _installSystemService(daemonBinPath) {
 module.exports = {
   installDaemonService,
   databasePath,
+  legacyDatabasePath,
+  DB_SIDECARS,
   migrateLegacyDatabase,
   userUnitContent,
   runtimeSocketPath,
