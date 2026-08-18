@@ -44,10 +44,10 @@ table below.
 
 | Area | Why it matters | Difficulty |
 |---|---|---|
-| **Ubuntu LTS support** | All three LTS releases are validated against the full story suite on a live VM, each with a committed replay twin that reproduces it: 22.04, 24.04 and 26.04 all at 79/79. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: story coverage for the cross-family actions. The Debian-only ones are all covered now. | medium |
+| **Ubuntu LTS support** | All three LTS releases are validated against the full story suite on a live VM, each with a committed replay twin that reproduces it: 22.04, 24.04 and 26.04 all at 79/79. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: story coverage for the cross-family actions, and five Debian-only ones that still have none: the four fail2ban actions and `GrubSetKargs`. | medium |
 | **Distro detection coverage** | Robust `/etc/os-release` parsing for every release we claim to support. Pure-function tests against real fixture files, no integration mocks. The existing fixtures at the bottom of `crates/sysknife-core/src/distro.rs` show the shape. | easy |
 | **Action catalogue gaps** | Add a typed action (for example `EnableFirewallZone`). Small and isolated, and every PR carries the policy entry, the risk level and the tests. | easy |
-| **E2E story coverage** | Real prompts, real LLM, real daemon. The suite is 133 stories: 54 atomic + 79 Ubuntu. Every Debian-only action now has one. What is left is the cross-family middle: of the action names available on both families, 57 are still untouched by any story, plus 8 Fedora-only ones. | medium |
+| **E2E story coverage** | Real prompts, real LLM, real daemon. The suite is 133 stories: 54 atomic + 79 Ubuntu. Every Debian-only action now has one. What is left is the cross-family middle: of the action names available on both families, 59 are still untouched by any story, plus 10 Fedora-only and 5 Ubuntu-only ones. See #233 for the clustered map. | medium |
 | **Fedora Atomic validation** | The action families exist and `DistroId::is_supported()` returns true for Atomic 41 and up. Nobody has run `tests/e2e/atomic-vm.sh` against a current release. Needs Fedora Atomic hardware or a VM host. | tedious |
 | **Demo recording on real hardware** | Replace the bundled demo GIF with a 30-second recording on real Ubuntu 26.04 with rollback visible. | easy |
 
