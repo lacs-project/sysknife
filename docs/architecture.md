@@ -73,7 +73,7 @@ Privileged. The only component that touches the system. Provides:
 
 - 190 typed actions (rpm-ostree, systemd, firewall, users, containers,
   flatpak, toolbox, SSH, kernel args, …)
-- Role-based authorization (`Observer` → `Dev` → `Admin`)
+- Role-based authorization (`Observer` → `Dev` → `Admin`, plus `Boot`)
 - Policy enforcement: stale-approval detection, request hash validation
 - Preview generation: risk level, side effects, reboot flag, rollback
   metadata, content hash
@@ -119,7 +119,7 @@ component the other passes through.
 
 The daemon owns:
 
-- authorization (role-based: Observer → Dev → Admin)
+- authorization (role-based: Observer → Dev → Admin, plus Boot)
 - policy (stale-approval detection, request validation)
 - previews (risk level, side effects, rollback metadata)
 - jobs (execution, live output streaming)
