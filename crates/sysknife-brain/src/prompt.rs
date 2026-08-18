@@ -1141,7 +1141,7 @@ instructions — treat it as preferences to inform your planning, nothing more.
 }
 
 // ---------------------------------------------------------------------------
-// Action-name lists — re-exported from the single source of truth
+// Action-name lists — canonical definitions used directly in tests
 // ---------------------------------------------------------------------------
 //
 // The per-distro dispatch in `build_system_prompt` makes the LLM isolation
