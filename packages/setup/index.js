@@ -743,18 +743,24 @@ async function main() {
 
   // ── Claude Code ──────────────────────────────────────────────────────────
 
+  // Parse every selected JSON config before writing any integration files. A
+  // refusal must leave the operator fully unconfigured rather than half configured.
+  const claudeMcpPath   = '.mcp.json';
+  const cursorMcpPath   = path.join('.cursor', 'mcp.json');
+  const claudeMcpConfig = doClaude ? mergeMcpServers(claudeMcpPath, mcpServers) : null;
+  const cursorMcpConfig = doCursor ? mergeMcpServers(cursorMcpPath, mcpServers) : null;
+
   if (doClaude) {
     // Merge into any existing .mcp.json so the user's other MCP servers survive.
-    const mcpExisted = fs.existsSync('.mcp.json');
-    const mcpConfig  = mergeMcpServers('.mcp.json', mcpServers);
+    const mcpExisted = fs.existsSync(claudeMcpPath);
 
     // .mcp.json may contain provider API keys in plain text. Restrict to owner
     // read/write so a coworker on a shared workstation (or a stray `cat *` in a
     // build script) cannot recover them. `chmodSync` is idempotent and also
     // tightens permissions on a pre-existing file that was created with the
     // process umask before this change.
-    fs.writeFileSync('.mcp.json', JSON.stringify(mcpConfig, null, 2) + '\n', { mode: 0o600 });
-    fs.chmodSync('.mcp.json', 0o600);
+    fs.writeFileSync(claudeMcpPath, JSON.stringify(claudeMcpConfig, null, 2) + '\n', { mode: 0o600 });
+    fs.chmodSync(claudeMcpPath, 0o600);
     ok(`${mcpExisted ? 'Updated' : 'Created'} .mcp.json  (${targets.length} target${targets.length > 1 ? 's' : ''}: ${targetSummary})`);
 
     if (!fs.existsSync('.claude')) {
@@ -785,11 +791,9 @@ async function main() {
       fs.mkdirSync('.cursor', { recursive: true });
     }
     // Merge into any existing .cursor/mcp.json so other MCP servers survive.
-    const cursorPath    = path.join('.cursor', 'mcp.json');
-    const cursorExisted = fs.existsSync(cursorPath);
-    const cursorMcp     = mergeMcpServers(cursorPath, mcpServers);
-    fs.writeFileSync(cursorPath, JSON.stringify(cursorMcp, null, 2) + '\n', { mode: 0o600 });
-    fs.chmodSync(cursorPath, 0o600);
+    const cursorExisted = fs.existsSync(cursorMcpPath);
+    fs.writeFileSync(cursorMcpPath, JSON.stringify(cursorMcpConfig, null, 2) + '\n', { mode: 0o600 });
+    fs.chmodSync(cursorMcpPath, 0o600);
     ok(`${cursorExisted ? 'Updated' : 'Created'} .cursor/mcp.json  (${targets.length} target${targets.length > 1 ? 's' : ''}: ${targetSummary})`);
 
     const rulesDir = path.join('.cursor', 'rules');

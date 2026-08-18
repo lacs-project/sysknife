@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -17,10 +18,44 @@ test('generated integration rules require terminal-issued approval receipts', ()
 });
 
 test('MCP configs are merged, not overwritten (preserves other servers)', () => {
-  assert.match(source, /mergeMcpServers\('\.mcp\.json'/);
-  assert.match(source, /mergeMcpServers\(cursorPath/);
+  assert.match(source, /mergeMcpServers\(claudeMcpPath/);
+  assert.match(source, /mergeMcpServers\(cursorMcpPath/);
   assert.doesNotMatch(source, /const mcpConfig = \{ mcpServers \}/);
   assert.doesNotMatch(source, /const cursorMcp = \{ mcpServers \}/);
+});
+
+test('all selected MCP configs are validated before any integration file is written', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-setup-preflight-'));
+  const claudePath = path.join(cwd, '.mcp.json');
+  const cursorDir = path.join(cwd, '.cursor');
+  const cursorPath = path.join(cursorDir, 'mcp.json');
+  const claudeOriginal = JSON.stringify({ mcpServers: { other: { command: 'keep-me' } } }, null, 2) + '\n';
+  const cursorOriginal = '{"mcpServers": {},}\n';
+
+  fs.mkdirSync(cursorDir, { recursive: true });
+  fs.writeFileSync(claudePath, claudeOriginal);
+  fs.writeFileSync(cursorPath, cursorOriginal);
+
+  const entry = path.join(setupDir, 'index.js');
+  const setupArgs = ['--claude', '--cursor', '--no-prompts', '--no-binary', '--daemon-mode=skip'];
+  const bootstrap = [
+    "if (typeof process.getuid !== 'function') process.getuid = () => 1000;",
+    `process.argv = [process.execPath, ${JSON.stringify(entry)}, ...${JSON.stringify(setupArgs)}];`,
+    `require(${JSON.stringify(entry)});`,
+  ].join(' ');
+  const result = spawnSync(process.execPath, ['-e', bootstrap], {
+    cwd,
+    encoding: 'utf8',
+    timeout: 30_000,
+    env: { ...process.env, HOME: cwd },
+  });
+
+  assert.equal(result.status, 1, `expected setup refusal, got ${result.status}: ${result.stderr}`);
+  assert.match(result.stderr, /\.cursor[\\/]mcp\.json.*refusing to overwrite/i);
+  assert.equal(fs.readFileSync(claudePath, 'utf8'), claudeOriginal);
+  assert.equal(fs.readFileSync(cursorPath, 'utf8'), cursorOriginal);
+  assert.equal(fs.existsSync(path.join(cwd, '.claude')), false);
+  assert.equal(fs.existsSync(path.join(cursorDir, 'rules', 'sysknife.mdc')), false);
 });
 
 test('default MCP target, wizard user unit, and CLI default all resolve to the same socket', () => {

@@ -36,6 +36,22 @@ test('creates a fresh config when the file is missing', () => {
   assert.deepEqual(Object.keys(merged.mcpServers), ['sysknife']);
 });
 
+test('treats empty and whitespace-only configs as fresh configs', () => {
+  for (const contents of ['', '  \r\n\t  ']) {
+    const file = tmpFile(contents);
+    const merged = mergeMcpServers(file, SYSKNIFE);
+    assert.deepEqual(Object.keys(merged.mcpServers), ['sysknife']);
+  }
+});
+
+test('accepts a UTF-8 BOM and preserves existing servers', () => {
+  const file = tmpFile(
+    `\ufeff${JSON.stringify({ mcpServers: { other: { command: 'x', args: [] } } })}`
+  );
+  const merged = mergeMcpServers(file, SYSKNIFE);
+  assert.deepEqual(Object.keys(merged.mcpServers).sort(), ['other', 'sysknife']);
+});
+
 test('refuses to overwrite a malformed existing config', () => {
   const original = '{\n  "mcpServers": {"other": {"command": "x", "args": []}},\n}\n';
   const file = tmpFile(original);
@@ -46,6 +62,40 @@ test('refuses to overwrite a malformed existing config', () => {
     'a malformed config must abort the merge instead of discarding other servers'
   );
   assert.equal(fs.readFileSync(file, 'utf8'), original);
+});
+
+test('refuses valid JSON that is not an object', () => {
+  for (const original of ['[]', 'null', '"x"']) {
+    const file = tmpFile(original);
+    assert.throws(
+      () => mergeMcpServers(file, SYSKNIFE),
+      /must contain a JSON object.*refusing to overwrite/i
+    );
+    assert.equal(fs.readFileSync(file, 'utf8'), original);
+  }
+});
+
+test('malformed-config errors keep location but do not echo source contents', () => {
+  const file = tmpFile('{"mcpServers": {},}');
+  let error;
+  try {
+    mergeMcpServers(file, SYSKNIFE);
+  } catch (e) {
+    error = e;
+  }
+  assert.ok(error instanceof Error);
+  assert.match(error.message, /malformed JSON/i);
+  assert.match(error.message, /position \d+/i);
+
+  const markerFile = tmpFile('NO_ECHO_MARKER_12345');
+  let markerError;
+  try {
+    mergeMcpServers(markerFile, SYSKNIFE);
+  } catch (e) {
+    markerError = e;
+  }
+  assert.ok(markerError instanceof Error);
+  assert.doesNotMatch(markerError.message, /NO_ECHO_MARKER_12345/);
 });
 
 test('upserts a stale sysknife entry', () => {
