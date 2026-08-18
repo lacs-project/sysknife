@@ -36,10 +36,16 @@ test('creates a fresh config when the file is missing', () => {
   assert.deepEqual(Object.keys(merged.mcpServers), ['sysknife']);
 });
 
-test('does not throw on a malformed file (starts fresh)', () => {
-  const file = tmpFile('{ not: valid json ');
-  const merged = mergeMcpServers(file, SYSKNIFE);
-  assert.deepEqual(Object.keys(merged.mcpServers), ['sysknife']);
+test('refuses to overwrite a malformed existing config', () => {
+  const original = '{\n  "mcpServers": {"other": {"command": "x", "args": []}},\n}\n';
+  const file = tmpFile(original);
+
+  assert.throws(
+    () => mergeMcpServers(file, SYSKNIFE),
+    /malformed.*refusing to overwrite/i,
+    'a malformed config must abort the merge instead of discarding other servers'
+  );
+  assert.equal(fs.readFileSync(file, 'utf8'), original);
 });
 
 test('upserts a stale sysknife entry', () => {
@@ -82,10 +88,11 @@ test('refuses to merge when the existing config cannot be read', () => {
   }
 });
 
-test('still starts fresh when the existing config is malformed JSON', () => {
-  // The other half of the contract: unparseable content has nothing worth
-  // preserving, so the wizard proceeds instead of dying.
+test('malformed-config errors identify the file that was refused', () => {
   const file = tmpFile('{not valid json');
-  const merged = mergeMcpServers(file, SYSKNIFE);
-  assert.deepEqual(merged.mcpServers, SYSKNIFE);
+
+  assert.throws(
+    () => mergeMcpServers(file, SYSKNIFE),
+    (error) => error.message.includes(file) && /refusing to overwrite/i.test(error.message)
+  );
 });

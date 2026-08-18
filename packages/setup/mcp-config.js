@@ -9,8 +9,9 @@ const fs = require('fs');
 
 /**
  * Return an MCP config object with `servers` merged under `mcpServers`,
- * preserving any existing servers and unrelated top-level keys. A missing or
- * unparseable file is treated as an empty config (never throws).
+ * preserving any existing servers and unrelated top-level keys. A missing file
+ * is treated as an empty config; an unreadable or malformed existing file is
+ * refused so the caller cannot overwrite user-managed MCP entries.
  *
  * @param {string} filePath  path to the client's MCP config JSON
  * @param {Record<string, unknown>} servers  the sysknife server entries to upsert
@@ -38,10 +39,11 @@ function mergeMcpServers(filePath, servers) {
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         existing = parsed;
       }
-    } catch {
-      // Malformed JSON — start from an empty config rather than crashing the
-      // wizard. There is nothing to preserve in a file we cannot parse.
-      existing = {};
+    } catch (e) {
+      throw new Error(
+        `existing MCP config at ${filePath} is malformed JSON: ${e.message} — ` +
+          'refusing to overwrite it; fix or move the file and run setup again'
+      );
     }
   }
   const existingServers =
