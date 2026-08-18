@@ -4869,7 +4869,6 @@ version = "0.8.0"
 dependencies = [
  "prost",
  "prost-build",
- "prost-types",
  "protoc-bin-vendored",
 ]
 

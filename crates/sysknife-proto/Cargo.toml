@@ -12,7 +12,6 @@ categories = ["os::linux-apis", "encoding"]
 
 [dependencies]
 prost = { workspace = true }
-prost-types = { workspace = true }
 
 [build-dependencies]
 protoc-bin-vendored = "3"
