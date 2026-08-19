@@ -27,7 +27,6 @@ YELLOW=$'\033[38;2;255;213;79m'
 RED=$'\033[38;2;255;107;107m'
 PURPLE=$'\033[38;2;179;136;255m'
 RESET=$'\033[0m'
-ITALIC=$'\033[3m'
 
 sleep_ms() { sleep "$(awk -v ms="$1" 'BEGIN{printf "%.3f", ms/1000}')"; }
 
