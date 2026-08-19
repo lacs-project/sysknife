@@ -88,10 +88,29 @@ fi
 # --- 4. It must never print the credential it found -------------------------
 leak="$(make_key 'gsk_' 52)"
 printf 'k = "%s"\n' "$leak" > "$tmp/echo.txt"
-if "$CHECK" "$tmp/echo.txt" 2>&1 | grep -qF "$leak"; then
+out="$("$CHECK" "$tmp/echo.txt" 2>&1 || true)"
+if grep -qF "$leak" <<< "$out"; then
     echo "FAIL: the scanner echoed the credential it found — that is a second leak"
     fail=1
 fi
+
+# Mutation proof: point CHECK at a scanner that echoes the input and exits 1.
+# The repaired assertion must detect the leaked credential despite pipefail.
+mutant="$tmp/echoing-scanner.sh"
+cat > "$mutant" <<'EOF'
+#!/usr/bin/env bash
+cat "$1"
+exit 1
+EOF
+chmod +x "$mutant"
+real_check="$CHECK"
+CHECK="$mutant"
+out="$("$CHECK" "$tmp/echo.txt" 2>&1 || true)"
+if ! grep -qF "$leak" <<< "$out"; then
+    echo "FAIL: the no-echo mutation did not make the assertion fail"
+    fail=1
+fi
+CHECK="$real_check"
 
 if [ "$fail" != 0 ]; then exit 1; fi
 echo "ok: catches real-shaped credentials, ignores this repo's fixtures"
