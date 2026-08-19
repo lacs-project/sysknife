@@ -38,14 +38,17 @@
 </p>
 
 <p align="center">
-  <img src="assets/demo/mcp-flow.gif" alt="SysKnife in Claude Code via MCP" width="900"/>
+  <img src="assets/demo/ubuntu-flow.gif" alt="SysKnife in Claude Code via MCP on Ubuntu 24.04: UfwAllow, AptInstall and UfwStatus through terminal-issued receipts" width="900"/>
 </p>
 
 <p align="center">
-  <em>A deterministic reproduction of the Claude Code MCP flow, rendered offline by
-  <a href="assets/demo/mcp-flow-mock.sh">mcp-flow-mock.sh</a> so it replays identically from a
-  fresh checkout. The same flow works in Cursor and Codex CLI.</em><br/>
-  <em>Looking for the standalone CLI? See <a href="docs/cli.md">the CLI guide</a>.</em>
+  <em>A deterministic reproduction of the Claude Code MCP flow on Ubuntu 24.04, rendered offline by
+  <a href="assets/demo/ubuntu-flow-mock.sh">ubuntu-flow-mock.sh</a> so it replays identically from a
+  fresh checkout. Every action name, risk level and command shown is the one the catalogue
+  carries. The same flow works in Cursor and Codex CLI.</em><br/>
+  <em>On an atomic host the plan uses rpm-ostree instead:
+  <a href="assets/demo/mcp-flow.gif">the Fedora Atomic recording</a>.
+  Looking for the standalone CLI? See <a href="docs/cli.md">the CLI guide</a>.</em>
 </p>
 
 > **Describe what you want in plain language.** Review a typed plan with risk
@@ -382,6 +385,18 @@ roadmap matrix and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow.
 Issues labelled
 [`good first issue`](https://github.com/lacs-project/sysknife/labels/good%20first%20issue)
 are scoped with clear acceptance criteria.
+
+### Thanks
+
+Patches so far from [@ITSMERNB](https://github.com/ITSMERNB),
+[@918154429](https://github.com/918154429), [@Osheun](https://github.com/Osheun)
+and [@danial-razi](https://github.com/danial-razi). Every release names who fixed
+what in [CHANGELOG.md](CHANGELOG.md).
+
+If you send a patch, watching
+[Releases](https://github.com/lacs-project/sysknife/releases) is the quickest way
+to see it ship and to catch new `good first issue` entries as they land. A star
+helps other people find the project.
 
 ## Documentation
 
