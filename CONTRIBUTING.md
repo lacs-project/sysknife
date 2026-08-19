@@ -85,6 +85,25 @@ cargo fmt --all -- --check
 fail, then write the minimum code to make it pass. The test suite is the
 contract.
 
+**Adding or removing a Rust test moves a published figure.** The suite size lives
+in `tests/evidence/workspace-tests.json`, and `README.md`,
+`docs/introduction.md` and `docs/distro-support.md` state it in prose. Regenerate
+the artifact and update those three files in the same commit:
+
+```sh
+UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh
+grep -rn 'Rust tests' README.md docs/introduction.md docs/distro-support.md
+```
+
+CI gates both halves, so bumping the artifact alone turns `docs-and-hygiene` red
+after `rust` goes green.
+
+**Which release your change lands in.** While SysKnife is in the `0.y` series, a
+change that breaks a consumer moves the middle digit and everything else moves the
+last one. [docs/release.md](docs/release.md#version-numbering) carries the rules
+and the criteria for 1.0.0. Say so in your PR description when you remove or
+rename a public item, so it goes out in the right release.
+
 ### 3. Commit style
 
 Conventional Commits on the title:

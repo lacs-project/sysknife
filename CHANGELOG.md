@@ -4,9 +4,83 @@ All notable changes to SysKnife are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+While the version stays in the `0.y` series the middle digit carries breaking
+changes; [docs/release.md](docs/release.md#version-numbering) has the rules.
 
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
+
+## [0.9.0] — 2026-08-19
+
+The first outside contributions land in this release, and four dead public items
+leave with them. Removing published paths is a breaking change under Cargo's 0.x
+rules, which is why this is 0.9.0 and not 0.8.1.
+
+### Removed
+
+- **Four verified-dead items, and the public paths they occupied.**
+  ([#244](https://github.com/lacs-project/sysknife/pull/244))
+  `sysknife_core::PRODUCTION_LISTEN_URI`, the root re-export of `detect`,
+  `detect_distro`, `parse_os_release`, `DistroFamily` and `DistroId`,
+  `sysknife_brain::action_name::UnknownActionName`, and the
+  `DEBIAN_ONLY_ACTION_NAMES` / `FEDORA_ONLY_ACTION_NAMES` aliases in
+  `sysknife_brain::prompt` are gone. Every live caller already went through the
+  module path, so in-tree code is unchanged, and `sysknife_types::UnknownActionName`
+  and `sysknife_core::action_family::{DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS}`
+  remain the canonical spellings. The unused direct `prost-types` dependency went
+  with them. Thanks to @ITSMERNB.
+
+### Fixed
+
+- **A malformed `.mcp.json` was replaced rather than refused, discarding the
+  user's other MCP servers.** ([#243](https://github.com/lacs-project/sysknife/pull/243),
+  [#225](https://github.com/lacs-project/sysknife/issues/225))
+  `mergeMcpServers` treated unparseable content as an empty config, so the wizard
+  wrote a sysknife-only file over a config that still held the user's other
+  servers, kept no backup, and reported success. It now refuses, and the refusal
+  happens before any integration file is written, so a bad `.cursor/mcp.json` no
+  longer leaves `.mcp.json` and three hookify rules already on disk. An empty,
+  whitespace-only or BOM-prefixed file is treated as a fresh config instead of a
+  failure, valid JSON that is not an object is refused, and the error carries the
+  parser's position without echoing file contents, since these files hold provider
+  API keys. Thanks to @ITSMERNB.
+- **The audit-database migration could half-move, and `--purge` could not see the
+  result.** ([#241](https://github.com/lacs-project/sysknife/pull/241))
+- **Two plugin registry metadata gaps that cost trust points.**
+  ([#220](https://github.com/lacs-project/sysknife/pull/220))
+
+### Security
+
+- **h2 queued unbounded empty HTTP/2 DATA frames (RUSTSEC-2026-0258).**
+  ([#245](https://github.com/lacs-project/sysknife/pull/245)) Bumped to 0.4.16.
+  `cargo audit` names the advisory without the bump and exits clean with it.
+
+### Changed
+
+- `scripts/check_release_versions.sh` now also checks the internal
+  `sysknife-* = { path = …, version = … }` pins against the package version, and
+  refuses to report success when its manifest globs match nothing. A bump that
+  missed a pin would otherwise publish a crate depending on the previously
+  released version of its sibling.
+- Dependency bumps: futures 0.3.34 and uuid 1.24.1
+  ([#257](https://github.com/lacs-project/sysknife/pull/257)),
+  @testing-library/jest-dom 7.0.1
+  ([#255](https://github.com/lacs-project/sysknife/pull/255)), the
+  `rust:1-bookworm` base image digest
+  ([#254](https://github.com/lacs-project/sysknife/pull/254)), and four pinned
+  GitHub Actions ([#258](https://github.com/lacs-project/sysknife/pull/258)).
+
+### Documentation
+
+- **How the version number is chosen is now written down.** `docs/release.md`
+  explains why a removal moves the middle digit while the leading zero stands,
+  names the three conditions for 1.0.0, and `CONTRIBUTING.md` points contributors
+  at it alongside the test-baseline artifact they need to regenerate when they add
+  a test.
+- Five published figures that had drifted past the guards were corrected
+  ([#242](https://github.com/lacs-project/sysknife/pull/242)), and three dead ends
+  in the contributor path were removed
+  ([#214](https://github.com/lacs-project/sysknife/pull/214)).
 
 ## [0.8.0] — 2026-08-16
 

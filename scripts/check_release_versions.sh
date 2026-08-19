@@ -52,4 +52,37 @@ if [[ -n "$expected" && "$baseline" != "$expected" ]]; then
     exit 1
 fi
 
-printf 'All release versions match %s.\n' "$baseline"
+# Internal path dependencies carry an explicit `version` next to `path`, and that
+# field is what crates.io resolves at publish time. A bump that misses one
+# publishes sysknife-brain 0.9.0 depending on sysknife-core ^0.8.0, which resolves
+# to the crate already on the registry instead of the tree that was just built,
+# and the mistake is invisible until someone builds against the published crate.
+# The package-version loop above reads only `[package] version`, so these need
+# their own pass.
+pins="$(grep -rn '^sysknife-[a-z-]* = {' \
+    "$repo_root"/crates/*/Cargo.toml \
+    "$repo_root"/apps/sysknife-cli/Cargo.toml \
+    "$repo_root"/apps/sysknife-shell/src-tauri/Cargo.toml |
+    grep 'version = ')"
+
+# An empty result means the manifests moved, not that every pin agrees. Fail
+# loudly rather than reporting success for a check that inspected nothing.
+if [[ -z "$pins" ]]; then
+    printf 'No internal dependency pins found; the manifest paths in %s are stale.\n' \
+        "${BASH_SOURCE[0]}" >&2
+    exit 1
+fi
+
+pin_count=0
+while IFS= read -r pin; do
+    pin_count=$((pin_count + 1))
+    pinned="$(printf '%s' "$pin" | sed -n 's/.*version = "\([^"]*\)".*/\1/p')"
+    if [[ "$pinned" != "$baseline" ]]; then
+        printf 'Internal dependency pin does not match package version %s:\n  %s\n' \
+            "$baseline" "$pin" >&2
+        exit 1
+    fi
+done <<< "$pins"
+
+printf 'All release versions match %s (%d internal dependency pins checked).\n' \
+    "$baseline" "$pin_count"

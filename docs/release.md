@@ -4,6 +4,49 @@ SysKnife releases are intentionally tag-driven and one way. npm and crates.io
 versions cannot be replaced after publication, so a tag is pushed only after
 the [release-readiness checklist](release-readiness.md) is complete.
 
+## Version numbering
+
+SysKnife is in the `0.y.z` series. Cargo and npm both treat the leftmost non-zero
+component as the compatibility unit, so while the leading zero stands the middle
+digit carries breaking changes and the last one carries everything else:
+
+| Change | Bump | Example |
+|---|---|---|
+| Removing or renaming a public item, changing a signature, changing behaviour a caller relied on | `0.y` | v0.9.0 removed `PRODUCTION_LISTEN_URI` and three dead re-exports |
+| Compatible additions, fixes, dependency bumps | `0.y.z` | a new action, a bug fix, a security patch |
+
+A consumer writing `sysknife-core = "0.8"` accepts 0.8.1 and refuses 0.9.0. That
+is the whole reason a removal has to move the middle digit: shipping it as a patch
+hands the breakage to everyone pinned to the series, and
+[the Cargo book](https://doc.rust-lang.org/cargo/reference/semver.html) classifies
+removing a public item, a `pub use` re-export included, as a major change.
+
+Behaviour counts, not only types. v0.9.0 also made `sysknife-setup` refuse a
+malformed `.mcp.json` that earlier versions overwrote, so a run that used to
+succeed now exits 1. No signature changed and it is still a compatibility break.
+
+### After 1.0.0
+
+Once the public API is declared stable the digits take their usual
+[SemVer](https://semver.org/) meaning: MAJOR for breaking changes, MINOR for
+compatible features, PATCH for fixes.
+
+1.0.0 is not a maturity badge and it is not scheduled. Three things have to be
+true first, so the switch is a decision rather than a mood:
+
+1. The daemon protocol is settled. The wire enums and `ChainRow` still gain
+   fields, and `chain_version` exists because the encoding is expected to move.
+2. The action catalogue naming is settled. [#237](https://github.com/lacs-project/sysknife/issues/237)
+   splits the Ubuntu-only actions out of `DEBIAN_ONLY_ACTIONS` and
+   [#239](https://github.com/lacs-project/sysknife/issues/239) adds nftables
+   vocabulary. Both rename or re-scope public items.
+3. Something outside this repository depends on the library crates. Today the only
+   reverse dependencies of `sysknife-core` on crates.io are `sysknife-brain`,
+   `sysknife-daemon` and `sysknife-cli`, all pinned to the same version, so there
+   is no outside consumer to stabilise for yet.
+
+Until then, expect a minor bump whenever a release removes or renames something.
+
 ## What the workflow publishes
 
 Pushing a tag matching `vMAJOR.MINOR.PATCH` on `main` starts
