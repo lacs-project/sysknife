@@ -71,6 +71,9 @@ jobs:
       - name: Check the secret scanner catches keys and ignores fixtures
         run: bash tests/release/no-secrets.test.sh
 
+      - name: Check systemd directory modes match tmpfiles
+        run: bash tests/release/systemd-directory-modes.test.sh
+
       - name: Check rmswap only removes known swap files
         run: bash tests/release/rmswap.test.sh
 

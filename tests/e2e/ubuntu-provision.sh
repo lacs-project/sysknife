@@ -326,7 +326,9 @@ RestartSec=5s
 ProtectSystem=yes
 ReadWritePaths=/var/lib/sysknife /run/sysknife
 RuntimeDirectory=sysknife
+RuntimeDirectoryMode=0750
 StateDirectory=sysknife
+StateDirectoryMode=0700
 
 [Install]
 WantedBy=multi-user.target
