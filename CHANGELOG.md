@@ -10,6 +10,42 @@ changes; [docs/release.md](docs/release.md#version-numbering) has the rules.
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [Unreleased]
+
+### Fixed
+
+- **A gate that could not fail: the credential scanner's "never echo the secret"
+  assertion.** ([#262](https://github.com/lacs-project/sysknife/pull/262),
+  [#228](https://github.com/lacs-project/sysknife/issues/228)) Under `pipefail`,
+  `"$CHECK" file | grep -qF "$leak"` reported the scanner's own exit status even
+  when grep matched, so the branch that fails the build was unreachable. The
+  assertion now captures the output and greps it separately, and a mutation block
+  runs an echoing scanner through the same check to prove it can still fail.
+  Thanks to @ITSMERNB.
+- **Ten files carrying public claims were never screened.**
+  ([#259](https://github.com/lacs-project/sysknife/pull/259),
+  [#232](https://github.com/lacs-project/sysknife/issues/232))
+  `scripts/check_public_claims.sh` kept its own list of six files while
+  `check_evidence_claims.py` knew sixteen, so the prose rules skipped ten of them.
+  The shell script now reads `CLAIM_FILES` from the Python module, and refuses to
+  report success when that read comes back empty, which `set -euo pipefail` cannot
+  catch on its own inside process substitution. Thanks to @Osheun.
+
+### Documentation
+
+- **The README hero is an Ubuntu recording, and the social preview leads with
+  Ubuntu.** The demo GIF moved from the Fedora Atomic flow to a new Ubuntu 24.04
+  one covering `UfwAllow`, `AptInstall` and `UfwStatus`, with the Atomic recording
+  still linked for `rpm-ostree` hosts. The social preview now names Ubuntu 20.04+
+  first and describes Fedora as Atomic-only, which is what the support matrix
+  says. `assets/demo/README.md` records the render pipeline, including the ffmpeg
+  frame-rate step that takes a raw 424-frame VHS render down to 170 frames and
+  2.12 MB; that step is load-bearing rather than cosmetic, since `gifsicle` only
+  touches the palette.
+- Contributors are named in the README, with a pointer at Releases for anyone who
+  wants to see their own fix ship.
+  ([#265](https://github.com/lacs-project/sysknife/pull/265))
+
 ## [0.9.0] — 2026-08-19
 
 The first outside contributions land in this release, and four dead public items

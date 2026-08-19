@@ -7,14 +7,32 @@ repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # and evidence, so a path relative to repo_root would not resolve there.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-claim_files=(
-    "$repo_root/README.md"
-    "$repo_root/docs/introduction.md"
-    "$repo_root/docs/quickstart.md"
-    "$repo_root/docs/distro-support.md"
-    "$repo_root/docs/contributing/ubuntu-vm-testing.md"
-    "$repo_root/packages/setup/index.js"
+# Read out of check_evidence_claims.py rather than kept here as a second copy.
+# The two lists drifted -- this one had 6 entries, the Python one 16 -- so ten
+# files carrying public claims were never screened by the prose rules below.
+# tests/release/public-claims.test.sh already reads the list the same way.
+mapfile -t claim_files_rel < <(
+    python3 - "$script_dir/check_evidence_claims.py" <<'PYEOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("checker", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print("\n".join(mod.CLAIM_FILES))
+PYEOF
 )
+
+# `set -euo pipefail` does not see a failure inside process substitution, so a
+# rename in check_evidence_claims.py would leave this list empty and the script
+# would exit 0 having screened nothing.
+((${#claim_files_rel[@]})) || {
+    echo 'could not read CLAIM_FILES from check_evidence_claims.py' >&2
+    exit 1
+}
+
+claim_files=()
+for rel in "${claim_files_rel[@]}"; do
+    claim_files+=("$repo_root/$rel")
+done
 demo_source="$repo_root/assets/demo/mcp-flow-mock.sh"
 
 for path in "${claim_files[@]}" "$demo_source"; do

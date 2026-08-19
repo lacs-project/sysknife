@@ -188,6 +188,14 @@ printf '\nFedora Workstation 44 is fully supported.\n' >> "$fixture/README.md"
 assert_rejected 'plain Fedora fully supported'
 cp "$repo_root/README.md" "$fixture/README.md"
 
+# The same forbidden phrase, but in a file the shell guard never screened. Its
+# claim_files list held 6 entries while CLAIM_FILES held 16, so ten files were
+# unscreened and this mutation passed silently. Both lists now come from the
+# Python module, so any file listed there is covered here.
+printf '\nFedora Workstation 44 is fully supported.\n' >> "$fixture/docs/architecture.md"
+assert_rejected 'forbidden claim in a file only the Python list knew about'
+cp "$repo_root/docs/architecture.md" "$fixture/docs/architecture.md"
+
 printf '\nlocal-clone path until npm publish lands\n' >> "$fixture/README.md"
 assert_rejected 'publish-pending setup language'
 cp "$repo_root/README.md" "$fixture/README.md"
