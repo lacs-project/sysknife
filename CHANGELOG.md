@@ -10,6 +10,23 @@ changes; [docs/release.md](docs/release.md#version-numbering) has the rules.
 Releases before `0.2.5` predate the public launch; their notes live in the
 [git tag history](https://github.com/lacs-project/sysknife/tags).
 
+## [Unreleased]
+
+### Documentation
+
+- **The README hero is an Ubuntu recording, and the social preview leads with
+  Ubuntu.** The demo GIF moved from the Fedora Atomic flow to a new Ubuntu 24.04
+  one covering `UfwAllow`, `AptInstall` and `UfwStatus`, with the Atomic recording
+  still linked for `rpm-ostree` hosts. The social preview now names Ubuntu 20.04+
+  first and describes Fedora as Atomic-only, which is what the support matrix
+  says. `assets/demo/README.md` records the render pipeline, including the ffmpeg
+  frame-rate step that takes a raw 424-frame VHS render down to 170 frames and
+  2.12 MB; that step is load-bearing rather than cosmetic, since `gifsicle` only
+  touches the palette.
+- Contributors are named in the README, with a pointer at Releases for anyone who
+  wants to see their own fix ship.
+  ([#265](https://github.com/lacs-project/sysknife/pull/265))
+
 ## [0.9.0] — 2026-08-19
 
 The first outside contributions land in this release, and four dead public items

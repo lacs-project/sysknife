@@ -1,11 +1,56 @@
 # Demo assets
 
-Two demo recordings live here — one for the standalone CLI and one for the
-Claude Code MCP flow.
+Three demo recordings live here: the Ubuntu MCP flow, the Fedora Atomic MCP
+flow, and the standalone CLI.
+
+Ubuntu is the primary target, so `ubuntu-flow.gif` is the README hero. Keep it
+that way when adding recordings.
 
 ---
 
-## MCP flow demo (primary hero)
+## Ubuntu MCP flow demo (primary hero)
+
+`ubuntu-flow.tape` + `ubuntu-flow-mock.sh` -> `ubuntu-flow.gif`
+
+Shows a Claude Code session on Ubuntu 24.04: `sysknife_plan` returns three
+transaction IDs across all three risk tiers, the operator approves each one with
+`sysknife approve <transaction-id>` in a separate terminal, and Claude passes the
+one-time receipts to `sysknife_execute`. Receipts are consumed and the audit hash
+is printed. A chat response alone is never presented as approval.
+
+Every action name, risk level and command in the mock is the one the catalogue
+carries, checked against `docs/action-reference.md`:
+
+| action | command | risk |
+|---|---|---|
+| `UfwAllow` | `sudo ufw allow 22` | High |
+| `AptInstall` | `sudo env DEBIAN_FRONTEND=noninteractive ... apt-get install -y curl` | Medium |
+| `UfwStatus` | `sudo ufw status verbose` | Low |
+
+`GetFirewallState` is deliberately absent: it runs `firewall-cmd`, which is
+firewalld, so it has no meaning on an Ubuntu host.
+
+### Regenerate the Ubuntu GIF
+
+```bash
+# Render raw GIF with VHS
+vhs assets/demo/ubuntu-flow.tape
+
+# Reduce the frame count and palette. The frame step is not cosmetic: LinkedIn
+# freezes an uploaded GIF on its first frame above 400 frames, and a raw VHS
+# render of this tape lands at 424. 10 fps keeps all 17 seconds and yields 170.
+ffmpeg -y -i assets/demo/ubuntu-flow.gif \
+  -vf "fps=10,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=3" \
+  assets/demo/ubuntu-flow.tmp.gif
+mv assets/demo/ubuntu-flow.tmp.gif assets/demo/ubuntu-flow.gif
+```
+
+Budget: 1000 x 600, under 400 frames, under 5 MB. Current render is 170 frames,
+17.0 s, 2.12 MB.
+
+---
+
+## Fedora Atomic MCP flow demo (secondary)
 
 `mcp-flow.tape` + `mcp-flow-mock.sh` → `mcp-flow.gif`
 
@@ -62,6 +107,10 @@ Output: `demo.gif`.
 - **MCP width x height = 1000 x 600**; CLI width x height = 1200 x 720.
 - Keep each GIF under 5 MB so the README remains usable on slower links.
 - FontSize 18 for the MCP flow (more content fits on screen); 24 for the CLI demo.
+- Keep the hero recording under 400 frames. Above that LinkedIn shows frame one
+  as a still instead of animating, and a terminal recording's first frame is a
+  near-empty header bar. `mcp-flow.gif` (822 frames) and `demo.gif` (602) both
+  exceed it and are not meant for that surface.
 
 ## Why mocks instead of live binaries?
 
