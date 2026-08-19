@@ -24,6 +24,11 @@
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
 use std::process::Command;
+use std::sync::Arc;
+use sysknife_daemon::audit_chain::{AuditKey, ChainRow};
+use sysknife_daemon::auth::CallerPrincipal;
+use sysknife_daemon::transactions::{NewTransaction, TransactionStore};
+use sysknife_types::{CallerRole, RiskLevel};
 
 /// Path the CLI tries to connect to in tests — points at a directory we
 /// own so the failure mode is "ENOENT" rather than "ECONNREFUSED on a
@@ -123,6 +128,64 @@ fn audit_verify_exits_with_code_2_when_the_key_file_is_missing() {
         .arg(dir.path().join("no-such-key.pub"))
         .assert()
         .code(2);
+}
+
+#[test]
+fn audit_export_emits_the_stored_rows_as_parseable_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("daemon.sqlite");
+    let key = Arc::new(AuditKey::load_or_generate(&dir.path().join("audit-key")).unwrap());
+    let store = TransactionStore::open_with_key(&db_path, key).unwrap();
+    for request_id in ["req-1", "req-2"] {
+        store
+            .record(NewTransaction {
+                request_id: request_id.to_string(),
+                request_hash: format!("hash-{request_id}"),
+                action_name: "UpdateSystem".to_string(),
+                risk_level: RiskLevel::High,
+                summary: "Upgrade the system".to_string(),
+                warnings: vec![],
+                caller_role: CallerRole::Dev,
+                caller_principal: CallerPrincipal::Uid(1000),
+            })
+            .unwrap();
+    }
+    let stored = store.fetch_chain_rows().unwrap();
+    drop(store);
+
+    let output = cli()
+        .env("SYSKNIFE_DATABASE_PATH", &db_path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .args(["audit", "export", "--limit", "1"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let exported: Vec<ChainRow> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(exported.len(), 1);
+    assert_eq!(exported[0], stored[0]);
+    assert_eq!(
+        exported[0].chain_hash.as_bytes(),
+        stored[0].chain_hash.as_bytes()
+    );
+}
+
+#[test]
+fn audit_export_rejects_an_invalid_since_timestamp() {
+    let dir = tempfile::tempdir().unwrap();
+    cli()
+        .env("SYSKNIFE_DATABASE_PATH", dir.path().join("unused.sqlite"))
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .args(["audit", "export", "--since", "not-a-timestamp"])
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("--since"));
 }
 
 #[test]

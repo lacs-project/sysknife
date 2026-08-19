@@ -145,6 +145,25 @@ receipt.
 Inspect and anchor the tamper-evident, Ed25519-signed audit chain the daemon
 writes for every executed action.
 
+#### `sysknife audit export`
+
+Export the transaction-chain rows from the configured SQLite or PostgreSQL
+audit store as a JSON array, in ascending `seq` order. Each object contains the
+17 stored `ChainRow` columns, including `prev_chain_hash` and `chain_hash`.
+The latter is the Ed25519 signature and is deliberately not renamed. Optional
+values that were not recorded are JSON `null`; `argv`, `outcome`, and a
+separate `signature` field are not reconstructed.
+
+```sh
+sysknife audit export
+sysknife audit export --since 2026-08-01T00:00:00Z --limit 500
+```
+
+| Flag | Description |
+|---|---|
+| `--since DATETIME` | Include rows recorded at or after this RFC 3339 timestamp |
+| `--limit N` | Emit at most N matching rows; omitted means all matching rows |
+
 #### `sysknife audit verify`
 
 Verify the audit trail: the transaction chain, the approval-event chain, and

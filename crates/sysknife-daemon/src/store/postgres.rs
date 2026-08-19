@@ -297,6 +297,16 @@ impl PostgresStore {
         }
     }
 
+    /// Read the transaction chain without a signing key or schema mutation.
+    /// Used by `sysknife audit export`, which must never acquire signing
+    /// capability merely to serialize rows that already exist.
+    pub async fn read_chain_rows(
+        config: &PostgresConfig,
+    ) -> Result<Vec<ChainRow>, TransactionStoreError> {
+        let pool = Self::connect_pool(config).await?;
+        fetch_chain_rows_from_pool(&pool).await
+    }
+
     /// All three checks with the daemon's key.
     pub async fn verify_all(
         &self,

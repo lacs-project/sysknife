@@ -361,8 +361,9 @@ See [ROADMAP.md](ROADMAP.md) for the full milestone breakdown.
 
 - ✅ **Ubuntu 22.04** — 79/79 stories on a live VM (recorded in `tests/evidence/story-runs/`)
 - ✅ **Ubuntu 24.04 and 26.04** — 79/79 and 79/79 on live VMs; every LTS run has a replay twin that reproduces it
+- ✅ `sysknife audit export` — stored signed chain rows as JSON with `--since` / `--limit`
 - 📋 Telegram inline-button approvals
-- 📋 `sysknife audit export` (CEF / NDJSON for SIEM ingest)
+- 📋 CEF / NDJSON output modes for SIEM ingest
 - 📋 Fleet plan/execute (one plan, N targets, parallel approval)
 
 ## Protocol
