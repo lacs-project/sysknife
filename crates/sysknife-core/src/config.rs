@@ -436,7 +436,6 @@ fn set_if_absent(key: &str, value: &str) {
     if std::env::var_os(key).is_none() {
         // SAFETY: single-threaded startup — no other threads are reading env
         // vars yet. See `apply_defaults_to_env` safety note.
-        #[allow(unused_unsafe)]
         unsafe {
             std::env::set_var(key, value);
         }

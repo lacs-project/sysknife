@@ -1141,19 +1141,13 @@ instructions — treat it as preferences to inform your planning, nothing more.
 }
 
 // ---------------------------------------------------------------------------
-// Action-name lists — re-exported from the single source of truth
+// Action-name lists — canonical definitions used directly in tests
 // ---------------------------------------------------------------------------
 //
 // The per-distro dispatch in `build_system_prompt` makes the LLM isolation
 // structural (Fedora prompts never contain Debian action names and vice versa),
-// so these lists are no longer used to build "do not propose" text. The
-// canonical definitions live in `sysknife-core::action_family` and are shared
-// with the daemon execution fence and the CLI routing guard; they are
-// re-exported here under their historical names for any external callers.
-pub use sysknife_core::action_family::{
-    DEBIAN_ONLY_ACTIONS as DEBIAN_ONLY_ACTION_NAMES,
-    FEDORA_ONLY_ACTIONS as FEDORA_ONLY_ACTION_NAMES,
-};
+// so these lists are no longer used to build "do not propose" text. Tests use
+// the canonical definitions in `sysknife-core::action_family` directly.
 
 #[cfg(test)]
 mod tests {
@@ -1258,7 +1252,7 @@ mod tests {
         let hint = debian_hint();
         let p = build_system_prompt(None, Some(&hint));
         let mut leaked = Vec::new();
-        for action in FEDORA_ONLY_ACTION_NAMES {
+        for action in sysknife_core::action_family::FEDORA_ONLY_ACTIONS {
             if p.contains(action) {
                 leaked.push(*action);
             }
@@ -1545,8 +1539,14 @@ mod tests {
     #[test]
     fn shared_examples_demonstrate_only_cross_distro_actions() {
         for (family, actions) in [
-            ("Fedora-only", FEDORA_ONLY_ACTION_NAMES),
-            ("Debian-only", DEBIAN_ONLY_ACTION_NAMES),
+            (
+                "Fedora-only",
+                sysknife_core::action_family::FEDORA_ONLY_ACTIONS,
+            ),
+            (
+                "Debian-only",
+                sysknife_core::action_family::DEBIAN_ONLY_ACTIONS,
+            ),
             (
                 "non-canonical-on-Debian",
                 sysknife_core::action_family::NON_CANONICAL_ON_DEBIAN,

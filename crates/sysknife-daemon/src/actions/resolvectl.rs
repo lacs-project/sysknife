@@ -2,7 +2,7 @@
 //!
 //! Both actions are cross-distro: they work on any host running
 //! `systemd-resolved`, including Fedora Atomic and Ubuntu. Registration in
-//! `KNOWN_ACTION_NAMES` only (not `DEBIAN_ONLY_ACTION_NAMES`).
+//! `KNOWN_ACTION_NAMES` only (not `DEBIAN_ONLY_ACTIONS`).
 
 use std::net::IpAddr;
 

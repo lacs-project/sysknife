@@ -14,7 +14,7 @@
 //! matters: believing malformed names are already rejected on arrival is
 //! exactly the premise under which someone would weaken that later check.
 
-pub use sysknife_types::{ActionName, UnknownActionName, KNOWN_ACTION_NAMES};
+pub use sysknife_types::{ActionName, KNOWN_ACTION_NAMES};
 
 #[cfg(test)]
 mod tests {

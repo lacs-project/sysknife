@@ -6,13 +6,6 @@ pub mod action_family;
 pub mod config;
 pub mod distro;
 
-pub use distro::{detect, detect_distro, parse_os_release, DistroFamily, DistroId};
-
-/// Production socket URI written by the systemd unit (`sysknife-daemon.service`).
-///
-/// This is **not** the dev/test fallback — see [`default_listen_uri`].
-pub const PRODUCTION_LISTEN_URI: &str = "unix:///run/sysknife/daemon.sock";
-
 /// Production SQLite path written by the systemd unit (`sysknife-daemon.service`).
 ///
 /// This is **not** the dev/test fallback — see [`default_database_path`].
@@ -159,16 +152,13 @@ fn current_uid() -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        default_database_path, default_listen_uri, PRODUCTION_DATABASE_PATH, PRODUCTION_LISTEN_URI,
-    };
+    use super::{default_database_path, default_listen_uri, PRODUCTION_DATABASE_PATH};
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn production_constants_are_absolute() {
-        assert!(PRODUCTION_LISTEN_URI.starts_with("unix:///run/"));
+    fn production_database_path_is_absolute() {
         assert!(PRODUCTION_DATABASE_PATH.starts_with("/var/lib/"));
     }
 
