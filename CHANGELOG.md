@@ -12,6 +12,25 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Fixed
+
+- **A gate that could not fail: the credential scanner's "never echo the secret"
+  assertion.** ([#262](https://github.com/lacs-project/sysknife/pull/262),
+  [#228](https://github.com/lacs-project/sysknife/issues/228)) Under `pipefail`,
+  `"$CHECK" file | grep -qF "$leak"` reported the scanner's own exit status even
+  when grep matched, so the branch that fails the build was unreachable. The
+  assertion now captures the output and greps it separately, and a mutation block
+  runs an echoing scanner through the same check to prove it can still fail.
+  Thanks to @ITSMERNB.
+- **Ten files carrying public claims were never screened.**
+  ([#259](https://github.com/lacs-project/sysknife/pull/259),
+  [#232](https://github.com/lacs-project/sysknife/issues/232))
+  `scripts/check_public_claims.sh` kept its own list of six files while
+  `check_evidence_claims.py` knew sixteen, so the prose rules skipped ten of them.
+  The shell script now reads `CLAIM_FILES` from the Python module, and refuses to
+  report success when that read comes back empty, which `set -euo pipefail` cannot
+  catch on its own inside process substitution. Thanks to @Osheun.
+
 ### Documentation
 
 - **The README hero is an Ubuntu recording, and the social preview leads with
