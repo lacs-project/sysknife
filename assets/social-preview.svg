@@ -110,15 +110,17 @@
   <!-- Distro stickers row — generous gaps, single line each -->
   <g transform="translate(600 360)" font-family="ui-sans-serif, system-ui, sans-serif"
      font-size="20" font-weight="600">
-    <!-- Fedora -->
-    <rect x="0"   y="0" width="140" height="40" rx="8" fill="#294172"/>
-    <text x="70"  y="27" text-anchor="middle" fill="#FFFFFF">Fedora 41+</text>
-    <!-- Ubuntu -->
-    <rect x="156" y="0" width="280" height="40" rx="8" fill="#E95420"/>
-    <text x="296" y="27" text-anchor="middle" fill="#FFFFFF">Ubuntu 22.04 / 24.04 / 26.04</text>
+    <!-- Ubuntu — primary target, eligibility floor. The validated releases live
+         in the support matrix, not on a card that cannot cite evidence. -->
+    <rect x="0"   y="0" width="165" height="40" rx="8" fill="#E95420"/>
+    <text x="82"  y="27" text-anchor="middle" fill="#FFFFFF">Ubuntu 20.04+</text>
+    <!-- Fedora — Atomic only. Workstation and Server are not targets, and a bare
+         "Fedora 41+" claims them. -->
+    <rect x="181" y="0" width="205" height="40" rx="8" fill="#294172"/>
+    <text x="283" y="27" text-anchor="middle" fill="#FFFFFF">Fedora Atomic 41+</text>
     <!-- License -->
-    <rect x="452" y="0" width="80"  height="40" rx="8" fill="#475569"/>
-    <text x="492" y="27" text-anchor="middle" fill="#FFFFFF">MIT</text>
+    <rect x="402" y="0" width="80"  height="40" rx="8" fill="#475569"/>
+    <text x="442" y="27" text-anchor="middle" fill="#FFFFFF">MIT</text>
   </g>
 
   <!-- Repo URL — larger, cleaner spacing -->
