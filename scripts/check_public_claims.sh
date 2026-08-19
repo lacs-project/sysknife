@@ -21,6 +21,14 @@ print("\n".join(mod.CLAIM_FILES))
 PYEOF
 )
 
+# `set -euo pipefail` does not see a failure inside process substitution, so a
+# rename in check_evidence_claims.py would leave this list empty and the script
+# would exit 0 having screened nothing.
+((${#claim_files_rel[@]})) || {
+    echo 'could not read CLAIM_FILES from check_evidence_claims.py' >&2
+    exit 1
+}
+
 claim_files=()
 for rel in "${claim_files_rel[@]}"; do
     claim_files+=("$repo_root/$rel")
