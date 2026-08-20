@@ -137,6 +137,9 @@ impl Command {
 /// `sysknife audit <subcommand>` subcommands.
 #[derive(Subcommand, Debug, Clone)]
 pub enum AuditCommand {
+    /// Export the stored signed audit-chain rows as JSON.
+    Export(AuditExportArgs),
+
     /// Verify the tamper-evident Ed25519-signed hash chain over the audit log.
     ///
     /// Exits 0 if the chain is intact, 1 if any row is broken, and 2 if the
@@ -149,6 +152,18 @@ pub enum AuditCommand {
     /// append-only database, then verify all anchored checkpoints against the
     /// local chain (detects tail-truncation and rewrite).
     Checkpoint(AuditCheckpointArgs),
+}
+
+/// Arguments for `sysknife audit export`.
+#[derive(Args, Debug, Clone)]
+pub struct AuditExportArgs {
+    /// Export rows recorded at or after this RFC 3339 datetime.
+    #[arg(long, value_name = "DATETIME")]
+    pub since: Option<String>,
+
+    /// Maximum number of rows to export. By default every matching row is emitted.
+    #[arg(long, value_name = "N")]
+    pub limit: Option<u32>,
 }
 
 /// Arguments for `sysknife audit verify`.
@@ -356,6 +371,29 @@ mod tests {
                 assert_eq!(args.since.as_deref(), Some("2026-01-01T00:00:00Z"));
             }
             other => panic!("expected Command::History, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn audit_export_subcommand_with_filters() {
+        let cli = Cli::try_parse_from([
+            "sysknife",
+            "audit",
+            "export",
+            "--since",
+            "2026-01-01T00:00:00Z",
+            "--limit",
+            "5",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Audit {
+                command: AuditCommand::Export(args),
+            }) => {
+                assert_eq!(args.since.as_deref(), Some("2026-01-01T00:00:00Z"));
+                assert_eq!(args.limit, Some(5));
+            }
+            other => panic!("expected audit export, got {other:?}"),
         }
     }
 
