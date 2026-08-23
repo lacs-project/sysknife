@@ -14,6 +14,26 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Fixed
 
+- **A saved preference could close the prompt envelope that contains it.**
+  ([#256](https://github.com/lacs-project/sysknife/pull/256),
+  [#253](https://github.com/lacs-project/sysknife/issues/253))
+  `append_prefs` wraps saved facts in `<user_preferences>` and tells the model to
+  treat the block as data, but `neutralise_envelope_tags` knew only the
+  `untrusted_tool_output` envelope. A remembered fact containing a literal
+  `</user_preferences>` therefore closed its own envelope, and everything after it
+  read as system-level instruction. `remember` is model-driven and a hostile tool
+  result can steer it, so the injection was durable: replayed into the system
+  prompt on every later plan.
+
+  Both envelope names now come from one list, the sentinel is a prefix
+  (`<BLOCKED_name`) so normalisation is a fixed point rather than stacking markers
+  on each pass, the closing trigger no longer requires the `>` so an end tag with
+  whitespace before it cannot slip through, and preferences get their own
+  normaliser instead of the 8 KiB tool-output one that silently truncated a file
+  the write path allows to reach 10 240 bytes. `remove_pref` and the duplicate
+  check normalise both sides, so the model can delete exactly the fact it was
+  shown, including in a hand-edited file. Thanks to @QinXi-ai.
+
 - **A gate that could not fail: the credential scanner's "never echo the secret"
   assertion.** ([#262](https://github.com/lacs-project/sysknife/pull/262),
   [#228](https://github.com/lacs-project/sysknife/issues/228)) Under `pipefail`,
