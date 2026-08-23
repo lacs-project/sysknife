@@ -1137,10 +1137,28 @@ pub(crate) async fn verify_sqlite(
     use sysknife_daemon::audit_chain::{verify_all, verify_all_with_pubkey};
     use sysknife_daemon::transactions::TransactionStore;
 
-    if !db_path.exists() {
+    // Path::exists is false for both ENOENT and EACCES. Prefer a message that
+    // covers the unreadable 0700 system store and points operators at sudo /
+    // an explicit path, matching the audit-key diagnostic above.
+    if !sysknife_core::path_is_present(db_path) {
         return cannot_verify_all(format!(
             "audit database not found at {}; set $SYSKNIFE_DATABASE_PATH \
              or run the daemon first",
+            db_path.display()
+        ));
+    }
+    if !db_path.exists() {
+        let sudo_hint = if db_path
+            == std::path::Path::new(sysknife_core::PRODUCTION_DATABASE_PATH)
+        {
+            "; the system daemon's store is root-owned, so run this under sudo or \
+             set $SYSKNIFE_DATABASE_PATH"
+        } else {
+            ""
+        };
+        return cannot_verify_all(format!(
+            "audit database not found or not readable at {}; set $SYSKNIFE_DATABASE_PATH \
+             or run the daemon first{sudo_hint}",
             db_path.display()
         ));
     }

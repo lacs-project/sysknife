@@ -121,14 +121,37 @@ pub fn choose_audit_store(
     AuditStoreChoice::PerUser(per_user)
 }
 
+/// Whether an audit-store path should count as present for selection.
+///
+/// [`Path::exists`] is `metadata().is_ok()`, so a root-owned `0700` directory
+/// returns `false` for a non-root operator (`EACCES`) exactly as a missing path
+/// does (`ENOENT`). Treating permission denied as present keeps the `System`
+/// branch and the sudo hint, instead of sending the operator to an empty
+/// per-user path.
+pub fn path_is_present(path: &Path) -> bool {
+    path_is_present_result(std::fs::metadata(path).map(|_| ()))
+}
+
+/// Classify a filesystem probe result for [`path_is_present`].
+///
+/// Split out so the `PermissionDenied` -> present rule is unit-tested without
+/// needing a second Unix user.
+pub(crate) fn path_is_present_result(result: Result<(), std::io::Error>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => true,
+        Err(_) => false,
+    }
+}
+
 /// Resolve the audit store for this process against the real environment and
 /// filesystem.
 pub fn resolve_audit_store() -> AuditStoreChoice {
     let explicit = std::env::var_os("SYSKNIFE_DATABASE_PATH").map(PathBuf::from);
     let per_user = default_database_path();
     let system = PathBuf::from(PRODUCTION_DATABASE_PATH);
-    let per_user_exists = per_user.exists();
-    let system_exists = system.exists();
+    let per_user_exists = path_is_present(&per_user);
+    let system_exists = path_is_present(&system);
     choose_audit_store(explicit, per_user, per_user_exists, system_exists)
 }
 
@@ -320,6 +343,76 @@ mod tests {
         let choice = super::choose_audit_store(None, per_user.clone(), false, false);
         assert_eq!(choice.path(), per_user.as_path());
         assert_eq!(choice.note(), None);
+    }
+
+    #[test]
+    fn permission_denied_counts_as_a_present_store() {
+        assert!(
+            super::path_is_present_result(Ok(())),
+            "a successful stat is present"
+        );
+        assert!(
+            super::path_is_present_result(Err(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied
+            ))),
+            "EACCES must not be treated as missing"
+        );
+        assert!(
+            !super::path_is_present_result(Err(std::io::Error::from(
+                std::io::ErrorKind::NotFound
+            ))),
+            "ENOENT remains missing"
+        );
+    }
+
+    /// A 0700 system store that the operator cannot stat must still select the
+    /// system path so `audit verify` prints the sudo / `--pubkey` hint instead
+    /// of sending them to an empty per-user store.
+    #[test]
+    fn unreadable_system_store_wins_over_a_missing_per_user_store() {
+        let per_user = PathBuf::from("/home/u/.local/state/sysknife/daemon.sqlite");
+        let system_exists = super::path_is_present_result(Err(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        )));
+        let choice = super::choose_audit_store(None, per_user, false, system_exists);
+        assert_eq!(
+            choice.path(),
+            Path::new(super::PRODUCTION_DATABASE_PATH),
+            "EACCES on the system store must not fall through to PerUser"
+        );
+        assert!(
+            choice.note().is_some(),
+            "System choice must still announce itself"
+        );
+    }
+
+    /// Filesystem form of the EACCES probe: a database behind a mode-000
+    /// directory is unreadable even to its owner, and must count as present.
+    #[cfg(unix)]
+    #[test]
+    fn path_behind_mode_000_directory_counts_as_present() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let locked = root.path().join("locked");
+        std::fs::create_dir(&locked).expect("mkdir");
+        let db = locked.join("daemon.sqlite");
+        std::fs::write(&db, b"x").expect("write db");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
+            .expect("chmod 000");
+
+        let present = super::path_is_present(&db);
+
+        // Restore perms so TempDir cleanup can unlink the tree.
+        let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700));
+        assert!(
+            present,
+            "metadata EACCES on a 0700/000 store must count as present, not missing"
+        );
+        assert!(
+            !db.exists(),
+            "precondition: Path::exists is false under EACCES (the bug we are fixing)"
+        );
     }
 
     /// Drift guard: the constant the CLI falls back to must be the path the
