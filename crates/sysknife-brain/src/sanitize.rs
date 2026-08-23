@@ -288,9 +288,10 @@ fn next_char_boundary(s: &str, i: usize) -> usize {
 ///   "Unicode tag" injection attacks.
 /// - **Private Use Area** `U+E000..=U+F8FF`, `U+F0000..=U+FFFFD`, `U+100000..=U+10FFFD` —
 ///   no agreed semantics; an attacker can encode anything.
-/// - **Bidirectional and zero-width formatting** controls
-///   (`U+200B..=U+200F`, `U+202A..=U+202E`, `U+2066..=U+2069`, `U+FEFF`) —
-///   used to swap rendered direction or hide text from a reviewer.
+/// - **Line-separator, bidirectional, and zero-width formatting** controls
+///   (`U+200B..=U+200F`, `U+2028..=U+202E`, `U+2066..=U+2069`, `U+FEFF`) —
+///   used to introduce visual breaks, swap rendered direction, or hide text
+///   from a reviewer.
 /// - **Additional invisible/format characters** — `U+00AD` (soft hyphen),
 ///   `U+034F` (combining grapheme joiner), `U+180E` (Mongolian vowel
 ///   separator), and `U+2060..=U+2064` (word joiner plus the invisible math
@@ -312,8 +313,8 @@ fn strip_dangerous_unicode(s: &str) -> String {
             // Soft hyphen, combining grapheme joiner, Mongolian vowel
             // separator — invisible-in-rendering keyword-splitting carriers.
             0x00AD | 0x034F | 0x180E |
-            // Bidi + zero-width formatting
-            0x200B..=0x200F | 0x202A..=0x202E | 0x2066..=0x2069 | 0xFEFF |
+            // Line separators + bidi + zero-width formatting
+            0x200B..=0x200F | 0x2028..=0x202E | 0x2066..=0x2069 | 0xFEFF |
             // Word joiner + invisible math operators (function application,
             // invisible times/separator/plus) — zero-width keyword-splitting
             // carriers, same threat class as the bidi/zero-width block above.
@@ -488,11 +489,18 @@ mod tests {
     }
 
     #[test]
-    fn zero_width_chars_are_stripped() {
-        // U+200B ZWSP often used to break keyword matching.
-        let raw = "IGN\u{200B}ORE\u{200C}IN\u{FEFF}STRUCTIONS";
+    fn zero_width_and_visual_line_separator_chars_are_stripped() {
+        // U+200B ZWSP often breaks keyword matching; U+2028/U+2029 create
+        // visual line breaks that `str::lines` does not see.
+        let raw = "IGN\u{200B}ORE\u{200C}IN\u{2028}STRUC\u{2029}TI\u{FEFF}ONS";
         let normalised = normalise_free_text(raw);
         assert_eq!(normalised, "IGNOREINSTRUCTIONS");
+
+        let paragraph_padding = "trusted\u{2029}\u{2029}forged heading";
+        assert_eq!(
+            normalise_free_text(paragraph_padding),
+            "trustedforged heading"
+        );
     }
 
     #[test]
