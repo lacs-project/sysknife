@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use sqlx_core::row::Row;
 use sqlx_postgres::{PgConnectOptions, PgPoolOptions};
-use sysknife_daemon::audit_chain::{AuditKey, VerifyOutcome};
+use sysknife_daemon::audit_chain::{AuditKey, BindingOutcome, VerifyOutcome};
 use sysknife_daemon::store::postgres::{PostgresConfig, PostgresStore};
 use sysknife_daemon::store::AuditStore;
 use sysknife_daemon::transactions::NewTransaction;
@@ -620,4 +620,304 @@ async fn connect_lets_a_loopback_url_through_the_tls_floor() {
         !err.to_string().contains("sslmode"),
         "loopback must pass the TLS floor; got a guard refusal instead: {err}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// An auditor that cannot read the event table must say so, not report a clean
+// chain and not report a tamper.
+//
+// `verify_all_with_pubkey` swallowed every error from the approval-event read
+// with `unwrap_or_default()`, justified by a comment about pre-migration chains
+// that have no `audit_events` table. That case is real; the other ones it also
+// covered are not: a revoked SELECT, a dropped table, a connection lost
+// mid-fetch, a malformed row. Each became "zero approval events", and zero
+// events produces one of two opposite false verdicts —
+//
+//   * a clean bill, `OK: 0 approval event(s) verified` and exit 0, for a trail
+//     nobody read, or
+//   * `BROKEN: … approval events were deleted from the end of the chain`, if
+//     any transaction row committed a non-empty event tip, publishing a
+//     permissions error in the exact words operators are taught to read as
+//     erasure.
+//
+// This test owns a dedicated schema. The cases above share the public schema
+// and drop its tables at will, so a role grant made there could be revoked by a
+// concurrent test dropping the table it names.
+// ---------------------------------------------------------------------------
+
+/// Same URL, different credentials — the auditor connects as its own role.
+fn url_with_credentials(url: &str, user: &str, password: &str) -> String {
+    let (scheme, rest) = url.split_once("://").expect("URL has a scheme");
+    // Strip existing credentials if present: everything before the last '@' of
+    // the authority is userinfo, and the authority ends at the first '/' or '?'.
+    let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(authority_end);
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    format!("{scheme}://{user}:{password}@{host}{tail}")
+}
+
+/// Same URL, pinned to one schema, so this test cannot collide with the others.
+fn url_with_schema(url: &str, schema: &str) -> String {
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}options=-csearch_path%3D{schema}")
+}
+
+#[tokio::test]
+async fn an_auditor_denied_the_event_table_cannot_verify() {
+    let Some(url) = test_url() else {
+        eprintln!("SYSKNIFE_TEST_POSTGRES_URL is unset; live Postgres contract not requested");
+        return;
+    };
+    assert!(
+        url.contains("sysknife_test"),
+        "refusing destructive integration test against a non-test database"
+    );
+
+    const SCHEMA: &str = "sysknife_denied_events";
+    const ROLE: &str = "sysknife_denied_events_auditor";
+    // Generated, not written down. A literal here is a hard-coded credential in
+    // a repository whose whole subject is privileged access, and it would be one
+    // whether or not the role is a throwaway. The role is created, used and
+    // dropped inside this test, so nothing needs to know the value but us.
+    let role_pw = format!(
+        "t{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after the epoch")
+            .as_nanos()
+    );
+
+    let options = PgConnectOptions::from_str(&url).expect("parse test database URL");
+    let admin = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .expect("connect to test database");
+
+    let exec = |sql: String| {
+        let admin = admin.clone();
+        async move {
+            sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(sql))
+                .execute(&admin)
+                .await
+        }
+    };
+
+    exec(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE"))
+        .await
+        .expect("reset the test schema");
+    exec(format!("CREATE SCHEMA {SCHEMA}"))
+        .await
+        .expect("create the test schema");
+
+    // Write a real chain into that schema: a previewed transaction, approved and
+    // claimed, so `audit_events` holds rows AND the transaction row commits a
+    // non-empty event tip. The tip is what turns a swallowed read into the
+    // fabricated-tamper verdict rather than only a false clean bill.
+    let key_dir = tempfile::tempdir().expect("create audit-key directory");
+    let key = Arc::new(
+        AuditKey::load_or_generate(&key_dir.path().join("audit-key")).expect("generate audit key"),
+    );
+    let owner_config = PostgresConfig {
+        url: url_with_schema(&url, SCHEMA),
+        ..PostgresConfig::default()
+    };
+    let store = PostgresStore::connect(&owner_config, Arc::clone(&key))
+        .await
+        .expect("connect and migrate into the test schema");
+    let recorded = store
+        .record_previewed(new_transaction(), preview())
+        .await
+        .expect("record previewed transaction");
+    let receipt = store
+        .approve_transaction(&recorded.transaction.transaction_id)
+        .await
+        .expect("approve transaction")
+        .expect("fresh transaction is approved");
+    assert!(store
+        .claim_approved_for_execution(
+            &recorded.transaction.transaction_id,
+            &sysknife_daemon::audit_chain::approval_receipt_digest(&receipt),
+        )
+        .await
+        .expect("claim approved transaction"));
+
+    // A second row, written after those two events exist, so it commits a
+    // NON-EMPTY event tip. That is what makes the swallowed read produce the
+    // second, opposite false verdict: the binding check looks for that tip in an
+    // empty event slice and reports approval events deleted from the end of the
+    // chain — a permissions error published as erasure.
+    let mut second = new_transaction();
+    second.request_id = "postgres-binding-second".to_string();
+    store
+        .record_previewed(second, preview())
+        .await
+        .expect("record a second transaction that commits a non-empty event tip");
+
+    // The owner still sees an intact chain — this is the control, so a failure
+    // below is about the auditor's grants and not about the fixture.
+    let as_owner = PostgresStore::verify_all_with_pubkey(&owner_config, &key.verifying_key_hex())
+        .await
+        .expect("owner verifies the chain");
+    assert_eq!(as_owner.chain, VerifyOutcome::Intact { rows_checked: 2 });
+    assert_eq!(as_owner.events, VerifyOutcome::Intact { rows_checked: 2 });
+    assert!(
+        matches!(as_owner.binding, BindingOutcome::Consistent { .. }),
+        "control: the owner's binding check must run, got {:?}",
+        as_owner.binding
+    );
+
+    // An auditor granted the transaction table and nothing else. This is the
+    // shape the design is built around: verify with the exported public key,
+    // trusting neither the signing key nor the host that wrote the rows.
+    exec(format!("DROP ROLE IF EXISTS {ROLE}")).await.ok();
+    exec(format!("CREATE ROLE {ROLE} LOGIN PASSWORD '{role_pw}'"))
+        .await
+        .expect("create the auditor role");
+    exec(format!("GRANT USAGE ON SCHEMA {SCHEMA} TO {ROLE}"))
+        .await
+        .expect("grant schema usage");
+    exec(format!("GRANT SELECT ON {SCHEMA}.transactions TO {ROLE}"))
+        .await
+        .expect("grant the transaction table");
+    // Deliberately no grant on audit_events.
+
+    let auditor_config = PostgresConfig {
+        url: url_with_schema(&url_with_credentials(&url, ROLE, &role_pw), SCHEMA),
+        ..PostgresConfig::default()
+    };
+    let verdict = PostgresStore::verify_all_with_pubkey(&auditor_config, &key.verifying_key_hex())
+        .await
+        .expect("the auditor path must return a verdict, not an error");
+
+    // Clean up before asserting, so a failure does not leave the role behind and
+    // break the next run.
+    let cleanup = async {
+        exec(format!(
+            "REVOKE ALL ON ALL TABLES IN SCHEMA {SCHEMA} FROM {ROLE}"
+        ))
+        .await
+        .ok();
+        exec(format!("REVOKE ALL ON SCHEMA {SCHEMA} FROM {ROLE}"))
+            .await
+            .ok();
+        exec(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE"))
+            .await
+            .ok();
+        exec(format!("DROP ROLE IF EXISTS {ROLE}")).await.ok();
+    };
+    cleanup.await;
+
+    assert!(
+        matches!(verdict.events, VerifyOutcome::CannotVerify { .. }),
+        "an unreadable event table must be cannot-verify, not a count of zero: {:?}",
+        verdict.events
+    );
+    assert!(
+        !matches!(verdict.binding, BindingOutcome::Consistent { .. }),
+        "the binding check cannot be consistent over events that were never read: {:?}",
+        verdict.binding
+    );
+    assert!(
+        !matches!(verdict.binding, BindingOutcome::MissingEvent { .. }),
+        "a permissions error must not be published as deleted approval events: {:?}",
+        verdict.binding
+    );
+    assert_eq!(
+        verdict.exit_code(),
+        2,
+        "inconclusive verification is exit 2, never 0 and never 1"
+    );
+}
+
+#[tokio::test]
+async fn a_chain_predating_the_event_table_still_verifies() {
+    // The other half of the same guard. Failing closed on an unreadable event
+    // table must not fail closed on a chain written before `audit_events`
+    // existed: that table is absent, not withheld, and the comment justifying
+    // the original `unwrap_or_default()` was right about this case. Without
+    // this test the fix could be "return CannotVerify on any error" and still
+    // look correct.
+    let Some(url) = test_url() else {
+        eprintln!("SYSKNIFE_TEST_POSTGRES_URL is unset; live Postgres contract not requested");
+        return;
+    };
+    assert!(
+        url.contains("sysknife_test"),
+        "refusing destructive integration test against a non-test database"
+    );
+
+    const SCHEMA: &str = "sysknife_premigration_events";
+
+    let options = PgConnectOptions::from_str(&url).expect("parse test database URL");
+    let admin = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .expect("connect to test database");
+    let exec = |sql: String| {
+        let admin = admin.clone();
+        async move {
+            sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(sql))
+                .execute(&admin)
+                .await
+        }
+    };
+
+    exec(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE"))
+        .await
+        .expect("reset the test schema");
+    exec(format!("CREATE SCHEMA {SCHEMA}"))
+        .await
+        .expect("create the test schema");
+
+    let key_dir = tempfile::tempdir().expect("create audit-key directory");
+    let key = Arc::new(
+        AuditKey::load_or_generate(&key_dir.path().join("audit-key")).expect("generate audit key"),
+    );
+    let config = PostgresConfig {
+        url: url_with_schema(&url, SCHEMA),
+        ..PostgresConfig::default()
+    };
+    let store = PostgresStore::connect(&config, Arc::clone(&key))
+        .await
+        .expect("connect and migrate into the test schema");
+    store
+        .record_previewed(new_transaction(), preview())
+        .await
+        .expect("record previewed transaction");
+    drop(store);
+
+    // Take the table away, leaving the transaction chain intact — the shape of a
+    // chain written before the approval-event migration.
+    exec(format!("DROP TABLE {SCHEMA}.audit_events"))
+        .await
+        .expect("drop the event table");
+
+    let verdict = PostgresStore::verify_all_with_pubkey(&config, &key.verifying_key_hex())
+        .await
+        .expect("verify a pre-migration chain");
+
+    exec(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE"))
+        .await
+        .ok();
+
+    assert_eq!(
+        verdict.chain,
+        VerifyOutcome::Intact { rows_checked: 1 },
+        "the transaction chain is readable and must still be verified"
+    );
+    assert_eq!(
+        verdict.events,
+        VerifyOutcome::Intact { rows_checked: 0 },
+        "an absent event table is an absent feature, not a failed read: {:?}",
+        verdict.events
+    );
+    assert!(
+        matches!(verdict.binding, BindingOutcome::Consistent { .. }),
+        "with no events to bind to and no tip committed, the binding check runs \
+         and agrees: {:?}",
+        verdict.binding
+    );
+    assert_eq!(verdict.exit_code(), 0);
 }
