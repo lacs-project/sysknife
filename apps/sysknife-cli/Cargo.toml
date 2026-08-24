@@ -7,7 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 description = "Approval-gated AI system administration CLI and MCP server"
 readme = "README.md"
-keywords = ["linux", "sysadmin", "mcp", "ai-agent"]
+keywords = ["linux", "sysadmin", "mcp", "ai-agent", "llm"]
 categories = ["command-line-utilities", "os::linux-apis"]
 
 [[bin]]

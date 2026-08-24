@@ -31,8 +31,20 @@
   "keywords": [
     "sysknife",
     "mcp",
+    "model-context-protocol",
     "claude",
-    "linux"
+    "claude-code",
+    "cursor",
+    "codex",
+    "linux",
+    "sysadmin",
+    "ai-agent",
+    "llm",
+    "devops",
+    "systemd",
+    "ubuntu",
+    "fedora",
+    "audit-log"
   ],
   "license": "MIT",
   "mcpName": "io.github.lacs-project/sysknife",
