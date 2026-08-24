@@ -402,6 +402,7 @@ mod tests {
             .expect("chmod 000");
 
         let present = super::path_is_present(&db);
+        let exists_under_eacces = db.exists();
 
         // Restore perms so TempDir cleanup can unlink the tree.
         let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700));
@@ -410,7 +411,7 @@ mod tests {
             "metadata EACCES on a 0700/000 store must count as present, not missing"
         );
         assert!(
-            !db.exists(),
+            !exists_under_eacces,
             "precondition: Path::exists is false under EACCES (the bug we are fixing)"
         );
     }
