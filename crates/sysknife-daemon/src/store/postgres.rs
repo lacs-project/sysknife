@@ -36,8 +36,8 @@ use sysknife_types::{JobState, PreviewEnvelope, TransactionRecord};
 use uuid::Uuid;
 
 use crate::audit_chain::{
-    AuditEventKind, AuditKey, AuditVerification, ChainContent, ChainIdentity, ChainRow,
-    EventContent, EventRow, VerifyOutcome, CURRENT_KEY_ID,
+    AttributionCensus, AuditEventKind, AuditKey, AuditVerification, BindingOutcome, ChainContent,
+    ChainIdentity, ChainRow, EventContent, EventRow, VerifyOutcome, CURRENT_KEY_ID,
 };
 use crate::audit_watermark::emit_chain_tip_watermark;
 use crate::store::AuditStore;
@@ -232,15 +232,69 @@ impl PostgresStore {
     ) -> Result<AuditVerification, TransactionStoreError> {
         let pool = Self::connect_pool(config).await?;
         let tx_rows = fetch_chain_rows_from_pool(&pool).await?;
-        // A chain written before the migration has no `audit_events` table.
-        // That is an absent feature, not a missing verification: report zero
-        // events rather than failing the whole verify.
-        let event_rows = fetch_event_rows_from_pool(&pool).await.unwrap_or_default();
+        let event_rows = match fetch_event_rows_from_pool(&pool).await {
+            Ok(rows) => rows,
+            Err(err) => {
+                // A chain written before the migration has no `audit_events`
+                // table. That is an absent feature, not a missing verification:
+                // report zero events rather than failing the whole verify.
+                //
+                // That is the ONLY reason to carry on. This used to be
+                // `unwrap_or_default()`, which also swallowed a revoked SELECT,
+                // a dropped table, a lost connection and a malformed row — each
+                // becoming "zero approval events", which is either a clean bill
+                // for a trail nobody read or, when a transaction row commits a
+                // non-empty event tip, a `MissingEvent` binding published in the
+                // words operators are taught to read as deleted approvals.
+                //
+                // So ask specifically whether the table is absent, and fail
+                // closed on everything else, including a probe that cannot
+                // answer: an audit tool that cannot read its evidence must say
+                // so rather than grade it.
+                match audit_events_table_absent(&pool).await {
+                    Ok(true) => Vec::new(),
+                    Ok(false) => {
+                        return Ok(Self::unreadable_events(
+                            verifying_key_hex,
+                            &tx_rows,
+                            format!("could not read the approval-event table: {err}"),
+                        ))
+                    }
+                    Err(probe_err) => {
+                        return Ok(Self::unreadable_events(
+                            verifying_key_hex,
+                            &tx_rows,
+                            format!(
+                                "could not read the approval-event table ({err}), and could not \
+                                 determine whether it exists ({probe_err})"
+                            ),
+                        ))
+                    }
+                }
+            }
+        };
         Ok(crate::audit_chain::verify_all_with_pubkey(
             verifying_key_hex,
             &tx_rows,
             &event_rows,
         ))
+    }
+
+    /// The transaction chain still verifies on its own — report it — but the
+    /// event chain was not read, so its verdict is inconclusive and the binding
+    /// check between the two did not run. `NotChecked` is what keeps that
+    /// distinct from a binding that ran over zero events and agreed.
+    fn unreadable_events(
+        verifying_key_hex: &str,
+        tx_rows: &[ChainRow],
+        reason: String,
+    ) -> AuditVerification {
+        AuditVerification {
+            chain: crate::audit_chain::verify_chain_with_pubkey(verifying_key_hex, tx_rows),
+            events: VerifyOutcome::CannotVerify { reason },
+            binding: BindingOutcome::NotChecked,
+            attribution: Some(AttributionCensus::of(tx_rows)),
+        }
     }
 
     /// All three checks with the daemon's key.
@@ -825,6 +879,21 @@ async fn fetch_chain_rows_from_pool(pool: &PgPool) -> Result<Vec<ChainRow>, Tran
     .await
     .map_err(map_sqlx_err)?;
     rows.into_iter().map(row_to_chain_row).collect()
+}
+
+/// Is `audit_events` genuinely not there, as opposed to unreadable?
+///
+/// `to_regclass` resolves the name through the same `search_path` the queries
+/// use and returns NULL when nothing matches. It answers existence, not access:
+/// a table the caller may not SELECT still resolves, which is exactly the
+/// distinction the caller needs.
+async fn audit_events_table_absent(pool: &PgPool) -> Result<bool, TransactionStoreError> {
+    let present: Option<String> =
+        sqlx_core::query_scalar::query_scalar("SELECT to_regclass('audit_events')::text")
+            .fetch_one(pool)
+            .await
+            .map_err(map_sqlx_err)?;
+    Ok(present.is_none())
 }
 
 /// Fetch every approval event in seq order.
