@@ -74,14 +74,24 @@ echo "Phase 1 already complete (found $LAYERED_MARKER). Continuing phase 2."
 # ---------------------------------------------------------------------------
 
 step "Install Rust via rustup"
+# Put an existing toolchain on PATH BEFORE asking whether one exists. This
+# script runs under sudo, whose secure_path does not include ~/.cargo/bin, so
+# `command -v cargo` answers no on a guest that already has cargo installed and
+# the download runs on every provision. That is wasteful when the network is
+# good and a hang when it is not: one re-run stalled at 10,612,736 of
+# 20,838,840 bytes of rustup-init and sat there, while `cargo 1.94.1` was
+# already installed two directories away.
+# shellcheck disable=SC1091
+source "$HOME/.cargo/env" 2>/dev/null || true
+export PATH="$HOME/.cargo/bin:$PATH"
 if ! command -v cargo &>/dev/null; then
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --default-toolchain stable \
         || fail "Install Rust"
+    # shellcheck disable=SC1091
+    source "$HOME/.cargo/env" 2>/dev/null || true
+    export PATH="$HOME/.cargo/bin:$PATH"
 fi
-# shellcheck disable=SC1091
-source "$HOME/.cargo/env" 2>/dev/null || true
-export PATH="$HOME/.cargo/bin:$PATH"
 cargo --version || fail "Rust install verification"
 
 # ---------------------------------------------------------------------------
