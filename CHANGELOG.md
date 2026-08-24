@@ -12,6 +12,19 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-08-24
+
+Four fixes from outside contributors, three of them closing the same class of
+gap. [#256](https://github.com/lacs-project/sysknife/pull/256) stopped a saved
+preference from closing the prompt envelope that contains it, then
+[#274](https://github.com/lacs-project/sysknife/pull/274) and
+[#280](https://github.com/lacs-project/sysknife/pull/280) removed U+2028 and
+U+2029 from both paths that render untrusted text: the one the model reads and
+the one the operator approves from.
+[#282](https://github.com/lacs-project/sysknife/pull/282) took the last
+hand-typed wire numbers out of the envelope encoder. No public item was removed,
+renamed or re-signed, so this is a patch.
+
 ### Fixed
 
 - **Two Unicode line separators reached the model as visual line breaks.**
