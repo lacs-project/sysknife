@@ -14,6 +14,20 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Fixed
 
+- **Two Unicode line separators reached the model as visual line breaks.**
+  ([#274](https://github.com/lacs-project/sysknife/pull/274),
+  [#224](https://github.com/lacs-project/sysknife/issues/224))
+  `strip_dangerous_unicode` covered `U+200B..=U+200F` and `U+202A..=U+202E`, which
+  left U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR sitting in the gap
+  between the two ranges. `append_pref` refuses both when a fact is written, but
+  `read_prefs` normalises on the way back out and passed them through, so a
+  hand-edited preferences file could hold one fact that `str::lines` and the
+  `- ` filter in `append_prefs` read as a single line while the model read three,
+  the second an unprefixed heading. The same gap let paragraph padding slip past
+  `collapse_blank_runs`, which counts `\n` only. The arm now widens to
+  `U+2028..=U+202E`, stripping both before blank-run handling. Thanks to
+  @vsolano9.
+
 - **A saved preference could close the prompt envelope that contains it.**
   ([#256](https://github.com/lacs-project/sysknife/pull/256),
   [#253](https://github.com/lacs-project/sysknife/issues/253))
