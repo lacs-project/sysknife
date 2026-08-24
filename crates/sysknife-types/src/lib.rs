@@ -1040,6 +1040,12 @@ mod frame_limit_declaration_tests {
     /// Lines that merely use the literal as a buffer size (e.g. a
     /// `tokio::io::duplex(...)` in a test) or that reference the imported
     /// constant are not declarations and are intentionally ignored.
+    ///
+    /// The scan matches the `4 * 1024 * 1024` literal *form*, not the value:
+    /// a re-declaration written as `4194304` or `4 << 20` would slip past it,
+    /// as would one split across two lines. That is a known, accepted gap —
+    /// the duplicates it must catch arrived as copy-pastes of the existing
+    /// literal. No reader should over-trust it as a value-graph check.
     #[test]
     fn frame_limit_is_declared_once() {
         let root = workspace_root();
