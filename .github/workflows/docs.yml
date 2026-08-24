@@ -10,6 +10,10 @@ on:
       # outside docs/. Without this the one file the build hard-depends on could
       # be renamed or deleted without ever triggering the build that would fail.
       - "theme/**"
+      # docs/images/social-preview.png is a symlink into assets/, and
+      # theme/head.hbs points every page's og:image at it. A new card image
+      # must redeploy the pages that advertise its dimensions.
+      - "assets/social-preview.png"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 

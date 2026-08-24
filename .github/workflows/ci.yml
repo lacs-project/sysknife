@@ -83,6 +83,9 @@ jobs:
       - name: Check grub-kargs-edit screens karg deletions
         run: bash tests/release/grub-kargs-edit.test.sh
 
+      - name: Check the docs share cards name an image the build produces
+        run: bash tests/release/docs-share-cards.test.sh
+
       - name: Check provider parity across E2E entry points
         run: bash tests/e2e/provider-parity.test.sh
 

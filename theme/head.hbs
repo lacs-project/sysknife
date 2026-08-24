@@ -1,0 +1,39 @@
+{{!
+  Extra <head> content for every docs page. mdBook injects this file verbatim;
+  the rest of the default theme is untouched.
+
+  Why: a link to any docs page rendered as a bare URL everywhere it was shared
+  — Slack, Mastodon, LinkedIn, HN — because the pages carried a description tag
+  and nothing else. GitHub had a social preview image; the docs site had no way
+  to reach it.
+
+  og:url is deliberately absent. mdBook exposes the source path (`index.md`),
+  not the built one, and handlebars has no string replace, so a derived URL
+  would name a file that does not exist. Scrapers fall back to the URL they
+  fetched, which is correct. A wrong canonical is worse than no canonical.
+
+  Every variable used here was checked against BOTH mdBook 0.4.40 (the version
+  .github/workflows/docs.yml pins) and 0.5.2, and renders identically.
+
+  The og:image URL is absolute and hand-written, for the same reason. It points
+  at docs/images/social-preview.png, which is a symlink into assets/ so the card
+  image has one source of truth: assets/raster/README.md names that file as the
+  one to upload to GitHub's own social-preview setting, and generates it from
+  the SVG. mdBook resolves the symlink and copies the content.
+
+  tests/release/docs-share-cards.test.sh derives both sides of that URL and
+  fails if they stop agreeing, because a card whose image 404s is worse than no
+  card: the scraper caches the failure.
+}}
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="{{ book_title }}">
+<meta property="og:title" content="{{ title }}">
+<meta property="og:description" content="{{ description }}">
+<meta property="og:image" content="https://lacs-project.github.io/sysknife/images/social-preview.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="SysKnife: an AI that administers Linux through typed, approval-gated, Ed25519-audited actions">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{ title }}">
+<meta name="twitter:description" content="{{ description }}">
+<meta name="twitter:image" content="https://lacs-project.github.io/sysknife/images/social-preview.png">
