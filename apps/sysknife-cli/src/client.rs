@@ -37,6 +37,7 @@ use std::time::Duration;
 use serde_json::Value;
 use sysknife_brain::planner::PlanningError;
 use sysknife_brain::state_client::{CuratedState, StateClient};
+use sysknife_daemon::transport::framing::MAX_MESSAGE_BYTES;
 use sysknife_types::{ApprovalReceipt, PreviewEnvelope, ResultEnvelope, TransactionId};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -64,7 +65,6 @@ const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
 /// alive but permanently silent eventually surfaces as an error instead of
 /// freezing the CLI — and, through it, an entire MCP session.
 const EXECUTE_FRAME_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60 + 300);
-const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // SocketTarget — Unix socket path or vsock CID:PORT
@@ -156,7 +156,7 @@ fn read_framed(stream: &mut impl Read) -> std::io::Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf)?;
     let len = u32::from_le_bytes(len_buf) as usize;
-    if len > MAX_FRAME_BYTES {
+    if len > MAX_MESSAGE_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("frame too large: {len} bytes"),
@@ -191,7 +191,7 @@ where
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).await?;
     let len = u32::from_le_bytes(len_buf) as usize;
-    if len > MAX_FRAME_BYTES {
+    if len > MAX_MESSAGE_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("frame too large: {len} bytes"),
@@ -1622,7 +1622,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 12: read_framed rejects a frame exceeding MAX_FRAME_BYTES (sync)
+    // Test 12: read_framed rejects a frame exceeding MAX_MESSAGE_BYTES (sync)
     // -----------------------------------------------------------------------
     #[test]
     fn read_framed_rejects_frame_above_4mib() {
@@ -1631,7 +1631,7 @@ mod tests {
             // Consume the client's request
             let _ = read_framed(&mut stream).unwrap();
             // Send an oversized length prefix — no body needed; the check fires first
-            let oversized = (MAX_FRAME_BYTES as u32) + 1;
+            let oversized = (MAX_MESSAGE_BYTES as u32) + 1;
             stream.write_all(&oversized.to_le_bytes()).unwrap();
         });
 
@@ -1649,7 +1649,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 13: read_framed_async rejects a frame exceeding MAX_FRAME_BYTES
+    // Test 13: read_framed_async rejects a frame exceeding MAX_MESSAGE_BYTES
     // -----------------------------------------------------------------------
     #[tokio::test]
     async fn read_framed_async_rejects_frame_above_4mib() {
@@ -1662,7 +1662,7 @@ mod tests {
             // Consume the client's request
             read_framed_async(&mut stream).await.unwrap();
             // Send an oversized length prefix
-            let oversized = (MAX_FRAME_BYTES as u32) + 1;
+            let oversized = (MAX_MESSAGE_BYTES as u32) + 1;
             stream.write_all(&oversized.to_le_bytes()).await.unwrap();
         });
 

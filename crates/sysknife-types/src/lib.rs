@@ -586,35 +586,6 @@ pub struct TransactionRecord {
     pub warnings: Vec<String>,
 }
 
-fn caller_role_code(value: CallerRole) -> i32 {
-    match value {
-        CallerRole::Observer => 1,
-        CallerRole::Dev => 2,
-        CallerRole::Admin => 3,
-        CallerRole::Boot => 4,
-    }
-}
-
-fn risk_level_code(value: RiskLevel) -> i32 {
-    match value {
-        RiskLevel::Low => 1,
-        RiskLevel::Medium => 2,
-        RiskLevel::High => 3,
-    }
-}
-
-fn job_state_code(value: JobState) -> i32 {
-    match value {
-        JobState::Queued => 1,
-        JobState::Running => 2,
-        JobState::Succeeded => 3,
-        JobState::Failed => 4,
-        JobState::Canceled => 5,
-        JobState::RolledBack => 6,
-        JobState::NeedsReboot => 7,
-    }
-}
-
 impl From<CallerRole> for proto::CallerRole {
     // Matched directly rather than round-tripping through the i32 code table
     // and unwrapping. The conversion is total, so it should not be able to
@@ -755,7 +726,7 @@ impl From<RequestEnvelope> for proto::RequestEnvelope {
             action_name: value.action_name,
             request_id: value.request_id,
             params_json: serde_json::to_string(&value.params).expect("json serialization"),
-            caller_role: caller_role_code(value.caller_role),
+            caller_role: i32::from(proto::CallerRole::from(value.caller_role)),
             request_hash: value.request_hash.into_inner(),
         }
     }
@@ -789,7 +760,7 @@ impl From<PreviewEnvelope> for proto::PreviewEnvelope {
     fn from(value: PreviewEnvelope) -> Self {
         Self {
             summary: value.summary,
-            risk_level: risk_level_code(value.risk_level),
+            risk_level: i32::from(proto::RiskLevel::from(value.risk_level)),
             current_state_json: serde_json::to_string(&value.current_state)
                 .expect("json serialization"),
             proposed_change_json: serde_json::to_string(&value.proposed_change)
@@ -836,7 +807,7 @@ impl TryFrom<proto::PreviewEnvelope> for PreviewEnvelope {
 impl From<ResultEnvelope> for proto::ResultEnvelope {
     fn from(value: ResultEnvelope) -> Self {
         Self {
-            status: job_state_code(value.status),
+            status: i32::from(proto::JobState::from(value.status)),
             summary: value.summary,
             warnings: value.warnings,
             job_id: value.job_id.unwrap_or_default(),
@@ -883,8 +854,8 @@ impl From<TransactionRecord> for proto::TransactionRecord {
             request_id: value.request_id,
             request_hash: value.request_hash,
             action_name: value.action_name,
-            risk_level: risk_level_code(value.risk_level),
-            status: job_state_code(value.status),
+            risk_level: i32::from(proto::RiskLevel::from(value.risk_level)),
+            status: i32::from(proto::JobState::from(value.status)),
             approval_id: value.approval_id.unwrap_or_default(),
             summary: value.summary,
             warnings: value.warnings,

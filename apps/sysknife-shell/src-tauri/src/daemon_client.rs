@@ -32,9 +32,12 @@ use serde_json::Value;
 use sysknife_brain::planner::PlanningError;
 #[cfg(any(test, not(feature = "demo")))]
 use sysknife_brain::state_client::{CuratedState, StateClient};
+#[cfg(any(test, not(feature = "demo")))]
+use sysknife_daemon::transport::framing::MAX_MESSAGE_BYTES;
 
 /// Maximum response size accepted from the daemon (4 MiB — mirrors daemon limit).
-const MAX_RESPONSE_BYTES: u32 = 4 * 1024 * 1024;
+#[cfg(any(test, not(feature = "demo")))]
+const MAX_RESPONSE_BYTES: u32 = MAX_MESSAGE_BYTES as u32;
 
 /// Read/write timeout applied to each daemon connection for state collection.
 ///
@@ -205,7 +208,7 @@ fn read_framed(stream: &mut UnixStream) -> io::Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf)?;
     let len = u32::from_le_bytes(len_buf);
-    if len > MAX_RESPONSE_BYTES {
+    if len > MAX_MESSAGE_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("daemon response too large: {len} bytes"),
@@ -452,7 +455,7 @@ async fn async_read_framed(stream: &mut tokio::net::UnixStream) -> io::Result<Ve
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).await?;
     let len = u32::from_le_bytes(len_buf);
-    if len > MAX_RESPONSE_BYTES {
+    if len > MAX_MESSAGE_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("daemon response too large: {len} bytes"),
