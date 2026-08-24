@@ -280,6 +280,7 @@ run_hygiene_group() {
     run_step 'hygiene: ubuntu-vm-bootstrap.test.sh' bash "$repo_root/tests/e2e/ubuntu-vm-bootstrap.test.sh"
     run_step 'hygiene: provider-parity.test.sh' bash "$repo_root/tests/e2e/provider-parity.test.sh"
     run_step 'hygiene: story-metadata.test.sh' bash "$repo_root/tests/e2e/story-metadata.test.sh"
+    run_step 'hygiene: vm-sync-parity.test.sh' bash "$repo_root/tests/e2e/vm-sync-parity.test.sh"
 
     if have markdownlint-cli2; then
         run_step 'hygiene: markdownlint-cli2' hygiene_markdownlint

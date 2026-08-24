@@ -92,6 +92,9 @@ jobs:
       - name: Check Ubuntu VM bootstrap contract
         run: bash tests/e2e/ubuntu-vm-bootstrap.test.sh
 
+      - name: Check no harness syncs another harness's VM disk into its guest
+        run: bash tests/e2e/vm-sync-parity.test.sh
+
       - name: Lint markdown
         run: |
           markdownlint-cli2 \

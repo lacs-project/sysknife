@@ -59,6 +59,21 @@ VARIANT="$(printf '%s' "${SYSKNIFE_VM_VARIANT:-silverblue}" | tr '[:upper:]' '[:
 VM_DIR="${SYSKNIFE_VM_DIR:-tests/e2e/vm}"
 VM_USER="${SYSKNIFE_VM_USER:-lacsdev}"
 
+# What never goes into the guest. `cmd_sync` and `cmd_provision` share one list
+# so they cannot drift apart, and so the sibling harness's VM directory is not
+# forgotten again: tests/e2e/ubuntu-vm holds multi-gigabyte qcow2 overlays that
+# are gitignored but sit in the worktree, and copying them filled the guest's
+# 38G disk mid-rsync. tests/e2e/ubuntu-vm.sh has excluded both directories since
+# it was written; this script excluded only its own.
+RSYNC_EXCLUDES=(
+    --exclude=target
+    --exclude=node_modules
+    --exclude=.git
+    --exclude="$VM_DIR"
+    --exclude=tests/e2e/vm
+    --exclude=tests/e2e/ubuntu-vm
+)
+
 # quickget's canonical capitalized edition name for the `quickget` CLI.
 # quickget writes the config file with the edition lowercased.
 case "$VARIANT" in
@@ -278,8 +293,7 @@ cmd_sync() {
     port="$(vm_ssh_port)"
     repo_root="$(git rev-parse --show-toplevel)"
     log "Syncing repo to VM (no build, no provision)..."
-    rsync -az --exclude=target --exclude=node_modules --exclude=.git \
-        --exclude="$VM_DIR" \
+    rsync -az "${RSYNC_EXCLUDES[@]}" \
         -e "ssh $(ssh_opts) -p $port" \
         "$repo_root/" "${VM_USER}@127.0.0.1:/home/${VM_USER}/sysknife/"
     log "Sync complete. Run '$0 test-exec' or '$0 test-daemon' to exercise the new scripts."
@@ -292,8 +306,7 @@ cmd_provision() {
     port="$(vm_ssh_port)"
     repo_root="$(git rev-parse --show-toplevel)"
     log "Copying repo to VM via rsync on port $port..."
-    rsync -az --exclude=target --exclude=node_modules --exclude=.git \
-        --exclude="$VM_DIR" \
+    rsync -az "${RSYNC_EXCLUDES[@]}" \
         -e "ssh $(ssh_opts) -p $port" \
         "$repo_root/" "${VM_USER}@127.0.0.1:/home/${VM_USER}/sysknife/"
     log "Running provisioner inside the VM..."
