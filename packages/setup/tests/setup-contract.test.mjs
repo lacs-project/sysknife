@@ -94,3 +94,34 @@ test('--help remains a non-interactive smoke test', () => {
   });
   assert.match(output, /sysknife-setup/);
 });
+
+test('a daemon that was not installed is reported as outstanding, whatever the reason', () => {
+  // The wizard used to print this block only for --daemon-mode=system. A skip,
+  // and a host with no systemd at all, ended on "Setup complete" with MCP
+  // configured and nothing able to execute. Both are not-installed outcomes and
+  // both must say so.
+  //
+  // Run in a throwaway cwd: the wizard writes .mcp.json and .claude/ where it
+  // is invoked, and --no-binary keeps it off the network.
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-setup-outstanding-'));
+  const result = spawnSync(
+    process.execPath,
+    [path.join(setupDir, 'index.js'), '--claude', '--no-prompts', '--no-binary', '--daemon-mode=skip'],
+    { cwd, encoding: 'utf8', input: '', timeout: 30_000 },
+  );
+
+  const output = `${result.stdout}${result.stderr}`;
+  // The headline differs by reason — "You skipped …" where systemd exists,
+  // "systemd was not detected" where it does not — so assert the line both
+  // share, which is the one that tells the operator the run is unfinished.
+  assert.match(
+    output,
+    /nothing will execute until these steps are done/,
+    `a not-installed daemon must be reported as outstanding:\n${output}`,
+  );
+  assert.match(
+    output,
+    /Start manually:/,
+    `the outstanding block must carry the steps, not just the warning:\n${output}`,
+  );
+});

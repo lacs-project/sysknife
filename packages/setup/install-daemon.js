@@ -297,12 +297,31 @@ function userModeCapabilityWarning() {
  * @param {{ ask: Function, daemonBinPath: string, daemonMode: string|null }} opts
  */
 async function installDaemonService(opts) {
-  const { ask, daemonBinPath, daemonMode = null } = opts;
+  // `hasSystemd` is injectable so a test can choose the branch instead of
+  // inheriting whichever init system the machine runs. Without it the
+  // no-systemd path below is unreachable on Linux CI and the systemd paths are
+  // unreachable anywhere else, which is how the bare `return` here survived.
+  const {
+    ask,
+    daemonBinPath,
+    daemonMode = null,
+    hasSystemd: detectSystemd = hasSystemd,
+  } = opts;
 
-  if (!hasSystemd()) {
+  if (!detectSystemd()) {
+    // No init system to install into, so the flag cannot change the outcome.
+    // This used to `return` bare. Every other branch hands back a result, and
+    // the caller decides what to report from it — an undefined here meant the
+    // wizard printed its success banner for a daemon that was never installed.
+    //
+    // `none` rather than `skip`: skipping is a choice the operator made, this
+    // is a fact about the host, and only one of them is worth re-running with
+    // a different flag. It is deliberately not in DAEMON_MODES — that is the
+    // CLI's input vocabulary, and `--daemon-mode=none` could not do anything.
+    const manualSteps = [`Start manually:  ${daemonBinPath}`];
     warn('systemd not detected — skipping daemon service install.');
     step('Start the daemon manually:  ' + daemonBinPath);
-    return;
+    return { mode: 'none', daemonInstalled: false, manualSteps };
   }
 
   console.log();

@@ -917,19 +917,31 @@ async function main() {
   console.log(`${B}Next steps${X}`);
   console.log();
 
-  // System mode installs nothing from here (it needs root-owned policy the
-  // Makefile owns), so the daemon steps come FIRST and are stated as
-  // outstanding. Reporting MCP configuration as "done" while the daemon does
-  // not exist is what made this look like a successful install.
-  if (daemonInstall && !daemonInstall.daemonInstalled && daemonInstall.mode === 'system') {
-    warn('The system daemon is not installed yet. MCP clients are configured, but');
+  // A daemon that was not installed comes FIRST and is stated as outstanding,
+  // whatever the reason. Reporting MCP configuration as "done" while the daemon
+  // does not exist is what made this look like a successful install.
+  //
+  // This used to fire only for `mode === 'system'`, which left the two other
+  // not-installed outcomes ending on the success banner: a host without systemd
+  // (which returned no result at all) and a deliberate skip.
+  if (daemonInstall && !daemonInstall.daemonInstalled) {
+    const headline = {
+      system: 'The system daemon is not installed yet.',
+      none:   'No daemon service was installed: systemd was not detected.',
+      skip:   'You skipped the daemon service install.',
+    }[daemonInstall.mode] || 'The daemon is not installed yet.';
+    warn(`${headline} MCP clients are configured, but`);
     warn('nothing will execute until these steps are done:');
     console.log();
     for (const cmd of daemonInstall.manualSteps) {
       console.log(`    ${D}${cmd}${X}`);
     }
     console.log();
-    step('Then re-run:  npx sysknife-setup --daemon-mode=skip');
+    // Only the system path has a wizard step left to re-run; the others are
+    // done once the daemon is running.
+    if (daemonInstall.mode === 'system') {
+      step('Then re-run:  npx sysknife-setup --daemon-mode=skip');
+    }
     console.log();
   }
 
