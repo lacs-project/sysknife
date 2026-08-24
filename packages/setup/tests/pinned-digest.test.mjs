@@ -23,7 +23,7 @@ import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { verifySha256 } = require('../install-binary.js');
+const { verifySha256, digestFor, pinnedDigestFor } = require('../install-binary.js');
 
 const PAYLOAD = Buffer.from('#!/bin/sh\necho sysknife\n');
 const DIGEST = crypto.createHash('sha256').update(PAYLOAD).digest('hex');
@@ -84,4 +84,63 @@ test('release-checksum mismatch still fails even with no pin', () => {
     () => verifySha256(Buffer.from('tampered'), SUMS, ASSET),
     /SHA256 mismatch/,
   );
+});
+
+// ---------------------------------------------------------------------------
+// The pin must not go quiet when the sums file does not name the asset.
+//
+// Asset names carry the release tag, so they change on every version bump. An
+// operator who pinned one release and then installs the next has a sums file
+// that names nothing being downloaded. Skipping the gate there hands the
+// publisher exactly the capability the pin exists to withhold, while the
+// installer still prints that it is pinning.
+// ---------------------------------------------------------------------------
+
+const OLD_ASSET = 'sysknife-v0.8.0-linux-x86_64';
+const NEW_ASSET = 'sysknife-v0.9.0-linux-x86_64';
+const PINS_PATH = '/etc/sysknife/pins.txt';
+const STALE_PINS = `${DIGEST}  ${OLD_ASSET}\n`;
+
+test('digestFor still reports a missing entry as null', () => {
+  // The lookup keeps its contract; the decision to refuse belongs to the caller
+  // that knows a pin was requested.
+  assert.equal(digestFor(STALE_PINS, NEW_ASSET), null);
+  assert.equal(digestFor(STALE_PINS, OLD_ASSET), DIGEST);
+});
+
+test('a pinned sums file that does not name the asset refuses the install', () => {
+  assert.throws(
+    () => pinnedDigestFor(STALE_PINS, NEW_ASSET, PINS_PATH),
+    (e) => {
+      assert.ok(
+        e.message.includes(NEW_ASSET),
+        `error must name the asset that went unpinned: ${e.message}`,
+      );
+      assert.ok(
+        e.message.includes(PINS_PATH),
+        `error must name the file that was supposed to pin it: ${e.message}`,
+      );
+      return true;
+    },
+    'an asset the pinned file does not mention must not install unpinned',
+  );
+});
+
+test('a pinned sums file that names the asset returns its digest', () => {
+  assert.equal(pinnedDigestFor(STALE_PINS, OLD_ASSET, PINS_PATH), DIGEST);
+});
+
+test('a null pin reaching verifySha256 is fatal, not treated as no pin', () => {
+  // Defence in depth: whatever the caller does, `null` must never mean "unpinned".
+  assert.throws(
+    () => verifySha256(PAYLOAD, SUMS, ASSET, { pinnedSha256: null }),
+    /not a valid digest/i,
+    'null must take the unusable-pin path, not the no-pin path',
+  );
+});
+
+test('an absent pin option still means no pin', () => {
+  assert.equal(verifySha256(PAYLOAD, SUMS, ASSET), DIGEST);
+  assert.equal(verifySha256(PAYLOAD, SUMS, ASSET, {}), DIGEST);
+  assert.equal(verifySha256(PAYLOAD, SUMS, ASSET, { pinnedSha256: undefined }), DIGEST);
 });
