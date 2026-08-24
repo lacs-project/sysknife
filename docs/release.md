@@ -25,6 +25,31 @@ Behaviour counts, not only types. v0.9.0 also made `sysknife-setup` refuse a
 malformed `.mcp.json` that earlier versions overwrote, so a run that used to
 succeed now exits 1. No signature changed and it is still a compatibility break.
 
+### Public enums stay exhaustive
+
+Adding a variant to a `pub enum` that is not `#[non_exhaustive]` is a major change
+under [Cargo's rules](https://doc.rust-lang.org/cargo/reference/semver.html#enum-variant-new),
+because a downstream `match` stops compiling. In the `0.y` series that moves the
+middle digit. `BindingOutcome` gained `NotChecked` in
+[#289](https://github.com/lacs-project/sysknife/pull/289), so that change ships in
+0.10.0 rather than 0.9.2.
+
+Marking those enums `#[non_exhaustive]` would make every later variant free, and
+this project deliberately does not. `sysknife-cli` matches `BindingOutcome` across
+a crate boundary in every place it reports one, and the compiler refusing to build
+until each of those readers has an arm is a guard the codebase relies on by
+design. `audit_chain.rs`
+argues the same point about the signing-generation tag, where an `if let` chain
+would have let a new generation encode byte-identically to `LegacyV1`.
+
+That PR is the evidence it works. Adding one variant forced both the MCP report
+and the CLI JSON writer to decide what to print, which is why both files are in
+that diff. Under a wildcard arm the new state would have reached an operator as
+silence, on a tool whose whole job is saying what it does not know.
+
+So the trade is deliberate: a variant costs a minor bump and buys a compile error
+instead of a silent gap.
+
 ### After 1.0.0
 
 Once the public API is declared stable the digits take their usual

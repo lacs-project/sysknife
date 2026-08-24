@@ -71,6 +71,13 @@ the design direction before you sink time into a PR. For tiny fixes
 (typos, comment improvements, a missing test), skip the issue and go
 straight to a PR.
 
+**Say so in the thread before you start.** We add the `claimed` label when
+someone does, and that label is what everyone else reads. Two contributors
+picked up the same issue a minute apart recently and one of them lost the work.
+A one-line comment prevents it. If an issue already carries `claimed` and the
+thread has been quiet for a week, say you are taking it over rather than opening
+a competing PR.
+
 ### 2. Branch, code, test
 
 ```sh
@@ -84,6 +91,19 @@ cargo fmt --all -- --check
 **TDD is the project rhythm.** Write the failing test first, watch it
 fail, then write the minimum code to make it pass. The test suite is the
 contract.
+
+**One command runs the whole board.**
+
+```sh
+scripts/ci-local.sh
+```
+
+It reproduces every gate CI runs, including the ones that only fail after the
+obvious ones pass: the evidence artifact below, the prose claim screen over
+every doc that carries a published figure, ShellCheck, and the registry
+manifests. A per-crate run like
+`cargo test -p sysknife-types` never touches those, so a green crate is not a
+green board.
 
 **Adding or removing a Rust test moves a published figure.** The suite size lives
 in `tests/evidence/workspace-tests.json`, and `README.md`,
@@ -127,12 +147,56 @@ Bodies should explain *why*. The diff already says what.
 - Sign off your commits if your employer asks for DCO; we don't require
   it but we accept it.
 
+**Before you open it.** Three habits account for most of the rework on this
+tracker, and each is cheap:
+
+- Run `scripts/ci-local.sh`. A compile error in a crate your machine cannot
+  build is still a compile error, and finding it costs a review round.
+- Read `git status` before committing. Plans, prompts, harness logs and scratch
+  directories belong outside the tree. Stage explicit paths rather than `-A`,
+  which also sweeps up anything a parallel session left behind.
+- Report only what you ran. If you filtered a test run by name, say which names.
+  A validation list shorter than the diff describes coverage that does not exist,
+  and the test it skipped is usually the one that fails.
+
+**Check `main` before calling a failure pre-existing.** `main` is green and its CI
+history is public. A failure that appears only on your branch is yours. One that
+appears only on your machine is worth an issue with the output, because a flake
+in this suite is worth knowing about either way.
+
+**Your first PR needs a maintainer to approve each CI run.** GitHub holds fork
+workflows until you have something merged here, and it holds them again after
+every push. An empty check board is not a green one, so wait for the runs to
+appear before drawing conclusions from them, and say so in the thread if they
+look stuck.
+
 ### 5. Review
 
 Every PR gets a review pass + a sonnet code-reviewer agent dispatch
 (automatic). Security-sensitive PRs (privilege boundary, IPC, validators,
 audit chain) also get a red-team agent dispatch. Aim for review turnaround
 under 48h; ping in the PR if you've been waiting longer.
+
+## Working with an AI assistant
+
+Use one if it helps. Several merged changes here were written with one, and
+[#274](https://github.com/lacs-project/sysknife/pull/274) is the model: the
+author named the tool that assisted, reviewed the whole diff themselves, and
+every figure in the description came from a run they had actually done.
+
+Two things are asked in return, and neither is about the tool.
+
+Read the diff before you open the PR. You are its author. Review here goes into
+tracing a change to a live path and mutation-testing the guards it touches, and
+that effort is wasted on a diff nobody has read.
+
+Do not let it write claims you have not checked. A validation checklist states
+what happened rather than offering a template to fill in. The costliest version
+of this is a confident summary attached to a branch that does not compile,
+because a reviewer who believes it stops reading.
+
+Disclosure is welcome and never counts against a PR. It tells a reviewer where to
+look harder, which helps both of us.
 
 ## Trust-boundary rules
 
