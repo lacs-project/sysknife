@@ -389,9 +389,10 @@ are scoped with clear acceptance criteria.
 ### Thanks
 
 Patches so far from [@ITSMERNB](https://github.com/ITSMERNB),
-[@918154429](https://github.com/918154429), [@Osheun](https://github.com/Osheun)
-and [@danial-razi](https://github.com/danial-razi). Every release names who fixed
-what in [CHANGELOG.md](CHANGELOG.md).
+[@QinXi-ai](https://github.com/QinXi-ai), [@Osheun](https://github.com/Osheun),
+[@danial-razi](https://github.com/danial-razi) and
+[@vsolano9](https://github.com/vsolano9). Every release names who fixed what in
+[CHANGELOG.md](CHANGELOG.md).
 
 If you send a patch, watching
 [Releases](https://github.com/lacs-project/sysknife/releases) is the quickest way
