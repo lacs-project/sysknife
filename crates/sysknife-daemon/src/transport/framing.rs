@@ -1,9 +1,6 @@
 use std::io;
+use sysknife_types::MAX_MESSAGE_BYTES;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-/// Maximum body size accepted by `recv`. Connections sending a larger
-/// length header are terminated immediately.
-pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FramingError {
@@ -335,22 +332,5 @@ mod tests {
         sender.send(b"second").await.unwrap();
         assert_eq!(recvr.recv().await.unwrap(), b"first");
         assert_eq!(recvr.recv().await.unwrap(), b"second");
-    }
-
-    /// Assert that the frame size limit is declared in exactly one place.
-    ///
-    /// The daemon (this crate), the CLI, and the Tauri shell each had their
-    /// own copy of the 4 MiB constant. If they diverge, a peer that raises
-    /// its limit will be rejected by the other side, causing a transport
-    /// error for work that already succeeded on the sender. This test
-    /// ensures the shared constant from `sysknife_daemon::transport::framing`
-    /// is used everywhere by verifying the constant compiles and is accessible
-    /// to downstream crates (CLI and shell import it).
-    #[test]
-    fn frame_limit_constants_agree() {
-        // The CLI and shell now import MAX_MESSAGE_BYTES from this crate.
-        // If they didn't, their builds would fail to compile.
-        // Here we just verify the constant is well-defined and accessible.
-        assert_eq!(MAX_MESSAGE_BYTES, 4 * 1024 * 1024);
     }
 }

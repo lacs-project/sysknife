@@ -37,7 +37,7 @@ use std::time::Duration;
 use serde_json::Value;
 use sysknife_brain::planner::PlanningError;
 use sysknife_brain::state_client::{CuratedState, StateClient};
-use sysknife_daemon::transport::framing::MAX_MESSAGE_BYTES;
+use sysknife_types::MAX_MESSAGE_BYTES;
 use sysknife_types::{ApprovalReceipt, PreviewEnvelope, ResultEnvelope, TransactionId};
 
 #[derive(Clone, Debug, PartialEq)]

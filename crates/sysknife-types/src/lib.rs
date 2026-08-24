@@ -5,6 +5,20 @@ use std::convert::TryFrom;
 use sysknife_proto::sysknife::v1 as proto;
 
 // ---------------------------------------------------------------------------
+// Framing / wire protocol
+// ---------------------------------------------------------------------------
+
+/// Maximum size of a single message exchanged over a sysknife socket, in bytes
+/// (4 MiB).
+///
+/// As a wire fact, the frame limit belongs to the protocol crate that every
+/// side already depends on, rather than to any one executor (the daemon), so
+/// that the daemon and the CLI agree on it without a dependency edge from a
+/// consumer up to a privileged producer. Duplicate declarations of the limit
+/// elsewhere are guarded against by `tests::frame_limit_is_declared_once`.
+pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+
+// ---------------------------------------------------------------------------
 // DistroHint — planner-facing snapshot of the running distro
 // ---------------------------------------------------------------------------
 
@@ -586,6 +600,35 @@ pub struct TransactionRecord {
     pub warnings: Vec<String>,
 }
 
+fn caller_role_code(value: CallerRole) -> i32 {
+    match value {
+        CallerRole::Observer => 1,
+        CallerRole::Dev => 2,
+        CallerRole::Admin => 3,
+        CallerRole::Boot => 4,
+    }
+}
+
+fn risk_level_code(value: RiskLevel) -> i32 {
+    match value {
+        RiskLevel::Low => 1,
+        RiskLevel::Medium => 2,
+        RiskLevel::High => 3,
+    }
+}
+
+fn job_state_code(value: JobState) -> i32 {
+    match value {
+        JobState::Queued => 1,
+        JobState::Running => 2,
+        JobState::Succeeded => 3,
+        JobState::Failed => 4,
+        JobState::Canceled => 5,
+        JobState::RolledBack => 6,
+        JobState::NeedsReboot => 7,
+    }
+}
+
 impl From<CallerRole> for proto::CallerRole {
     // Matched directly rather than round-tripping through the i32 code table
     // and unwrapping. The conversion is total, so it should not be able to
@@ -726,7 +769,7 @@ impl From<RequestEnvelope> for proto::RequestEnvelope {
             action_name: value.action_name,
             request_id: value.request_id,
             params_json: serde_json::to_string(&value.params).expect("json serialization"),
-            caller_role: i32::from(proto::CallerRole::from(value.caller_role)),
+            caller_role: caller_role_code(value.caller_role),
             request_hash: value.request_hash.into_inner(),
         }
     }
@@ -760,7 +803,7 @@ impl From<PreviewEnvelope> for proto::PreviewEnvelope {
     fn from(value: PreviewEnvelope) -> Self {
         Self {
             summary: value.summary,
-            risk_level: i32::from(proto::RiskLevel::from(value.risk_level)),
+            risk_level: risk_level_code(value.risk_level),
             current_state_json: serde_json::to_string(&value.current_state)
                 .expect("json serialization"),
             proposed_change_json: serde_json::to_string(&value.proposed_change)
@@ -807,7 +850,7 @@ impl TryFrom<proto::PreviewEnvelope> for PreviewEnvelope {
 impl From<ResultEnvelope> for proto::ResultEnvelope {
     fn from(value: ResultEnvelope) -> Self {
         Self {
-            status: i32::from(proto::JobState::from(value.status)),
+            status: job_state_code(value.status),
             summary: value.summary,
             warnings: value.warnings,
             job_id: value.job_id.unwrap_or_default(),
@@ -854,8 +897,8 @@ impl From<TransactionRecord> for proto::TransactionRecord {
             request_id: value.request_id,
             request_hash: value.request_hash,
             action_name: value.action_name,
-            risk_level: i32::from(proto::RiskLevel::from(value.risk_level)),
-            status: i32::from(proto::JobState::from(value.status)),
+            risk_level: risk_level_code(value.risk_level),
+            status: job_state_code(value.status),
             approval_id: value.approval_id.unwrap_or_default(),
             summary: value.summary,
             warnings: value.warnings,
@@ -939,5 +982,111 @@ mod caller_role_ordering_tests {
             CallerRole::Admin
         );
         assert_eq!(CallerRole::Boot.max(CallerRole::Dev), CallerRole::Boot);
+    }
+}
+
+#[cfg(test)]
+mod frame_limit_declaration_tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    /// Walk the workspace root: climb from this crate's manifest dir until a
+    /// `Cargo.toml` declaring `[workspace]` is found.
+    fn workspace_root() -> PathBuf {
+        let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        loop {
+            let manifest = dir.join("Cargo.toml");
+            if manifest.is_file() {
+                if let Ok(text) = fs::read_to_string(&manifest) {
+                    if text.contains("[workspace]") {
+                        return dir;
+                    }
+                }
+            }
+            if !dir.pop() {
+                panic!("could not locate the workspace root");
+            }
+        }
+    }
+
+    /// Collect every `.rs` file under `dir`, skipping build output.
+    fn walk_rs(dir: &Path, out: &mut Vec<PathBuf>) {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.file_name().is_some_and(|n| n == "target") {
+                    continue;
+                }
+                if path.is_dir() {
+                    walk_rs(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+    }
+
+    /// The 4 MiB frame limit must be declared in exactly one place.
+    ///
+    /// `MAX_MESSAGE_BYTES` is a wire fact and therefore lives only in
+    /// `sysknife-types` (the protocol crate every side depends on). The daemon
+    /// and CLI import it rather than redeclare it. If a second `4 MiB`
+    /// *constant* is added anywhere in the daemon or CLI (a re-introduced
+    /// `MAX_FRAME_BYTES`), the limit can silently diverge and one peer can
+    /// reject frames the other side already accepted. That regression is what
+    /// this test catches: it scans the workspace for constant *declarations*
+    /// carrying the 4 MiB initialiser and requires exactly one, in this crate.
+    ///
+    /// Lines that merely use the literal as a buffer size (e.g. a
+    /// `tokio::io::duplex(...)` in a test) or that reference the imported
+    /// constant are not declarations and are intentionally ignored.
+    #[test]
+    fn frame_limit_is_declared_once() {
+        let root = workspace_root();
+        let mut files: Vec<PathBuf> = Vec::new();
+        for crate_dir in [
+            "crates/sysknife-types",
+            "crates/sysknife-daemon",
+            "apps/sysknife-cli",
+        ] {
+            walk_rs(&root.join(crate_dir), &mut files);
+        }
+
+        let mut declarations: Vec<String> = Vec::new();
+        for path in &files {
+            let text = fs::read_to_string(path).unwrap();
+            for (idx, raw) in text.lines().enumerate() {
+                let line = raw.trim();
+                let is_const_decl = [
+                    "const ",
+                    "pub const ",
+                    "pub(crate) const ",
+                    "pub(super) const ",
+                ]
+                .iter()
+                .any(|p| line.starts_with(p));
+                // A declaration names a constant AND carries the 4 MiB value.
+                // Doc comments (start with `///`) and usages never both match.
+                if is_const_decl && line.contains("4 * 1024 * 1024") {
+                    declarations.push(format!("{}:{}", path.display(), idx + 1));
+                }
+            }
+        }
+
+        assert_eq!(
+            declarations.len(),
+            1,
+            "expected exactly one declaration of the 4 MiB frame limit, \
+             found {}:\n{:#?}",
+            declarations.len(),
+            declarations
+        );
+        let (decl_path, _line) = declarations[0].rsplit_once(':').unwrap();
+        let relativized = PathBuf::from(decl_path.replace(&format!("{}/", root.display()), ""));
+        assert_eq!(
+            relativized,
+            Path::new("crates/sysknife-types/src/lib.rs"),
+            "the single frame-limit declaration must live in sysknife-types"
+        );
     }
 }

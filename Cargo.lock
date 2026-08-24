@@ -4882,7 +4882,6 @@ dependencies = [
  "serde_json",
  "sysknife-brain",
  "sysknife-core",
- "sysknife-daemon",
  "tauri",
  "tauri-build",
  "tempfile",
