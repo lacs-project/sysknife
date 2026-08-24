@@ -390,9 +390,10 @@ are scoped with clear acceptance criteria.
 
 Patches so far from [@ITSMERNB](https://github.com/ITSMERNB),
 [@QinXi-ai](https://github.com/QinXi-ai), [@Osheun](https://github.com/Osheun),
-[@danial-razi](https://github.com/danial-razi) and
-[@vsolano9](https://github.com/vsolano9). Every release names who fixed what in
-[CHANGELOG.md](CHANGELOG.md).
+[@danial-razi](https://github.com/danial-razi),
+[@vsolano9](https://github.com/vsolano9) and
+[@Georgefifth](https://github.com/Georgefifth). Every release names who fixed
+what in [CHANGELOG.md](CHANGELOG.md).
 
 If you send a patch, watching
 [Releases](https://github.com/lacs-project/sysknife/releases) is the quickest way

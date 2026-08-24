@@ -444,6 +444,10 @@ the same as "I checked and it's fine." When the three checks disagree, the
 worst wins, and `1` outranks `2`: if anything is provably broken, saying
 "could not verify" would understate what is known.
 
+When the store cannot be read, the cross-chain binding status is
+`not_checked`, not `consistent`; no transaction or approval-event rows were
+available to compare.
+
 ## Limits and honest scope {#limits-and-honest-scope}
 
 The chain is strong evidence, not a magic guarantee. Be precise about what

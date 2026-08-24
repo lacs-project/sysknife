@@ -104,7 +104,10 @@ pub(crate) fn operator_safe(s: &str) -> String {
             // C1 controls: U+009B is CSI to a terminal in 8-bit mode.
             c if ('\u{80}'..='\u{9f}').contains(&c) => false,
             // Bidi overrides and isolates — reorder what is displayed.
-            '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => false,
+            // U+2028/U+2029 sit in the gap below the bidi arm; terminals
+            // render them as nothing, so they belong in the same drop set
+            // (#274 widened the brain-side range the same way).
+            '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => false,
             // Zero-width and byte-order marks — hide text in plain sight.
             '\u{200b}'..='\u{200f}' | '\u{feff}' => false,
             // U+061C ARABIC LETTER MARK is a bidi control in exactly the way
@@ -276,6 +279,9 @@ mod tests {
         for ch in [
             '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}',
             '\u{2068}', '\u{2069}', '\u{200b}', '\u{200e}', '\u{feff}',
+            // U+2028/U+2029 sit in the gap between the U+200F and U+202A arms.
+            // Terminals render them as nothing, same class as the rest.
+            '\u{2028}', '\u{2029}',
         ] {
             let safe = operator_safe(&format!("remove{ch}nothing"));
             assert!(!safe.contains(ch), "U+{:04X} survived: {safe:?}", ch as u32);

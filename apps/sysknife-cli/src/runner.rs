@@ -1122,9 +1122,7 @@ fn cannot_verify_all(reason: String) -> AuditVerification {
             reason: reason.clone(),
         },
         events: VerifyOutcome::CannotVerify { reason },
-        binding: BindingOutcome::Consistent {
-            bindings_checked: 0,
-        },
+        binding: BindingOutcome::NotChecked,
         // The store or the key could not be opened, so no census was taken.
         // `None`, not a census of zero rows: a database nobody could read and an
         // empty one that read fine must not serialize the same way.
@@ -1377,17 +1375,7 @@ fn emit_verification(
             "rows_without_principal": census.map(|c| c.not_recorded()),
             "rows_unattested": census.map(|c| c.unattested()),
             "rows_naming_no_account": census.map(|c| c.unnamed()),
-            "binding": match &verification.binding {
-                BindingOutcome::Consistent { bindings_checked } => json!({
-                    "status": "consistent",
-                    "bindings_checked": bindings_checked,
-                }),
-                BindingOutcome::MissingEvent { transaction_seq, event_tip } => json!({
-                    "status": "missing_event",
-                    "transaction_seq": transaction_seq,
-                    "event_tip": event_tip,
-                }),
-            },
+            "binding": binding_json(&verification.binding),
         });
         log.println(
             &serde_json::to_string_pretty(&payload)
@@ -1473,6 +1461,9 @@ fn emit_verification(
                 "OK: {bindings_checked} row(s) still match the approval event they committed to"
             ));
         }
+        BindingOutcome::NotChecked => {
+            log.println("CANNOT VERIFY binding: transaction or approval-event rows were not read");
+        }
         BindingOutcome::MissingEvent {
             transaction_seq,
             event_tip,
@@ -1518,6 +1509,27 @@ fn outcome_json(outcome: &sysknife_daemon::audit_chain::VerifyOutcome) -> serde_
         VerifyOutcome::CannotVerify { reason } => json!({
             "status": "cannot_verify",
             "reason": reason,
+        }),
+    }
+}
+
+fn binding_json(outcome: &sysknife_daemon::audit_chain::BindingOutcome) -> serde_json::Value {
+    use sysknife_daemon::audit_chain::BindingOutcome;
+    match outcome {
+        BindingOutcome::Consistent { bindings_checked } => json!({
+            "status": "consistent",
+            "bindings_checked": bindings_checked,
+        }),
+        BindingOutcome::NotChecked => json!({
+            "status": "not_checked",
+        }),
+        BindingOutcome::MissingEvent {
+            transaction_seq,
+            event_tip,
+        } => json!({
+            "status": "missing_event",
+            "transaction_seq": transaction_seq,
+            "event_tip": event_tip,
         }),
     }
 }
@@ -2292,18 +2304,32 @@ mod tests {
     /// nothing was found: that is the same confusion as the counter this release
     /// replaced, one level up.
     #[test]
-    fn the_json_report_distinguishes_no_census_from_a_census_of_nothing() {
-        use sysknife_daemon::audit_chain::VerifyOutcome;
-        let text = rendered(
-            VerifyOutcome::CannotVerify {
-                reason: "audit database not found".to_string(),
+    fn the_json_report_marks_an_unreadable_binding_not_checked() {
+        use sysknife_daemon::audit_chain::BindingOutcome;
+        let verification = cannot_verify_all("audit database not found".to_string());
+
+        assert_eq!(verification.binding, BindingOutcome::NotChecked);
+        assert_eq!(verification.exit_code(), 2);
+        assert_eq!(binding_json(&verification.binding)["status"], "not_checked");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("verify.log");
+        let log = Logger::new(Some(&path)).expect("logger");
+        emit_verification(
+            &crate::cli::AuditVerifyArgs {
+                json: true,
+                pubkey: None,
             },
+            &log,
+            &verification,
+            "/tmp/test.db",
             None,
-            true,
         );
+        let text = std::fs::read_to_string(&path).expect("logger wrote the rendered output");
 
         let parsed: serde_json::Value =
             serde_json::from_str(&text).expect("--json must emit one JSON document");
+        assert_eq!(parsed["binding"]["status"], "not_checked");
         for key in [
             "attributed_rows",
             "unattributed_rows",

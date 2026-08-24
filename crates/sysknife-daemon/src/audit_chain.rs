@@ -1082,6 +1082,9 @@ fn parse_event_kind(raw: &str) -> Option<AuditEventKind> {
 pub enum BindingOutcome {
     /// Every committed tip is present in the event chain.
     Consistent { bindings_checked: u64 },
+    /// The transaction or approval-event rows could not be read, so the
+    /// cross-chain binding check did not run.
+    NotChecked,
     /// A transaction row committed to an event tip that no longer exists —
     /// approval events were deleted from the end of the event chain, which the
     /// event chain walk alone cannot see.
@@ -1417,10 +1420,12 @@ pub fn verify_all_with_pubkey(
 }
 
 /// Exit code for the binding check, on the same scale as
-/// [`outcome_to_exit_code`]: a missing event is a detected tamper (`1`).
+/// [`outcome_to_exit_code`]: a missing event is a detected tamper (`1`), while
+/// a check that could not run is inconclusive (`2`).
 pub fn binding_outcome_to_exit_code(outcome: &BindingOutcome) -> i32 {
     match outcome {
         BindingOutcome::Consistent { .. } => 0,
+        BindingOutcome::NotChecked => 2,
         BindingOutcome::MissingEvent { .. } => 1,
     }
 }
@@ -2915,7 +2920,7 @@ mod tests {
     }
 
     #[test]
-    fn binding_exit_codes_split_clean_from_tampered() {
+    fn binding_exit_codes_split_clean_tampered_and_unchecked() {
         assert_eq!(
             binding_outcome_to_exit_code(&BindingOutcome::Consistent {
                 bindings_checked: 0
@@ -2929,6 +2934,7 @@ mod tests {
             }),
             1
         );
+        assert_eq!(binding_outcome_to_exit_code(&BindingOutcome::NotChecked), 2);
     }
 
     #[test]

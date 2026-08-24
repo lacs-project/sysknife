@@ -12,6 +12,19 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-08-24
+
+Four fixes from outside contributors, three of them closing the same class of
+gap. [#256](https://github.com/lacs-project/sysknife/pull/256) stopped a saved
+preference from closing the prompt envelope that contains it, then
+[#274](https://github.com/lacs-project/sysknife/pull/274) and
+[#280](https://github.com/lacs-project/sysknife/pull/280) removed U+2028 and
+U+2029 from both paths that render untrusted text: the one the model reads and
+the one the operator approves from.
+[#282](https://github.com/lacs-project/sysknife/pull/282) took the last
+hand-typed wire numbers out of the envelope encoder. No public item was removed,
+renamed or re-signed, so this is a patch.
+
 ### Fixed
 
 - **Two Unicode line separators reached the model as visual line breaks.**
@@ -64,6 +77,24 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   The shell script now reads `CLAIM_FILES` from the Python module, and refuses to
   report success when that read comes back empty, which `set -euo pipefail` cannot
   catch on its own inside process substitution. Thanks to @Osheun.
+- **Outbound envelope encoding hand-typed the wire numbers while inbound
+  trusted the generated enum.** ([#281](https://github.com/lacs-project/sysknife/issues/281))
+  The three `From<…> for proto::…` conversions existed but were unused, and the
+  encode path wrote integers from three literal match tables instead. A
+  renumbered `.proto` would have moved the decode side with the file while the
+  encode side kept writing the old numbers — a peer reading `High` as `Medium`,
+  which decides whether an approval receipt is required. The encode path now
+  goes through the same prost-generated enums the decode path already trusts
+  (`i32::from(proto::X::from(value))`), and the three tables are deleted.
+- **`operator_safe` kept U+2028 and U+2029, so the invisible-character set it
+  calls complete was not.** ([#276](https://github.com/lacs-project/sysknife/issues/276))
+  The drop arms covered `U+200B..=U+200F` and `U+202A..=U+202E`, leaving the two
+  line/paragraph separators in the gap between them. Terminals render both as
+  nothing, which is exactly the class the function drops by name: a plan summary
+  reading `remove nothing` could hide a different target from the operator
+  approving it. The bidi arm is now `U+2028..=U+202E`, the same widening
+  [#274](https://github.com/lacs-project/sysknife/pull/274) applied on the
+  model-facing path. Thanks to @Georgefifth.
 
 ### Documentation
 

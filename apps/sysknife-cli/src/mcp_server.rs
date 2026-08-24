@@ -310,8 +310,9 @@ pub struct AuditVerifyReport {
     /// `"cannot_verify"`. Reported separately from `status` so a clean
     /// authorisation trail can never paper over a tampered approval trail.
     pub approval_events_status: String,
-    /// `"consistent"` or `"missing_event"`: whether every event tip committed
-    /// by a transaction row is still present in the event chain.
+    /// `"consistent"`, `"not_checked"`, or `"missing_event"`: whether every
+    /// event tip committed by a transaction row is still present in the event
+    /// chain.
     pub binding_status: String,
     /// Backend label: a filesystem path for SQLite, the literal `"postgres"`
     /// for Postgres deployments.
@@ -1035,11 +1036,20 @@ fn outcome_label(outcome: &sysknife_daemon::audit_chain::VerifyOutcome) -> &'sta
     }
 }
 
+fn binding_outcome_label(outcome: &sysknife_daemon::audit_chain::BindingOutcome) -> &'static str {
+    use sysknife_daemon::audit_chain::BindingOutcome;
+    match outcome {
+        BindingOutcome::Consistent { .. } => "consistent",
+        BindingOutcome::NotChecked => "not_checked",
+        BindingOutcome::MissingEvent { .. } => "missing_event",
+    }
+}
+
 fn outcome_to_report(
     verification: sysknife_daemon::audit_chain::AuditVerification,
     backend: String,
 ) -> AuditVerifyReport {
-    use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
+    use sysknife_daemon::audit_chain::VerifyOutcome;
 
     // One helper for both report arms and for the `CannotVerify` arm below, so
     // the census can only reach the report one way. The first version of this
@@ -1055,11 +1065,7 @@ fn outcome_to_report(
         VerifyOutcome::CannotVerify { .. } => 0,
     };
     let approval_events_status = outcome_label(&verification.events).to_string();
-    let binding_status = match &verification.binding {
-        BindingOutcome::Consistent { .. } => "consistent",
-        BindingOutcome::MissingEvent { .. } => "missing_event",
-    }
-    .to_string();
+    let binding_status = binding_outcome_label(&verification.binding).to_string();
 
     // The detail fields describe the first *break*, wherever it was found. A
     // broken transaction chain is reported ahead of a broken event chain
@@ -1158,6 +1164,8 @@ fn with_socket_caveat(mut report: AuditVerifyReport, caveat: Option<String>) -> 
 }
 
 fn cannot_verify_report(backend: String, reason: String) -> AuditVerifyReport {
+    use sysknife_daemon::audit_chain::BindingOutcome;
+
     AuditVerifyReport {
         status: "cannot_verify".to_string(),
         rows_checked: 0,
@@ -1169,7 +1177,7 @@ fn cannot_verify_report(backend: String, reason: String) -> AuditVerifyReport {
         backend,
         events_checked: 0,
         approval_events_status: "cannot_verify".to_string(),
-        binding_status: "consistent".to_string(),
+        binding_status: binding_outcome_label(&BindingOutcome::NotChecked).to_string(),
         // The chain verdict for a report built before any row was read. Callers
         // that reach this constructor overwrite it when they know better.
         chain_status: "cannot_verify".to_string(),
@@ -1383,9 +1391,16 @@ mod tests {
     /// `null`. An agent alerting on attribution must be able to tell "no data" from
     /// "no account named", which a `0` here would hide.
     #[test]
-    fn a_report_for_a_store_that_was_never_read_nulls_every_count() {
+    fn an_unreadable_store_marks_binding_not_checked_and_nulls_every_count() {
+        use sysknife_daemon::audit_chain::BindingOutcome;
+
         let report = cannot_verify_report("/tmp/store.sqlite".into(), "no key".into());
 
+        assert_eq!(
+            binding_outcome_label(&BindingOutcome::NotChecked),
+            "not_checked"
+        );
+        assert_eq!(report.binding_status, "not_checked");
         assert!(report.attributed_rows.is_none());
         assert!(report.unattributed_rows.is_none());
         assert!(report.rows_without_principal.is_none());
