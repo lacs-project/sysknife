@@ -338,6 +338,50 @@ function digestFor(sumsText, filename) {
   return entry ? entry.split(/\s+/)[0].toLowerCase() : null;
 }
 
+/**
+ * Look up `filename`'s digest in an operator-supplied pin file, or throw.
+ *
+ * `digestFor` returns null for an asset the file does not name, which is the
+ * right answer to "is it in there". It is the wrong thing to hand to the gate:
+ * asset names carry the release tag, so a pin file written for one release
+ * names nothing in the next, and passing that null on skips the check instead
+ * of failing it — silently disabling a control the operator switched on, which
+ * is exactly what the malformed-digest branch in verifySha256 refuses to do.
+ *
+ * `sourcePath` is in the message because the operator's next move is to edit
+ * that file, and because "unpinned" and "pinned against the wrong file" need
+ * to be told apart.
+ */
+function pinnedDigestFor(sumsText, filename, sourcePath) {
+  const pinned = digestFor(sumsText, filename);
+  if (pinned === null) {
+    throw new Error(
+      `Pinned digests were requested, but ${sourcePath} does not name "${filename}". ` +
+      `Asset names carry the release tag, so a pin file written for an earlier release ` +
+      `will not name this one. Add the digest for "${filename}" or unset ` +
+      `SYSKNIFE_PINNED_SHA256SUMS. Refusing to install rather than ignore the pin.`
+    );
+  }
+  return pinned;
+}
+
+/**
+ * Build the per-asset pin lookup the download path hands to `verifySha256`.
+ *
+ * This is a named function rather than a closure at the call site so the wiring
+ * itself is testable. The defect this whole path fixes was a call site handing
+ * the gate a value the lookup never refused; a test that only calls
+ * `pinnedDigestFor` proves the lookup throws and proves nothing about what the
+ * installer asks. Reverting this to `digestFor` has to fail a test.
+ *
+ * No pin file loaded means no pin, which is `undefined` — the one value
+ * `verifySha256` treats as unpinned. `null` deliberately is not.
+ */
+function pinLookup(pinnedSumsText, pinnedSumsPath) {
+  return (asset) =>
+    (pinnedSumsText ? pinnedDigestFor(pinnedSumsText, asset, pinnedSumsPath) : undefined);
+}
+
 function verifySha256(data, sumsText, filename, opts = {}) {
   const lines = sumsText
     .split('\n')
@@ -366,11 +410,14 @@ function verifySha256(data, sumsText, filename, opts = {}) {
   // release itself is authentic. An operator who obtained the digest
   // independently — from the signed git tag, an internal mirror, or a
   // config-management value — can require it here.
-  if (opts.pinnedSha256 !== undefined && opts.pinnedSha256 !== null) {
+  if (opts.pinnedSha256 !== undefined) {
     const pinned = String(opts.pinnedSha256).trim().toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(pinned)) {
       // Never treat an unusable pin as "no pin": that would silently disable a
-      // control the operator deliberately switched on.
+      // control the operator deliberately switched on. `null` counts as
+      // unusable — it is what a lookup returns when the pin file does not name
+      // the asset, and it used to fall through this guard as though unpinned.
+      // Only `undefined`, meaning no pin was requested at all, skips the gate.
       throw new Error(
         `Pinned SHA256 for ${filename} is not a valid digest: ${JSON.stringify(opts.pinnedSha256)}. ` +
         `Expected 64 hex characters. Refusing to install rather than ignore the pin.`
@@ -637,13 +684,15 @@ async function installBinaryIfMissing(opts) {
   if (pinnedSumsPath) {
     try {
       pinnedSumsText = fs.readFileSync(pinnedSumsPath, 'utf8');
-      ok(`Pinning digests against ${pinnedSumsPath}`);
+      // Says what has happened, not what will. Enforcement is reported per
+      // asset below, once a digest has actually been found and matched.
+      ok(`Loaded pinned digests from ${pinnedSumsPath}`);
     } catch (e) {
       err(`SYSKNIFE_PINNED_SHA256SUMS is set but ${pinnedSumsPath} could not be read: ${e.message}`);
       process.exit(1);
     }
   }
-  const pinFor = (asset) => (pinnedSumsText ? digestFor(pinnedSumsText, asset) : undefined);
+  const pinFor = pinLookup(pinnedSumsText, pinnedSumsPath);
 
   // --- Download and verify sysknife CLI ---
   console.log();
@@ -658,8 +707,10 @@ async function installBinaryIfMissing(opts) {
   try {
     const digest = verifySha256(cliBuf, sumsText, cliAsset, { pinnedSha256: pinFor(cliAsset) });
     // Print the digest rather than only "verified": a checksum nobody can see
-    // cannot be cross-checked against a signed tag or an internal mirror.
-    ok(`SHA256 verified: ${cliAsset}  ${digest}`);
+    // cannot be cross-checked against a signed tag or an internal mirror. The
+    // "pinned" marker is printed only on this line, after the pin was found and
+    // matched, so it can never appear for an asset that went unpinned.
+    ok(`SHA256 verified${pinnedSumsText ? ' (pinned)' : ''}: ${cliAsset}  ${digest}`);
   } catch (e) {
     err(e.message);
     process.exit(1);
@@ -678,7 +729,7 @@ async function installBinaryIfMissing(opts) {
     const digest = verifySha256(daemonBuf, sumsText, daemonAsset, { pinnedSha256: pinFor(daemonAsset) });
     // Print the digest rather than only "verified": a checksum nobody can see
     // cannot be cross-checked against a signed tag or an internal mirror.
-    ok(`SHA256 verified: ${daemonAsset}  ${digest}`);
+    ok(`SHA256 verified${pinnedSumsText ? ' (pinned)' : ''}: ${daemonAsset}  ${digest}`);
   } catch (e) {
     err(e.message);
     process.exit(1);
@@ -710,6 +761,8 @@ module.exports = {
   detectPlatform,
   verifySha256,
   digestFor,
+  pinnedDigestFor,
+  pinLookup,
   isOnPath,
   stageForPrivilegedInstall,
   fetchLatestRelease,
