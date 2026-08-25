@@ -23,7 +23,7 @@ import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { verifySha256, digestFor, pinnedDigestFor } = require('../install-binary.js');
+const { verifySha256, digestFor, pinnedDigestFor, pinLookup } = require('../install-binary.js');
 
 const PAYLOAD = Buffer.from('#!/bin/sh\necho sysknife\n');
 const DIGEST = crypto.createHash('sha256').update(PAYLOAD).digest('hex');
@@ -143,4 +143,62 @@ test('an absent pin option still means no pin', () => {
   assert.equal(verifySha256(PAYLOAD, SUMS, ASSET), DIGEST);
   assert.equal(verifySha256(PAYLOAD, SUMS, ASSET, {}), DIGEST);
   assert.equal(verifySha256(PAYLOAD, SUMS, ASSET, { pinnedSha256: undefined }), DIGEST);
+});
+
+// ---------------------------------------------------------------------------
+// The wiring, not just the lookup.
+//
+// Every test above calls `pinnedDigestFor` directly, so all of them pass with
+// the download path still asking `digestFor` — the exact line this change
+// fixes. These pin what the installer builds and hands to the gate.
+// ---------------------------------------------------------------------------
+
+test('the lookup the installer builds refuses an asset a loaded pin file does not name', () => {
+  const pinFor = pinLookup(STALE_PINS, PINS_PATH);
+  assert.throws(
+    () => pinFor(NEW_ASSET),
+    (e) => {
+      assert.ok(
+        e.message.includes(NEW_ASSET) && e.message.includes(PINS_PATH),
+        `error must name the asset and the pin file: ${e.message}`,
+      );
+      return true;
+    },
+    'a lookup built over a stale pin file must refuse, not return null',
+  );
+});
+
+test('the lookup returns the pinned digest for an asset the file does name', () => {
+  assert.equal(pinLookup(STALE_PINS, PINS_PATH)(OLD_ASSET), DIGEST);
+});
+
+test('with no pin file loaded the lookup yields undefined, the only unpinned value', () => {
+  // Not null: verifySha256 takes null down the unusable-pin path on purpose,
+  // so a lookup returning it would refuse every unpinned install.
+  for (const empty of [null, '', undefined]) {
+    const pinFor = pinLookup(empty, undefined);
+    assert.equal(pinFor(ASSET), undefined);
+    assert.equal(
+      verifySha256(PAYLOAD, SUMS, ASSET, { pinnedSha256: pinFor(ASSET) }),
+      DIGEST,
+      'an install with no pin file must still verify against the release sums',
+    );
+  }
+});
+
+test('the value the lookup produces is what the gate enforces', () => {
+  // The end-to-end shape of the defect: a pin file naming a different release
+  // must stop the install at verifySha256, through the lookup rather than
+  // around it.
+  const pinFor = pinLookup(STALE_PINS, PINS_PATH);
+  assert.throws(
+    () => verifySha256(PAYLOAD, SUMS, NEW_ASSET, { pinnedSha256: pinFor(NEW_ASSET) }),
+    (e) => {
+      assert.ok(
+        e.message.includes(NEW_ASSET) && e.message.includes(PINS_PATH),
+        `the refusal must come from the pin lookup, naming both: ${e.message}`,
+      );
+      return true;
+    },
+  );
 });

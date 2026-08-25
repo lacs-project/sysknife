@@ -365,6 +365,23 @@ function pinnedDigestFor(sumsText, filename, sourcePath) {
   return pinned;
 }
 
+/**
+ * Build the per-asset pin lookup the download path hands to `verifySha256`.
+ *
+ * This is a named function rather than a closure at the call site so the wiring
+ * itself is testable. The defect this whole path fixes was a call site handing
+ * the gate a value the lookup never refused; a test that only calls
+ * `pinnedDigestFor` proves the lookup throws and proves nothing about what the
+ * installer asks. Reverting this to `digestFor` has to fail a test.
+ *
+ * No pin file loaded means no pin, which is `undefined` — the one value
+ * `verifySha256` treats as unpinned. `null` deliberately is not.
+ */
+function pinLookup(pinnedSumsText, pinnedSumsPath) {
+  return (asset) =>
+    (pinnedSumsText ? pinnedDigestFor(pinnedSumsText, asset, pinnedSumsPath) : undefined);
+}
+
 function verifySha256(data, sumsText, filename, opts = {}) {
   const lines = sumsText
     .split('\n')
@@ -675,8 +692,7 @@ async function installBinaryIfMissing(opts) {
       process.exit(1);
     }
   }
-  const pinFor = (asset) =>
-    (pinnedSumsText ? pinnedDigestFor(pinnedSumsText, asset, pinnedSumsPath) : undefined);
+  const pinFor = pinLookup(pinnedSumsText, pinnedSumsPath);
 
   // --- Download and verify sysknife CLI ---
   console.log();
@@ -746,6 +762,7 @@ module.exports = {
   verifySha256,
   digestFor,
   pinnedDigestFor,
+  pinLookup,
   isOnPath,
   stageForPrivilegedInstall,
   fetchLatestRelease,
