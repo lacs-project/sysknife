@@ -49,9 +49,38 @@ apt and a read-only root, so the Debian-family action set cannot apply.
 | **Ubuntu 22.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, **79/79**, recorded in `ubuntu-22.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — zero misses, `cassette_audit.verdict` `ok`. This is the release whose twin exercises the recorded-rejection path: story 101's first call was refused by the provider (`tool_use_failed`), and the replay serves the refusal, the correction and the answer, 81 calls for 79 stories | **Validated** |
 | **Ubuntu 26.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, **79/79**, recorded in `ubuntu-26.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — zero misses, `cassette_audit.verdict` `ok`; plus sudo-rs sudoers verification (26.04 ships sudo-rs 0.2.x; `visudo -cf` parses the SysKnife sudoers and every grant — including the trailing-`*` wildcard grants — is honoured) | **Validated** |
 | **Every other Ubuntu 20.04+ release** (20.04, 20.10, 21.x, 23.x, 25.x, 26.10, …) | Ubuntu/apt family | Eligible by release family; no per-release VM run | **Smoke-tested** |
-| **Fedora Silverblue 44** | rpm-ostree, Flatpak, toolbox, firewalld, systemd, containers | Harness and fixture coverage; no current live-VM run | **Experimental** (eligible, awaiting a fresh VM run) |
-| **Other Fedora Atomic 41+ variants** | rpm-ostree family | Detection and shared action tests | **Experimental** (eligible, awaiting a fresh VM run) |
+| **Fedora Silverblue 44** | rpm-ostree, Flatpak, toolbox, firewalld, systemd, containers | Harness and fixture coverage; no live-VM run on this release | **Blocked** (`make install` does not complete on rpm-ostree, [#301](https://github.com/lacs-project/sysknife/issues/301)) |
+| **Other Fedora Atomic 41+ variants** | rpm-ostree family | Detection and shared action tests, plus a live VM run on Fedora 43 Silverblue (2026-08-24) that provisioned and then stopped at `make install` | **Blocked** (`make install` does not complete on rpm-ostree, [#301](https://github.com/lacs-project/sysknife/issues/301)) |
 | **Fedora Workstation / Server** | `dnf` family incomplete | Detection tests only | **Experimental** |
+
+## Fedora Atomic cannot be installed yet
+
+A live run on Fedora 43 Silverblue on 2026-08-24 provisioned the guest and then
+stopped:
+
+```text
+install -Dm 755 packaging/sysknife-apt-pin-edit /usr/lib/sysknife/apt-pin-edit
+install: cannot create directory '/usr/lib/sysknife': Read-only file system
+```
+
+`HELPERS` defaults to `/usr/lib/sysknife`, and rpm-ostree mounts `/usr`
+read-only. The twelve privileged helper scripts have nowhere to go, and the path
+is not a free choice: twelve daemon constants and twelve `NOPASSWD` sudoers
+grants name it. [#301](https://github.com/lacs-project/sysknife/issues/301)
+carries the options and
+[discussion #307](https://github.com/lacs-project/sysknife/discussions/307) is
+where the shape is being argued.
+
+`make install` no longer discovers this halfway. `daemon-install-preflight`
+checks every directory in `INSTALL_DIRS` before the first write and refuses the
+whole install, naming the directories at fault. Before that, the run had already
+written the daemon binary, the systemd unit, the polkit rules and all twelve
+sudo grants, leaving live grants for helper scripts that did not exist.
+
+Everything above the install still holds: detection, the rpm-ostree action
+family and the atomic story family are implemented and covered by the workspace
+suite. What is missing is a way to put the helpers somewhere the daemon's own
+grants already point.
 
 The deterministic workspace baseline is 1,772 Rust tests plus 72 frontend
 tests. Those tests verify action construction, policy, approval, storage, and

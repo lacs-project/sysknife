@@ -26,9 +26,16 @@ POLKIT      ?= /usr/share/polkit-1/rules.d
 SUDOERS     ?= /etc/sudoers.d
 HELPERS     ?= /usr/lib/sysknife
 
+# Every directory daemon-install writes into, in one place so the preflight
+# below cannot fall behind the recipe. tests/release/install-paths.test.sh
+# derives the recipe's own $(VAR) uses and fails if this list disagrees.
+INSTALL_DIRS = $(BINDIR) $(SYSUSERS) $(TMPFILES) $(SYSTEMD) $(POLKIT) \
+               $(SUDOERS) $(HELPERS)
+
 CARGO_BUILD_FLAGS ?= --release --locked
 
-.PHONY: build install uninstall daemon-install cli-install daemon-uninstall cli-uninstall check
+.PHONY: build install uninstall daemon-install daemon-install-preflight \
+	cli-install daemon-uninstall cli-uninstall check
 
 ## ── Build ────────────────────────────────────────────────────────────────────
 
@@ -38,6 +45,39 @@ CARGO_BUILD_FLAGS ?= --release --locked
 build:
 	cargo build $(CARGO_BUILD_FLAGS) -p sysknife-daemon -p sysknife-cli
 	@echo "Build complete. Binaries: target/release/sysknife-daemon, target/release/sysknife"
+
+## ── Preflight ────────────────────────────────────────────────────────────────
+
+# Refuse an install that cannot finish, before it writes anything.
+#
+# daemon-install is a sequence of `install` calls with no rollback, so a
+# directory that turns out to be unwritable halfway leaves a working systemd
+# unit and twelve sudo grants naming helper scripts that were never installed.
+# That is worse than not installing at all: the grants are live and their
+# targets are absent. Observed on Fedora Atomic, where /usr is read-only and
+# $(HELPERS) defaults underneath it (see issue #301).
+#
+# `install -D` creates missing parents, so the thing to test is the nearest
+# ancestor that exists, not the leaf.
+daemon-install-preflight:
+	@unwritable=""; \
+	for d in $(INSTALL_DIRS); do \
+		probe="$$d"; \
+		while [ ! -d "$$probe" ] && [ "$$probe" != "/" ]; do \
+			probe="$$(dirname "$$probe")"; \
+		done; \
+		[ -w "$$probe" ] || unwritable="$$unwritable $$d"; \
+	done; \
+	if [ -n "$$unwritable" ]; then \
+		echo "make: refusing to install; nothing has been written." >&2; \
+		echo "" >&2; \
+		echo "These directories are not writable:" >&2; \
+		for d in $$unwritable; do echo "  $$d" >&2; done; \
+		echo "" >&2; \
+		echo "On an rpm-ostree host (Silverblue, Kinoite, Sericea, Onyx)" >&2; \
+		echo "/usr is read-only. See docs/distro-support.md and issue #301." >&2; \
+		exit 1; \
+	fi
 
 ## ── Install ──────────────────────────────────────────────────────────────────
 
@@ -51,7 +91,7 @@ cli-install: build
 	install -Dm 755 target/release/sysknife $(BINDIR)/sysknife
 	@echo "CLI installed: $(BINDIR)/sysknife"
 
-daemon-install: build
+daemon-install: daemon-install-preflight build
 	install -Dm 755 target/release/sysknife-daemon $(BINDIR)/sysknife-daemon
 
 	# System user and group (idempotent via systemd-sysusers).

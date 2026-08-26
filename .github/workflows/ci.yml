@@ -86,6 +86,9 @@ jobs:
       - name: Check the docs share cards name an image the build produces
         run: bash tests/release/docs-share-cards.test.sh
 
+      - name: Check the install knows every directory it writes into
+        run: bash tests/release/install-paths.test.sh
+
       - name: Check provider parity across E2E entry points
         run: bash tests/e2e/provider-parity.test.sh
 

@@ -282,6 +282,7 @@ run_hygiene_group() {
     run_step 'hygiene: story-metadata.test.sh' bash "$repo_root/tests/e2e/story-metadata.test.sh"
     run_step 'hygiene: vm-sync-parity.test.sh' bash "$repo_root/tests/e2e/vm-sync-parity.test.sh"
     run_step 'hygiene: docs-share-cards.test.sh' bash "$repo_root/tests/release/docs-share-cards.test.sh"
+    run_step 'hygiene: install-paths.test.sh' bash "$repo_root/tests/release/install-paths.test.sh"
 
     if have markdownlint-cli2; then
         run_step 'hygiene: markdownlint-cli2' hygiene_markdownlint
