@@ -126,9 +126,12 @@ ready the maintainer regenerates it at merge. Whoever merges is what moves the
 figure, so whoever merges carries it. If `rust` is red only on the baseline, the
 PR is not blocked on you.
 
-`scripts/test_baseline.sh` names both numbers when they disagree
-(`rust suite has 1772 tests, baseline says 1771`), so a red run tells you the
-answer rather than setting a puzzle.
+`scripts/test_baseline.sh` names both numbers when they disagree, in the form
+`rust suite has <measured> tests, baseline says <recorded>`, so a red run tells
+you the answer rather than setting a puzzle. (Real digits are not written here on
+purpose: this file is screened by `scripts/check_evidence_claims.py`, and an
+illustrative figure reads as a published claim. That screen caught this very
+paragraph.)
 
 **A change that touches no Rust skips the Rust gate.** The workspace suite exists
 to stop a Rust regression reaching `main`, and a diff with no `.rs` file in it
