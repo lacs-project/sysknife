@@ -1148,8 +1148,7 @@ pub(crate) async fn verify_sqlite(
         ));
     }
     if !db_path.exists() {
-        let sudo_hint = if db_path
-            == std::path::Path::new(sysknife_core::PRODUCTION_DATABASE_PATH)
+        let sudo_hint = if db_path == std::path::Path::new(sysknife_core::PRODUCTION_DATABASE_PATH)
         {
             "; the system daemon's store is root-owned, so run this under sudo or \
              set $SYSKNIFE_DATABASE_PATH"

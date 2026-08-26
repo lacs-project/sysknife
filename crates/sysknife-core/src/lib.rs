@@ -358,9 +358,7 @@ mod tests {
             "EACCES must not be treated as missing"
         );
         assert!(
-            !super::path_is_present_result(Err(std::io::Error::from(
-                std::io::ErrorKind::NotFound
-            ))),
+            !super::path_is_present_result(Err(std::io::Error::from(std::io::ErrorKind::NotFound))),
             "ENOENT remains missing"
         );
     }
