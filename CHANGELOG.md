@@ -12,6 +12,114 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-08-26
+
+The middle digit moves because [#289](https://github.com/lacs-project/sysknife/pull/289)
+added a variant to `BindingOutcome`, a public enum this codebase deliberately
+keeps exhaustive, so any downstream `match` over it stops compiling. That is the
+whole of the breaking change; nothing was removed, renamed or re-signed.
+
+Sixteen changes, seven of them from five outside contributors and two from
+Dependabot. Three closed cases where a check reported a verdict it had not
+earned: a Postgres auditor grading an event table it could not read, a binding
+check that never ran reported as consistent, and a pin file that stopped
+enforcing when it did not name the asset.
+
+### Changed
+
+- **`BindingOutcome` gained `NotChecked`.**
+  ([#289](https://github.com/lacs-project/sysknife/pull/289))
+  A cross-chain binding check that could not run used to be indistinguishable
+  from one that ran over zero rows and agreed. It now has its own variant,
+  mapping to exit `2` on the same inconclusive/detected scale as
+  `outcome_to_exit_code`. Public enums here stay exhaustive on purpose, so an
+  added variant is a compile-time prompt to handle it rather than a silent
+  default; [docs/release.md](docs/release.md#public-enums-stay-exhaustive) has
+  the reasoning. Thanks to @k4its1t.
+
+### Fixed
+
+- **The Postgres auditor graded evidence it never read.**
+  ([#295](https://github.com/lacs-project/sysknife/pull/295),
+  [#246](https://github.com/lacs-project/sysknife/issues/246))
+  `verify_all_from_config` swallowed every error from the approval-event read
+  with `unwrap_or_default()`, justified by pre-migration chains that have no
+  `audit_events` table. A revoked `SELECT`, a dropped table or a lost connection
+  became "zero approval events", which is either a clean bill for a trail nobody
+  read or, when a transaction row commits a non-empty event tip, a
+  `MissingEvent` published in the words operators are taught to read as deleted
+  approvals. It now asks `to_regclass` whether the table is genuinely absent and
+  fails closed on everything else. Thanks to @vsolano9.
+
+- **`SYSKNIFE_PINNED_SHA256SUMS` stopped enforcing when the pin file did not name
+  the asset.** ([#290](https://github.com/lacs-project/sysknife/pull/290),
+  [#223](https://github.com/lacs-project/sysknife/issues/223))
+  Asset names carry the release tag, so a pin file written for one release names
+  nothing in the next. The lookup returned `null`, the gate treated `null` as
+  "no pin", and the install proceeded unpinned with the control switched on. The
+  lookup now refuses, and the gate refuses `null` even if a future lookup hands
+  one over. Thanks to @vsolano9.
+
+- **The setup wizard reported success for a daemon it never installed.**
+  ([#293](https://github.com/lacs-project/sysknife/pull/293),
+  [#291](https://github.com/lacs-project/sysknife/issues/291))
+  `installDaemonService` returned bare `undefined` when systemd was absent while
+  its three siblings returned a result, and the caller gated the
+  outstanding-steps block on `mode === 'system'`. A host without systemd and a
+  deliberate `--daemon-mode=skip` both ended on the success banner. Thanks to
+  @vsolano9.
+
+- **`resolve_audit_store` read a permission error as a missing database.**
+  ([#275](https://github.com/lacs-project/sysknife/pull/275),
+  [#266](https://github.com/lacs-project/sysknife/issues/266))
+  `Path::exists` is false for both ENOENT and EACCES, so an unreadable `0700`
+  system store sent the operator to an empty per-user store instead of telling
+  them to use `sudo`. Thanks to @VedantMadane.
+
+- **The 4 MiB frame limit was declared in three places.**
+  ([#285](https://github.com/lacs-project/sysknife/pull/285),
+  [#230](https://github.com/lacs-project/sysknife/issues/230))
+  Now `sysknife_types::MAX_MESSAGE_BYTES`, with a test that walks the three
+  crates and asserts exactly one declaration. Thanks to @kragent66-glitch.
+
+- **`RiskLevel` was the one wire enum with no anchored protobuf number.**
+  ([#284](https://github.com/lacs-project/sysknife/pull/284),
+  [#231](https://github.com/lacs-project/sysknife/issues/231))
+  Anchored in both directions: the decode assertion alone left the outbound map
+  unpinned, because every envelope test uses `Medium` and both fixtures hard-code
+  `risk_level: 2`, so `High` never traversed the map. Thanks to @Georgefifth.
+
+- **`make install` failed halfway on an immutable-root host.**
+  ([#309](https://github.com/lacs-project/sysknife/pull/309),
+  [#301](https://github.com/lacs-project/sysknife/issues/301))
+  `daemon-install` wrote the binary, the systemd unit, the polkit rules and all
+  twelve sudo grants before discovering `/usr` was read-only, leaving live grants
+  for helper scripts that did not exist. A preflight now checks every directory
+  in `INSTALL_DIRS` and refuses the whole install before the first write. Fedora
+  Atomic remains uninstallable pending the path decision in #301.
+
+- **Two E2E harness defects that only appear on a machine that ran both VM
+  harnesses.** ([#296](https://github.com/lacs-project/sysknife/pull/296),
+  [#298](https://github.com/lacs-project/sysknife/pull/298))
+  `atomic-vm.sh` rsynced `tests/e2e/ubuntu-vm/`, 24 GB of gitignored qcow2
+  overlays, into a 38 GB guest; and `provision.sh` asked `command -v cargo`
+  before putting `~/.cargo/bin` on PATH under `sudo`, so it re-downloaded rustup
+  on every run.
+
+### Documentation
+
+- Contributor norms, the baseline-ownership convention, and the rule that a diff
+  with no `.rs` file in it does not need the Rust workspace gate
+  ([#292](https://github.com/lacs-project/sysknife/pull/292),
+  [#308](https://github.com/lacs-project/sysknife/pull/308)).
+- Every docs page now carries an Open Graph card, with a test tying the image URL
+  to a file the build produces
+  ([#302](https://github.com/lacs-project/sysknife/pull/302)).
+- npm keywords and the crates.io homepage now point at the docs site rather than
+  repeating the repository link
+  ([#300](https://github.com/lacs-project/sysknife/pull/300)).
+
+
 ## [0.9.1] — 2026-08-24
 
 Four fixes from outside contributors, three of them closing the same class of
