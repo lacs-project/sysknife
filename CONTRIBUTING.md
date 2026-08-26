@@ -118,6 +118,32 @@ grep -rn 'Rust tests' README.md docs/introduction.md docs/distro-support.md
 CI gates both halves, so bumping the artifact alone turns `docs-and-hygiene` red
 after `rust` goes green.
 
+**Do not chase the figure.** It moved fifteen times in the twenty days to
+2026-08-24, so on any PR that waits a day or two the number you recorded stops
+being the answer, and that is not your problem to solve. Record it once, say in
+the PR how many tests you added, and if it has expired by the time the PR is
+ready the maintainer regenerates it at merge. Whoever merges is what moves the
+figure, so whoever merges carries it. If `rust` is red only on the baseline, the
+PR is not blocked on you.
+
+`scripts/test_baseline.sh` names both numbers when they disagree
+(`rust suite has 1772 tests, baseline says 1771`), so a red run tells you the
+answer rather than setting a puzzle.
+
+**A change that touches no Rust skips the Rust gate.** The workspace suite exists
+to stop a Rust regression reaching `main`, and a diff with no `.rs` file in it
+cannot cause one:
+
+```sh
+git diff --name-only upstream/main... | grep '\.rs$'   # empty means the gate does not apply
+```
+
+For such a diff the gate is the Node suite for the package you touched,
+`scripts/check_evidence_claims.py`, and CI on Ubuntu. Run the claim screen even
+for a JavaScript change: `packages/setup/index.js` is in `CLAIM_FILES`, and the
+screen is pure Python with no subprocess calls, so it runs anywhere Python does.
+Say which of the three you ran.
+
 **Which release your change lands in.** While SysKnife is in the `0.y` series, a
 change that breaks a consumer moves the middle digit and everything else moves the
 last one. [docs/release.md](docs/release.md#version-numbering) carries the rules
