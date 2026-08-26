@@ -29,6 +29,20 @@ fn failure_category_round_trips_through_proto() {
 }
 
 #[test]
+fn risk_level_round_trips_through_proto() {
+    let proto_level = proto::RiskLevel::try_from(3).unwrap();
+    let local_level = RiskLevel::try_from(proto_level).unwrap();
+
+    assert_eq!(local_level, RiskLevel::High);
+
+    // Anchor the encode direction too. Decode alone leaves the outbound map
+    // unpinned: every envelope test uses RiskLevel::Medium, and proto_bridge.rs
+    // hard-codes `risk_level: 2` in both fixtures, so High never traverses the
+    // map and swapping its arm keeps the whole type-layer suite green.
+    assert_eq!(i32::from(proto::RiskLevel::from(RiskLevel::High)), 3);
+}
+
+#[test]
 fn request_envelope_round_trips_through_proto() {
     let value = RequestEnvelope {
         action_name: "InstallFlatpak".to_string(),
