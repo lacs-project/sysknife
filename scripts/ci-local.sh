@@ -336,7 +336,7 @@ run_security_group() {
 
 run_postgres_contract_group() {
     printf '\n### postgres-contract (optional)\n'
-    local label="postgres-contract: cargo test -p sysknife-daemon --test postgres_store --locked"
+    local label="postgres-contract: cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored"
 
     if [[ "$run_postgres" != true ]]; then
         record SKIP "${label} (--no-postgres)"
@@ -344,7 +344,8 @@ run_postgres_contract_group() {
     fi
 
     if [[ -n "${SYSKNIFE_TEST_POSTGRES_URL:-}" ]]; then
-        run_step "$label" cargo test -p sysknife-daemon --test postgres_store --locked
+        SYSKNIFE_REQUIRE_POSTGRES=1 \
+            run_step "$label" cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored
         return
     fi
 
@@ -386,7 +387,8 @@ run_postgres_contract_group() {
     done
 
     SYSKNIFE_TEST_POSTGRES_URL="postgres://sysknife:sysknife@127.0.0.1:${POSTGRES_HOST_PORT}/sysknife_test?sslmode=disable" \
-        run_step "$label" cargo test -p sysknife-daemon --test postgres_store --locked
+    SYSKNIFE_REQUIRE_POSTGRES=1 \
+        run_step "$label" cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored
 
     "$runtime" rm -f "$POSTGRES_CONTAINER_NAME" >/dev/null 2>&1 || true
 }

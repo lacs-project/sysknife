@@ -10,7 +10,64 @@ use sysknife_daemon::transactions::NewTransaction;
 use sysknife_types::{CallerRole, JobState, PreviewEnvelope, RequestHash, RiskLevel};
 
 fn test_url() -> Option<String> {
-    std::env::var("SYSKNIFE_TEST_POSTGRES_URL").ok()
+    std::env::var("SYSKNIFE_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|url| !url.is_empty())
+}
+
+fn postgres_is_required() -> bool {
+    std::env::var("SYSKNIFE_REQUIRE_POSTGRES").is_ok()
+}
+
+/// Live-contract URL, or `None` to skip. Panics when a server is required
+/// (`SYSKNIFE_REQUIRE_POSTGRES`) but no URL was configured, so CI cannot
+/// report success after the database never started.
+fn resolve_live_postgres_url(url: Option<String>, required: bool) -> Option<String> {
+    match url {
+        Some(url) => Some(url),
+        None if required => panic!(
+            "SYSKNIFE_REQUIRE_POSTGRES is set but SYSKNIFE_TEST_POSTGRES_URL is unset; \
+             the live Postgres contract was not requested"
+        ),
+        None => None,
+    }
+}
+
+fn live_postgres_url() -> Option<String> {
+    resolve_live_postgres_url(test_url(), postgres_is_required())
+}
+
+#[test]
+fn live_postgres_url_is_none_when_neither_is_set() {
+    assert_eq!(resolve_live_postgres_url(None, false), None);
+}
+
+#[test]
+fn live_postgres_url_returns_the_configured_url() {
+    let url = "postgres://sysknife@127.0.0.1/sysknife_test".to_string();
+    assert_eq!(
+        resolve_live_postgres_url(Some(url.clone()), true),
+        Some(url)
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "SYSKNIFE_REQUIRE_POSTGRES is set but SYSKNIFE_TEST_POSTGRES_URL is unset"
+)]
+fn live_postgres_url_panics_when_required_and_missing() {
+    let _ = resolve_live_postgres_url(None, true);
+}
+
+#[test]
+fn require_postgres_fails_closed_when_the_url_is_missing() {
+    if postgres_is_required() {
+        assert!(
+            test_url().is_some(),
+            "SYSKNIFE_REQUIRE_POSTGRES is set but SYSKNIFE_TEST_POSTGRES_URL is unset; \
+             the live Postgres contract was not requested and would have been skipped"
+        );
+    }
 }
 
 fn new_transaction() -> NewTransaction {
@@ -41,9 +98,9 @@ fn preview() -> PreviewEnvelope {
 }
 
 #[tokio::test]
+#[ignore = "live Postgres; set SYSKNIFE_TEST_POSTGRES_URL and run with --include-ignored"]
 async fn migrates_legacy_schema_and_enforces_store_contract() {
-    let Some(url) = test_url() else {
-        eprintln!("SYSKNIFE_TEST_POSTGRES_URL is unset; live Postgres contract not requested");
+    let Some(url) = live_postgres_url() else {
         return;
     };
     assert!(
@@ -361,6 +418,7 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
 /// and in parallel, so two destructive tests sharing `public` would race — the
 /// first version of this test tore down the other test's tables mid-run.
 #[tokio::test]
+#[ignore = "live Postgres; set SYSKNIFE_TEST_POSTGRES_URL and run with --include-ignored"]
 async fn postgres_checkpoint_sink_round_trips_and_detects_truncation() {
     use sysknife_daemon::checkpoint_sink::{
         anchor_once, AnchorOutcome, CheckpointSink, PostgresCheckpointSink,
@@ -368,8 +426,7 @@ async fn postgres_checkpoint_sink_round_trips_and_detects_truncation() {
 
     const SCHEMA: &str = "checkpoint_sink_test";
 
-    let Some(url) = test_url() else {
-        eprintln!("SYSKNIFE_TEST_POSTGRES_URL is unset; live Postgres contract not requested");
+    let Some(url) = live_postgres_url() else {
         return;
     };
     assert!(
@@ -469,13 +526,13 @@ async fn postgres_checkpoint_sink_round_trips_and_detects_truncation() {
 /// account". That is the misreport the census exists to prevent, and on the
 /// Postgres path nothing else would catch it.
 #[tokio::test]
+#[ignore = "live Postgres; set SYSKNIFE_TEST_POSTGRES_URL and run with --include-ignored"]
 async fn attribution_census_over_a_real_postgres_round_trip() {
     use sysknife_daemon::audit_chain::AttributionCensus;
 
     const SCHEMA: &str = "attribution_census_test";
 
-    let Some(url) = test_url() else {
-        eprintln!("SYSKNIFE_TEST_POSTGRES_URL is unset; live Postgres contract not requested");
+    let Some(url) = live_postgres_url() else {
         return;
     };
     assert!(
@@ -663,9 +720,9 @@ fn url_with_schema(url: &str, schema: &str) -> String {
 }
 
 #[tokio::test]
+#[ignore = "live Postgres; set SYSKNIFE_TEST_POSTGRES_URL and run with --include-ignored"]
 async fn an_auditor_denied_the_event_table_cannot_verify() {
-    let Some(url) = test_url() else {
-        eprintln!("SYSKNIFE_TEST_POSTGRES_URL is unset; live Postgres contract not requested");
+    let Some(url) = live_postgres_url() else {
         return;
     };
     assert!(
@@ -831,6 +888,7 @@ async fn an_auditor_denied_the_event_table_cannot_verify() {
 }
 
 #[tokio::test]
+#[ignore = "live Postgres; set SYSKNIFE_TEST_POSTGRES_URL and run with --include-ignored"]
 async fn a_chain_predating_the_event_table_still_verifies() {
     // The other half of the same guard. Failing closed on an unreadable event
     // table must not fail closed on a chain written before `audit_events`
@@ -838,8 +896,7 @@ async fn a_chain_predating_the_event_table_still_verifies() {
     // the original `unwrap_or_default()` was right about this case. Without
     // this test the fix could be "return CannotVerify on any error" and still
     // look correct.
-    let Some(url) = test_url() else {
-        eprintln!("SYSKNIFE_TEST_POSTGRES_URL is unset; live Postgres contract not requested");
+    let Some(url) = live_postgres_url() else {
         return;
     };
     assert!(
