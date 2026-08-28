@@ -12,6 +12,19 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Fixed
+
+- **`CheckPendingReboot` failed exactly when a reboot was pending.**
+  ([#227](https://github.com/lacs-project/sysknife/issues/227))
+  The action read `/var/run/reboot-required-pkgs`, a filename Ubuntu does not
+  write. `update-notifier` writes `reboot-required.pkgs`. When the sentinel
+  was present the missing `cat` became the script's exit status, the
+  dispatcher dropped stdout, and the operator saw
+  `CheckPendingReboot failed with exit code 1` instead of
+  `*** System restart required ***`. The action now reads the dot filename
+  and ends the then-branch with `true`, so a missing packages file is
+  optional rather than an error.
+
 ## [0.10.0] — 2026-08-26
 
 The middle digit moves because [#289](https://github.com/lacs-project/sysknife/pull/289)

@@ -256,7 +256,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `CheckPendingReboot` | `bash -c "if test -f /var/run/reboot-required; then cat /var/run/reboot-required; cat /var/run/reboot-required-pkgs 2>/dev/null; else echo 'No reboot required.'; fi"` | Low | Ubuntu | – | – | check whether a reboot is pending (/var/run/reboot-required) — no params; Ubuntu/Debian only; read-only |
+| `CheckPendingReboot` | `bash -c "if test -f /var/run/reboot-required; then cat /var/run/reboot-required; cat /var/run/reboot-required.pkgs 2>/dev/null; true; else echo 'No reboot required.'; fi"` | Low | Ubuntu | – | – | check whether a reboot is pending (/var/run/reboot-required) — no params; Ubuntu/Debian only; read-only |
 
 ## AppArmor
 
