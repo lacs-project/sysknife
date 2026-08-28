@@ -12,6 +12,21 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Fixed
+
+- **`postgres-contract` reported success when no database was configured.**
+  ([#313](https://github.com/lacs-project/sysknife/pull/313),
+  [#294](https://github.com/lacs-project/sysknife/issues/294))
+  Five tests in `postgres_store.rs` returned early when
+  `SYSKNIFE_TEST_POSTGRES_URL` was unset, so a renamed variable or a dropped
+  `services:` block left one of `main`'s five required checks green over a
+  contract it never ran. nextest prints per-test stdout only on failure, so the
+  existing notice was invisible in exactly that run. The five live tests are now
+  `#[ignore]`, the job sets `SYSKNIFE_REQUIRE_POSTGRES` and runs with
+  `--include-ignored`, and a required-but-unconfigured run panics instead of
+  passing. A local run without a database reports them ignored rather than
+  passed.
+
 ## [0.10.0] — 2026-08-26
 
 The middle digit moves because [#289](https://github.com/lacs-project/sysknife/pull/289)
