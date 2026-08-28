@@ -15,7 +15,8 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 ### Fixed
 
 - **`CheckPendingReboot` failed exactly when a reboot was pending.**
-  ([#227](https://github.com/lacs-project/sysknife/issues/227))
+  ([#314](https://github.com/lacs-project/sysknife/pull/314),
+  [#227](https://github.com/lacs-project/sysknife/issues/227))
   The action read `/var/run/reboot-required-pkgs`, a filename Ubuntu does not
   write. `update-notifier` writes `reboot-required.pkgs`. When the sentinel
   was present the missing `cat` became the script's exit status, the
