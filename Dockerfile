@@ -6,7 +6,7 @@
 # Base images are pinned by manifest-list digest (not just tag) so a moved or
 # compromised tag cannot silently change the build. Dependabot's Docker
 # ecosystem tracks these and bumps both the tag and the digest together.
-FROM docker.io/library/rust:1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS builder
+FROM docker.io/library/rust:1-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922 AS builder
 
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
