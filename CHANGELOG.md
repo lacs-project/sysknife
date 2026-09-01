@@ -12,6 +12,22 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-09-01
+
+The middle digit moves because of [#312](https://github.com/lacs-project/sysknife/pull/312).
+`npx sysknife-setup --claude --no-prompts --daemon-mode=system`, the automation
+one-liner in `docs/quickstart.md`, now exits 3 where it exited 0. No signature
+changed, and a run that used to succeed now reports failure, which
+[docs/release.md](docs/release.md#version-numbering) already counts as a break.
+System mode is a two-phase install by design, so the honest exit code is
+non-zero.
+
+Sixteen changes, four of them from three outside contributors and seven from
+Dependabot. Two closed cases where a secret was readable by anyone on the host,
+and one added a way to run without a human that records the fact in the signed
+chain rather than hiding it.
+
+
 ### Added
 
 - **`sysknife --dangerously-skip-approval` runs with no human in the loop.**
