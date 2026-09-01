@@ -19,6 +19,7 @@ sysknife-brain = { path = "../../crates/sysknife-brain", version = "0.10.0" }
 sysknife-core = { path = "../../crates/sysknife-core", version = "0.10.0" }
 sysknife-daemon = { path = "../../crates/sysknife-daemon", version = "0.10.0" }
 chrono = "0.4"
+libc = "0.2"
 sysknife-types = { path = "../../crates/sysknife-types", version = "0.10.0" }
 
 clap = { version = "4", features = ["derive"] }

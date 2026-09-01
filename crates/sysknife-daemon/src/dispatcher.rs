@@ -252,6 +252,16 @@ enum DaemonRequest {
         request_id: String,
         action_name: String,
         params: Value,
+        /// The client is running with its approval gate lifted, so no human
+        /// will confirm this step.
+        ///
+        /// `#[serde(default)]` keeps an older client working unchanged. The
+        /// daemon does not trust this to *permit* anything; it only records
+        /// it, by appending [`UNATTENDED_WARNING`] to the preview warnings,
+        /// which are signed into the transaction row. A client that lies by
+        /// omission gains nothing, because the field grants no authority.
+        #[serde(default)]
+        unattended: bool,
     },
     Approve {
         request_id: String,
@@ -1252,6 +1262,7 @@ async fn dispatch_loop<S>(
                 request_id,
                 action_name,
                 params,
+                unattended,
             } => {
                 handle_preview(
                     framed,
@@ -1261,6 +1272,7 @@ async fn dispatch_loop<S>(
                     request_id,
                     action_name,
                     params,
+                    *unattended,
                 )
                 .await
             }
@@ -1969,6 +1981,22 @@ async fn handle_describe(
     .await
 }
 
+/// Recorded in the signed transaction row when a client declares that its
+/// approval gate was lifted for the run.
+///
+/// The exact string is part of the wire contract: the CLI looks for it in the
+/// returned warnings and refuses to execute if it is absent, which is how a
+/// new client detects that it is talking to a daemon too old to record the
+/// fact. Changing the text breaks that check, so change it deliberately.
+pub const UNATTENDED_WARNING: &str =
+    "Approved without a human: this step was previewed by a client running with \
+     --dangerously-skip-approval, so no operator confirmed it.";
+
+// Eight arguments, matching `handle_execute` and `run_action_job` below. The
+// alternative is a struct that exists only to carry the request body one frame
+// deeper, and the frames it would cross are the ones a reader of this file
+// most wants to see spelled out.
+#[allow(clippy::too_many_arguments)]
 async fn handle_preview(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     state: &DaemonState,
@@ -1977,6 +2005,7 @@ async fn handle_preview(
     request_id: &str,
     action_name: &str,
     params: &Value,
+    unattended: bool,
 ) -> Result<(), HandlerError> {
     let spec = match build_action_spec(action_name, params) {
         Ok(s) => s,
@@ -2089,6 +2118,13 @@ async fn handle_preview(
              Review the action carefully before approving."
                 .to_string(),
         );
+    }
+    // Recorded, not trusted. `warnings` is copied into `NewTransaction` below
+    // and signed as `warnings_json`, so this sentence is inside the Ed25519
+    // commitment for the row: an unattended run cannot later be presented as
+    // one a human approved without the signature failing to verify.
+    if unattended {
+        preview.warnings.push(UNATTENDED_WARNING.to_string());
     }
 
     // Persist a pending transaction so execute can verify a prior preview.

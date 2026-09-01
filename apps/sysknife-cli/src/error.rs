@@ -47,6 +47,17 @@ pub enum CliError {
     #[error("plan requires interactive approval but --non-interactive was set")]
     NonInteractive,
 
+    /// `--dangerously-skip-approval` without `SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1`.
+    ///
+    /// Exit code 1, the "cannot proceed, and that is a legitimate outcome"
+    /// bucket, rather than clap's usual 2 for a usage error. Nothing
+    /// malfunctioned and no argument was malformed; the operator asked to run
+    /// unattended and has not completed the second half of the handshake. A
+    /// script that already treats 1 as "SysKnife declined to act" gets the
+    /// right answer without a new case.
+    #[error("{0}")]
+    UnattendedConsentMissing(String),
+
     /// Produced when `sysknife approve` is run without a terminal on stdin.
     ///
     /// Distinct from [`Self::NonInteractive`] because the cause is different and
@@ -79,6 +90,7 @@ impl CliError {
             | Self::Refused { .. }
             | Self::RiskCeilingExceeded { .. }
             | Self::NonInteractive
+            | Self::UnattendedConsentMissing(_)
             | Self::ApprovalNeedsTerminal => 1,
             Self::ExecutionFailed(_) => 2,
             Self::PlanningFailed(_) => 3,

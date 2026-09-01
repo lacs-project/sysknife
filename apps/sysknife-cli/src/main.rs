@@ -7,6 +7,7 @@ mod mcp_server;
 mod operator_text;
 mod render;
 mod runner;
+mod unattended;
 
 use clap::Parser;
 
@@ -108,6 +109,21 @@ async fn dispatch(
     socket: crate::client::SocketTarget,
     log: &Logger,
 ) -> Result<(), crate::error::CliError> {
+    // Both halves of the two-key rule are checked before any subcommand runs,
+    // so `--dangerously-skip-approval` on a read-only subcommand still fails
+    // loudly rather than being quietly ignored. A flag that is sometimes
+    // ignored teaches people it is harmless.
+    let consent = crate::cli::UnattendedConsent::from_env(cli.dangerously_skip_approval);
+    if let Some(refusal) = consent.refusal() {
+        return Err(crate::error::CliError::UnattendedConsentMissing(refusal));
+    }
+    // --dry-run executes nothing, so the banner would be theatre. Everything
+    // else, including the read-only subcommands, gets it: the point is that a
+    // run in this mode is never quiet.
+    if consent.is_granted() && !cli.dry_run {
+        crate::unattended::warn_and_pause().await;
+    }
+
     match &cli.command {
         // --- sysknife completions <shell> ---
         Some(Command::Completions { shell }) => {
@@ -177,5 +193,7 @@ fn build_run_opts(cli: &Cli, socket: crate::client::SocketTarget) -> RunOpts {
         dry_run: cli.dry_run,
         json: cli.json,
         step_by_step: cli.step_by_step,
+        skip_approval: crate::cli::UnattendedConsent::from_env(cli.dangerously_skip_approval)
+            .is_granted(),
     }
 }

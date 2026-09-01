@@ -60,6 +60,20 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub step_by_step: bool,
 
+    /// Execute HIGH-risk steps with no human confirmation.
+    ///
+    /// Requires `SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1` in the environment as
+    /// well; the flag on its own refuses to run. Implies `--yes`,
+    /// `--max-risk high` and `--non-interactive` unless you set a lower
+    /// `--max-risk`, which still wins.
+    ///
+    /// This lifts the approval gate and nothing else. Typed actions,
+    /// parameter validation, the polkit allowlist, the CLI/daemon risk-skew
+    /// abort and the signed audit chain all still apply, and every step run
+    /// this way is recorded as unattended inside the signed audit row.
+    #[arg(long, global = true)]
+    pub dangerously_skip_approval: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -233,6 +247,151 @@ impl From<MaxRiskArg> for MaxRisk {
             MaxRiskArg::Medium => MaxRisk::Medium,
             MaxRiskArg::High => MaxRisk::High,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// UnattendedConsent
+// ---------------------------------------------------------------------------
+
+/// The environment variable that must accompany `--dangerously-skip-approval`.
+pub const UNATTENDED_CONSENT_VAR: &str = "SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT";
+
+/// The value that variable must hold. Anything else is treated as unset, so a
+/// stray `=0` or `=false` left in a profile cannot arm the override.
+pub const UNATTENDED_CONSENT_VALUE: &str = "1";
+
+/// Proof that both halves of the two-key rule were supplied.
+///
+/// The type exists so `skip_approval` cannot be set from a bare boolean at a
+/// call site. `ApprovalPolicy::new_unattended` takes the boolean, but the only
+/// `true` in the binary comes from [`UnattendedConsent::resolve`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum UnattendedConsent {
+    /// Neither half supplied. Normal operation.
+    NotRequested,
+    /// Both halves supplied. The approval gate is lifted for this run.
+    Granted,
+    /// The flag without the variable.
+    FlagWithoutEnv,
+    /// The variable without the flag. Not an error, but worth saying: an
+    /// environment left armed is exactly what the two-key rule guards against.
+    EnvWithoutFlag,
+}
+
+impl UnattendedConsent {
+    /// Resolve the two keys. `env_value` is the raw `SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT`
+    /// reading, passed in rather than read here so this stays a pure function.
+    pub fn resolve(flag: bool, env_value: Option<&str>) -> Self {
+        let env_ok = env_value == Some(UNATTENDED_CONSENT_VALUE);
+        match (flag, env_ok) {
+            (true, true) => Self::Granted,
+            (true, false) => Self::FlagWithoutEnv,
+            (false, true) => Self::EnvWithoutFlag,
+            (false, false) => Self::NotRequested,
+        }
+    }
+
+    /// Read the environment and resolve.
+    pub fn from_env(flag: bool) -> Self {
+        let raw = std::env::var(UNATTENDED_CONSENT_VAR).ok();
+        Self::resolve(flag, raw.as_deref())
+    }
+
+    /// Whether the approval gate is lifted. The only place that answers `true`.
+    pub fn is_granted(&self) -> bool {
+        matches!(self, Self::Granted)
+    }
+
+    /// The message to print when the run cannot proceed, or `None` when it can.
+    pub fn refusal(&self) -> Option<String> {
+        match self {
+            Self::FlagWithoutEnv => Some(format!(
+                "--dangerously-skip-approval was passed but {UNATTENDED_CONSENT_VAR} is not set to \
+                 {UNATTENDED_CONSENT_VALUE}.\n\nThis flag lets an LLM's plan execute HIGH-risk \
+                 actions as root with nobody watching. It needs two keys on purpose, so that \
+                 neither a flag left in a script nor a variable left in a profile is enough on its \
+                 own.\n\nIf you meant it:  {UNATTENDED_CONSENT_VAR}={UNATTENDED_CONSENT_VALUE} \
+                 sysknife --dangerously-skip-approval ..."
+            )),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod unattended_consent_tests {
+    use super::*;
+
+    #[test]
+    fn both_keys_grant() {
+        assert_eq!(
+            UnattendedConsent::resolve(true, Some("1")),
+            UnattendedConsent::Granted
+        );
+        assert!(UnattendedConsent::resolve(true, Some("1")).is_granted());
+    }
+
+    #[test]
+    fn the_flag_alone_refuses_and_says_why() {
+        let c = UnattendedConsent::resolve(true, None);
+        assert_eq!(c, UnattendedConsent::FlagWithoutEnv);
+        assert!(!c.is_granted());
+        let msg = c.refusal().expect("a refusal must carry a message");
+        assert!(
+            msg.contains(UNATTENDED_CONSENT_VAR),
+            "names the variable: {msg}"
+        );
+        assert!(msg.contains("as root"), "says what is at stake: {msg}");
+    }
+
+    #[test]
+    fn the_variable_alone_does_not_arm_anything() {
+        let c = UnattendedConsent::resolve(false, Some("1"));
+        assert_eq!(c, UnattendedConsent::EnvWithoutFlag);
+        assert!(
+            !c.is_granted(),
+            "an armed profile must not skip approval on its own"
+        );
+        assert!(c.refusal().is_none(), "it is not an error, only inert");
+    }
+
+    #[test]
+    fn neither_key_is_ordinary_operation() {
+        let c = UnattendedConsent::resolve(false, None);
+        assert_eq!(c, UnattendedConsent::NotRequested);
+        assert!(!c.is_granted());
+        assert!(c.refusal().is_none());
+    }
+
+    // A profile carrying `=0`, `=false`, `=yes` or an empty value is the shape
+    // that would otherwise arm this by accident. Only the exact string counts.
+    #[test]
+    fn only_the_exact_value_counts() {
+        for v in ["0", "false", "true", "yes", "", " 1", "1 ", "01", "TRUE"] {
+            assert_eq!(
+                UnattendedConsent::resolve(true, Some(v)),
+                UnattendedConsent::FlagWithoutEnv,
+                "{v:?} must not satisfy the environment half"
+            );
+        }
+    }
+
+    #[test]
+    fn the_flag_parses_and_defaults_off() {
+        let cli = Cli::parse_from(["sysknife", "check disk"]);
+        assert!(!cli.dangerously_skip_approval);
+        let cli = Cli::parse_from(["sysknife", "--dangerously-skip-approval", "check disk"]);
+        assert!(cli.dangerously_skip_approval);
+    }
+
+    // There is deliberately no short form and no abbreviation. Typing it has to
+    // be a decision, which is the whole safeguard.
+    #[test]
+    fn the_flag_has_no_short_form() {
+        assert!(Cli::try_parse_from(["sysknife", "-d", "check disk"]).is_err());
+        assert!(Cli::try_parse_from(["sysknife", "--skip-approval", "check disk"]).is_err());
+        assert!(Cli::try_parse_from(["sysknife", "--dangerously-skip", "check disk"]).is_err());
     }
 }
 

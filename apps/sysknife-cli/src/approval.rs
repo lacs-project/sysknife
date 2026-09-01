@@ -3,15 +3,29 @@
 //! Determines whether plan steps can be auto-approved, need a human prompt,
 //! or must be rejected outright based on CLI flags.
 //!
-//! Security invariant: `--yes` NEVER auto-approves HIGH risk steps regardless
-//! of any flag combination. This is hardcoded, not configurable.
+//! Security invariant: `--yes` NEVER auto-approves HIGH risk steps. The single
+//! exception is `--dangerously-skip-approval`, which exists so an operator can
+//! run SysKnife unattended and which the CLI refuses to honour unless
+//! `SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1` is also set. It lifts the hardcoded
+//! cap and nothing else: the typed-action catalogue, the polkit allowlist, the
+//! CLI/daemon risk-skew abort and the signed audit chain are unaffected, and a
+//! transaction previewed in this mode carries a daemon-written warning inside
+//! the signed `warnings_json`, so the trail records that no human approved.
 
 use sysknife_brain::planner::{AuthorizedPlan, PlanRiskLevel};
 
 /// The maximum risk level that `--yes` can auto-approve.
 /// `--max-risk high` with `--yes` still only auto-approves up to MEDIUM.
-/// HIGH always requires a human in the loop.
+/// HIGH requires a human in the loop unless the operator has taken the two
+/// explicit steps that [`ApprovalPolicy::skip_approval`] represents.
 const HARDCODED_MAX_AUTO_APPROVE: MaxRisk = MaxRisk::Medium;
+
+/// The cap once the operator has opted out of the human-in-the-loop rule.
+///
+/// This is still a named ceiling rather than "no ceiling": an explicit
+/// `--max-risk low` continues to win, because the override removes the cap the
+/// project imposed, not the one the operator asked for.
+const UNATTENDED_MAX_AUTO_APPROVE: MaxRisk = MaxRisk::High;
 
 /// CLI risk-level argument (mirrors clap value-enum).
 ///
@@ -56,6 +70,9 @@ pub struct ApprovalPolicy {
     max_risk: Option<MaxRisk>,
     non_interactive: bool,
     dry_run: bool,
+    /// Set only by `--dangerously-skip-approval` plus its environment
+    /// confirmation. Raises the hardcoded cap from MEDIUM to HIGH.
+    skip_approval: bool,
 }
 
 /// The result of evaluating a step or plan against the policy.
@@ -82,12 +99,29 @@ pub enum ApprovalDecision {
 
 impl ApprovalPolicy {
     /// Construct from parsed CLI flags.
-    pub fn new(yes: bool, max_risk: Option<MaxRisk>, non_interactive: bool, dry_run: bool) -> Self {
+    ///
+    /// There is one constructor rather than a safe one and an unattended one,
+    /// so no call site can pick up the human-in-the-loop rule by accident and
+    /// none can drop it without saying so on the same line.
+    ///
+    /// `skip_approval` must only ever come from
+    /// [`crate::cli::UnattendedConsent`], which is the single place that reads
+    /// both the flag and the environment variable. Passing `true` from
+    /// anywhere else defeats the two-key rule; the structural test in
+    /// `main.rs` pins that there is exactly one such call site.
+    pub fn new(
+        yes: bool,
+        max_risk: Option<MaxRisk>,
+        non_interactive: bool,
+        dry_run: bool,
+        skip_approval: bool,
+    ) -> Self {
         Self {
             yes,
             max_risk,
             non_interactive,
             dry_run,
+            skip_approval,
         }
     }
 
@@ -102,9 +136,14 @@ impl ApprovalPolicy {
         // User-requested ceiling (default to Low when --yes is bare).
         let requested = self.max_risk.unwrap_or(MaxRisk::Low);
 
-        // Clamp using Ord::min: any variant ≥ HARDCODED_MAX_AUTO_APPROVE is
-        // reduced to the constant. Extension-safe — no named-arm match needed.
-        Some(requested.min(HARDCODED_MAX_AUTO_APPROVE))
+        // Clamp using Ord::min: any variant ≥ the cap is reduced to it.
+        // Extension-safe — no named-arm match needed.
+        let cap = if self.skip_approval {
+            UNATTENDED_MAX_AUTO_APPROVE
+        } else {
+            HARDCODED_MAX_AUTO_APPROVE
+        };
+        Some(requested.min(cap))
     }
 
     /// Decision for a single step's risk level.
@@ -161,6 +200,117 @@ impl ApprovalPolicy {
 }
 
 #[cfg(test)]
+mod unattended_tests {
+    use super::*;
+    use sysknife_brain::planner::PlanRiskLevel;
+
+    fn policy(skip: bool) -> ApprovalPolicy {
+        ApprovalPolicy::new(true, Some(MaxRisk::High), true, false, skip)
+    }
+
+    #[test]
+    fn without_the_override_high_is_never_auto_approved() {
+        assert_eq!(
+            policy(false).decide_step(&PlanRiskLevel::High),
+            ApprovalDecision::RequiresInteraction,
+            "the hardcoded Medium cap must still hold when the override is off"
+        );
+    }
+
+    #[test]
+    fn with_the_override_high_is_auto_approved() {
+        assert_eq!(
+            policy(true).decide_step(&PlanRiskLevel::High),
+            ApprovalDecision::AutoApproved,
+            "the override exists to lift exactly this"
+        );
+    }
+
+    #[test]
+    fn the_override_raises_the_effective_ceiling_to_high() {
+        assert_eq!(
+            policy(false).effective_auto_ceiling(),
+            Some(MaxRisk::Medium)
+        );
+        assert_eq!(policy(true).effective_auto_ceiling(), Some(MaxRisk::High));
+    }
+
+    #[test]
+    fn the_override_does_not_lift_an_explicit_lower_max_risk() {
+        // --dangerously-skip-approval --max-risk low still refuses a Medium
+        // step. The override removes the hardcoded cap; it does not overrule a
+        // ceiling the operator asked for by name.
+        let p = ApprovalPolicy::new(true, Some(MaxRisk::Low), true, false, true);
+        assert_eq!(
+            p.decide_step(&PlanRiskLevel::Medium),
+            ApprovalDecision::ExceedsCeiling(MaxRisk::Low)
+        );
+    }
+
+    #[test]
+    fn the_override_is_inert_without_yes() {
+        // The flag implies --yes at the CLI layer. If that wiring is ever
+        // dropped, the policy must not auto-approve on the override alone.
+        let p = ApprovalPolicy::new(false, Some(MaxRisk::High), true, false, true);
+        assert_eq!(p.effective_auto_ceiling(), None);
+        assert_eq!(
+            p.decide_step(&PlanRiskLevel::Low),
+            ApprovalDecision::RequiresInteraction
+        );
+    }
+
+    #[test]
+    fn dry_run_still_wins_over_the_override() {
+        let p = ApprovalPolicy::new(true, Some(MaxRisk::High), true, true, true);
+        assert_eq!(
+            p.decide_step(&PlanRiskLevel::High),
+            ApprovalDecision::AutoApproved,
+            "dry-run approves vacuously because nothing executes"
+        );
+    }
+
+    #[test]
+    fn a_whole_plan_of_high_steps_is_auto_approved_only_with_the_override() {
+        use sysknife_brain::action_name::ActionName;
+        use sysknife_brain::planner::{Plan, PlanStep};
+        let mk = || {
+            let steps = vec![
+                PlanStep::new(
+                    ActionName::parse("GetDiskUsage").unwrap(),
+                    "one".into(),
+                    PlanRiskLevel::High,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+                PlanStep::new(
+                    ActionName::parse("GetDiskUsage").unwrap(),
+                    "two".into(),
+                    PlanRiskLevel::Low,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+            ];
+            Plan::new(
+                "test".into(),
+                "test plan".into(),
+                "test explanation".into(),
+                steps,
+            )
+            .unwrap()
+            .assume_authorized()
+        };
+        assert_eq!(
+            policy(false).decide_plan(&mk()),
+            ApprovalDecision::RequiresInteraction
+        );
+        assert_eq!(
+            policy(true).decide_plan(&mk()),
+            ApprovalDecision::AutoApproved
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use sysknife_brain::action_name::ActionName;
@@ -197,7 +347,7 @@ mod tests {
         non_interactive: bool,
         dry_run: bool,
     ) -> ApprovalPolicy {
-        ApprovalPolicy::new(yes, max_risk, non_interactive, dry_run)
+        ApprovalPolicy::new(yes, max_risk, non_interactive, dry_run, false)
     }
 
     // --- Step-level: security policy ---

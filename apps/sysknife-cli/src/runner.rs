@@ -328,8 +328,27 @@ fn anchor_caveat() -> &'static str {
 ///
 /// This adds no new refusal class to `--non-interactive`: a plan containing a
 /// HIGH step is already refused at the plan gate before this point.
+///
+/// `--dangerously-skip-approval` deliberately does not change this predicate.
+/// A HIGH step still takes the post-preview branch, so the daemon's preview is
+/// still fetched, still checked against the approved risk, and still printed;
+/// the policy then answers `AutoApproved` instead of asking. Short-circuiting
+/// here instead would have skipped the preview itself, and the preview is the
+/// only record of what an unattended run was about to change.
 fn post_preview_confirmation_required(step_by_step: bool, risk: &PlanRiskLevel) -> bool {
     step_by_step || matches!(risk, PlanRiskLevel::High)
+}
+
+/// Whether the daemon recorded the unattended declaration in this preview.
+///
+/// Compares against the daemon's own constant rather than a copy of the
+/// sentence. A local literal here would be a second source of truth that could
+/// drift silently, and the failure mode of that drift is the CLI deciding an
+/// unattended run *was* recorded when it was not.
+fn unattended_marker_present(warnings: &[String]) -> bool {
+    warnings
+        .iter()
+        .any(|w| w == sysknife_daemon::dispatcher::UNATTENDED_WARNING)
 }
 
 // ---------------------------------------------------------------------------
@@ -772,12 +791,21 @@ pub struct RunOpts {
     pub dry_run: bool,
     pub json: bool,
     pub step_by_step: bool,
+    /// Both halves of the two-key rule were supplied, so the approval gate is
+    /// lifted for this run. Set only from [`crate::cli::UnattendedConsent`].
+    pub skip_approval: bool,
 }
 
 impl RunOpts {
     /// Build the `ApprovalPolicy` for this set of flags.
     pub fn approval_policy(&self) -> ApprovalPolicy {
-        ApprovalPolicy::new(self.yes, self.max_risk, self.non_interactive, self.dry_run)
+        ApprovalPolicy::new(
+            self.yes,
+            self.max_risk,
+            self.non_interactive,
+            self.dry_run,
+            self.skip_approval,
+        )
     }
 }
 
@@ -1891,9 +1919,23 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
         // meant the preview was never a decision point — consent had already
         // been given and execution followed immediately.
         let prepared = exec_client
-            .preview(step.action_name(), step.params())
+            .preview_declaring(step.action_name(), step.params(), opts.skip_approval)
             .await?;
         let preview = &prepared.preview;
+
+        // The declaration is only worth making if it was recorded. A daemon
+        // older than this field accepts the preview and drops it, which would
+        // leave an unattended run indistinguishable from an approved one in
+        // the signed chain. Refuse rather than execute unrecorded.
+        if opts.skip_approval && !unattended_marker_present(&preview.warnings) {
+            return Err(CliError::ConfigOrDaemon(format!(
+                "{}: this run has the approval gate lifted, but the daemon did not record it in \
+                 the preview warnings, so the audit row would not show that no human approved. \
+                 The daemon is older than this CLI. Upgrade it, or drop \
+                 --dangerously-skip-approval.",
+                step.action_name(),
+            )));
+        }
 
         // Fail closed on CLI/daemon risk skew: the plan-level decision used the
         // CLI's own linked catalogue. If the live daemon rates this step higher
@@ -2868,6 +2910,45 @@ mod tests {
         ));
     }
 
+    /// The skew check that stops an unattended run from executing unrecorded.
+    ///
+    /// A daemon older than the `unattended` field accepts the preview and
+    /// silently drops it, so the signed row would look exactly like one a
+    /// human approved. The CLI compares against the daemon crate's own
+    /// constant rather than a local copy of the sentence, because a copy that
+    /// drifted would answer "recorded" for a row that carries nothing.
+    #[test]
+    fn the_marker_check_matches_the_daemon_constant_exactly() {
+        let real = sysknife_daemon::dispatcher::UNATTENDED_WARNING.to_string();
+        assert!(unattended_marker_present(std::slice::from_ref(&real)));
+        assert!(unattended_marker_present(&[
+            "System state could not be collected".into(),
+            real.clone(),
+        ]));
+    }
+
+    #[test]
+    fn the_marker_check_rejects_an_absent_or_near_miss_warning() {
+        assert!(!unattended_marker_present(&[]));
+        assert!(!unattended_marker_present(&["something else".into()]));
+
+        // A near miss is the dangerous case: an older daemon, or one whose
+        // wording drifted, must read as "not recorded" rather than close
+        // enough. Substring matching would accept all three of these.
+        let real = sysknife_daemon::dispatcher::UNATTENDED_WARNING;
+        for near in [
+            real.trim_end_matches('.'),
+            &real.to_lowercase(),
+            &format!(" {real}"),
+            &real.replace("no operator", "No operator"),
+        ] {
+            assert!(
+                !unattended_marker_present(&[near.to_string()]),
+                "near miss must not count as recorded: {near:?}"
+            );
+        }
+    }
+
     /// Structural guard on the execute loop: the daemon preview must be
     /// fetched before any approval decision is taken for that step.
     ///
@@ -2883,10 +2964,19 @@ mod tests {
         let loop_start = src
             .find("    // ---- execute steps ---")
             .expect("execute-steps section marker present");
-        let body = &src[loop_start..];
+        // Stop at the test module. Without this bound the search window
+        // includes the two literals below, so the guard reads itself: the
+        // production call could be renamed away entirely and the assertion
+        // would still find a match, in the wrong order, and report a defect
+        // that is really a stale anchor.
+        let body_end = src[loop_start..]
+            .find("#[cfg(test)]")
+            .map(|i| loop_start + i)
+            .expect("the test module follows the execute loop");
+        let body = &src[loop_start..body_end];
 
         let preview_at = body
-            .find(".preview(step.action_name()")
+            .find(".preview_declaring(step.action_name()")
             .expect("the loop previews each step");
         let gate_at = body
             .find("policy.decide_step(")
@@ -3208,7 +3298,7 @@ mod tests {
             vec![mk("RebootSystem", PlanRiskLevel::Low)],
         )
         .unwrap();
-        let policy = ApprovalPolicy::new(true, Some(MaxRisk::Medium), false, false);
+        let policy = ApprovalPolicy::new(true, Some(MaxRisk::Medium), false, false, false);
         assert_eq!(
             policy.decide_plan(&under_rated.clone().assume_authorized()),
             ApprovalDecision::AutoApproved,
@@ -3246,7 +3336,7 @@ mod tests {
             vec![mk("RestartService", PlanRiskLevel::Low)],
         )
         .unwrap();
-        let policy = ApprovalPolicy::new(true, None, false, false);
+        let policy = ApprovalPolicy::new(true, None, false, false, false);
         assert_eq!(
             policy.decide_plan(&plan.clone().assume_authorized()),
             ApprovalDecision::AutoApproved,
@@ -3280,7 +3370,7 @@ mod tests {
             vec![mk("RestartService", PlanRiskLevel::Low)],
         )
         .unwrap();
-        let policy = ApprovalPolicy::new(true, None, true, false);
+        let policy = ApprovalPolicy::new(true, None, true, false, false);
         assert_eq!(
             policy.decide_plan(&plan.clone().assume_authorized()),
             ApprovalDecision::AutoApproved,
@@ -3315,7 +3405,7 @@ mod tests {
             vec![mk("GetDiskUsage", PlanRiskLevel::High)],
         )
         .unwrap();
-        let policy = ApprovalPolicy::new(true, Some(MaxRisk::Low), false, false);
+        let policy = ApprovalPolicy::new(true, Some(MaxRisk::Low), false, false, false);
         assert_eq!(
             policy.decide_plan(&plan.clone().assume_authorized()),
             ApprovalDecision::ExceedsCeiling(MaxRisk::Low),

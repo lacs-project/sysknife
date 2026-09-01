@@ -4840,6 +4840,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "indicatif",
+ "libc",
  "owo-colors",
  "predicates",
  "rmcp",

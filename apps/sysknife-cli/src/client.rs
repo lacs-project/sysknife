@@ -597,6 +597,23 @@ impl DaemonClient {
         action_name: &str,
         params: &Value,
     ) -> Result<PreparedPreview, CliError> {
+        self.preview_declaring(action_name, params, false).await
+    }
+
+    /// `preview`, declaring whether this client's approval gate is lifted.
+    ///
+    /// The daemon records the declaration in the signed transaction row. It
+    /// grants nothing, so a client that omits it gains no permission; what it
+    /// loses is the audit trail saying no human approved. That is why
+    /// `run_intent` refuses when it declared unattended and the marker does
+    /// not come back: an unrecorded unattended run is the one outcome worth
+    /// failing over.
+    pub async fn preview_declaring(
+        &self,
+        action_name: &str,
+        params: &Value,
+        unattended: bool,
+    ) -> Result<PreparedPreview, CliError> {
         let mut stream = self.connect_async().await?;
 
         let req = serde_json::to_vec(&serde_json::json!({
@@ -604,6 +621,7 @@ impl DaemonClient {
             "request_id": format!("cli-preview-{action_name}"),
             "action_name": action_name,
             "params": params,
+            "unattended": unattended,
         }))
         .map_err(|e| CliError::ConfigOrDaemon(format!("serialize: {e}")))?;
 

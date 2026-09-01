@@ -297,3 +297,93 @@ fn audit_export_distinguishes_unreadable_from_absent() {
         }
     }
 }
+// ---------------------------------------------------------------------------
+// --dangerously-skip-approval: the two-key rule, exercised on the real binary
+// ---------------------------------------------------------------------------
+
+/// The flag on its own must stop the run and explain the second key.
+///
+/// Driven through the compiled binary rather than the pure resolver, because
+/// the property under test is that `dispatch` refuses *before* reaching a
+/// subcommand. A unit test on `UnattendedConsent` would still pass if that
+/// wiring were dropped.
+#[test]
+fn the_skip_approval_flag_alone_refuses_and_names_the_second_key() {
+    let dir = tempfile::tempdir().unwrap();
+    cli()
+        .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+        .env_remove("SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT")
+        .args(["--dangerously-skip-approval", "doctor"])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT")
+                .and(predicate::str::contains("as root")),
+        );
+}
+
+/// A value that is not exactly `1` must not satisfy the environment half. A
+/// profile carrying `=0` or `=false` is the accident this guards against.
+#[test]
+fn a_non_exact_consent_value_does_not_arm_the_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    for value in ["0", "false", "true", "yes", ""] {
+        cli()
+            .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+            .env("SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT", value)
+            .args(["--dangerously-skip-approval", "doctor"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(
+                "SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT",
+            ));
+    }
+}
+
+/// With both keys the refusal is gone and the banner is on stderr. The command
+/// still fails, because the socket does not exist, and that is the point: the
+/// run proceeded past the consent gate and failed for its own reason.
+#[test]
+fn both_keys_print_the_banner_and_let_the_command_run() {
+    let dir = tempfile::tempdir().unwrap();
+    cli()
+        .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+        .env("SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT", "1")
+        .args(["--dangerously-skip-approval", "doctor"])
+        .assert()
+        .stderr(
+            predicate::str::contains("UNATTENDED MODE")
+                .and(predicate::str::contains("approval gate is OFF"))
+                .and(predicate::str::contains("polkit allowlist"))
+                .and(predicate::str::contains("is not set to").not()),
+        );
+}
+
+/// The environment variable on its own changes nothing. An operator who exports
+/// it in a profile and forgets has not armed anything.
+#[test]
+fn the_consent_variable_alone_is_inert() {
+    let dir = tempfile::tempdir().unwrap();
+    cli()
+        .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+        .env("SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT", "1")
+        .args(["doctor"])
+        .assert()
+        .stderr(predicate::str::contains("UNATTENDED MODE").not());
+}
+
+/// `--help` has to carry the warning too. The flag is discovered there, and a
+/// help entry that reads like an ordinary option teaches the wrong thing.
+#[test]
+fn help_says_what_the_skip_approval_flag_does_and_does_not_do() {
+    cli()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--dangerously-skip-approval"));
+
+    cli().arg("--help").assert().success().stdout(
+        predicate::str::contains("SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT")
+            .or(predicate::str::contains("Requires")),
+    );
+}

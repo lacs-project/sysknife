@@ -309,6 +309,86 @@ All flags apply to every subcommand and to free-form intents.
 | `--json` | Emit NDJSON to stdout — one JSON object per event (plan, preview, result).  All colour and spinner output is suppressed.  Safe to pipe. |
 | `--timeout SECS` | Hard wall-clock timeout in seconds.  Aborts the whole operation if exceeded. |
 | `--log-to FILE` | Tee all stdout output to FILE in addition to the terminal.  Appends if the file exists. |
+| `--dangerously-skip-approval` | Auto-approve HIGH-risk steps as well, with no human confirmation.  Refuses to run unless `SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1` is also set.  See [Unattended mode](#unattended-mode). |
+
+---
+
+## Unattended mode
+
+`--dangerously-skip-approval` lets a plan written by a language model execute
+HIGH-risk actions with nobody confirming them. It exists for scheduled and
+CI-driven runs, and it is the only way to lift the rule that `--yes` can never
+auto-approve HIGH.
+
+### Two keys, on purpose
+
+The flag alone does nothing but print an explanation and exit 1. It needs the
+environment variable as well:
+
+```sh
+SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1 \
+  sysknife --dangerously-skip-approval --json "apply pending security updates"
+```
+
+Neither half is enough alone. A flag left in a script and a variable left in a
+shell profile are the two ways this gets armed by accident, and requiring both
+means neither accident is sufficient. Only the exact value `1` counts; `true`,
+`yes` and `0` are all read as unset.
+
+The flag has no short form and no abbreviation. Typing it has to be a decision.
+
+### What it turns off
+
+One thing: the approval gate.
+
+- `--yes` may now auto-approve HIGH-risk steps. The cap moves from MEDIUM to
+  HIGH.
+- The post-preview confirmation on a HIGH step no longer asks. The preview is
+  still fetched and still printed, because it is the only record of what the
+  run was about to change.
+
+An explicit `--max-risk` still wins. `--dangerously-skip-approval --max-risk
+low` aborts on a MEDIUM step, because the flag removes the ceiling the project
+imposes, not the one you asked for. `--dry-run` still executes nothing.
+
+### What it does not turn off
+
+Everything that makes SysKnife more than a shell:
+
+- Only actions in the typed catalogue can run, with validated parameters. There
+  is no path from this flag to an arbitrary command.
+- The polkit allowlist still gates every privileged D-Bus call.
+- The run still aborts if the daemon rates a step above what the CLI approved.
+- Role-based authorization is unchanged. An account that cannot run an action
+  still cannot run it.
+- Every step is still previewed, still gets a transaction row, and is still
+  signed into the audit chain.
+
+If you want a tool that will run any command an LLM writes, this is not it, and
+no flag here turns it into one.
+
+### The audit trail records it
+
+A transaction previewed in this mode carries this sentence in its `warnings`:
+
+> Approved without a human: this step was previewed by a client running with
+> --dangerously-skip-approval, so no operator confirmed it.
+
+`warnings` is stored as `warnings_json`, and `warnings_json` is one of the
+fields inside the row's Ed25519 signature. So the record is not a log line that
+can be edited later: deleting it makes `sysknife audit verify` report that row
+`Broken`. `sysknife audit export` carries it like any other field.
+
+The CLI checks that the daemon sent the sentence back, and refuses to execute
+if it did not. A daemon older than this field accepts the declaration and drops
+it, which would leave an unattended run indistinguishable from an approved one.
+Upgrade the daemon, or drop the flag.
+
+### Before you use it
+
+Run it against a machine you can rebuild. The failure mode is not a bad diff to
+revert; it is a system change applied by a model with no one watching. A VM
+snapshot beforehand costs less than the alternative.
 
 ---
 
@@ -367,6 +447,15 @@ above.
 |---|---|
 | `SYSKNIFE_SOCKET` | Daemon socket the CLI dials (`unix://`, `vsock://`, or a bare path). Falls back to the same resolution as `SYSKNIFE_LISTEN_URI`: `$XDG_RUNTIME_DIR/sysknife/daemon.sock`, then `/tmp/sysknife-$UID.sock` as a last resort. Production deployments set this via the systemd unit to `/run/sysknife/daemon.sock`. |
 
+### Unattended-mode consent
+
+| Variable | Value | Meaning |
+|---|---|---|
+| `SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT` | exactly `1` | Second half of the two-key rule for `--dangerously-skip-approval`. Inert on its own: setting it changes nothing until the flag is also passed. Any other value, including `true` and `yes`, reads as unset. |
+
+See [Unattended mode](#unattended-mode) for what the flag does and does not
+turn off.
+
 ---
 
 ## Scripting and CI
@@ -386,6 +475,12 @@ sysknife --yes --max-risk medium --non-interactive "list layered packages"
 sysknife --yes --max-risk low --non-interactive --timeout 60 \
      --log-to /var/log/sysknife/run.log \
      "check disk usage"
+
+# Unattended, including HIGH-risk steps. Both keys are required, and every
+# step is recorded in the signed chain as having had no human approval.
+SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1 \
+  sysknife --dangerously-skip-approval --json --timeout 300 \
+     "apply pending security updates"
 ```
 
 The `--json` output schema:
