@@ -12,6 +12,23 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Added
+
+- **`sysknife audit export` writes the signed chain rows as JSON.**
+  ([#215](https://github.com/lacs-project/sysknife/issues/215),
+  [#260](https://github.com/lacs-project/sysknife/pull/260))
+  Emits the stored transaction-chain rows in ascending `seq` order, with
+  `--since` and `--limit`, including `prev_chain_hash` and the Ed25519 signature
+  stored as `chain_hash`, so an offline consumer has the linkage and signature
+  bytes without opening the database itself. It reconstructs nothing the signed
+  row never stored, and the store is opened without acquiring a signing key.
+  Contributed by @danial-razi.
+
+  `docs/cli.md` and `docs/the-audit-chain.md` now state that an export is not a
+  redacted artifact: `request_hash` commits to the unredacted parameters as one
+  unsalted SHA-256, so an export inherits the confidentiality class of the
+  `0600` database it came from ([#268](https://github.com/lacs-project/sysknife/issues/268)).
+
 ### Fixed
 
 - **`postgres-contract` reported success when no database was configured.**

@@ -92,6 +92,9 @@ jobs:
       - name: Check postgres-contract still requires both job tokens
         run: bash tests/release/postgres-contract-guard.test.sh
 
+      - name: Check the audit export states its confidentiality class
+        run: bash tests/release/audit-export-confidentiality.test.sh
+
       - name: Check provider parity across E2E entry points
         run: bash tests/e2e/provider-parity.test.sh
 

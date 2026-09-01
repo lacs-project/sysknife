@@ -284,6 +284,7 @@ run_hygiene_group() {
     run_step 'hygiene: docs-share-cards.test.sh' bash "$repo_root/tests/release/docs-share-cards.test.sh"
     run_step 'hygiene: install-paths.test.sh' bash "$repo_root/tests/release/install-paths.test.sh"
     run_step 'hygiene: postgres-contract-guard.test.sh' bash "$repo_root/tests/release/postgres-contract-guard.test.sh"
+    run_step 'hygiene: audit-export-confidentiality.test.sh' bash "$repo_root/tests/release/audit-export-confidentiality.test.sh"
 
     if have markdownlint-cli2; then
         run_step 'hygiene: markdownlint-cli2' hygiene_markdownlint
