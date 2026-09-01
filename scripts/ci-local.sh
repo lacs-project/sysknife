@@ -276,6 +276,7 @@ run_hygiene_group() {
     run_step 'hygiene: registry-manifest.test.sh' bash "$repo_root/tests/release/registry-manifest.test.sh"
     run_step 'hygiene: smithery-manifest.test.sh' bash "$repo_root/tests/release/smithery-manifest.test.sh"
     run_step 'hygiene: release-rehearsal.test.sh' bash "$repo_root/tests/release/release-rehearsal.test.sh"
+    run_step 'hygiene: database-path-agreement.test.sh' bash "$repo_root/tests/release/database-path-agreement.test.sh"
     run_step 'hygiene: node-eol.test.sh' bash "$repo_root/tests/release/node-eol.test.sh"
     run_step 'hygiene: systemd-directory-modes.test.sh' bash "$repo_root/tests/release/systemd-directory-modes.test.sh"
     run_step 'hygiene: ubuntu-vm-bootstrap.test.sh' bash "$repo_root/tests/e2e/ubuntu-vm-bootstrap.test.sh"

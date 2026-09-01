@@ -74,6 +74,9 @@ jobs:
       - name: Check the secret scanner catches keys and ignores fixtures
         run: bash tests/release/no-secrets.test.sh
 
+      - name: Check the installer and the daemon agree on the database path
+        run: bash tests/release/database-path-agreement.test.sh
+
       - name: Check no workflow pins an end-of-life Node release
         run: bash tests/release/node-eol.test.sh
 

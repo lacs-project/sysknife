@@ -111,6 +111,7 @@ EXEC_NAMES[8]="SetHostname cycle — change and restore (destructive)"
 EXEC_NAMES[9]="SetTimezone cycle — Chicago then restore UTC (destructive)"
 EXEC_NAMES[10]="Group membership cycle — audio add then remove (destructive)"
 EXEC_NAMES[11]="ConfigureFirewall cycle — ftp add then remove (destructive)"
+EXEC_NAMES[12]="UfwAllow + UfwDeny cycle — port 8080 open then blocked (destructive)"
 
 declare -A RESULTS
 declare -A DURATIONS
@@ -119,7 +120,7 @@ declare -A MESSAGES
 if [[ $# -gt 0 ]]; then
   STORIES=("$@")
 elif [[ "$ALLOW_DESTRUCTIVE" == "1" ]]; then
-  STORIES=(1 2 3 4 5 6 7 8 9 10 11)
+  STORIES=(1 2 3 4 5 6 7 8 9 10 11 12)
 else
   # Safe (non-destructive, Low risk) stories only.
   STORIES=(1 2 3 6)

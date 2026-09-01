@@ -817,9 +817,29 @@ pub async fn run_audit_export(args: AuditExportArgs, log: &Logger) -> Result<(),
             use sysknife_daemon::transactions::TransactionStore;
 
             let db_path = resolved_store.path();
-            if !db_path.exists() {
+            // `Path::exists()` answers false for both ENOENT and EACCES, so
+            // probing with it tells an operator the root-owned 0700 system
+            // store does not exist and suggests starting the daemon, when the
+            // daemon is running and the fix is sudo. `run_audit_verify` has
+            // carried the corrected form since #275; export was written
+            // without it.
+            if !sysknife_core::path_is_present(db_path) {
                 return Err(CliError::ConfigOrDaemon(format!(
                     "audit database not found at {}; set $SYSKNIFE_DATABASE_PATH or run the daemon first",
+                    db_path.display()
+                )));
+            }
+            if !db_path.exists() {
+                let sudo_hint =
+                    if db_path == std::path::Path::new(sysknife_core::PRODUCTION_DATABASE_PATH) {
+                        "; the system daemon's store is root-owned, so run this under sudo or \
+                     set $SYSKNIFE_DATABASE_PATH"
+                    } else {
+                        ""
+                    };
+                return Err(CliError::ConfigOrDaemon(format!(
+                    "audit database not found or not readable at {}; set $SYSKNIFE_DATABASE_PATH \
+                     or run the daemon first{sudo_hint}",
                     db_path.display()
                 )));
             }

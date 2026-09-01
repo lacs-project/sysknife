@@ -118,8 +118,12 @@ write_guest_env_file() {
         fi
     done
 
+    # `rm -f` first, because `cat >` truncates and reuses an existing inode:
+    # umask governs the mode only when the redirection creates the file. A
+    # leftover from a killed run, or a symlink planted at that path, would
+    # otherwise receive the secrets at whatever mode it already had.
     printf '%s\n' "${assignments[@]}" \
-        | cmd_ssh "sudo sh -c 'umask 077 && cat > ${GUEST_ENV_FILE}'"
+        | cmd_ssh "sudo sh -c 'rm -f ${GUEST_ENV_FILE} && umask 077 && cat > ${GUEST_ENV_FILE}'"
 }
 
 require_tools() {

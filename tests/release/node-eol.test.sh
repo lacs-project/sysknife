@@ -70,6 +70,19 @@ while IFS= read -r hit; do
     fi
 done < <(grep -rn '^[[:space:]]*node-version:' "$workflows" || true)
 
+# The extraction above recognises the block-style `node-version:` key only.
+# Two other spellings pin a Node major without matching it, and neither would
+# trip the "found no pin" fallback while other files still carry real pins:
+# `node-version-file:` (reads a possibly stale .nvmrc) and a flow-style inline
+# mapping. Neither is used here today. Refuse them rather than let a future
+# workflow pin an end-of-life release through a form this test cannot read.
+while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    file="${hit%%:*}"
+    rest="${hit#*:}"
+    report "$(basename "$file"):${rest%%:*} pins Node through a form this check cannot read; use a literal \`node-version:\` line"
+done < <(grep -rnE '^[[:space:]]*node-version-file:|\{[^}]*node-version[[:space:]]*:' "$workflows" || true)
+
 if [ "$pins" -eq 0 ]; then
     printf 'no node-version pin found under .github/workflows; the extraction is broken, not the workflows\n' >&2
     exit 1
