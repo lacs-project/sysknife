@@ -137,6 +137,9 @@ async fn dispatch(
 
         // --- sysknife audit verify ---
         Some(Command::Audit { command }) => match command {
+            crate::cli::AuditCommand::Export(args) => {
+                runner::run_audit_export(args.clone(), log).await
+            }
             crate::cli::AuditCommand::Verify(args) => {
                 runner::run_audit_verify(args.clone(), log).await
             }

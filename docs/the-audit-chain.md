@@ -13,7 +13,8 @@ for a security-sensitive deployment, this is the page to try to break.
 Each row in the transaction table captures the decision the daemon made about
 one action, at the moment it made it. `sysknife history` renders a subset;
 `caller_role`, `caller_principal` and `event_tip` are chain fields, read with
-`sysknife audit verify` or directly from the database:
+`sysknife audit export` (or directly from the database) and checked with
+`sysknife audit verify`:
 
 | Field | What it commits to |
 |---|---|
@@ -389,7 +390,22 @@ Machine-readable output for CI or a SIEM pipeline:
 
 ```sh
 sysknife audit verify --pubkey audit-key.pub --json
+sysknife audit export --since 2026-08-01T00:00:00Z --limit 500 > audit-rows.json
 ```
+
+`audit export` emits the stored transaction-chain rows as one JSON array in
+ascending `seq` order. It includes both `prev_chain_hash` and the Ed25519
+signature stored as `chain_hash`, so an offline consumer has the linkage and
+signature bytes without opening SQLite itself. It does not invent `argv`,
+`outcome`, or a separate `signature` field that the signed row never stored.
+Absent optional columns are JSON `null`, while a value actually recorded as an
+empty string remains an empty string.
+
+An export inherits the confidentiality class of the audit database and is not a
+redacted artifact. `request_hash` commits to the unredacted parameters as one
+unsalted SHA-256, so a low-entropy value such as a Wi-Fi passphrase remains
+attackable in an exported file even though the stored preview is redacted.
+Handle an export like the `0600` database it came from.
 
 Anchor and check signed checkpoints against an external database:
 

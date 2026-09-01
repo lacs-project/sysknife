@@ -145,6 +145,41 @@ receipt.
 Inspect and anchor the tamper-evident, Ed25519-signed audit chain the daemon
 writes for every executed action.
 
+#### `sysknife audit export`
+
+Export the transaction-chain rows from the configured SQLite or PostgreSQL
+audit store as a JSON array, in ascending `seq` order. Each object contains the
+17 stored `ChainRow` columns, including `prev_chain_hash` and `chain_hash`.
+The latter is the Ed25519 signature and is deliberately not renamed. Optional
+values that were not recorded are JSON `null`; `argv`, `outcome`, and a
+separate `signature` field are not reconstructed.
+
+```sh
+sysknife audit export
+sysknife audit export --since 2026-08-01T00:00:00Z --limit 500
+```
+
+| Flag | Description |
+|---|---|
+| `--since DATETIME` | Include rows recorded at or after this RFC 3339 timestamp |
+| `--limit N` | Emit at most N matching rows; omitted means all matching rows |
+
+An export is not a redacted artifact. It inherits the confidentiality class of
+the audit database, which the daemon keeps `0600` inside a `0700` directory, and
+writing one moves that content across the boundary those modes exist to hold.
+
+Every row carries `request_hash`, a single unsalted SHA-256 over the action name
+and the **unredacted** parameters. `compute_request_hash` runs before
+`redact_params`, so redaction never reaches the hashed preimage. Where an
+action's parameters are low entropy and partly public the hash is worth
+attacking: for `ConfigureWifi` the SSID is broadcast, which leaves the
+passphrase as the only unknown. High-entropy values such as `ProAttach` tokens
+are unaffected.
+
+The column cannot be dropped, because `request_hash` is part of the signed bytes
+an offline verifier rebuilds. Treat an export with the same care as the database
+itself rather than as a sanitised report.
+
 #### `sysknife audit verify`
 
 Verify the audit trail: the transaction chain, the approval-event chain, and

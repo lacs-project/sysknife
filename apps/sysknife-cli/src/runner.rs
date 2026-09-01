@@ -32,7 +32,7 @@ use sysknife_types::{
 use sysknife_brain::state_client::StateClient as _;
 
 use crate::approval::{ApprovalDecision, ApprovalPolicy, MaxRisk};
-use crate::cli::{AuditVerifyArgs, Cli, HistoryArgs};
+use crate::cli::{AuditExportArgs, AuditVerifyArgs, Cli, HistoryArgs};
 use crate::client::{DaemonClient, SocketTarget};
 use crate::error::CliError;
 
@@ -782,8 +782,63 @@ impl RunOpts {
 }
 
 // ---------------------------------------------------------------------------
-// run_audit_verify
+// run_audit_export / run_audit_verify
 // ---------------------------------------------------------------------------
+
+/// Export the signed transaction-chain rows from the configured audit store.
+///
+/// This is deliberately a local storage read, just like `audit verify`; it
+/// does not cross the daemon protocol or load the private audit key.
+pub async fn run_audit_export(args: AuditExportArgs, log: &Logger) -> Result<(), CliError> {
+    use sysknife_core::config::LacsConfig;
+    use sysknife_daemon::audit_chain::{select_chain_rows_for_export, validate_export_since};
+
+    if let Some(since) = args.since.as_deref() {
+        validate_export_since(since).map_err(|e| CliError::ConfigOrDaemon(e.to_string()))?;
+    }
+
+    let lacs_config = LacsConfig::load();
+    let resolved_store = sysknife_core::resolve_audit_store();
+    if let Some(note) = resolved_store.note() {
+        log.print_stderr(&format!("note: {note}"));
+    }
+
+    let rows = match lacs_config.storage.as_ref() {
+        Some(storage) if storage.backend.eq_ignore_ascii_case("postgres") => {
+            let config = postgres_config(storage)
+                .map_err(|reason| CliError::ConfigOrDaemon(format!("audit export: {reason}")))?;
+            sysknife_daemon::store::postgres::PostgresStore::read_chain_rows(&config)
+                .await
+                .map_err(|e| {
+                    CliError::ConfigOrDaemon(format!("postgres audit chain query failed: {e}"))
+                })?
+        }
+        _ => {
+            use sysknife_daemon::transactions::TransactionStore;
+
+            let db_path = resolved_store.path();
+            if !db_path.exists() {
+                return Err(CliError::ConfigOrDaemon(format!(
+                    "audit database not found at {}; set $SYSKNIFE_DATABASE_PATH or run the daemon first",
+                    db_path.display()
+                )));
+            }
+            let store = TransactionStore::open_read_only(db_path).map_err(|e| {
+                CliError::ConfigOrDaemon(format!("opening audit database failed: {e}"))
+            })?;
+            store
+                .fetch_chain_rows()
+                .map_err(|e| CliError::ConfigOrDaemon(format!("audit chain query failed: {e}")))?
+        }
+    };
+
+    let rows = select_chain_rows_for_export(rows, args.since.as_deref(), args.limit)
+        .map_err(|e| CliError::ConfigOrDaemon(e.to_string()))?;
+    let json = serde_json::to_string(&rows)
+        .map_err(|e| CliError::ConfigOrDaemon(format!("serializing audit export failed: {e}")))?;
+    log.println(&json);
+    Ok(())
+}
 
 /// Walk the audit log hash chain and report integrity status.
 ///
@@ -1183,39 +1238,12 @@ pub(crate) async fn verify_postgres(
     storage: &sysknife_core::config::StorageSection,
     verifier: &Verifier,
 ) -> AuditVerification {
-    use sysknife_core::config::StorageBackend;
-    use sysknife_daemon::store::postgres::{PostgresConfig, PostgresStore};
+    use sysknife_daemon::store::postgres::PostgresStore;
 
-    // Project the relaxed config form into the type-state-checked enum;
-    // the match below makes future backends a compile-time decision.
-    let parsed = match storage.parsed() {
-        Ok(p) => p,
+    let cfg = match postgres_config(storage) {
+        Ok(config) => config,
         Err(reason) => return cannot_verify_all(reason),
     };
-    let (url, pool) =
-        match parsed {
-            StorageBackend::Sqlite => return cannot_verify_all(
-                "verify_postgres called with backend = \"sqlite\" — caller picks the wrong path"
-                    .to_string(),
-            ),
-            StorageBackend::Postgres { url, pool } => (url, pool),
-        };
-
-    let mut cfg = PostgresConfig {
-        url,
-        ..PostgresConfig::default()
-    };
-    {
-        if let Some(n) = pool.max_connections {
-            cfg.max_connections = n;
-        }
-        if let Some(s) = pool.acquire_timeout_secs {
-            cfg.acquire_timeout = std::time::Duration::from_secs(s);
-        }
-        if let Some(c) = pool.statement_cache_capacity {
-            cfg.statement_cache_capacity = c;
-        }
-    }
 
     match verifier {
         Verifier::Private(key) => {
@@ -1236,6 +1264,41 @@ pub(crate) async fn verify_postgres(
             }
         }
     }
+}
+
+/// Project the relaxed user-facing storage section into Postgres' checked
+/// connection configuration. Both audit readers use this so `verify` and
+/// `export` cannot drift on pool settings or URL validation.
+fn postgres_config(
+    storage: &sysknife_core::config::StorageSection,
+) -> Result<sysknife_daemon::store::postgres::PostgresConfig, String> {
+    use sysknife_core::config::StorageBackend;
+    use sysknife_daemon::store::postgres::PostgresConfig;
+
+    let (url, pool) = match storage.parsed()? {
+        StorageBackend::Sqlite => {
+            return Err(
+                "postgres reader called with backend = \"sqlite\" — caller picked the wrong path"
+                    .to_string(),
+            );
+        }
+        StorageBackend::Postgres { url, pool } => (url, pool),
+    };
+
+    let mut config = PostgresConfig {
+        url,
+        ..PostgresConfig::default()
+    };
+    if let Some(value) = pool.max_connections {
+        config.max_connections = value;
+    }
+    if let Some(value) = pool.acquire_timeout_secs {
+        config.acquire_timeout = std::time::Duration::from_secs(value);
+    }
+    if let Some(value) = pool.statement_cache_capacity {
+        config.statement_cache_capacity = value;
+    }
+    Ok(config)
 }
 
 /// What the chain verdict says about the standing of the attribution counts.

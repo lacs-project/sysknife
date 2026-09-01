@@ -12,6 +12,23 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Added
+
+- **`sysknife audit export` writes the signed chain rows as JSON.**
+  ([#215](https://github.com/lacs-project/sysknife/issues/215),
+  [#260](https://github.com/lacs-project/sysknife/pull/260))
+  Emits the stored transaction-chain rows in ascending `seq` order, with
+  `--since` and `--limit`, including `prev_chain_hash` and the Ed25519 signature
+  stored as `chain_hash`, so an offline consumer has the linkage and signature
+  bytes without opening the database itself. It reconstructs nothing the signed
+  row never stored, and the store is opened without acquiring a signing key.
+  Contributed by @danial-razi.
+
+  `docs/cli.md` and `docs/the-audit-chain.md` now state that an export is not a
+  redacted artifact: `request_hash` commits to the unredacted parameters as one
+  unsalted SHA-256, so an export inherits the confidentiality class of the
+  `0600` database it came from ([#268](https://github.com/lacs-project/sysknife/issues/268)).
+
 ### Fixed
 
 - **`postgres-contract` reported success when no database was configured.**
@@ -38,6 +55,19 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   `*** System restart required ***`. The action now reads the dot filename
   and ends the then-branch with `true`, so a missing packages file is
   optional rather than an error.
+
+- **`postgres-contract` could still report success on zero live tests.**
+  ([#317](https://github.com/lacs-project/sysknife/pull/317),
+  [#315](https://github.com/lacs-project/sysknife/issues/315))
+  [#313](https://github.com/lacs-project/sysknife/pull/313) made the job fail
+  closed on a missing database, but split the guarantee across two tokens:
+  `SYSKNIFE_REQUIRE_POSTGRES` fails loudly from inside the test file, while
+  `--include-ignored` is what runs the five `#[ignore]` live tests at all.
+  Dropping the flag left the job reporting `6 passed; 5 ignored` and exiting 0
+  with no database touched. `tests/release/postgres-contract-guard.test.sh` now
+  reads the CI job and both `scripts/ci-local.sh` branches and fails when either
+  token goes missing. It derives the variable name from `postgres_store.rs` and
+  asserts no test count, so adding a store test does not break it.
 
 ## [0.10.0] — 2026-08-26
 

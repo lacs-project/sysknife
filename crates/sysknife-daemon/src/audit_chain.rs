@@ -658,7 +658,7 @@ pub fn outcome_to_exit_code(outcome: &VerifyOutcome) -> i32 {
 }
 
 /// One row's worth of chain data, as fetched from the store.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChainRow {
     pub seq: u64,
     pub key_id: String,
@@ -684,6 +684,61 @@ pub struct ChainRow {
     /// required for `chain_version = 3`. Scheme-prefixed, see
     /// [`ChainIdentity::V3`].
     pub caller_principal: Option<String>,
+}
+
+/// Invalid input or stored data encountered while selecting rows for export.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ChainExportError {
+    #[error("--since: {0:?} is not a valid RFC 3339 timestamp")]
+    InvalidSince(String),
+    #[error("audit row {seq} has an invalid RFC 3339 created_at value {created_at:?}")]
+    InvalidCreatedAt { seq: u64, created_at: String },
+}
+
+/// Validate the timestamp accepted by `sysknife audit export --since`.
+pub fn validate_export_since(since: &str) -> Result<(), ChainExportError> {
+    chrono::DateTime::parse_from_rfc3339(since)
+        .map(|_| ())
+        .map_err(|_| ChainExportError::InvalidSince(since.to_string()))
+}
+
+/// Select stored chain rows for export while preserving their `seq` order.
+///
+/// The storage readers return rows in ascending `seq` order. Filtering here,
+/// rather than re-encoding any fields, keeps every exported byte-for-byte
+/// value (especially `chain_hash` and `warnings_json`) exactly as stored and
+/// gives SQLite and PostgreSQL identical `--since` semantics.
+pub fn select_chain_rows_for_export(
+    rows: Vec<ChainRow>,
+    since: Option<&str>,
+    limit: Option<u32>,
+) -> Result<Vec<ChainRow>, ChainExportError> {
+    let since = since
+        .map(|value| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .map_err(|_| ChainExportError::InvalidSince(value.to_string()))
+        })
+        .transpose()?;
+    let limit = limit.map_or(usize::MAX, |value| value as usize);
+
+    rows.into_iter()
+        .filter_map(|row| {
+            let keep = match since.as_ref() {
+                None => true,
+                Some(since) => match chrono::DateTime::parse_from_rfc3339(&row.created_at) {
+                    Ok(created_at) => created_at >= *since,
+                    Err(_) => {
+                        return Some(Err(ChainExportError::InvalidCreatedAt {
+                            seq: row.seq,
+                            created_at: row.created_at,
+                        }));
+                    }
+                },
+            };
+            keep.then_some(Ok(row))
+        })
+        .take(limit)
+        .collect()
 }
 
 /// Why a stored row's columns do not describe a verifiable encoding.
@@ -1775,6 +1830,95 @@ mod tests {
             prev = hash;
         }
         rows
+    }
+
+    #[test]
+    fn exported_chain_row_json_round_trips_without_changing_the_signature() {
+        let key = fixed_key();
+        let row = build_chain(&key, 1).remove(0);
+
+        let json = serde_json::to_string(&row).expect("chain row serializes");
+        let decoded: ChainRow = serde_json::from_str(&json).expect("chain row deserializes");
+
+        assert_eq!(decoded, row);
+        assert_eq!(decoded.chain_hash.as_bytes(), row.chain_hash.as_bytes());
+    }
+
+    #[test]
+    fn exported_chain_row_uses_the_stored_column_contract_and_json_nulls() {
+        let key = fixed_key();
+        let mut row = build_chain(&key, 1).remove(0);
+        row.approval_id = None;
+        row.caller_role = None;
+        row.event_tip = None;
+        row.caller_principal = None;
+
+        let value = serde_json::to_value(&row).expect("chain row serializes");
+        let object = value.as_object().expect("chain row is a JSON object");
+        let keys: Vec<&str> = object.keys().map(String::as_str).collect();
+
+        assert_eq!(
+            keys,
+            vec![
+                "action_name",
+                "approval_id",
+                "caller_principal",
+                "caller_role",
+                "chain_hash",
+                "chain_version",
+                "created_at",
+                "event_tip",
+                "key_id",
+                "prev_chain_hash",
+                "request_hash",
+                "request_id",
+                "risk_level",
+                "seq",
+                "summary",
+                "transaction_id",
+                "warnings_json",
+            ]
+        );
+        for optional in [
+            "approval_id",
+            "caller_role",
+            "event_tip",
+            "caller_principal",
+        ] {
+            assert!(object[optional].is_null(), "{optional} must be JSON null");
+        }
+        assert!(!object.contains_key("argv"));
+        assert!(!object.contains_key("outcome"));
+        assert!(!object.contains_key("signature"));
+    }
+
+    #[test]
+    fn export_since_is_inclusive_and_limit_preserves_chain_order() {
+        let key = fixed_key();
+        let mut rows = build_chain(&key, 4);
+        for (row, created_at) in rows.iter_mut().zip([
+            "2026-08-19T09:00:00Z",
+            "2026-08-19T10:00:00Z",
+            "2026-08-19T11:00:00Z",
+            "2026-08-19T12:00:00Z",
+        ]) {
+            row.created_at = created_at.to_string();
+        }
+
+        let selected =
+            select_chain_rows_for_export(rows, Some("2026-08-19T10:00:00+00:00"), Some(2)).unwrap();
+
+        assert_eq!(
+            selected.iter().map(|row| row.seq).collect::<Vec<_>>(),
+            [2, 3]
+        );
+    }
+
+    #[test]
+    fn export_rejects_an_invalid_since_timestamp() {
+        let error = select_chain_rows_for_export(Vec::new(), Some("last Tuesday"), None)
+            .expect_err("invalid --since must fail before reading rows");
+        assert!(matches!(error, ChainExportError::InvalidSince(_)));
     }
 
     // ── caller identity in the signed content ─────────────────────────────
