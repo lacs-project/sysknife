@@ -93,6 +93,7 @@ pub fn bind_unix_listener(target: &ListenTarget) -> Result<UnixListener, ListenT
     match target {
         ListenTarget::Unix(path) => {
             if let Some(parent) = path.parent() {
+                let parent_existed = parent.exists();
                 fs::create_dir_all(parent).map_err(|err| {
                     // Name the socket as well as the directory: the socket is
                     // what the operator configured, the directory is only how
@@ -103,6 +104,22 @@ pub fn bind_unix_listener(target: &ListenTarget) -> Result<UnixListener, ListenT
                         path.display()
                     ))
                 })?;
+
+                // Match the packaged RuntimeDirectoryMode when a manual start
+                // has to recreate /run/sysknife. Do not change an existing
+                // operator-owned directory just because a socket lives in it.
+                if !parent_existed {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(parent, fs::Permissions::from_mode(0o750)).map_err(
+                        |err| {
+                            ListenTargetError::Io(format!(
+                                "cannot set permissions on directory {} for socket {}: {err}",
+                                parent.display(),
+                                path.display()
+                            ))
+                        },
+                    )?;
+                }
             }
 
             if path.exists() {
@@ -208,6 +225,47 @@ mod tests {
         let _second = bind_unix_listener(&target).expect("a stale socket must be reclaimed");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn newly_created_socket_parent_uses_runtime_directory_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root =
+            std::env::temp_dir().join(format!("sysknife-bind-parent-mode-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let parent = root.join("run/sysknife");
+        let path = parent.join("daemon.sock");
+
+        let _listener = bind_unix_listener(&ListenTarget::Unix(path))
+            .expect("binding should create the socket parent");
+
+        let mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o750);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn existing_socket_parent_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "sysknife-bind-existing-parent-mode-{}",
+            std::process::id()
+        ));
+        let parent = root.join("socket-dir");
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let path = parent.join("daemon.sock");
+        let _listener =
+            bind_unix_listener(&ListenTarget::Unix(path)).expect("binding should succeed");
+
+        let mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

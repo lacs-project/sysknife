@@ -40,6 +40,30 @@ fail() {
     exit 1
 }
 
+tmpfiles_mode_for() {
+    local path="$1"
+    local mode
+    mode="$(awk -v path="$path" '$1 == "d" && $2 == path { print $3; exit }' \
+        "${REPO_DIR}/packaging/sysknife-tmpfiles.conf")"
+    if [[ ! "$mode" =~ ^0?[0-7]{3}$ ]]; then
+        printf 'invalid tmpfiles mode for %s: %s\n' "$path" "${mode:-<empty>}" >&2
+        return 1
+    fi
+    printf '%s\n' "${mode#0}"
+}
+
+assert_live_directory_mode() {
+    local path="$1"
+    local expected actual
+    expected="$(tmpfiles_mode_for "$path")" \
+        || fail "Could not derive tmpfiles mode for $path"
+    actual="$(stat -c %a "$path")" \
+        || fail "stat failed for live directory $path"
+    [ "$actual" = "$expected" ] \
+        || fail "Live mode for $path is $actual; tmpfiles declares $expected"
+    echo "Live directory mode matches tmpfiles: $path = $actual"
+}
+
 # ---------------------------------------------------------------------------
 # Detect Ubuntu version
 # ---------------------------------------------------------------------------
@@ -339,6 +363,9 @@ systemctl daemon-reload
 systemctl enable --now sysknife-daemon || fail "Start sysknife-daemon"
 sleep 2
 systemctl is-active sysknife-daemon    || fail "sysknife-daemon not active after start"
+
+assert_live_directory_mode /run/sysknife
+assert_live_directory_mode /var/lib/sysknife
 
 # ---------------------------------------------------------------------------
 # Step 8: Verify daemon socket is reachable
