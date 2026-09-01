@@ -239,3 +239,61 @@ fn timeout_flag_bounds_a_daemon_that_accepts_but_never_replies() {
         "--timeout 1 must give up promptly against a silent daemon, took {elapsed:?}"
     );
 }
+
+/// `audit export` must give the same diagnosis as `audit verify` when the store
+/// exists but cannot be read.
+///
+/// `Path::exists()` answers false for both ENOENT and EACCES, so probing with
+/// it told an operator the root-owned 0700 system store did not exist and to
+/// start the daemon, while the daemon was running and the fix was sudo. Export
+/// was written without the `path_is_present` call that verify has carried since
+/// #275.
+///
+/// Skipped as root, which stats straight through mode 000; the assertion on the
+/// captured precondition is what turns that into a skip rather than a false
+/// pass.
+#[test]
+#[cfg(unix)]
+fn audit_export_distinguishes_unreadable_from_absent() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join("state");
+    std::fs::create_dir_all(&store_dir).unwrap();
+    let db = store_dir.join("daemon.sqlite");
+    std::fs::write(&db, b"not really a database").unwrap();
+    std::fs::set_permissions(&store_dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    // Capture the probe on this side of the restore. A test that chmods back
+    // first and then probes reads the restored state and proves nothing.
+    let unreadable = std::fs::metadata(&db).is_err();
+
+    let assertion = if unreadable {
+        Some(
+            cli()
+                .env("SYSKNIFE_DATABASE_PATH", &db)
+                .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+                .args(["audit", "export"])
+                .assert()
+                .failure(),
+        )
+    } else {
+        None
+    };
+
+    std::fs::set_permissions(&store_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    match assertion {
+        Some(a) => {
+            a.stderr(
+                predicate::str::contains("not readable")
+                    .or(predicate::str::contains("Permission denied")),
+            );
+        }
+        None => {
+            // Running as root, so mode 000 is not a barrier and there is
+            // nothing to assert. Say so rather than passing quietly.
+            eprintln!("skipped: this user stats through mode 000 (probably root)");
+        }
+    }
+}
