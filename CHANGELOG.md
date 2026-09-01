@@ -14,6 +14,37 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Added
 
+- **`sysknife --dangerously-skip-approval` runs with no human in the loop.**
+  Until now `--yes` could never auto-approve a HIGH-risk step, and there was no
+  way to say otherwise. The rule is right for a terminal and wrong for a
+  scheduled run.
+
+  The flag lifts the approval gate: HIGH becomes auto-approvable and the
+  post-preview confirmation stops asking. The preview is still fetched and
+  printed, because it is the only record of what an unattended run was about to
+  change. An explicit `--max-risk` still wins, and `--dry-run` still executes
+  nothing.
+
+  It lifts nothing else. Only catalogue actions with validated parameters run,
+  the polkit allowlist still gates every privileged call, the run still aborts
+  when the daemon rates a step above what the CLI approved, role authorization
+  is unchanged, and every step is still signed into the chain.
+
+  Two keys are required. The flag alone prints an explanation and exits 1; it
+  also needs `SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1`, and only that exact value.
+  A flag left in a script and a variable left in a profile are the two ways
+  this gets armed by accident, so neither is sufficient alone. No short form,
+  no abbreviation, and a red banner naming the host and account before anything
+  runs.
+
+  The audit trail records it. The daemon writes a warning into the transaction's
+  `warnings`, which is stored as `warnings_json` and signed as one of the fields
+  in `ChainContent::canonical_bytes`, so an unattended run cannot later be
+  presented as one a human approved: editing the marker out of the stored column
+  makes `sysknife audit verify` report that row `Broken`. The CLI refuses to
+  execute if a daemon too old to record it drops the declaration.
+  [docs/cli.md](docs/cli.md#unattended-mode) has the full contract.
+
 - **`sysknife audit export` writes the signed chain rows as JSON.**
   ([#215](https://github.com/lacs-project/sysknife/issues/215),
   [#260](https://github.com/lacs-project/sysknife/pull/260))
