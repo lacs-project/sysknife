@@ -84,6 +84,7 @@ CLOUD_INIT_DIR="${VM_DIR}/cloud-init"
 
 # Dedicated passphrase-less SSH key for the VM. Shared with atomic-vm.sh.
 SSH_KEY="${SYSKNIFE_VM_SSH_KEY:-$HOME/.ssh/sysknife-vm}"
+GUEST_ENV_FILE="/run/sysknife-e2e.env"
 SSH_OPTIONS=(
     -o StrictHostKeyChecking=no
     -o UserKnownHostsFile=/dev/null
@@ -105,6 +106,21 @@ _MIN_IMAGE_SIZE=314572800
 
 log()  { printf '[ubuntu-vm:%s] %s\n' "$UBUNTU_RELEASE" "$*" >&2; }
 die()  { log "ERROR: $*"; exit 1; }
+
+write_guest_env_file() {
+    local assignment value var
+    local assignments=()
+    for var in "$@"; do
+        eval "value=\${$var-}"
+        if [ -n "$value" ]; then
+            printf -v assignment '%s=%q' "$var" "$value"
+            assignments+=("$assignment")
+        fi
+    done
+
+    printf '%s\n' "${assignments[@]}" \
+        | cmd_ssh "sudo sh -c 'umask 077 && cat > ${GUEST_ENV_FILE}'"
+}
 
 require_tools() {
     local missing=()
@@ -498,39 +514,28 @@ cmd_provision() {
     [ -f "$SSH_KEY" ] || die "SSH key not found. Run '$0 download' first."
     cmd_sync
     log "Running ubuntu-provision.sh inside the VM as root..."
-    local prov_env=""
-    for var in OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY \
-               GROQ_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY XAI_API_KEY \
-               SYSKNIFE_SKIP_OLLAMA SYSKNIFE_TEST_MODEL; do
-        eval "val=\${$var:-}"
-        if [ -n "$val" ]; then
-            prov_env+=" $var='$val'"
-        fi
-    done
+    write_guest_env_file \
+        OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY \
+        GROQ_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY XAI_API_KEY \
+        SYSKNIFE_SKIP_OLLAMA SYSKNIFE_TEST_MODEL
     # shellcheck disable=SC2029
-    cmd_ssh "cd /home/${VM_USER}/sysknife && sudo${prov_env} bash tests/e2e/ubuntu-provision.sh"
+    cmd_ssh "cd /home/${VM_USER}/sysknife && sudo bash -c 'set -e; trap \"rm -f ${GUEST_ENV_FILE}\" EXIT; set -a; . ${GUEST_ENV_FILE}; set +a; rm -f ${GUEST_ENV_FILE}; trap - EXIT; exec bash tests/e2e/ubuntu-provision.sh'"
 }
 
 cmd_run() {
     [ -f "$SSH_KEY" ] || die "SSH key not found."
-    local sudo_env=""
-    for var in SYSKNIFE_ALLOW_DESTRUCTIVE SYSKNIFE_LLM_PROVIDER SYSKNIFE_LLM_MODEL \
-               SYSKNIFE_TEST_MODEL SYSKNIFE_OLLAMA_URL SYSKNIFE_LISTEN_URI \
-               SYSKNIFE_STORY_TIMEOUT SYSKNIFE_MAX_RPM \
-               SYSKNIFE_CASSETTE SYSKNIFE_CASSETTE_MODE \
-               SYSKNIFE_RESULTS_JSON \
-               OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY \
-               GROQ_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY XAI_API_KEY; do
-        eval "val=\${$var:-}"
-        if [ -n "$val" ]; then
-            sudo_env+=" $var='$val'"
-        fi
-    done
+    write_guest_env_file \
+        SYSKNIFE_ALLOW_DESTRUCTIVE SYSKNIFE_LLM_PROVIDER SYSKNIFE_LLM_MODEL \
+        SYSKNIFE_TEST_MODEL SYSKNIFE_OLLAMA_URL SYSKNIFE_LISTEN_URI \
+        SYSKNIFE_STORY_TIMEOUT SYSKNIFE_MAX_RPM \
+        SYSKNIFE_CASSETTE SYSKNIFE_CASSETTE_MODE SYSKNIFE_RESULTS_JSON \
+        OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY \
+        GROQ_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY XAI_API_KEY
     local story_args=""
     if [ $# -gt 0 ]; then
         story_args=" $*"
     fi
-    cmd_ssh "cd /home/${VM_USER}/sysknife && sudo${sudo_env} bash tests/e2e/run-stories.sh${story_args}"
+    cmd_ssh "cd /home/${VM_USER}/sysknife && sudo bash -c 'set -e; trap \"rm -f ${GUEST_ENV_FILE}\" EXIT; set -a; . ${GUEST_ENV_FILE}; set +a; rm -f ${GUEST_ENV_FILE}; trap - EXIT; exec bash tests/e2e/run-stories.sh${story_args}'"
 }
 
 cmd_stop() {

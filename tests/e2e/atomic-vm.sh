@@ -104,6 +104,7 @@ VM_SUBDIR="${VM_DIR}/${VM_NAME}"
 # contributor's personal ~/.ssh/id_* keys because those are typically
 # passphrase-protected, which breaks rsync/non-interactive ssh.
 SSH_KEY="${SYSKNIFE_VM_SSH_KEY:-$HOME/.ssh/sysknife-vm}"
+GUEST_ENV_FILE="/run/sysknife-e2e.env"
 
 ssh_opts() {
     printf -- '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i %s -o IdentitiesOnly=yes' "$SSH_KEY"
@@ -115,6 +116,21 @@ ssh_opts() {
 
 log() { printf '[atomic-vm] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
+
+write_guest_env_file() {
+    local assignment value var
+    local assignments=()
+    for var in "$@"; do
+        eval "value=\${$var-}"
+        if [ -n "$value" ]; then
+            printf -v assignment '%s=%q' "$var" "$value"
+            assignments+=("$assignment")
+        fi
+    done
+
+    printf '%s\n' "${assignments[@]}" \
+        | cmd_ssh "sudo sh -c 'umask 077 && cat > ${GUEST_ENV_FILE}'"
+}
 
 require_tools() {
     local missing=()
@@ -310,17 +326,11 @@ cmd_provision() {
         -e "ssh $(ssh_opts) -p $port" \
         "$repo_root/" "${VM_USER}@127.0.0.1:/home/${VM_USER}/sysknife/"
     log "Running provisioner inside the VM..."
-    local prov_env=""
-    for var in OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY \
-               GROQ_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY XAI_API_KEY \
-               SYSKNIFE_SKIP_OLLAMA \
-               SYSKNIFE_TEST_MODEL VM_USER; do
-        eval "val=\${$var:-}"
-        if [ -n "$val" ]; then
-            prov_env+=" $var='$val'"
-        fi
-    done
-    cmd_ssh "cd /home/${VM_USER}/sysknife && sudo${prov_env} bash tests/e2e/provision.sh"
+    write_guest_env_file \
+        OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY \
+        GROQ_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY XAI_API_KEY \
+        SYSKNIFE_SKIP_OLLAMA SYSKNIFE_TEST_MODEL VM_USER
+    cmd_ssh "cd /home/${VM_USER}/sysknife && sudo bash -c 'set -e; trap \"rm -f ${GUEST_ENV_FILE}\" EXIT; set -a; . ${GUEST_ENV_FILE}; set +a; rm -f ${GUEST_ENV_FILE}; trap - EXIT; exec bash tests/e2e/provision.sh'"
 }
 
 # Generate a dedicated SSH key for the VM (no passphrase). Idempotent.
@@ -449,22 +459,13 @@ cmd_run() {
         log "Running read-only stories (default set). Set SYSKNIFE_ALLOW_DESTRUCTIVE=1 for all 54."
     fi
 
-    # Forward relevant env vars through SSH → sudo. Passing them as
-    # `sudo VAR=val VAR2=val2 cmd` injects them into the command's env
-    # regardless of sudoers env_reset/env_keep settings.
-    local sudo_env=""
-    for var in SYSKNIFE_ALLOW_DESTRUCTIVE SYSKNIFE_LLM_PROVIDER SYSKNIFE_LLM_MODEL \
-               SYSKNIFE_TEST_MODEL SYSKNIFE_OLLAMA_URL SYSKNIFE_LISTEN_URI \
-               SYSKNIFE_STORY_TIMEOUT SYSKNIFE_MAX_RPM \
-               SYSKNIFE_CASSETTE SYSKNIFE_CASSETTE_MODE \
-               SYSKNIFE_RESULTS_JSON \
-               OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY \
-               GROQ_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY XAI_API_KEY; do
-        eval "val=\${$var:-}"
-        if [ -n "$val" ]; then
-            sudo_env+=" $var='$val'"
-        fi
-    done
+    write_guest_env_file \
+        SYSKNIFE_ALLOW_DESTRUCTIVE SYSKNIFE_LLM_PROVIDER SYSKNIFE_LLM_MODEL \
+        SYSKNIFE_TEST_MODEL SYSKNIFE_OLLAMA_URL SYSKNIFE_LISTEN_URI \
+        SYSKNIFE_STORY_TIMEOUT SYSKNIFE_MAX_RPM \
+        SYSKNIFE_CASSETTE SYSKNIFE_CASSETTE_MODE SYSKNIFE_RESULTS_JSON \
+        OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY \
+        GROQ_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY XAI_API_KEY
 
     # Forward positional args (specific story numbers, e.g. `run 1 3 7`)
     # through to run-stories.sh so contributors can target individual
@@ -473,7 +474,7 @@ cmd_run() {
     if [ $# -gt 0 ]; then
         story_args=" $*"
     fi
-    cmd_ssh "cd /home/${VM_USER}/sysknife && sudo${sudo_env} bash tests/e2e/run-stories.sh${story_args}"
+    cmd_ssh "cd /home/${VM_USER}/sysknife && sudo bash -c 'set -e; trap \"rm -f ${GUEST_ENV_FILE}\" EXIT; set -a; . ${GUEST_ENV_FILE}; set +a; rm -f ${GUEST_ENV_FILE}; trap - EXIT; exec bash tests/e2e/run-stories.sh${story_args}'"
 }
 
 cmd_test_daemon() {

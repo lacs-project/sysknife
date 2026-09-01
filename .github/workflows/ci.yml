@@ -98,6 +98,9 @@ jobs:
       - name: Check provider parity across E2E entry points
         run: bash tests/e2e/provider-parity.test.sh
 
+      - name: Check VM harnesses keep provider keys out of process arguments
+        run: bash tests/e2e/vm-env-secrets.test.sh
+
       - name: Check story metadata is derived from the story files
         run: bash tests/e2e/story-metadata.test.sh
 
