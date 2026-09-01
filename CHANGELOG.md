@@ -39,6 +39,19 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   and ends the then-branch with `true`, so a missing packages file is
   optional rather than an error.
 
+- **`postgres-contract` could still report success on zero live tests.**
+  ([#317](https://github.com/lacs-project/sysknife/pull/317),
+  [#315](https://github.com/lacs-project/sysknife/issues/315))
+  [#313](https://github.com/lacs-project/sysknife/pull/313) made the job fail
+  closed on a missing database, but split the guarantee across two tokens:
+  `SYSKNIFE_REQUIRE_POSTGRES` fails loudly from inside the test file, while
+  `--include-ignored` is what runs the five `#[ignore]` live tests at all.
+  Dropping the flag left the job reporting `6 passed; 5 ignored` and exiting 0
+  with no database touched. `tests/release/postgres-contract-guard.test.sh` now
+  reads the CI job and both `scripts/ci-local.sh` branches and fails when either
+  token goes missing. It derives the variable name from `postgres_store.rs` and
+  asserts no test count, so adding a store test does not break it.
+
 ## [0.10.0] — 2026-08-26
 
 The middle digit moves because [#289](https://github.com/lacs-project/sysknife/pull/289)
