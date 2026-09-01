@@ -32,11 +32,14 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Pinned, because this job holds the workflow token: an unpinned global
+      # install lets a compromised release of any of these three run arbitrary
+      # code on the trusted side of the build. Bump deliberately.
       - name: Install lint tools
         run: |
-          npm install --global markdownlint-cli2 markdown-link-check
+          npm install --global markdownlint-cli2@0.23.2 markdown-link-check@3.15.0
           python -m pip install --upgrade pip
-          pip install yamllint
+          pip install yamllint==1.38.0
 
       - name: Check required repository files
         run: bash scripts/check_repo_completeness.sh
