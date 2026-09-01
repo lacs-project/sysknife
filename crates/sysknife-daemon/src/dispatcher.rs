@@ -733,6 +733,104 @@ fn authorization_failure_message(
 /// Returns `Ok(true)` when authorized (proceed). Returns `Ok(false)` when a
 /// response has already been sent (transaction missing, load error, or denied)
 /// and the caller must return early.
+/// Whether `caller` is the account that created `transaction_id`.
+///
+/// The approval receipt is documented as proof that a human confirmed one
+/// specific preview. Checking only the caller's role made that proof
+/// unattributed: any account permitted to reach the socket could mint a
+/// receipt for a transaction it had never previewed, and the signed row would
+/// still name the account that *previewed* it, so the trail blamed the wrong
+/// person. `caller_principal` was already captured, stored and signed; nothing
+/// read it back.
+///
+/// The rule is principal equality, not connection equality. `sysknife approve`
+/// is deliberately a separate process from the client that previewed, and every
+/// CLI call opens its own connection, so requiring one connection would break
+/// the product. Requiring one account does not: both halves run as the same
+/// uid, and a vsock client previews and approves over the same channel.
+///
+/// Two cases refuse rather than compare:
+///
+/// - `Unattributed`, on either side. The kernel could not name the peer, so
+///   two such callers are not known to be the same account. Treating them as
+///   equal would put a claim in the signed record that the daemon has no
+///   evidence for, which is the thing [`CallerPrincipal::Unattributed`] exists
+///   to avoid.
+/// - A row with no stored principal. Only a chain imported from before the
+///   `caller_principal` migration can be in that state, and such a row cannot
+///   legitimately be queued for approval on a daemon running this code.
+async fn caller_owns_transaction(
+    state: &DaemonState,
+    caller: &CallerAttribution,
+    transaction_id: &str,
+) -> Ownership {
+    if matches!(
+        caller.principal(),
+        crate::auth::CallerPrincipal::Unattributed
+    ) {
+        return Ownership::CannotEstablish(
+            "this connection could not be attributed to an account, so it cannot approve, \
+             cancel, inspect or execute a transaction. The daemon reports the peer as \
+             unattributed when SO_PEERCRED fails or when the peer is not representable in \
+             this daemon's user namespace."
+                .to_string(),
+        );
+    }
+    let row = match state.audit.fetch_chain_row(transaction_id).await {
+        Ok(row) => row,
+        Err(e) => {
+            return Ownership::CannotEstablish(format!(
+                "failed to load transaction ownership: {e}"
+            ));
+        }
+    };
+    // A transaction that does not exist is not an ownership question. Saying
+    // "that belongs to someone else" about an id nobody ever created would be
+    // both wrong and a way to probe which ids exist, so this hands the case
+    // back to the caller's own missing-transaction path.
+    let Some(row) = row else {
+        return Ownership::NoSuchTransaction;
+    };
+    let Some(owner) = row.caller_principal.as_deref() else {
+        return Ownership::CannotEstablish(format!(
+            "transaction {transaction_id} records no owning account, so ownership cannot be \
+             established"
+        ));
+    };
+    if owner == caller.principal().as_signed_str() {
+        Ownership::Owned
+    } else {
+        Ownership::NotOwned
+    }
+}
+
+/// The four answers [`caller_owns_transaction`] can give.
+///
+/// An enum rather than a `Result<bool, _>` because "no such transaction" and
+/// "someone else's transaction" need different answers to the caller, and a
+/// boolean forced them together. The first version of this check reported a
+/// nonexistent id as belonging to another account, which is both untrue and a
+/// way to probe the id space.
+enum Ownership {
+    Owned,
+    NotOwned,
+    NoSuchTransaction,
+    CannotEstablish(String),
+}
+
+/// The refusal an operator sees when they act on someone else's transaction.
+///
+/// Deliberately does not name the owning account. Telling one caller which
+/// other account queued a transaction would hand out exactly the cross-account
+/// information this check exists to withhold.
+fn not_your_transaction_message(transaction_id: &str) -> String {
+    format!(
+        "transaction {transaction_id} was created by a different account. An approval receipt \
+         is proof that a specific account confirmed a specific preview, so only the account \
+         that previewed an action can approve, cancel, inspect or execute it."
+    )
+}
+
 async fn authorize_for_transaction(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     state: &DaemonState,
@@ -744,6 +842,23 @@ async fn authorize_for_transaction(
 ) -> Result<bool, HandlerError> {
     match state.audit.get(transaction_id).await {
         Ok(Some(transaction)) => {
+            match caller_owns_transaction(state, caller, transaction_id).await {
+                Ownership::Owned | Ownership::NoSuchTransaction => {}
+                Ownership::NotOwned => {
+                    send_error(
+                        framed,
+                        request_id,
+                        "authorization_failure",
+                        not_your_transaction_message(transaction_id),
+                    )
+                    .await?;
+                    return Ok(false);
+                }
+                Ownership::CannotEstablish(message) => {
+                    send_error(framed, request_id, "authorization_failure", message).await?;
+                    return Ok(false);
+                }
+            }
             if authorize_action(&state.policy, &caller.role(), &transaction.action_name) {
                 Ok(true)
             } else {
@@ -1452,6 +1567,21 @@ async fn handle_approval_details(
     request_id: &str,
     transaction_id: &str,
 ) -> Result<(), HandlerError> {
+    match caller_owns_transaction(state, caller, transaction_id).await {
+        Ownership::Owned | Ownership::NoSuchTransaction => {}
+        Ownership::NotOwned => {
+            return send_error(
+                framed,
+                request_id,
+                "authorization_failure",
+                not_your_transaction_message(transaction_id),
+            )
+            .await;
+        }
+        Ownership::CannotEstablish(message) => {
+            return send_error(framed, request_id, "authorization_failure", message).await;
+        }
+    }
     let transaction = match state.audit.get(transaction_id).await {
         Ok(Some(transaction)) if transaction.status == JobState::Queued => transaction,
         Ok(_) => {
@@ -2367,6 +2497,25 @@ async fn handle_execute(
             return send_error(framed, request_id, "validation_failure", e.to_string()).await;
         }
     };
+
+    // Checked here as well as at approve, not instead of it. A receipt is a
+    // bearer token for one transaction, so an account that obtained one it was
+    // never issued must still be refused at the point of execution.
+    match caller_owns_transaction(state, caller, transaction_id).await {
+        Ownership::Owned | Ownership::NoSuchTransaction => {}
+        Ownership::NotOwned => {
+            return send_error(
+                framed,
+                request_id,
+                "authorization_failure",
+                not_your_transaction_message(transaction_id),
+            )
+            .await;
+        }
+        Ownership::CannotEstablish(message) => {
+            return send_error(framed, request_id, "authorization_failure", message).await;
+        }
+    }
 
     if !authorize_action(&state.policy, &caller.role(), action_name) {
         return send_error(

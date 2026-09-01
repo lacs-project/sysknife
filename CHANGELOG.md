@@ -12,6 +12,33 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Security
+
+- **A transaction can only be approved, cancelled, inspected or executed by the
+  account that created it.**
+  `authorize_for_transaction` checked the caller's role and nothing else, so any
+  account permitted to reach the daemon socket could mint an approval receipt
+  for a transaction it had never previewed, read that preview's unredacted
+  parameters and host-state snapshot, cancel it, or execute it. `handle_execute`
+  and `handle_approval_details` had the same gap on their own paths.
+
+  `caller_principal` was already captured at preview, stored, and signed into
+  the chain. No authorization decision read it back, so the receipt proved that
+  *a* permitted account confirmed a preview, never which one, and the signed row
+  went on naming the account that previewed rather than the one that approved.
+
+  The rule is principal equality, not connection equality. `sysknife approve` is
+  deliberately a separate process from the client that previewed, and every CLI
+  call opens its own connection, so both keep working. Two cases refuse rather
+  than compare: an `Unattributed` peer, because the kernel could not name it and
+  two such callers are not known to be the same account, and a row with no
+  recorded owner.
+
+  Scope, stated plainly: `/run/sysknife` is `0750` and the socket is `0660`, so
+  only members of group `sysknife` and root could reach this at all, and the
+  role ceiling always held, so it was never a route past your own role. The
+  defect was same-role and cross-account, inside the trusted group.
+
 ## [0.11.0] — 2026-09-01
 
 The middle digit moves because of [#312](https://github.com/lacs-project/sysknife/pull/312).
