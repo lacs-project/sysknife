@@ -176,3 +176,90 @@ fn the_mcp_server_completes_a_real_initialize_and_tools_list_over_stdio() {
         );
     }
 }
+
+/// `resources/read` must answer with a finished read, never with an
+/// input-required round.
+///
+/// rmcp 3 widened the server's reply to `ReadResourceResponse`, whose
+/// `InputRequired` variant (SEP-2322) asks the client for more input before the
+/// read completes. SysKnife must never take that branch: approval happens in a
+/// terminal, against the daemon, and an MCP-level input round would put a
+/// second question in front of the operator without an approval receipt behind
+/// it. `Complete` is the only shape that carries `contents`, so asserting the
+/// exact key set of the result is what separates the two on the wire.
+///
+/// Asserting the exact set also catches `ttlMs` or `cacheScope` appearing.
+/// Both are `None` on purpose: a client that caches the discovery document
+/// stops asking the daemon, and this test is where that decision is enforced.
+#[test]
+fn resources_read_answers_complete_and_advertises_no_cache_directive() {
+    let mut server = McpChild::spawn();
+
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": { "name": "sysknife-stdio-test", "version": "0" }
+        }
+    }));
+    let init = server.recv_response();
+    assert!(
+        init.get("error").is_none(),
+        "initialize returned an error: {init}"
+    );
+
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    }));
+
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "resources/list",
+        "params": {}
+    }));
+    let listed = server.recv_response();
+    assert!(
+        listed.get("error").is_none(),
+        "resources/list returned an error: {listed}"
+    );
+    let uri = listed["result"]["resources"][0]["uri"]
+        .as_str()
+        .unwrap_or_else(|| panic!("resources/list advertised no uri: {listed}"))
+        .to_string();
+
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "resources/read",
+        "params": { "uri": uri }
+    }));
+    let read = server.recv_response();
+    assert!(
+        read.get("error").is_none(),
+        "resources/read returned an error: {read}"
+    );
+
+    let result = read["result"]
+        .as_object()
+        .unwrap_or_else(|| panic!("resources/read has no result object: {read}"));
+    let mut keys: Vec<&str> = result.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["contents"],
+        "resources/read must answer with contents alone: {read}"
+    );
+
+    let contents = result["contents"]
+        .as_array()
+        .unwrap_or_else(|| panic!("contents is not an array: {read}"));
+    assert!(
+        !contents.is_empty(),
+        "a completed read must carry at least one content item: {read}"
+    );
+}

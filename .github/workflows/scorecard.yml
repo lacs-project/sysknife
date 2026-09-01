@@ -3,8 +3,15 @@ name: scorecard
 
 # OpenSSF Scorecard: grades the repo against ~18 supply-chain security
 # heuristics (branch protection, pinned deps, token permissions, CI tests, …)
-# and publishes results so the README can carry a Scorecard badge. Advisory —
-# it produces a report and SARIF alerts, never a hard pass/fail gate.
+# and publishes results so the README can carry a Scorecard badge. Advisory:
+# it produces a report, never a hard pass/fail gate.
+#
+# The SARIF upload is deliberately absent. Every Scorecard heuristic became a
+# code-scanning alert, five of them with no file attached, and the Security tab
+# stopped meaning "an analysis found something in this code". Four high-severity
+# CodeQL findings sat unread for 36 days behind that noise (#305). `publish_results`
+# still feeds the badge and the public Scorecard API, so nothing a reader sees is
+# lost.
 
 on:
   branch_protection_rule:
@@ -18,14 +25,12 @@ permissions:
 
 jobs:
   analysis:
-    # Scorecard publishes results and uploads SARIF to code scanning, both of
-    # which require the repo to be public (GHAS). Gate on visibility (same
-    # pattern as codeql.yml) so the run stays green while private and resumes
-    # automatically on the public flip.
+    # Publishing results requires the repo to be public. Gate on visibility
+    # (same pattern as codeql.yml) so the run stays green while private and
+    # resumes automatically on the public flip.
     if: github.event.repository.visibility == 'public'
     runs-on: ubuntu-latest
     permissions:
-      security-events: write  # upload SARIF to code scanning
       id-token: write  # OIDC, required by publish_results
     steps:
       - name: Checkout
@@ -39,8 +44,3 @@ jobs:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
-
-      - name: Upload SARIF to code scanning
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4
-        with:
-          sarif_file: results.sarif

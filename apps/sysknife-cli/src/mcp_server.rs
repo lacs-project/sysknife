@@ -38,8 +38,8 @@ use rmcp::{
     handler::server::wrapper::{Json, Parameters},
     model::{
         Implementation, ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams,
-        ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents,
-        ServerCapabilities, ServerInfo,
+        ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
+        ResourceContents, ServerCapabilities, ServerInfo,
     },
     schemars, tool, tool_handler, tool_router,
     transport::stdio,
@@ -535,6 +535,9 @@ impl ServerHandler for SysknifeMcpServer {
             resources: vec![sysknife_about_resource()],
             next_cursor: None,
             meta: None,
+            result_type: None,
+            ttl_ms: None,
+            cache_scope: None,
         })
     }
 
@@ -543,10 +546,17 @@ impl ServerHandler for SysknifeMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        // `result_type`, `ttl_ms` and `cache_scope` arrived with the 2026-07-28
+        // protocol revision. All three stay `None`: absent `result_type` means
+        // "complete", and declining to advertise a cache scope or a TTL keeps
+        // every client asking the daemon rather than replaying a stored answer.
         Ok(ListResourceTemplatesResult {
             resource_templates: Vec::new(),
             next_cursor: None,
             meta: None,
+            result_type: None,
+            ttl_ms: None,
+            cache_scope: None,
         })
     }
 
@@ -554,12 +564,16 @@ impl ServerHandler for SysknifeMcpServer {
         &self,
         ReadResourceRequestParams { uri, .. }: ReadResourceRequestParams,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<ReadResourceResult, ErrorData> {
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        // rmcp 3 lets a server answer `resources/read` with `InputRequired`
+        // (SEP-2322), which asks the *client* for more input before the read
+        // finishes. SysKnife never uses it. Approval is a terminal action
+        // against the daemon, and an MCP-level input round would be a second
+        // channel that reaches the operator without one.
         match uri.as_str() {
-            SYSKNIFE_DISCOVERY_URI => Ok(ReadResourceResult::new(vec![ResourceContents::text(
-                SYSKNIFE_DISCOVERY_BODY,
-                uri,
-            )])),
+            SYSKNIFE_DISCOVERY_URI => Ok(ReadResourceResponse::Complete(ReadResourceResult::new(
+                vec![ResourceContents::text(SYSKNIFE_DISCOVERY_BODY, uri)],
+            ))),
             _ => Err(ErrorData::resource_not_found(
                 "resource_not_found",
                 Some(serde_json::json!({ "uri": uri })),

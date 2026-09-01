@@ -25,18 +25,21 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.11"
 
+      # Pinned, because this job holds the workflow token: an unpinned global
+      # install lets a compromised release of any of these three run arbitrary
+      # code on the trusted side of the build. Bump deliberately.
       - name: Install lint tools
         run: |
-          npm install --global markdownlint-cli2 markdown-link-check
+          npm install --global markdownlint-cli2@0.23.2 markdown-link-check@3.15.0
           python -m pip install --upgrade pip
-          pip install yamllint
+          pip install yamllint==1.38.0
 
       - name: Check required repository files
         run: bash scripts/check_repo_completeness.sh
@@ -70,6 +73,9 @@ jobs:
 
       - name: Check the secret scanner catches keys and ignores fixtures
         run: bash tests/release/no-secrets.test.sh
+
+      - name: Check no workflow pins an end-of-life Node release
+        run: bash tests/release/node-eol.test.sh
 
       - name: Check systemd directory modes match tmpfiles
         run: bash tests/release/systemd-directory-modes.test.sh
@@ -173,7 +179,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Install dependencies
         run: npm ci
