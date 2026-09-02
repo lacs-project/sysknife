@@ -226,7 +226,7 @@ else
   # This subset is curated, not derivable: it is the atomic-family stories that
   # need no live rpm-ostree host, which no header tag records.
   STORIES=(1 2 3 4 5 6 7 11 12 13 14 15 16 17 \
-           21 22 25 26 28 29 32 38 41 46 47 48 49)
+           21 22 25 26 29 32 38 41 46 47 48 49)
 fi
 
 # ---------------------------------------------------------------------------

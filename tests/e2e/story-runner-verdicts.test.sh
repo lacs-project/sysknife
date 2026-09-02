@@ -155,6 +155,20 @@ else
     run_case 'mutated run-stories accepts SKIP' 0 "$run_mutant" 1 2
 fi
 
+# Exercise the production runner's no-argument default selection without
+# restating its curated list. Derive one passing fixture per checked-in story,
+# then make the Fedora-only story fail the aggregate contract if selected.
+for story_file in "$repo_root"/tests/e2e/stories/story-*.sh; do
+    story_name="${story_file##*/}"
+    story_id="${story_name#story-}"
+    story_id="${story_id%.sh}"
+    write_story "$run_root/stories" story- "$story_id" pass
+done
+write_story "$run_root/stories" story- 28 skip
+
+run_case 'run-stories default set accepts portable stories' 0 "$run_runner"
+assert_output_not_contains 'run-stories default set omits Fedora-only story 28' 'Story 28'
+
 # The exec runner has the same result contract but its own production loop.
 exec_root="$fixture/exec"
 mkdir -p "$exec_root"
