@@ -12,6 +12,24 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Fixed
+
+- **A story suite that proved nothing no longer reports success.** All three
+  runners (`run-stories.sh`, `exec/run-exec-stories.sh`, `dev-stories.sh`)
+  decided their exit status from `fail_count` alone, so a run where every story
+  was skipped or rate-limited printed `0/N passed, 0 failed` and exited 0.
+  `run-stories.sh` also rewrote a failing story's verdict to `RATELIMIT`, moving
+  it out of the only counter that could fail the run. A pass is now a positive
+  `PASS` marker rather than an inferred exit status, and skipped, rate-limited
+  and zero-pass runs all fail. `scripts/check_evidence_claims.py` refuses an
+  artifact carrying a non-zero `skipped` or `rate_limited` as evidence for a
+  published pass rate or a Validated tier.
+  `tests/e2e/story-runner-verdicts.test.sh` pins the contract by executing
+  staged copies of the three production runners and mutating their real exit
+  gates, so a reverted fix turns the suite red. Story 28 also left the
+  no-argument default sets, which selected a Fedora-only story on every Ubuntu
+  host. ([#247](https://github.com/lacs-project/sysknife/issues/247))
+
 ### Security
 
 - **A transaction can only be approved, cancelled, inspected or executed by the
