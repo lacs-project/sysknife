@@ -283,6 +283,7 @@ run_hygiene_group() {
     run_step 'hygiene: provider-parity.test.sh' bash "$repo_root/tests/e2e/provider-parity.test.sh"
     run_step 'hygiene: vm-env-secrets.test.sh' bash "$repo_root/tests/e2e/vm-env-secrets.test.sh"
     run_step 'hygiene: story-metadata.test.sh' bash "$repo_root/tests/e2e/story-metadata.test.sh"
+    run_step 'hygiene: story-runner-verdicts.test.sh' bash "$repo_root/tests/e2e/story-runner-verdicts.test.sh"
     run_step 'hygiene: vm-sync-parity.test.sh' bash "$repo_root/tests/e2e/vm-sync-parity.test.sh"
     run_step 'hygiene: docs-share-cards.test.sh' bash "$repo_root/tests/release/docs-share-cards.test.sh"
     run_step 'hygiene: install-paths.test.sh' bash "$repo_root/tests/release/install-paths.test.sh"

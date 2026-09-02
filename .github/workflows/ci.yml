@@ -113,6 +113,9 @@ jobs:
       - name: Check story metadata is derived from the story files
         run: bash tests/e2e/story-metadata.test.sh
 
+      - name: Check story runners reject unproven results
+        run: bash tests/e2e/story-runner-verdicts.test.sh
+
       - name: Check Ubuntu VM bootstrap contract
         run: bash tests/e2e/ubuntu-vm-bootstrap.test.sh
 

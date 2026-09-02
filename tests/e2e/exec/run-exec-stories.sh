@@ -156,12 +156,19 @@ run_exec() {
       MESSAGES[$n]="${last_line#SKIP}"
       DURATIONS[$n]="0.0"
       echo "SKIP"
-    else
+    elif [[ "$last_line" == PASS* ]]; then
       RESULTS[$n]="PASS"
       local end_time
       end_time=$(date +%s.%N)
       DURATIONS[$n]=$(echo "$end_time - $start_time" | bc 2>/dev/null || echo "?")
       echo "PASS (${DURATIONS[$n]}s)"
+    else
+      RESULTS[$n]="FAIL"
+      MESSAGES[$n]="exited 0 without a PASS marker"
+      local end_time
+      end_time=$(date +%s.%N)
+      DURATIONS[$n]=$(echo "$end_time - $start_time" | bc 2>/dev/null || echo "?")
+      echo "FAIL (${DURATIONS[$n]}s)"
     fi
   else
     local exit_code=$?
@@ -238,7 +245,7 @@ echo "Summary: $pass_count/$total passed, $fail_count failed, $skip_count skippe
 echo "Logs:    $LOG_DIR/"
 echo ""
 
-if [[ $fail_count -gt 0 ]]; then
+if [[ $fail_count -gt 0 || $skip_count -gt 0 || $pass_count -eq 0 ]]; then
   exit 1
 fi
 exit 0

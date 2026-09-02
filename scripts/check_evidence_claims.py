@@ -178,6 +178,19 @@ def load_story_runs(root: Path) -> list[dict]:
     return runs
 
 
+def story_run_has_no_unproven_results(run: dict) -> bool:
+    """Only a run with explicit zero skipped and rate-limited stories can prove claims."""
+    totals = run.get("totals")
+    if not isinstance(totals, dict):
+        return False
+    return all(
+        isinstance(totals.get(field), int)
+        and not isinstance(totals.get(field), bool)
+        and totals[field] == 0
+        for field in ("skipped", "rate_limited")
+    )
+
+
 def check_story_claims(texts: dict[str, str], runs: list[dict]) -> list[str]:
     problems = []
     pattern = re.compile(r"([0-9]+)\s*/\s*([0-9]+)\s+stories")
@@ -193,6 +206,7 @@ def check_story_claims(texts: dict[str, str], runs: list[dict]) -> list[str]:
                 if run.get("story_set") in FULL_STORY_SETS
                 and run.get("totals", {}).get("passed") == passed
                 and run.get("totals", {}).get("total") == total
+                and story_run_has_no_unproven_results(run)
                 # A replay that missed, or served nothing, proves nothing — the
                 # harness says so and fails the run. Such an artifact used to be
                 # written anyway, with a healthy-looking pass rate.
@@ -355,9 +369,12 @@ def replay_verified_releases(root: Path) -> set[str]:
         if not release:
             continue
         if path.name.endswith(".replay.json"):
-            if str(run.get("cassette_audit", {}).get("verdict", "")) == "ok":
+            if (
+                str(run.get("cassette_audit", {}).get("verdict", "")) == "ok"
+                and story_run_has_no_unproven_results(run)
+            ):
                 replays.add(release)
-        else:
+        elif story_run_has_no_unproven_results(run):
             records[release] = path
     return set(records) & replays
 

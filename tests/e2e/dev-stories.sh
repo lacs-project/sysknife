@@ -259,9 +259,13 @@ run_story() {
             RESULTS[$n]="SKIP"
             MESSAGES[$n]="${last_line#SKIP}"
             echo "SKIP"
-        else
+        elif [[ "$last_line" == PASS* ]]; then
             RESULTS[$n]="PASS"
             echo "PASS (${elapsed}s)"
+        else
+            RESULTS[$n]="FAIL"
+            MESSAGES[$n]="exited 0 without a PASS marker"
+            echo "FAIL (${elapsed}s)"
         fi
     else
         RESULTS[$n]="FAIL"
@@ -338,7 +342,7 @@ echo "Summary: $pass_count/$total passed, $fail_count failed, $skip_count skippe
 echo "Logs:    $LOG_DIR/"
 echo ""
 
-if (( fail_count > 0 )); then
+if (( fail_count > 0 || skip_count > 0 || pass_count == 0 )); then
     echo "NOTE: On a non-Fedora-Atomic host, stories 8 and 10 are expected to fail"
     echo "because query_packages and query_authorized_keys call rpm-ostree and SSH"
     echo "tools that are absent. Stories 1-7, 11-17, and 21-22, 25-26, 28-29 should"

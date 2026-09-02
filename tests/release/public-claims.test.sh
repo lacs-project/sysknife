@@ -139,6 +139,43 @@ if ! "$checker" "$fixture" >/dev/null 2>&1; then
     exit 1
 fi
 
+# A pass rate backed by a run that skipped stories is not a validated story
+# claim. Mutate the writer-produced artifact so this exercises the same schema
+# the production recorder emits rather than a hand-written JSON shape.
+python3 - "$fixture/tests/evidence/story-runs/fixture-run.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+run = json.loads(open(path).read())
+run["totals"]["skipped"] = 1
+open(path, "w").write(json.dumps(run, indent=2, sort_keys=True) + "\n")
+PY
+grep -q '"skipped": 1' "$fixture/tests/evidence/story-runs/fixture-run.json" || {
+    printf 'FAIL: skipped-story mutation did not apply\n' >&2
+    exit 1
+}
+assert_rejected 'story pass rate backed by skipped stories'
+write_fixture_run ubuntu 50 47 ok
+
+# Rate-limited stories are a separate diagnostic, but they are just as unable
+# to support a published pass rate as skipped stories.
+python3 - "$fixture/tests/evidence/story-runs/fixture-run.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+run = json.loads(open(path).read())
+run["totals"]["rate_limited"] = 1
+open(path, "w").write(json.dumps(run, indent=2, sort_keys=True) + "\n")
+PY
+grep -q '"rate_limited": 1' "$fixture/tests/evidence/story-runs/fixture-run.json" || {
+    printf 'FAIL: rate-limited-story mutation did not apply\n' >&2
+    exit 1
+}
+assert_rejected 'story pass rate backed by rate-limited stories'
+write_fixture_run ubuntu 50 47 ok
+
 # Backed by a run, but attributed to a model that did not produce it.
 sed -i 's|47/50 stories on a live VM.|47/50 stories on a live VM with gpt-4.1.|' "$fixture/README.md"
 grep -q 'gpt-4.1' "$fixture/README.md" || {
@@ -266,5 +303,42 @@ grep -q '"verdict": "failed"' "$fixture"/tests/evidence/story-runs/ubuntu-22.04-
 }
 assert_rejected 'a release tiered Validated on a replay whose cassette audit failed'
 cp "$repo_root"/tests/evidence/story-runs/*.json "$fixture/tests/evidence/story-runs/"
+
+# A record with skipped stories cannot earn a Validated tier, even if its replay
+# twin is otherwise healthy.
+python3 - "$fixture/tests/evidence/story-runs/ubuntu-22.04-gpt-oss-120b.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+run = json.loads(open(path).read())
+run["totals"]["skipped"] = 1
+open(path, "w").write(json.dumps(run, indent=2, sort_keys=True) + "\n")
+PY
+grep -q '"skipped": 1' "$fixture/tests/evidence/story-runs/ubuntu-22.04-gpt-oss-120b.json" || {
+    printf 'FAIL: skipped-record tier mutation did not apply\n' >&2
+    exit 1
+}
+assert_rejected 'Validated tier backed by a record with skipped stories'
+cp "$repo_root/tests/evidence/story-runs/ubuntu-22.04-gpt-oss-120b.json" \
+    "$fixture/tests/evidence/story-runs/ubuntu-22.04-gpt-oss-120b.json"
+
+# Keep the diagnostic separate in the artifact contract too: a replay with a
+# rate-limited story cannot validate a release.
+python3 - "$fixture/tests/evidence/story-runs/ubuntu-22.04-gpt-oss-120b.replay.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+run = json.loads(open(path).read())
+run["totals"]["rate_limited"] = 1
+open(path, "w").write(json.dumps(run, indent=2, sort_keys=True) + "\n")
+PY
+grep -q '"rate_limited": 1' \
+    "$fixture/tests/evidence/story-runs/ubuntu-22.04-gpt-oss-120b.replay.json" || {
+    printf 'FAIL: rate-limited-replay tier mutation did not apply\n' >&2
+    exit 1
+}
+assert_rejected 'Validated tier backed by a replay with rate-limited stories'
 
 printf 'Public claims contract passed.\n'
