@@ -218,7 +218,7 @@ if [[ $# -gt 0 ]]; then
 elif [[ "$ALLOW_DESTRUCTIVE" == "1" ]]; then
     STORIES=(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54)
 else
-    STORIES=(1 2 3 4 5 6 7 11 12 13 14 15 16 17 21 22 25 26 28 29 32 38 41 46 47 48 49)
+    STORIES=(1 2 3 4 5 6 7 11 12 13 14 15 16 17 21 22 25 26 29 32 38 41 46 47 48 49)
 fi
 
 # ---------------------------------------------------------------------------
@@ -345,7 +345,7 @@ echo ""
 if (( fail_count > 0 || skip_count > 0 || pass_count == 0 )); then
     echo "NOTE: On a non-Fedora-Atomic host, stories 8 and 10 are expected to fail"
     echo "because query_packages and query_authorized_keys call rpm-ostree and SSH"
-    echo "tools that are absent. Stories 1-7, 11-17, and 21-22, 25-26, 28-29 should"
+    echo "tools that are absent. Stories 1-7, 11-17, and 21-22, 25-26, 29 should"
     echo "always pass on any Linux host (plan-structure checks only, no execution)."
     echo "Run on a provisioned Silverblue VM for full coverage."
     echo ""
