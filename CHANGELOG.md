@@ -12,6 +12,22 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-09-03
+
+The middle digit moves because of [#334](https://github.com/lacs-project/sysknife/pull/334).
+The daemon now binds a transaction to the account that created it, and refuses
+two calls that used to succeed: one account acting on another account's
+transaction, and an `Unattributed` peer acting on its own. No signature changed,
+and [docs/release.md](docs/release.md#version-numbering) counts a behaviour
+change a caller relied on as a break, with v0.9.0 as the precedent.
+
+If you run `sysknife approve` in a terminal after an MCP preview, nothing
+changes. The daemon compares accounts rather than connections, and both halves
+of that flow run as your uid.
+
+Three changes, two of them from outside contributors. The authorization fix is
+the reason to upgrade.
+
 ### Fixed
 
 - **A story suite that proved nothing no longer reports success.** All three
@@ -29,6 +45,21 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   gates, so a reverted fix turns the suite red. Story 28 also left the
   no-argument default sets, which selected a Fedora-only story on every Ubuntu
   host. ([#247](https://github.com/lacs-project/sysknife/issues/247))
+
+- **A manually created socket directory now gets the mode the package
+  declares.** `bind_unix_listener` creates a missing parent for the socket path,
+  and it created it with whatever the process umask gave, so a daemon started by
+  hand could sit behind a directory more permissive than the `0750` that
+  `packaging/sysknife-tmpfiles.conf` sets under systemd. It now sets `0750` on a
+  directory it created, and leaves an existing one alone: an operator who put
+  the socket in their own `0700` directory keeps that mode rather than having it
+  widened. `tests/e2e/ubuntu-provision.sh` derives the expected runtime and
+  state directory modes from the tmpfiles config and asserts the live modes on
+  `/run/sysknife` and `/var/lib/sysknife` immediately after systemd starts the
+  daemon, which is the only point where the mode a running daemon has is a
+  different question from the mode a file declares.
+  ([#269](https://github.com/lacs-project/sysknife/issues/269), thanks to
+  [@ITSMERNB](https://github.com/ITSMERNB))
 
 ### Security
 
