@@ -1,6 +1,6 @@
 {
   "name": "sysknife-setup",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Zero-friction setup for SysKnife MCP server \u2014 Claude Code, Cursor, and Codex CLI",
   "author": "Vladimir Rotariu",
   "repository": {
