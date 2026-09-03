@@ -12,6 +12,21 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Fixed
+
+- **`sysknife audit verify` no longer lets an inconclusive anchor hide a broken
+  chain.** The command combined the local audit result with the configured
+  external anchor using `.max()` on their exit codes. Exit 1 means a break was
+  detected and exit 2 means a check could not reach a verdict, so numeric
+  ordering put "could not determine" above "this has been tampered with": a
+  broken chain whose anchor database was unreachable exited 2. A script that
+  treats 2 as a soft warning and 1 as an alert routed a real tamper event to the
+  wrong branch. Precedence is now explicit, and `--json` derives its `status`
+  from the same combined result rather than from the local check alone, so a
+  truncated anchor over an otherwise intact chain reports `broken` instead of
+  `intact`. ([#221](https://github.com/lacs-project/sysknife/issues/221), thanks
+  to [@k4its1t](https://github.com/k4its1t))
+
 ## [0.12.0] — 2026-09-03
 
 The middle digit moves because of [#334](https://github.com/lacs-project/sysknife/pull/334).
