@@ -31,9 +31,9 @@ cargo nextest run --workspace --locked
 
 # TypeScript / React
 cd apps/sysknife-shell
-pnpm install --frozen-lockfile
-pnpm test
-pnpm exec tsc --noEmit
+npm ci
+npm test
+npm exec -- tsc --noEmit
 ```
 
 ## Running stories on your dev machine (no VM required)
@@ -371,7 +371,7 @@ Per-story logs are written to `tests/e2e/logs/story-N.log`.
 
 ## Before opening a PR
 
-1. `cargo nextest run --workspace && pnpm test` — required, fast
+1. `cargo nextest run --workspace && npm test --prefix apps/sysknife-shell` — required, fast
 2. `cargo clippy --workspace --all-features --locked -- -D warnings`
 3. `cargo fmt --all --check`
 4. For changes to the brain, daemon, IPC, or action catalogue:

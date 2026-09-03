@@ -57,19 +57,19 @@ git clone https://github.com/lacs-project/sysknife
 cd sysknife
 
 # Install git hooks (once)
-pip install pre-commit
-pre-commit install
+scripts/ci-local.sh --install-hooks
 
 # Install frontend dependencies
-cd apps/sysknife-shell && pnpm install && cd ../..
+npm ci --prefix apps/sysknife-shell
 
 # Run all tests to verify everything works
 cargo nextest run --workspace --locked
-cd apps/sysknife-shell && pnpm test && pnpm exec tsc --noEmit && cd ../..
+npm test --prefix apps/sysknife-shell && npm exec --prefix apps/sysknife-shell -- tsc --noEmit
 ```
 
 See [docs/developer-guide.md](../developer-guide.md) for the full
-list of prerequisites (Rust, Node.js 20, pnpm, Tauri system deps).
+list of prerequisites (Rust, a C toolchain, Node.js 20, cargo-nextest,
+and the hygiene tools).
 
 ## Filing Issues
 
@@ -123,7 +123,7 @@ cargo clippy --workspace --all-features --locked -- -D warnings
 cargo nextest run --workspace --locked
 
 # Frontend
-cd apps/sysknife-shell && pnpm test && pnpm exec tsc --noEmit && cd ../..
+npm test --prefix apps/sysknife-shell && npm exec --prefix apps/sysknife-shell -- tsc --noEmit
 
 # All pre-commit hooks
 pre-commit run --all-files

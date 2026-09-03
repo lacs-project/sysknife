@@ -13,13 +13,38 @@ environment and covers everything you need to contribute confidently.
 
 ## Prerequisites
 
+**Required.** Without these nothing builds:
+
 | Tool | Version | Install |
 |---|---|---|
 | Rust stable | latest stable | [rustup.rs](https://rustup.rs) |
+| A C compiler and linker | — | `sudo apt-get install -y build-essential` |
 | Node.js | 20+ | [nodejs.org](https://nodejs.org) or your distro |
-| pnpm | latest | `npm install -g pnpm` |
-| Tauri system deps | — | [tauri.app/start/prerequisites](https://tauri.app/start/prerequisites/) |
-| pre-commit | latest | `pip install pre-commit` |
+| `cargo-nextest` | latest | `cargo install cargo-nextest --locked` |
+
+**Required to reproduce the `docs-and-hygiene` job**, which is one of the five
+checks `main` requires:
+
+| Tool | Version | Install |
+|---|---|---|
+| ShellCheck | distro | `sudo apt-get install -y shellcheck` |
+| Python | 3.10+ | usually already present |
+| `markdownlint-cli2` | 0.23.2 | `npm install --global markdownlint-cli2@0.23.2` |
+| `markdown-link-check` | 3.15.0 | `npm install --global markdown-link-check@3.15.0` |
+
+**Required only for the jobs that name them:**
+
+| Tool | Needed by | Install |
+|---|---|---|
+| Podman or Docker | the live `postgres-contract` job | `sudo apt-get install -y podman` |
+| Tauri system deps | building the paused GUI app | [tauri.app/start/prerequisites](https://tauri.app/start/prerequisites/) |
+
+> **Install `cargo-nextest` before you trust a green run.** `scripts/ci-local.sh`
+> reports `WARN ... SKIPPED` rather than failing when it is missing, so the whole
+> Rust test step silently does not run and the summary still ends `ci-local: PASS`.
+
+This project uses **npm**. `apps/sysknife-shell` carries a `package-lock.json`
+and CI runs `npm ci` against it. There is no pnpm or yarn lockfile in the tree.
 
 No API key is required to get started. SysKnife auto-detects a local
 Ollama instance (`http://localhost:11434`) when no cloud API key is set.
@@ -32,13 +57,18 @@ integration tests without it.
 git clone https://github.com/lacs-project/sysknife
 cd sysknife
 
-# Install git hooks (run once)
-pip install pre-commit
-pre-commit install
+# Install the git hooks (run once). This sets core.hooksPath to .githooks,
+# which is what wires up the real pre-commit and pre-push gates.
+scripts/ci-local.sh --install-hooks
 
 # Install frontend dependencies
-cd apps/sysknife-shell && pnpm install && cd ../..
+npm ci --prefix apps/sysknife-shell
 ```
+
+> Do **not** use `pip install pre-commit && pre-commit install`. This repository
+> drives its hooks through `core.hooksPath`, so anything written into
+> `.git/hooks` is ignored by Git and you would end up with no gate at all.
+> `.pre-commit-config.yaml` is left over from an earlier setup and is not used.
 
 ## Building
 
@@ -52,7 +82,7 @@ build stops at `error: linker cc not found`. `cmake` is not required.
 cargo build --workspace
 
 # Build the Tauri app (includes the GUI)
-cd apps/sysknife-shell && pnpm tauri build
+npm run tauri --prefix apps/sysknife-shell -- build
 ```
 
 ## Running Tests
@@ -64,12 +94,100 @@ These run in under 15 seconds and are required before every push:
 cargo nextest run --workspace --locked
 
 # TypeScript / React tests
-cd apps/sysknife-shell && pnpm test && pnpm exec tsc --noEmit
+npm test --prefix apps/sysknife-shell
+npm exec --prefix apps/sysknife-shell -- tsc --noEmit
 ```
 
 See [docs/contributing/testing.md](contributing/testing.md) for the
 full test pyramid, including how to run the LLM-driven E2E stories
 on your workstation and in a Fedora Atomic VM.
+
+## Reproducing the Required Checks
+
+`main` requires five checks. `scripts/ci-local.sh` runs most of them in one go
+and is the command to reach for first:
+
+```sh
+scripts/ci-local.sh          # everything it can run here
+scripts/ci-local.sh --fast   # what the pre-push hook runs
+```
+
+Read its summary rather than its exit code. A tool it cannot find becomes a
+`WARN ... SKIPPED` line and the run still ends `ci-local: PASS`, so an absent
+`cargo-nextest` means the Rust suite never ran at all.
+
+### Use `cargo nextest`, not `cargo test`
+
+CI and every script here run `cargo nextest run --workspace --locked`. Plain
+`cargo test` runs the whole binary's tests as threads in one process, and a few
+tests here set process-global environment variables, so it fails intermittently
+on `main` through no fault of your branch. `nextest` gives each test its own
+process and does not have that problem. If you have no choice, `cargo test --
+--test-threads=1` is stable.
+
+### The live Postgres contract
+
+`postgres-contract` is the only required check that needs a server, and it is
+the one people assume they cannot run. You can. CI starts `postgres:17-alpine`
+as a service container; do the same locally:
+
+```sh
+podman run -d --name sysknife-pg -p 55987:5432 \
+  -e POSTGRES_USER=sysknife -e POSTGRES_PASSWORD=sysknife \
+  -e POSTGRES_DB=sysknife_test docker.io/library/postgres:17-alpine
+
+export SYSKNIFE_TEST_POSTGRES_URL=postgres://sysknife:sysknife@127.0.0.1:55987/sysknife_test
+export SYSKNIFE_REQUIRE_POSTGRES=1
+cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored
+
+podman rm -f sysknife-pg
+```
+
+Those tests are `#[ignore]` by default, so a normal run reports them as ignored
+rather than passing over a database that was never there. `SYSKNIFE_REQUIRE_POSTGRES=1`
+without a URL panics on purpose: a misnamed variable used to report success.
+
+Podman works rootless and needs no daemon. Docker works too; on some hosts its
+published ports reset the connection, in which case use podman.
+
+### The hygiene guards
+
+`docs-and-hygiene` runs about two dozen host-side scripts under `tests/release/`
+and `scripts/`. They are plain shell and Python, they need no build, and each
+one runs on its own in well under a second:
+
+```sh
+bash tests/release/public-claims.test.sh
+bash scripts/check_release_versions.sh
+```
+
+If one goes red with no output, that is [#347](https://github.com/lacs-project/sysknife/issues/347),
+not you.
+
+### Running a contributor's branch safely
+
+Reviewing someone else's PR means running their code. Do it in a container with
+no network and nothing from your home directory mounted:
+
+```sh
+podman run --rm --network=none -v "$PWD:/repo:z" -w /repo \
+  docker.io/library/python:3-slim bash -c 'bash tests/release/public-claims.test.sh'
+```
+
+For Rust, give the container a throwaway copy of your cargo home with an overlay
+mount so a build script cannot write to yours, and point `CARGO_HOME` at it. The
+official `rust` image sets `CARGO_HOME=/usr/local/cargo`, so a mount alone is
+ignored:
+
+```sh
+podman run --rm --network=none -v "$PWD:/repo:z" -v "$HOME/.cargo:/cargo:O" \
+  -w /repo -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/repo/.container-target \
+  -e CARGO_NET_OFFLINE=true docker.io/library/rust:1-slim \
+  cargo test -p sysknife-cli --bins --offline
+```
+
+`sysknife-cli` is a binary crate, so its unit tests need `--bins`; `--lib` finds
+no target.
 
 ## Running the Full Stack Locally
 
@@ -90,7 +208,7 @@ cargo run -p sysknife-daemon
 
 ```sh
 cd apps/sysknife-shell
-pnpm tauri dev
+npm run tauri --prefix apps/sysknife-shell -- dev
 ```
 
 The shell opens as a desktop window. Type an intent and the daemon
@@ -250,7 +368,7 @@ CI runs on every pull request and push to `main`.
 | Clippy (warnings as errors) | `cargo clippy --workspace --all-features --locked -- -D warnings` |
 | Rust tests | `cargo nextest run --workspace --locked` |
 | TypeScript type check | `npx tsc --noEmit` (in `apps/sysknife-shell`) |
-| Frontend tests | `pnpm test` (in `apps/sysknife-shell`) |
+| Frontend tests | `npm test --prefix apps/sysknife-shell` |
 | Markdown lint | `markdownlint-cli2` on contributor-facing docs |
 | Link check | `markdown-link-check` on contributor-facing docs |
 | YAML lint | `yamllint` on issue templates and workflows |
