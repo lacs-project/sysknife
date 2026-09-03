@@ -12,6 +12,26 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-09-03
+
+The middle digit moves because of [#360](https://github.com/lacs-project/sysknife/pull/360).
+`query_action` used to run `AptUpdate`, and now refuses it. That call succeeded
+before, so a client scripting it against the raw IPC socket will see an
+`authorization_failure` where it previously got a result.
+
+Take the upgrade anyway. `AptUpdate` runs `sudo apt-get update`, writes the root
+apt index and takes the dpkg lock, and it reached the executor through
+`query_action` with no preview, no approval receipt, no transaction row and no
+exclusion gate. `RiskLevel::Low` was never a claim that an action is read-only;
+it decides how much authorization the caller needs. Every installed copy before
+this release will run that mutation for any client that can reach the socket.
+
+Nine changes. Two of them, #348 and #360, are the same boundary approached from
+opposite sides: one exposes read-only actions as direct MCP tools, the other
+makes sure the classification that decides "read-only" is enforced by the daemon
+rather than trusted from the surface. Both came from the same outside
+contributor within two days.
+
 ### Added
 
 - **MCP clients can query live system state without an LLM planning round trip.**
