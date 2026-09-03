@@ -63,6 +63,7 @@ use sysknife_brain::planning_tools::propose_plan::KNOWN_ACTIONS;
 use sysknife_brain::state_client::StateClient as _;
 use sysknife_core::action_family::{DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS};
 use sysknife_core::distro::DistroId;
+use sysknife_daemon::actions::OBSERVER_MUTATING_ACTIONS;
 
 use crate::client::{DaemonClient, DescribeInfo};
 use crate::error::CliError;
@@ -475,9 +476,6 @@ const MCP_READ_ONLY_ACTIONS: &[&str] = &[
     // Dispatcher-internal, with no ActionSpec of its own.
     "ListJobHistory",
 ];
-
-/// Low-risk actions that still mutate the host and therefore remain plan-only.
-const OBSERVER_MUTATING_ACTIONS: &[&str] = &["AptUpdate"];
 
 impl SysknifeMcpServer {
     fn new() -> Self {

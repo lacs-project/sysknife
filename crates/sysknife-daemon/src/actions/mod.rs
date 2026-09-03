@@ -42,6 +42,14 @@ pub mod ufw;
 pub mod users;
 pub(crate) mod validate;
 
+/// Observer-callable actions that still mutate the host and therefore require
+/// the preview/approve/execute interlock.
+///
+/// This is shared by every approval-free surface. Keeping the exception beside
+/// the action catalogue prevents the CLI's generated MCP router and the
+/// daemon's `query_action` endpoint from making independent safety decisions.
+pub const OBSERVER_MUTATING_ACTIONS: &[&str] = &["AptUpdate"];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionMechanism {
     Command {

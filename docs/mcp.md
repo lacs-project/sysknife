@@ -132,14 +132,16 @@ Every explicitly classified read-only catalogue action is exposed as
 
 Tool arguments are the action parameters described in each tool's generated
 description. Calls go through the daemon's `query_action` path, which preserves
-the Observer-role and distro fences. The tool annotations declare the routes
-read-only and non-destructive.
+the Observer-role and distro fences and independently rejects every action in
+the shared Observer-mutating classification. The tool annotations declare the
+routes read-only and non-destructive.
 
 The allowlist is deliberately not equivalent to `RiskLevel::Low`. `AptUpdate`
 runs `sudo apt-get update`; it is Low/Observer-callable but mutating, so it is
-never registered as a direct tool. A drift test compares the explicit read-only
-and mutating classifications with the live catalogue, forcing every future
-Observer action to be reviewed before the surface can change.
+never registered as a direct tool and the daemon refuses raw `query_action`
+requests for it. A drift test compares the explicit read-only and mutating
+classifications with the live catalogue, forcing every future Observer action
+to be reviewed before the surface can change.
 
 ---
 

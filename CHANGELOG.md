@@ -23,6 +23,14 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Fixed
 
+- **`query_action` can no longer bypass approval for Low-risk mutations.**
+  The daemon now rejects `AptUpdate` on the raw approval-free query path using
+  the same explicit Observer-mutating classification as the generated MCP
+  router. Direct socket clients must use preview, approval receipts and execute,
+  so the root apt index cannot be changed without an audit-backed approval or
+  concurrently with an action holding the dpkg exclusion gate.
+  ([#226](https://github.com/lacs-project/sysknife/issues/226))
+
 - **`sysknife audit verify` no longer lets an inconclusive anchor hide a broken
   chain.** The command combined the local audit result with the configured
   external anchor using `.max()` on their exit codes. Exit 1 means a break was
