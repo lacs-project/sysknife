@@ -4847,6 +4847,8 @@ dependencies = [
  "rustyline",
  "serde",
  "serde_json",
+ "sqlx-core",
+ "sqlx-postgres",
  "strip-ansi-escapes",
  "sysknife-brain",
  "sysknife-core",

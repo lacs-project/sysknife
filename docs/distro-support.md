@@ -82,7 +82,7 @@ family and the atomic story family are implemented and covered by the workspace
 suite. What is missing is a way to put the helpers somewhere the daemon's own
 grants already point.
 
-The deterministic workspace baseline is 1,831 Rust tests plus 72 frontend
+The deterministic workspace baseline is 1,833 Rust tests plus 72 frontend
 tests. Those tests verify action construction, policy, approval, storage, and
 UI behavior, but they do not replace a real distribution VM run.
 

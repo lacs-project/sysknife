@@ -313,7 +313,7 @@ milestone.
 | **Every Ubuntu LTS validated** — 22.04, 24.04 and 26.04 all at 79/79, each with a replay twin that reproduces it | ✅ |
 | Telegram approval interface | 📋 roadmap |
 
-**1,831 Rust tests and 72 frontend tests** form the current deterministic
+**1,833 Rust tests and 72 frontend tests** form the current deterministic
 release baseline.
 
 ## Configure your LLM

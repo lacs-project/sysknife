@@ -40,9 +40,14 @@ GRUB_DEFAULT = "/etc/default/grub"
 GRUB_BACKUP = "/etc/default/grub.sysknife.bak"
 
 # Defense-in-depth: each karg token is validated independently.
-# Matches the same allowlist as validated_safe_arg in validate.rs:
-#   ASCII alphanumeric, '.', '_', ':', '/', '+', '@', '=', '-'
-# No leading dash (kernel args may contain '=' but cannot start with '-').
+# Deliberately wider than validated_safe_arg in validate.rs: kernel
+# arguments take the key=value form (module.sig_enforce=1), so '=' must be
+# accepted here, while validated_safe_arg rejects it. '=' stays out of that
+# validator because a comma or an '=' there would let a caller inject extra
+# tokens into the comma-separated list this helper receives — see the
+# charset-check comment at the GrubSetKargs branch in executor.rs. The
+# daemon screens every token before invoking the helper, and the denylist
+# below enforces the boot-security policy independently of it.
 KARG_PATTERN = re.compile(r"^[A-Za-z0-9_.+@:/=-]+$")
 
 # Defense-in-depth denylist — mirrors validated_safe_kernel_arg in executor.rs.

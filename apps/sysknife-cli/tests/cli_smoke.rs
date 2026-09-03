@@ -130,6 +130,109 @@ fn audit_verify_exits_with_code_2_when_the_key_file_is_missing() {
         .code(2);
 }
 
+#[tokio::test]
+#[ignore = "live Postgres; set SYSKNIFE_TEST_POSTGRES_URL and run with --ignored"]
+async fn audit_verify_exits_with_code_1_when_anchor_is_truncated() {
+    use sqlx_postgres::{PgConnectOptions, PgPoolOptions};
+    use std::str::FromStr;
+    use sysknife_daemon::audit_chain::resolve_audit_key_path;
+    use sysknife_daemon::checkpoint_sink::{CheckpointSink, PostgresCheckpointSink};
+
+    let required = std::env::var_os("SYSKNIFE_REQUIRE_POSTGRES").is_some();
+    let url = std::env::var("SYSKNIFE_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|url| !url.is_empty());
+    let Some(url) = url else {
+        assert!(
+            !required,
+            "SYSKNIFE_REQUIRE_POSTGRES is set but SYSKNIFE_TEST_POSTGRES_URL is unset"
+        );
+        return;
+    };
+    assert!(
+        url.contains("sysknife_test"),
+        "refusing destructive integration test against a non-test database"
+    );
+
+    const SCHEMA: &str = "cli_smoke_anchor_exit";
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(PgConnectOptions::from_str(&url).expect("valid test URL"))
+        .await
+        .expect("connect for schema setup");
+    for statement in [
+        format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE"),
+        format!("CREATE SCHEMA {SCHEMA}"),
+    ] {
+        sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(statement))
+            .execute(&admin)
+            .await
+            .expect("prepare isolated schema");
+    }
+    let separator = if url.contains('?') { '&' } else { '?' };
+    let scoped_url = format!("{url}{separator}options=-csearch_path%3D{SCHEMA}");
+
+    let dir = tempfile::tempdir().expect("create CLI fixture directory");
+    let db_path = dir.path().join("daemon.sqlite");
+    let key =
+        AuditKey::load_or_generate(&resolve_audit_key_path(&db_path)).expect("generate audit key");
+    let store = TransactionStore::open_with_key(&db_path, Arc::new(key.clone()))
+        .expect("create audit store");
+    store
+        .record(NewTransaction {
+            request_id: "anchor-exit-code".to_string(),
+            request_hash: "anchor-exit-code-hash".to_string(),
+            action_name: "UpdateSystem".to_string(),
+            risk_level: RiskLevel::High,
+            summary: "Upgrade the system".to_string(),
+            warnings: vec![],
+            caller_role: CallerRole::Dev,
+            caller_principal: CallerPrincipal::Uid(1000),
+        })
+        .expect("record intact local chain");
+    drop(store);
+
+    let sink = PostgresCheckpointSink::connect(&scoped_url)
+        .await
+        .expect("connect checkpoint sink");
+    sink.append(&key.sign_checkpoint(2, "anchored-tip-beyond-local-chain", "2026-09-02T12:00:00Z"))
+        .await
+        .expect("store checkpoint beyond the local tip");
+    drop(sink);
+
+    let output = cli()
+        .env("SYSKNIFE_DATABASE_PATH", &db_path)
+        .env("SYSKNIFE_CHECKPOINT_DB", &scoped_url)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .args(["audit", "verify", "--json"])
+        .output()
+        .expect("run audit verify");
+
+    sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(format!(
+        "DROP SCHEMA {SCHEMA} CASCADE"
+    )))
+    .execute(&admin)
+    .await
+    .expect("drop isolated schema");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let doc: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("--json emits one document");
+    assert_eq!(
+        doc["status"],
+        "broken",
+        "the --json verdict must reflect the anchor: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
 #[test]
 fn audit_export_emits_the_stored_rows_as_parseable_json() {
     let dir = tempfile::tempdir().unwrap();
