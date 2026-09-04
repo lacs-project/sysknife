@@ -1,9 +1,10 @@
 # SysKnife MCP Server
 
-The `sysknife mcp-server` subcommand exposes five MCP tools that let any
-MCP-capable AI assistant (Claude Code, Cursor, Codex CLI, …) plan and execute
-Linux system administration tasks through SysKnife's approval-gated,
-audit-logged path.
+The `sysknife mcp-server` subcommand exposes five fixed MCP tools plus direct
+read-only query tools selected for the detected distro. MCP-capable AI
+assistants (Claude Code, Cursor, Codex CLI, …) can inspect live state without an
+LLM planning round trip, while every mutation still uses SysKnife's
+approval-gated, audit-logged path.
 
 <img
   src="https://raw.githubusercontent.com/lacs-project/sysknife/main/assets/demo/mcp-flow.gif"
@@ -15,13 +16,13 @@ audit-logged path.
 >
 > Run `npx sysknife-setup` — it detects which AI clients you have installed and
 > writes the correct config files for each one automatically.
-
+>
 > **Found SysKnife on a directory page where the tools error out?** Discovery
-> works anywhere: a directory sandbox lists all five tools, because the tool list
-> is static metadata. Calling them needs a privileged `sysknife-daemon` on a real
-> host, which a build container has no way to provide, so `doctor` reports the
-> socket absent and the rest fail. That is the trust boundary, not a packaging
-> defect. See
+> works anywhere: a directory sandbox lists the five fixed tools plus only the
+> cross-distro direct queries when distro detection is unavailable. Calling them
+> needs a `sysknife-daemon` on a real host, which a build container has no way to
+> provide, so `doctor` reports the socket absent and the rest fail. That is the
+> trust boundary, not a packaging defect. See
 > [Registry and Directory Listings](mcp-registry.md#what-a-directory-sandbox-can-and-cannot-tell-you).
 
 ---
@@ -118,6 +119,29 @@ quick audit-chain status. This tool is read-only.
 Verify the Ed25519-signed audit chain and report `intact`, `broken`, or
 `cannot_verify`, including the first offending row when verification fails.
 This tool is read-only.
+
+### Direct read-only action tools
+
+Every explicitly classified read-only catalogue action is exposed as
+`sysknife_<snake_case_action>`, for example:
+
+- `GetDiskUsage` → `sysknife_get_disk_usage`
+- `GetServiceStatus` → `sysknife_get_service_status`
+- `AptSearch` → `sysknife_apt_search` on Ubuntu-family hosts
+- `GetSystemState` → `sysknife_get_system_state` on Fedora-family hosts
+
+Tool arguments are the action parameters described in each tool's generated
+description. Calls go through the daemon's `query_action` path, which preserves
+the Observer-role and distro fences and independently rejects every action in
+the shared Observer-mutating classification. The tool annotations declare the
+routes read-only and non-destructive.
+
+The allowlist is deliberately not equivalent to `RiskLevel::Low`. `AptUpdate`
+runs `sudo apt-get update`; it is Low/Observer-callable but mutating, so it is
+never registered as a direct tool and the daemon refuses raw `query_action`
+requests for it. A drift test compares the explicit read-only and mutating
+classifications with the live catalogue, forcing every future Observer action
+to be reviewed before the surface can change.
 
 ---
 

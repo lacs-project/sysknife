@@ -150,21 +150,33 @@ fn the_mcp_server_completes_a_real_initialize_and_tools_list_over_stdio() {
         .filter_map(|tool| tool["name"].as_str())
         .collect();
 
-    // The full advertised surface. Asserting the exact set, not "at least one",
-    // is what makes this fail if a tool silently stops being registered.
-    let mut sorted = names.clone();
-    sorted.sort_unstable();
-    assert_eq!(
-        sorted,
-        vec![
-            "sysknife_audit_verify",
-            "sysknife_doctor",
-            "sysknife_execute",
-            "sysknife_history",
-            "sysknife_plan",
-        ],
-        "advertised tools changed"
-    );
+    // The five workflow tools remain stable, while the direct query surface is
+    // generated at runtime from the detected distro. Pin representative generic
+    // and distro-family queries instead of an OS-dependent exact count.
+    for expected in [
+        "sysknife_audit_verify",
+        "sysknife_doctor",
+        "sysknife_execute",
+        "sysknife_history",
+        "sysknife_plan",
+        "sysknife_get_disk_usage",
+        "sysknife_get_memory_info",
+    ] {
+        assert!(
+            names.contains(&expected),
+            "advertised tools missing {expected}: {names:?}"
+        );
+    }
+
+    // AptUpdate is Observer-callable but mutates the root apt index. Neither it
+    // nor a conventional mutating action may appear on the approval-free query
+    // surface.
+    for forbidden in ["sysknife_apt_update", "sysknife_apt_install"] {
+        assert!(
+            !names.contains(&forbidden),
+            "mutating action escaped onto MCP as {forbidden}: {names:?}"
+        );
+    }
 
     // Every tool must carry a schema: an agent cannot call a tool whose input
     // shape it does not know, and an empty schema is a silent way to break that.
@@ -174,6 +186,25 @@ fn the_mcp_server_completes_a_real_initialize_and_tools_list_over_stdio() {
             tool["inputSchema"].is_object(),
             "{name} has no object inputSchema: {tool}"
         );
+        if name.starts_with("sysknife_")
+            && ![
+                "sysknife_plan",
+                "sysknife_execute",
+                "sysknife_history",
+                "sysknife_doctor",
+                "sysknife_audit_verify",
+            ]
+            .contains(&name)
+        {
+            assert_eq!(
+                tool["annotations"]["readOnlyHint"], true,
+                "direct query {name} must advertise readOnlyHint: {tool}"
+            );
+            assert_eq!(
+                tool["annotations"]["destructiveHint"], false,
+                "direct query {name} must advertise destructiveHint=false: {tool}"
+            );
+        }
     }
 }
 

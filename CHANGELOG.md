@@ -12,6 +12,74 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-09-03
+
+The middle digit moves because of [#360](https://github.com/lacs-project/sysknife/pull/360).
+`query_action` used to run `AptUpdate`, and now refuses it. That call succeeded
+before, so a client scripting it against the raw IPC socket will see an
+`authorization_failure` where it previously got a result.
+
+Take the upgrade anyway. `AptUpdate` runs `sudo apt-get update`, writes the root
+apt index and takes the dpkg lock, and it reached the executor through
+`query_action` with no preview, no approval receipt, no transaction row and no
+exclusion gate. `RiskLevel::Low` was never a claim that an action is read-only;
+it decides how much authorization the caller needs. Every installed copy before
+this release will run that mutation for any client that can reach the socket.
+
+Nine changes. Two of them, #348 and #360, are the same boundary approached from
+opposite sides: one exposes read-only actions as direct MCP tools, the other
+makes sure the classification that decides "read-only" is enforced by the daemon
+rather than trusted from the surface. Both came from the same outside
+contributor within two days.
+
+### Added
+
+- **MCP clients can query live system state without an LLM planning round trip.**
+  Observer-callable actions now receive distro-compatible direct tools generated
+  from the catalogue, with read-only MCP annotations and the daemon's existing
+  policy and platform fences. The explicit classification is drift-tested:
+  `AptUpdate` remains plan-only because refreshing root's apt index mutates the
+  host despite its Low risk level. ([#216](https://github.com/lacs-project/sysknife/issues/216))
+
+### Fixed
+
+- **`query_action` can no longer bypass approval for Low-risk mutations.**
+  The daemon now rejects `AptUpdate` on the raw approval-free query path using
+  the same explicit Observer-mutating classification as the generated MCP
+  router. Direct socket clients must use preview, approval receipts and execute,
+  so the root apt index cannot be changed without an audit-backed approval or
+  concurrently with an action holding the dpkg exclusion gate.
+  ([#226](https://github.com/lacs-project/sysknife/issues/226))
+
+- **`sysknife audit verify` no longer lets an inconclusive anchor hide a broken
+  chain.** The command combined the local audit result with the configured
+  external anchor using `.max()` on their exit codes. Exit 1 means a break was
+  detected and exit 2 means a check could not reach a verdict, so numeric
+  ordering put "could not determine" above "this has been tampered with": a
+  broken chain whose anchor database was unreachable exited 2. A script that
+  treats 2 as a soft warning and 1 as an alert routed a real tamper event to the
+  wrong branch. Precedence is now explicit, and `--json` derives its `status`
+  from the same combined result rather than from the local check alone, so a
+  truncated anchor over an otherwise intact chain reports `broken` instead of
+  `intact`. ([#221](https://github.com/lacs-project/sysknife/issues/221), thanks
+  to [@k4its1t](https://github.com/k4its1t))
+
+## [0.12.0] — 2026-09-03
+
+The middle digit moves because of [#334](https://github.com/lacs-project/sysknife/pull/334).
+The daemon now binds a transaction to the account that created it, and refuses
+two calls that used to succeed: one account acting on another account's
+transaction, and an `Unattributed` peer acting on its own. No signature changed,
+and [docs/release.md](docs/release.md#version-numbering) counts a behaviour
+change a caller relied on as a break, with v0.9.0 as the precedent.
+
+If you run `sysknife approve` in a terminal after an MCP preview, nothing
+changes. The daemon compares accounts rather than connections, and both halves
+of that flow run as your uid.
+
+Three changes, two of them from outside contributors. The authorization fix is
+the reason to upgrade.
+
 ### Fixed
 
 - **A story suite that proved nothing no longer reports success.** All three
@@ -29,6 +97,21 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   gates, so a reverted fix turns the suite red. Story 28 also left the
   no-argument default sets, which selected a Fedora-only story on every Ubuntu
   host. ([#247](https://github.com/lacs-project/sysknife/issues/247))
+
+- **A manually created socket directory now gets the mode the package
+  declares.** `bind_unix_listener` creates a missing parent for the socket path,
+  and it created it with whatever the process umask gave, so a daemon started by
+  hand could sit behind a directory more permissive than the `0750` that
+  `packaging/sysknife-tmpfiles.conf` sets under systemd. It now sets `0750` on a
+  directory it created, and leaves an existing one alone: an operator who put
+  the socket in their own `0700` directory keeps that mode rather than having it
+  widened. `tests/e2e/ubuntu-provision.sh` derives the expected runtime and
+  state directory modes from the tmpfiles config and asserts the live modes on
+  `/run/sysknife` and `/var/lib/sysknife` immediately after systemd starts the
+  daemon, which is the only point where the mode a running daemon has is a
+  different question from the mode a file declares.
+  ([#269](https://github.com/lacs-project/sysknife/issues/269), thanks to
+  [@ITSMERNB](https://github.com/ITSMERNB))
 
 ### Security
 

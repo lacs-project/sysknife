@@ -105,7 +105,8 @@ What this does:
 4. **Writes the integration-specific MCP config** (merging into any existing
    file, never clobbering) so the next chat session sees the `sysknife_*` tools —
    `sysknife_plan`, `sysknife_execute`, `sysknife_history`, `sysknife_doctor`,
-   `sysknife_audit_verify` — as first-class tools.
+   `sysknife_audit_verify`, and distro-compatible direct read-only queries such
+   as `sysknife_get_disk_usage` — as first-class tools.
 5. **Installs and starts the daemon as a service** (last step) — a systemd
    *user* service by default (no sudo; kept alive across logout via linger).
    That service runs as you, so read-only actions work but **mutating ones do
@@ -313,7 +314,7 @@ milestone.
 | **Every Ubuntu LTS validated** — 22.04, 24.04 and 26.04 all at 79/79, each with a replay twin that reproduces it | ✅ |
 | Telegram approval interface | 📋 roadmap |
 
-**1,831 Rust tests and 72 frontend tests** form the current deterministic
+**1,837 Rust tests and 72 frontend tests** form the current deterministic
 release baseline.
 
 ## Configure your LLM

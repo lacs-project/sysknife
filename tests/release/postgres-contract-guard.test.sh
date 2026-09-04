@@ -46,7 +46,7 @@ done
 # Fail-closed env var, taken from the store test the job runs.
 # sort -u consumes every grep hit so a later head cannot SIGPIPE the pipeline
 # under `set -o pipefail`.
-require_token="$(grep -o 'SYSKNIFE_REQUIRE_POSTGRES' "$store" | sort -u)"
+require_token="$(grep -o 'SYSKNIFE_REQUIRE_POSTGRES' "$store" | sort -u || true)"
 if [ -z "$require_token" ]; then
     printf 'FAIL: %s no longer names SYSKNIFE_REQUIRE_POSTGRES; the job token cannot be derived\n' \
         "$store" >&2

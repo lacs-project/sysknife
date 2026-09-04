@@ -1015,14 +1015,7 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
     // this command used to report `audit_anchor: {configured: true}` without
     // ever reading the anchor — implying a check it did not perform.
     let anchor = verify_configured_anchor(&lacs_config, &db_path, &verifier).await;
-    let anchor_exit = anchor
-        .as_ref()
-        .map(sysknife_daemon::audit_chain::checkpoint_outcome_to_exit_code)
-        .unwrap_or(0);
-
-    // Worst verdict wins: a chain that verifies against itself but not against
-    // its anchor has been tampered with, whatever the local check said.
-    let exit_code = outcome.exit_code().max(anchor_exit);
+    let exit_code = combined_verification_exit_code(&outcome, anchor.as_ref());
     emit_verification(&args, log, &outcome, &label_for_diag, anchor.as_ref());
     if exit_code == 0 {
         Ok(())
@@ -1484,7 +1477,7 @@ fn emit_verification(
 
     if args.json {
         let payload = json!({
-            "status": status_word(verification.exit_code()),
+            "status": status_word(combined_verification_exit_code(verification, anchor)),
             "backend": backend_label,
             "chain": outcome_json(&verification.chain),
             "approval_events": outcome_json(&verification.events),
@@ -1602,6 +1595,29 @@ fn emit_verification(
                  were deleted from the end of the chain"
             ));
         }
+    }
+}
+
+/// Combine the local audit checks with the external anchor using the same
+/// precedence as [`AuditVerification::exit_code`]. A detected break is stronger
+/// evidence than a different check being inconclusive, so exit code `1` must
+/// outrank `2` rather than relying on numeric ordering.
+fn combined_verification_exit_code(
+    verification: &AuditVerification,
+    anchor: Option<&CheckpointOutcome>,
+) -> i32 {
+    let codes = [
+        verification.exit_code(),
+        anchor
+            .map(sysknife_daemon::audit_chain::checkpoint_outcome_to_exit_code)
+            .unwrap_or(0),
+    ];
+    if codes.contains(&1) {
+        1
+    } else if codes.contains(&2) {
+        2
+    } else {
+        0
     }
 }
 
@@ -2210,6 +2226,15 @@ mod tests {
         attribution: Option<sysknife_daemon::audit_chain::AttributionCensus>,
         json: bool,
     ) -> String {
+        rendered_with_anchor(chain, attribution, json, None)
+    }
+
+    fn rendered_with_anchor(
+        chain: sysknife_daemon::audit_chain::VerifyOutcome,
+        attribution: Option<sysknife_daemon::audit_chain::AttributionCensus>,
+        json: bool,
+        anchor: Option<&CheckpointOutcome>,
+    ) -> String {
         use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("verify.log");
@@ -2227,7 +2252,7 @@ mod tests {
             &log,
             &verification,
             "/tmp/test.db",
-            None,
+            anchor,
         );
         std::fs::read_to_string(&path).expect("logger wrote the rendered output")
     }
@@ -2868,6 +2893,54 @@ mod tests {
         };
         assert_eq!(anchor_json(&empty)["status"], "cannot_verify");
         assert_eq!(checkpoint_outcome_to_exit_code(&empty), 2);
+    }
+
+    #[test]
+    fn a_detected_break_outranks_an_inconclusive_anchor_in_the_cli_exit_code() {
+        use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
+
+        let verification = AuditVerification {
+            chain: VerifyOutcome::Broken {
+                rows_checked: 3,
+                first_broken_seq: 4,
+                first_broken_transaction_id: "tx-4".to_string(),
+                expected: "expected".to_string(),
+                actual: "actual".to_string(),
+            },
+            events: VerifyOutcome::Intact { rows_checked: 4 },
+            binding: BindingOutcome::Consistent {
+                bindings_checked: 4,
+            },
+            attribution: None,
+        };
+        let anchor = CheckpointOutcome::CannotVerify {
+            reason: "checkpoint database unavailable".to_string(),
+        };
+
+        assert_eq!(
+            combined_verification_exit_code(&verification, Some(&anchor)),
+            1
+        );
+    }
+
+    #[test]
+    fn json_status_includes_a_truncated_anchor_verdict() {
+        use sysknife_daemon::audit_chain::VerifyOutcome;
+
+        let anchor = CheckpointOutcome::Truncated {
+            checkpoint_seq: 42,
+            current_max_seq: 17,
+        };
+        let text = rendered_with_anchor(
+            VerifyOutcome::Intact { rows_checked: 17 },
+            None,
+            true,
+            Some(&anchor),
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).expect("--json must emit one JSON document");
+
+        assert_eq!(parsed["status"], "broken");
     }
 
     // -----------------------------------------------------------------------

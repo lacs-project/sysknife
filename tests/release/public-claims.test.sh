@@ -206,7 +206,7 @@ assert_rejected 'a claim file missing from the checked surface'
 mv "$fixture/ROADMAP.held" "$fixture/ROADMAP.md"
 
 # The action count is derived from the catalogue source, so a retyped one fails.
-actions="$(grep -oE '[0-9]+ typed actions' "$fixture/docs/introduction.md" | head -1 | grep -oE '^[0-9]+')"
+actions="$(grep -oE '[0-9]+ typed actions' "$fixture/docs/introduction.md" | head -1 | grep -oE '^[0-9]+' || true)"
 if [[ -z "$actions" ]]; then
     printf 'FAIL: could not find the typed-action count in the fixture\n' >&2
     exit 1

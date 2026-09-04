@@ -10,8 +10,8 @@
 ```sh
 git clone https://github.com/lacs-project/sysknife
 cd sysknife
-pip install pre-commit && pre-commit install
-cd apps/sysknife-shell && pnpm install && cd ../..
+scripts/ci-local.sh --install-hooks
+npm ci --prefix apps/sysknife-shell
 
 # Run the whole suite (≈ 90s)
 cargo nextest run --workspace --locked

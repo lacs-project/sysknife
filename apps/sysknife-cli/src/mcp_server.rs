@@ -1,12 +1,14 @@
 //! MCP server entry point for `sysknife mcp-server`.
 //!
-//! Exposes five tools plus one discovery resource:
+//! Exposes five workflow/audit tools, direct read-only action tools compatible
+//! with the detected distro, and one discovery resource:
 //!
 //! - `sysknife_plan`         — turn a natural-language intent into a risk-labelled plan.
 //! - `sysknife_execute`      — execute a plan returned by `sysknife_plan`.
 //! - `sysknife_history`      — list past audit-log entries (read-only).
 //! - `sysknife_doctor`       — daemon connectivity + config diagnostics (read-only).
 //! - `sysknife_audit_verify` — verify the audit-log hash chain (read-only).
+//! - `sysknife_<action>`     — run one catalogue-backed read-only query directly.
 //!
 //! Typical agentic loop:
 //!
@@ -15,9 +17,12 @@
 //! 3. The user runs `sysknife approve <transaction-id>` for each accepted step.
 //! 4. Call `sysknife_execute` with the exact steps and one-time receipts.
 //!
-//! The three read-only tools (`sysknife_history`, `sysknife_doctor`,
-//! `sysknife_audit_verify`) are safe to call without going through the
-//! plan/approve/execute loop — they only inspect state.
+//! The three fixed read-only tools and generated direct-query tools are safe to
+//! call without going through the plan/approve/execute loop — they only inspect
+//! state. Observer-callable mutations such as `AptUpdate` are never generated.
+//! Direct-query schemas remain open at the MCP layer deliberately: the daemon is
+//! authoritative for typed parameter validation, avoiding a second schema copy
+//! that could drift.
 //!
 //! The server uses stdio transport so any MCP client (Claude Desktop,
 //! Cursor, …) can launch it as a local subprocess.
@@ -32,14 +37,18 @@
 //! }
 //! ```
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use rmcp::{
-    handler::server::wrapper::{Json, Parameters},
+    handler::server::{
+        router::tool::{ToolRoute, ToolRouter},
+        wrapper::{Json, Parameters},
+    },
     model::{
-        Implementation, ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams,
-        ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
-        ResourceContents, ServerCapabilities, ServerInfo,
+        CallToolResult, ContentBlock, Implementation, ListResourceTemplatesResult,
+        ListResourcesResult, PaginatedRequestParams, ReadResourceRequestParams,
+        ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ServerCapabilities,
+        ServerInfo, Tool, ToolAnnotations,
     },
     schemars, tool, tool_handler, tool_router,
     transport::stdio,
@@ -50,7 +59,11 @@ use sysknife_types::{ApprovalReceipt, RiskLevel, TransactionId};
 
 use sysknife_brain::config::BrainConfig;
 use sysknife_brain::planner::LlmPlanner;
+use sysknife_brain::planning_tools::propose_plan::KNOWN_ACTIONS;
 use sysknife_brain::state_client::StateClient as _;
+use sysknife_core::action_family::{DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS};
+use sysknife_core::distro::DistroId;
+use sysknife_daemon::actions::OBSERVER_MUTATING_ACTIONS;
 
 use crate::client::{DaemonClient, DescribeInfo};
 use crate::error::CliError;
@@ -387,13 +400,194 @@ pub struct AuditVerifyReport {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub struct SysknifeMcpServer;
+pub struct SysknifeMcpServer {
+    tool_router: ToolRouter<Self>,
+}
+
+/// Observer-callable actions that are proven read-only and may therefore be
+/// exposed without the plan/approve/execute interlock.
+///
+/// This list is intentionally explicit. The `observer_actions_are_fully_classified`
+/// test compares it with the live catalogue plus [`OBSERVER_MUTATING_ACTIONS`], so a
+/// newly added low-risk action fails the test suite until somebody decides which
+/// side of the approval boundary it belongs on.
+const MCP_READ_ONLY_ACTIONS: &[&str] = &[
+    "GetSystemState",
+    "CollectDiagnostics",
+    "GetDeploymentHistory",
+    "ListDeployments",
+    "GetKernelArguments",
+    "GetLayeredPackages",
+    "GetPendingUpdates",
+    "GetDiskUsage",
+    "SearchFlatpakApps",
+    "ListFlatpakRemotes",
+    "ListInstalledFlatpaks",
+    "GetFlatpakAppInfo",
+    "UbuntuListFlatpaks",
+    "ListToolboxes",
+    "ListServices",
+    "GetServiceLogs",
+    "GetServiceStatus",
+    "ListTimers",
+    "GetServiceResourceLimits",
+    "ListProcesses",
+    "GetJournalLog",
+    "GetLvmReport",
+    "GetSysctl",
+    "GetMounts",
+    "GetLogrotateStatus",
+    "GetPasswordAging",
+    "GetAuditRules",
+    "GetCertificates",
+    "GetSudoGrants",
+    "GetFirewallState",
+    "GetNetworkStatus",
+    "GetListeningPorts",
+    "ResolvectlStatus",
+    "GetDateTime",
+    "ListUsers",
+    "ListGroups",
+    "GetAuthorizedKeys",
+    "ListPackageRepositories",
+    "GetMemoryInfo",
+    "GetHostState",
+    "ListContainers",
+    "GetContainerInfo",
+    "CheckPendingReboot",
+    "AppArmorStatus",
+    "CloudInitStatus",
+    "Fail2banStatus",
+    "AptSearch",
+    "AptListInstalled",
+    "AptShow",
+    "AptListUpgradable",
+    "AptHistoryList",
+    "GetAptPins",
+    "SnapList",
+    "SnapInfo",
+    "UfwStatus",
+    "NetplanGetConfig",
+    "DistroboxList",
+    "GrubGetKargs",
+    "ProStatus",
+    "LivepatchStatus",
+    "MultipassList",
+    // Dispatcher-internal, with no ActionSpec of its own.
+    "ListJobHistory",
+];
+
+impl SysknifeMcpServer {
+    fn new() -> Self {
+        let distro = sysknife_core::distro::detect().ok();
+        Self::for_distro(distro.as_ref())
+    }
+
+    fn for_distro(distro: Option<&DistroId>) -> Self {
+        Self {
+            tool_router: Self::tool_router() + direct_read_only_tool_router(distro),
+        }
+    }
+}
+
+fn direct_action_tool_name(action_name: &str) -> String {
+    let mut name = String::from("sysknife_");
+    for (index, ch) in action_name.chars().enumerate() {
+        if index > 0 && ch.is_ascii_uppercase() {
+            name.push('_');
+        }
+        name.push(ch.to_ascii_lowercase());
+    }
+    name
+}
+
+fn action_is_available_on_distro(action_name: &str, distro: Option<&DistroId>) -> bool {
+    match distro {
+        Some(distro) => {
+            crate::distro_routing::check_action_distro(action_name, Some(distro)).is_ok()
+        }
+        None => {
+            !DEBIAN_ONLY_ACTIONS.contains(&action_name)
+                && !FEDORA_ONLY_ACTIONS.contains(&action_name)
+        }
+    }
+}
+
+fn direct_query_input_schema() -> Arc<rmcp::model::JsonObject> {
+    Arc::new(serde_json::Map::from_iter([
+        ("type".to_string(), serde_json::json!("object")),
+        ("additionalProperties".to_string(), serde_json::json!(true)),
+    ]))
+}
+
+fn direct_read_only_tool_router(distro: Option<&DistroId>) -> ToolRouter<SysknifeMcpServer> {
+    let mut router = ToolRouter::new();
+
+    for spec in sysknife_daemon::actions::all_specs() {
+        let action_name = spec.action_name;
+        if spec.risk_level != RiskLevel::Low || !MCP_READ_ONLY_ACTIONS.contains(&action_name) {
+            continue;
+        }
+        // Fail closed even before the drift test runs: a name accidentally
+        // copied onto both lists never reaches the approval-free router.
+        if OBSERVER_MUTATING_ACTIONS.contains(&action_name) {
+            continue;
+        }
+        if !action_is_available_on_distro(action_name, distro) {
+            continue;
+        }
+
+        let tool_name = direct_action_tool_name(action_name);
+        let action_description = KNOWN_ACTIONS
+            .iter()
+            .find_map(|(name, description)| (*name == action_name).then_some(*description))
+            .unwrap_or("Read live system state through the SysKnife daemon.");
+        let tool = Tool::new(
+            tool_name,
+            format!("Read-only SysKnife action `{action_name}`. {action_description}"),
+            direct_query_input_schema(),
+        )
+        .with_annotations(
+            ToolAnnotations::new()
+                .read_only(true)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(false),
+        );
+        let routed_action = action_name.to_string();
+
+        router.add_route(ToolRoute::new_dyn(tool, move |context| {
+            let action_name = routed_action.clone();
+            let params = serde_json::Value::Object(context.arguments.unwrap_or_default());
+            Box::pin(async move {
+                let output = direct_query_inner(action_name, params)
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e, None))?;
+
+                Ok(CallToolResult::success(vec![ContentBlock::text(output)]).into())
+            })
+        }));
+    }
+
+    router
+}
+
+async fn direct_query_inner(
+    action_name: String,
+    params: serde_json::Value,
+) -> Result<String, String> {
+    let client = DaemonClient::new(resolve_socket_target());
+    tokio::task::spawn_blocking(move || client.query_action(&action_name, &params))
+        .await
+        .map_err(|e| format!("query join error: {e}"))?
+        .map_err(|e| format!("query failed: {e}"))
+}
 
 const SYSKNIFE_DISCOVERY_URI: &str = "sysknife://about";
 const SYSKNIFE_DISCOVERY_NAME: &str = "about";
 const SYSKNIFE_DISCOVERY_TITLE: &str = "SysKnife MCP server";
 const SYSKNIFE_DISCOVERY_DESCRIPTION: &str = "Discovery resource for Codex and other MCP clients.";
-const SYSKNIFE_DISCOVERY_BODY: &str = "SysKnife exposes a small tool set for planning and executing Linux system administration tasks.\n\nUse `sysknife_plan` first and present the plan to the user. The user must run `sysknife approve <transaction-id>` in a terminal for every accepted step. Call `sysknife_execute` only with the one-time receipts printed by those commands. MCP cannot issue approval receipts.\n\nAvailable read-only tools: `sysknife_history`, `sysknife_doctor`, and `sysknife_audit_verify`.";
+const SYSKNIFE_DISCOVERY_BODY: &str = "SysKnife exposes tools for planning and executing Linux system administration tasks, plus direct read-only queries selected for the detected distro.\n\nUse `sysknife_plan` first for any mutation and present the plan to the user. The user must run `sysknife approve <transaction-id>` in a terminal for every accepted step. Call `sysknife_execute` only with the one-time receipts printed by those commands. MCP cannot issue approval receipts.\n\nAvailable fixed read-only tools: `sysknife_history`, `sysknife_doctor`, and `sysknife_audit_verify`. Catalogue-backed query tools use `sysknife_<snake_case_action>` names, for example `sysknife_get_disk_usage`. `AptUpdate` remains plan-only even though its risk level is Low.";
 
 fn sysknife_about_resource() -> Resource {
     rmcp::model::Resource::new(SYSKNIFE_DISCOVERY_URI, SYSKNIFE_DISCOVERY_NAME)
@@ -507,7 +701,7 @@ fn sysknife_implementation() -> Implementation {
     implementation
 }
 
-#[tool_handler]
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for SysknifeMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
@@ -1213,7 +1407,7 @@ fn cannot_verify_report(backend: String, reason: String) -> AuditVerifyReport {
 // ---------------------------------------------------------------------------
 
 pub async fn run_mcp_server() -> Result<(), CliError> {
-    let service = SysknifeMcpServer
+    let service = SysknifeMcpServer::new()
         .serve(stdio())
         .await
         .map_err(|e| CliError::ExecutionFailed(format!("MCP server error: {e}")))?;
@@ -1608,6 +1802,114 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Direct read-only action classification and routing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn observer_actions_are_fully_classified() {
+        use std::collections::BTreeSet;
+
+        let mut observer_actions: BTreeSet<&str> = sysknife_daemon::actions::all_specs()
+            .into_iter()
+            .filter(|spec| spec.risk_level == RiskLevel::Low)
+            .map(|spec| spec.action_name)
+            .collect();
+        observer_actions.insert("ListJobHistory");
+
+        let read_only: BTreeSet<&str> = MCP_READ_ONLY_ACTIONS.iter().copied().collect();
+        let mutating: BTreeSet<&str> = OBSERVER_MUTATING_ACTIONS.iter().copied().collect();
+        assert!(
+            read_only.is_disjoint(&mutating),
+            "an Observer action cannot be both approval-free and mutating"
+        );
+
+        let classified: BTreeSet<&str> = read_only.union(&mutating).copied().collect();
+        assert_eq!(
+            classified, observer_actions,
+            "every Observer-callable action must be explicitly classified as read-only or mutating"
+        );
+        assert_eq!(observer_actions.len(), 63);
+        assert_eq!(read_only.len(), 62);
+        assert_eq!(mutating, BTreeSet::from(["AptUpdate"]));
+    }
+
+    #[test]
+    fn direct_tool_names_are_unique_and_described() {
+        use std::collections::BTreeSet;
+
+        let names: BTreeSet<String> = MCP_READ_ONLY_ACTIONS
+            .iter()
+            .map(|action| direct_action_tool_name(action))
+            .collect();
+        assert_eq!(names.len(), MCP_READ_ONLY_ACTIONS.len());
+        assert_eq!(
+            direct_action_tool_name("GetDiskUsage"),
+            "sysknife_get_disk_usage"
+        );
+        assert_eq!(
+            direct_action_tool_name("AppArmorStatus"),
+            "sysknife_app_armor_status"
+        );
+
+        for action in MCP_READ_ONLY_ACTIONS {
+            assert!(
+                KNOWN_ACTIONS.iter().any(|(known, _)| known == action),
+                "{action} needs an agent-facing catalogue description"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_router_filters_by_distro_and_never_exposes_mutations() {
+        let ubuntu = DistroId::Ubuntu {
+            major: 24,
+            minor: 4,
+        };
+        let ubuntu_names: std::collections::HashSet<String> =
+            direct_read_only_tool_router(Some(&ubuntu))
+                .list_all()
+                .into_iter()
+                .map(|tool| tool.name.to_string())
+                .collect();
+        assert!(ubuntu_names.contains("sysknife_get_disk_usage"));
+        assert!(ubuntu_names.contains("sysknife_apt_search"));
+        assert!(!ubuntu_names.contains("sysknife_get_system_state"));
+        assert!(!ubuntu_names.contains("sysknife_apt_update"));
+
+        let fedora = DistroId::FedoraSilverblue { version: 41 };
+        let fedora_names: std::collections::HashSet<String> =
+            direct_read_only_tool_router(Some(&fedora))
+                .list_all()
+                .into_iter()
+                .map(|tool| tool.name.to_string())
+                .collect();
+        assert!(fedora_names.contains("sysknife_get_system_state"));
+        assert!(!fedora_names.contains("sysknife_apt_search"));
+        assert!(!fedora_names.contains("sysknife_apt_update"));
+
+        let unknown_names: std::collections::HashSet<String> = direct_read_only_tool_router(None)
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        assert!(unknown_names.contains("sysknife_get_disk_usage"));
+        assert!(!unknown_names.contains("sysknife_apt_search"));
+        assert!(!unknown_names.contains("sysknife_get_system_state"));
+
+        let read_only_names: std::collections::HashSet<String> = MCP_READ_ONLY_ACTIONS
+            .iter()
+            .map(|action| direct_action_tool_name(action))
+            .collect();
+        for routed_names in [&ubuntu_names, &fedora_names, &unknown_names] {
+            let unexpected: Vec<_> = routed_names.difference(&read_only_names).collect();
+            assert!(
+                unexpected.is_empty(),
+                "approval-free router exposed tools outside MCP_READ_ONLY_ACTIONS: {unexpected:?}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // T11 — tool registration round-trip via the rmcp ToolRouter
     //
     // The `#[tool_router(server_handler)]` macro generates a
@@ -1622,8 +1924,8 @@ mod tests {
 
     #[test]
     fn rmcp_tool_router_registers_every_sysknife_tool() {
-        let router = SysknifeMcpServer::tool_router();
-        let tools = router.list_all();
+        let server = SysknifeMcpServer::for_distro(None);
+        let tools = server.tool_router.list_all();
 
         let names: std::collections::HashSet<String> =
             tools.iter().map(|t| t.name.to_string()).collect();
@@ -1633,6 +1935,8 @@ mod tests {
             "sysknife_history",
             "sysknife_doctor",
             "sysknife_audit_verify",
+            "sysknife_get_disk_usage",
+            "sysknife_get_memory_info",
         ] {
             assert!(
                 names.contains(expected),
@@ -1668,8 +1972,8 @@ mod tests {
         // `mcp_tools_integrate_with_a_daemon_over_the_socket`). Deleting this
         // clause would degrade the hint, not open a bypass — do not treat it
         // as the thing keeping a human in the loop.
-        let router = SysknifeMcpServer::tool_router();
-        let tools = router.list_all();
+        let server = SysknifeMcpServer::for_distro(None);
+        let tools = server.tool_router.list_all();
         let plan = tools
             .iter()
             .find(|t| t.name == "sysknife_plan")
@@ -1702,14 +2006,14 @@ mod tests {
         // `Implementation::from_build_env()` expands inside the rmcp crate, so
         // it reported name "rmcp" and rmcp's version — the string clients and
         // registry listings display for this server.
-        let info = SysknifeMcpServer.get_info();
+        let info = SysknifeMcpServer::new().get_info();
         assert_eq!(info.server_info.name, "sysknife");
         assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
     fn get_info_exposes_resources_capability_for_codex() {
-        let info = SysknifeMcpServer.get_info();
+        let info = SysknifeMcpServer::new().get_info();
         assert!(
             info.capabilities.resources.is_some(),
             "Codex-compatible MCP servers should advertise resources"
@@ -1801,17 +2105,30 @@ mod tests {
                     let req: serde_json::Value = serde_json::from_slice(&raw).unwrap();
                     let resp = match req["type"].as_str() {
                         Some("query_history") => serde_json::json!({
-                            "type": "history_response",
-                            "request_id": req["request_id"],
-                            "entries": [{
-                                "transaction_id": "tx-abc123",
-                                "action_name": "GetDiskUsage",
-                                "risk_level": "low",
-                                "status": "succeeded",
-                                "summary": "check disk usage",
-                                "created_at": "2026-07-19T12:00:00Z"
+                        "type": "history_response",
+                        "request_id": req["request_id"],
+                        "entries": [{
+                            "transaction_id": "tx-abc123",
+                            "action_name": "GetDiskUsage",
+                            "risk_level": "low",
+                            "status": "succeeded",
+                            "summary": "check disk usage",
+                            "created_at": "2026-07-19T12:00:00Z"
                             }]
                         }),
+                        Some("query_action") => {
+                            assert_eq!(req["action_name"], "GetSysctl");
+                            assert_eq!(
+                                req["params"],
+                                serde_json::json!({"key": "net.ipv4.ip_forward"})
+                            );
+                            serde_json::json!({
+                                "type": "query_action_response",
+                                "request_id": req["request_id"],
+                                "action_name": req["action_name"],
+                                "output": "net.ipv4.ip_forward = 0"
+                            })
+                        }
                         Some("execute") => serde_json::json!({
                             "type": "error_response",
                             "request_id": req["request_id"],
@@ -1848,6 +2165,16 @@ mod tests {
             Some("2026-07-19T12:00:00Z")
         );
         assert_eq!(entries[0].risk_level.as_deref(), Some("low"));
+
+        // A generated route uses query_action directly and preserves the exact
+        // catalogue action plus the caller's parameter object.
+        let query_output = direct_query_inner(
+            "GetSysctl".to_string(),
+            serde_json::json!({"key": "net.ipv4.ip_forward"}),
+        )
+        .await
+        .expect("direct read-only query over socket");
+        assert_eq!(query_output, "net.ipv4.ip_forward = 0");
 
         // Interlock: the daemon rejects the receipt, so execute MUST error,
         // never fabricate a success result.
