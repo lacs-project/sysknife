@@ -28,7 +28,7 @@ report() {
 [ -x "$runner" ] || { printf 'missing runner: %s\n' "$runner" >&2; exit 1; }
 
 metadata="$(bash "$runner" --metadata)"
-derived_count="$(printf '%s\n' "$metadata" | grep -c .)"
+derived_count="$(printf '%s\n' "$metadata" | grep -c . || true)"
 file_count="$(find "$story_dir" -maxdepth 1 -name 'story-*.sh' | wc -l)"
 
 # A regex that quietly matched nothing would make every assertion below vacuous.
@@ -63,8 +63,8 @@ done <<< "$metadata"
 
 # Both families must be populated: a filter that silently classified everything
 # one way would still satisfy the count check above.
-ubuntu_count="$(printf '%s\n' "$metadata" | awk -F'\t' '$2 == "ubuntu"' | grep -c .)"
-atomic_count="$(printf '%s\n' "$metadata" | awk -F'\t' '$2 == "atomic"' | grep -c .)"
+ubuntu_count="$(printf '%s\n' "$metadata" | awk -F'\t' '$2 == "ubuntu"' | grep -c . || true)"
+atomic_count="$(printf '%s\n' "$metadata" | awk -F'\t' '$2 == "atomic"' | grep -c . || true)"
 if [ "$ubuntu_count" -lt 1 ] || [ "$atomic_count" -lt 1 ]; then
     report "family split is degenerate: $ubuntu_count ubuntu, $atomic_count atomic"
 fi

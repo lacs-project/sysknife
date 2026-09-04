@@ -63,7 +63,7 @@ pins="$(grep -rn '^sysknife-[a-z-]* = {' \
     "$repo_root"/crates/*/Cargo.toml \
     "$repo_root"/apps/sysknife-cli/Cargo.toml \
     "$repo_root"/apps/sysknife-shell/src-tauri/Cargo.toml |
-    grep 'version = ')"
+    grep 'version = ' || true)"
 
 # An empty result means the manifests moved, not that every pin agrees. Fail
 # loudly rather than reporting success for a check that inspected nothing.
