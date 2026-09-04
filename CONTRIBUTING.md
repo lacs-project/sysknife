@@ -115,16 +115,31 @@ UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh
 grep -rn 'Rust tests' README.md docs/introduction.md docs/distro-support.md
 ```
 
+`cargo-nextest` itself needs no system packages. If it is the missing piece,
+install it directly:
+
+```sh
+cargo install cargo-nextest --locked
+```
+
+The GUI workspace members still need the platform libraries named in CI. If
+you cannot install those, do not estimate a count or edit the evidence metadata
+by hand. Leave `tests/evidence/workspace-tests.json` and the three prose files
+untouched. In the PR body, name the command you could not run and the missing
+tool or system library that blocked it. A maintainer will run the full suite and
+regenerate all four files before merge. This is the supported fallback; an
+honest missing measurement is better than metadata that describes a run which
+never happened.
+
 CI gates both halves, so bumping the artifact alone turns `docs-and-hygiene` red
 after `rust` goes green.
 
 **Do not chase the figure.** It moved fifteen times in the twenty days to
 2026-08-24, so on any PR that waits a day or two the number you recorded stops
 being the answer, and that is not your problem to solve. Record it once, say in
-the PR how many tests you added, and if it has expired by the time the PR is
-ready the maintainer regenerates it at merge. Whoever merges is what moves the
-figure, so whoever merges carries it. If `rust` is red only on the baseline, the
-PR is not blocked on you.
+the PR how many tests you added, and let the maintainer refresh it after later
+merges. Whoever merges is what moves the figure, so whoever merges carries it.
+If `rust` is red only on the baseline, the PR is not blocked on you.
 
 `scripts/test_baseline.sh` names both numbers when they disagree, in the form
 `rust suite has <measured> tests, baseline says <recorded>`, so a red run tells
