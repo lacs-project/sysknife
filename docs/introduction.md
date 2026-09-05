@@ -107,7 +107,7 @@ SysKnife, not an afterthought.
 > All three Ubuntu LTS releases have a committed live-VM run of the 79-story
 > Ubuntu suite, in `tests/evidence/story-runs/`: 22.04, 24.04 and 26.04 all at
 > 79/79. Each run has a replay twin that reproduces it, serving every call with
-> zero misses. Every Debian-only action has a story.
+> zero misses. Five Debian-only actions still have no story.
 > Fedora Atomic is supported by the rpm-ostree action family, but a current
 > Silverblue 44 VM run is a release gate. Plain Fedora remains experimental
 > until the `dnf` action family ships.
