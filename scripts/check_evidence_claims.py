@@ -75,6 +75,8 @@ TEST_BASELINE = "tests/evidence/workspace-tests.json"
 STORY_RUNS = "tests/evidence/story-runs"
 STORY_DIR = "tests/e2e/stories"
 ACTION_SOURCE = "crates/sysknife-brain/src/planning_tools/propose_plan.rs"
+ACTION_REFERENCE = "docs/action-reference.md"
+STORY_COVERAGE_FILE = "CONTRIBUTING.md"
 
 # Full family sets that run-stories.sh can run and record. A claim may only rest
 # on one of these.
@@ -91,7 +93,7 @@ def read_claim_files(root: Path) -> dict[str, str]:
     for rel in CLAIM_FILES:
         path = root / rel
         if path.exists():
-            texts[rel] = path.read_text()
+            texts[rel] = path.read_text(encoding="utf-8")
         else:
             missing.append(rel)
     if missing:
@@ -107,7 +109,7 @@ def count_actions(root: Path) -> int:
     source = root / ACTION_SOURCE
     if not source.exists():
         raise Failure(f"action catalogue source is missing: {ACTION_SOURCE}")
-    text = source.read_text()
+    text = source.read_text(encoding="utf-8")
     marker = "pub const KNOWN_ACTIONS: &[(&str, &str)] = &["
     if marker not in text:
         raise Failure(f"{ACTION_SOURCE} no longer declares KNOWN_ACTIONS as expected")
@@ -172,7 +174,7 @@ def load_story_runs(root: Path) -> list[dict]:
     runs = []
     for path in sorted(directory.glob("*.json")):
         try:
-            runs.append(json.loads(path.read_text()))
+            runs.append(json.loads(path.read_text(encoding="utf-8")))
         except json.JSONDecodeError as exc:
             raise Failure(f"{path.name} is not readable JSON: {exc}") from exc
     return runs
@@ -234,28 +236,272 @@ def check_story_claims(texts: dict[str, str], runs: list[dict]) -> list[str]:
     return problems
 
 
-def story_set_sizes(root: Path) -> set[int]:
-    """Legitimate story-suite sizes, derived from the story files themselves.
+STORY_HEADER = re.compile(r"^#\s*Story\s+\d+\s*(?:\(([^)]*)\))?\s*:")
 
-    The whole suite, and each family within it. Family membership is read the
-    same way `tests/e2e/run-stories.sh` reads it — a story whose header tags name
-    `ubuntu` is in the ubuntu family, everything else is atomic — so the guard
-    and the harness cannot disagree about how big a family is.
+
+def story_family_sizes(root: Path) -> dict[str, int]:
+    """Return story-family sizes using the harness's header classification.
+
+    A story whose header tags name `ubuntu` is in the ubuntu family; everything
+    else is atomic. This is the same rule as `tests/e2e/run-stories.sh`, rather
+    than a second classification maintained by the claims checker.
     """
     directory = root / STORY_DIR
     if not directory.is_dir():
-        return set()
-    header = re.compile(r"^#\s*Story\s+\d+\s*(?:\(([^)]*)\))?\s*:")
+        return {}
     families: dict[str, int] = {"ubuntu": 0, "atomic": 0}
-    for path in directory.glob("story-*.sh"):
-        tags = ""
-        for line in path.read_text(errors="replace").splitlines()[:6]:
-            match = header.match(line)
-            if match:
-                tags = match.group(1) or ""
-                break
+    paths = sorted(directory.glob("story-*.sh"))
+    if not paths:
+        return {}
+    for path in paths:
+        # The header lives on line 2, exactly where `tests/e2e/run-stories.sh`
+        # reads it (`sed -n '2p'`). Scanning a wider window would accept a
+        # header the harness itself rejects, letting this checker derive a
+        # different family table from the runner it is supposed to agree with.
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        match = STORY_HEADER.match(lines[1]) if len(lines) > 1 else None
+        if not match:
+            raise Failure(
+                f"could not derive a family from {STORY_DIR}/{path.name}; "
+                "expected the '# Story N (...): title' header on line 2"
+            )
+        tags = match.group(1) or ""
         families["ubuntu" if "ubuntu" in tags else "atomic"] += 1
+    return families
+
+
+def story_set_sizes(root: Path) -> set[int]:
+    """Legitimate story-suite sizes, derived from the story files themselves."""
+    families = story_family_sizes(root)
+    if not families:
+        return set()
     return set(families.values()) | {sum(families.values())}
+
+
+def uncovered_action_counts(root: Path) -> dict[str, int]:
+    """Count uncovered catalogue rows by distro family.
+
+    Catalogue rows come from the generated action reference. An action counts as
+    covered when its name appears as a quoted action-like identifier anywhere in
+    a story file. That intentionally keeps the approximation from #229: names
+    in "must not confuse with" comments can count as covered, and this is not a
+    stricter "covered by an Ubuntu-tagged story" metric from #233.
+    """
+    source = root / ACTION_REFERENCE
+    if not source.exists():
+        raise Failure(f"action reference is missing: {ACTION_REFERENCE}")
+    rows = re.findall(
+        r"^\| `([A-Za-z0-9_]+)` \|.*?\| (All|Ubuntu|Fedora) \|",
+        source.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if not rows:
+        raise Failure(
+            f"no action rows could be derived from {ACTION_REFERENCE}; "
+            "the generated catalogue shape may have changed"
+        )
+    names = [name for name, _ in rows]
+    if len(set(names)) != len(names):
+        raise Failure(f"duplicate action rows found in {ACTION_REFERENCE}")
+
+    story_dir = root / STORY_DIR
+    story_files = sorted(story_dir.glob("story-*.sh"))
+    if not story_files:
+        raise Failure(
+            f"no story files could be derived from {STORY_DIR}; "
+            "the story glob may have changed"
+        )
+    named = set()
+    for path in story_files:
+        named.update(
+            re.findall(r'"([A-Za-z0-9_]+)"', path.read_text(encoding="utf-8", errors="replace"))
+        )
+    if not named:
+        raise Failure(
+            f"no quoted action-like identifiers found in {STORY_DIR}; "
+            "story coverage could not be derived"
+        )
+
+    counts = {family: 0 for family in ("All", "Fedora", "Ubuntu")}
+    for name, family in rows:
+        if name not in named:
+            counts[family] += 1
+    return counts
+
+
+_NUMBER_WORDS = {
+    "zero": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
+
+
+def _claim_count(value: str) -> int:
+    return int(value) if value.isdigit() else _NUMBER_WORDS[value.lower()]
+
+
+# The two Debian-only prose shapes, shared by the CONTRIBUTING sentence check
+# and the every-file universal-claim check so they cannot drift apart.
+DEBIAN_GAP_PROSE = (
+    r"\b(?P<count>\d+|zero|one|two|three|four|five|six|seven|eight|"
+    r"nine|ten)\s+Debian-only\s+(?:actions?|ones?)\s+"
+    r"(?:that\s+)?still\s+have\s+no(?:ne|\s+story)\b"
+)
+DEBIAN_EVERY_CLAIM = re.compile(
+    r"\bEvery\s+Debian-only\s+action\s+(?:now\s+)?has\s+(?:one|a\s+story)\b",
+    re.IGNORECASE,
+)
+
+
+def check_story_coverage_claims(texts: dict[str, str], root: Path) -> list[str]:
+    """Keep the current story-coverage sentence derived from the tree.
+
+    The claim is deliberately anchored to the contributor-facing sentence. If
+    someone moves or rewrites that anchor, the check fails loudly instead of
+    silently deciding that no story-coverage claim exists.
+    """
+    rel = STORY_COVERAGE_FILE
+    text = texts.get(rel)
+    if text is None:
+        return [f"{rel}: story coverage claim file is not available"]
+    text = re.sub(r"\s+", " ", text)
+    family_sizes = story_family_sizes(root)
+    if not family_sizes:
+        raise Failure(
+            f"could not derive story coverage from {STORY_DIR}; no story families found"
+        )
+    total = sum(family_sizes.values())
+    uncovered = uncovered_action_counts(root)
+    problems = []
+
+    family_claim = re.search(
+        r"\bThe suite is\s+(?P<total>\d+)\s+stories?\s*:\s*"
+        r"(?P<atomic>\d+)\s+atomic\s*\+\s*(?P<ubuntu>\d+)\s+Ubuntu\b",
+        text,
+        re.IGNORECASE,
+    )
+    if not family_claim:
+        problems.append(
+            f"{rel}: could not derive story coverage claim; expected "
+            "'The suite is N stories: A atomic + U Ubuntu'"
+        )
+    else:
+        published_sizes = {
+            "total": int(family_claim.group("total")),
+            "atomic": int(family_claim.group("atomic")),
+            "ubuntu": int(family_claim.group("ubuntu")),
+        }
+        derived_sizes = {
+            "total": total,
+            "atomic": family_sizes.get("atomic", 0),
+            "ubuntu": family_sizes.get("ubuntu", 0),
+        }
+        for label in ("total", "atomic", "ubuntu"):
+            if published_sizes[label] != derived_sizes[label]:
+                problems.append(
+                    f"{rel}: story coverage {label} count has published "
+                    f"{published_sizes[label]}, derived {derived_sizes[label]}"
+                )
+
+    uncovered_claim = re.search(
+        r"\bof the action names available on both families,\s*"
+        r"(?P<all>\d+)\s+are still untouched by any story,\s*"
+        r"plus\s+(?P<fedora>\d+)\s+Fedora-only\s+and\s+"
+        r"(?P<ubuntu>\d+)\s+Ubuntu-only\s+ones\b",
+        text,
+        re.IGNORECASE,
+    )
+    if not uncovered_claim:
+        problems.append(
+            f"{rel}: could not derive story coverage claim; expected the "
+            "'action names available on both families' uncovered-count anchor"
+        )
+    else:
+        published_uncovered = {
+            family: int(uncovered_claim.group(family.lower()))
+            for family in ("All", "Fedora", "Ubuntu")
+        }
+        for family in ("All", "Fedora", "Ubuntu"):
+            if published_uncovered[family] != uncovered[family]:
+                problems.append(
+                    f"{rel}: uncovered {family} action count has published "
+                    f"{published_uncovered[family]}, derived {uncovered[family]}"
+                )
+
+    gap_claim = re.search(DEBIAN_GAP_PROSE, text, re.IGNORECASE)
+    covered_claim = DEBIAN_EVERY_CLAIM.search(text)
+    # Symmetric in both directions: a stated gap must equal the derived count
+    # whether that count is zero or not, and the universal "every ... has one"
+    # is valid only when the derived count is zero — so the two can never pass
+    # together while disagreeing.
+    if gap_claim:
+        if _claim_count(gap_claim.group("count")) != uncovered["Ubuntu"]:
+            problems.append(
+                f"{rel}: Debian-only uncovered prose has published "
+                f"{_claim_count(gap_claim.group('count'))}, derived "
+                f"{uncovered['Ubuntu']}"
+            )
+    elif uncovered["Ubuntu"]:
+        problems.append(
+            f"{rel}: could not derive the Debian-only coverage prose; "
+            f"expected a statement that {uncovered['Ubuntu']} actions still "
+            "have no story"
+        )
+    if covered_claim:
+        if uncovered["Ubuntu"]:
+            problems.append(
+                f"{rel}: says every Debian-only action has a story, but the tree "
+                f"leaves {uncovered['Ubuntu']} Ubuntu-only actions uncovered"
+            )
+    elif not uncovered["Ubuntu"] and not gap_claim:
+        problems.append(
+            f"{rel}: could not derive the Debian-only coverage prose; "
+            "expected every Debian-only action to have a story"
+        )
+
+    return problems
+
+
+def check_debian_only_prose_claims(texts: dict[str, str], root: Path) -> list[str]:
+    """Every screened file's Debian-only prose must match the derived gap.
+
+    A universal "every ... has a story" is valid only when the derived
+    Ubuntu-only uncovered count is zero; a stated gap count must equal it,
+    whether it is zero or not — so contradictory claims can never pass
+    together. The same sentence lived in two screened files saying opposite
+    things, so both forms are checked everywhere, not just where the counts
+    sit. No action-name list is maintained or validated here.
+    """
+    uncovered_ubuntu = uncovered_action_counts(root)["Ubuntu"]
+    problems = []
+    for rel, text in texts.items():
+        # CONTRIBUTING.md is skipped here: check_story_coverage_claims already
+        # reports both shapes with the same messages, so including it would
+        # only double-report the same sentences.
+        if rel == STORY_COVERAGE_FILE:
+            continue
+        normalized = re.sub(r"\s+", " ", text)
+        gap_claim = re.search(DEBIAN_GAP_PROSE, normalized, re.IGNORECASE)
+        if gap_claim and _claim_count(gap_claim.group("count")) != uncovered_ubuntu:
+            problems.append(
+                f"{rel}: Debian-only uncovered prose has published "
+                f"{_claim_count(gap_claim.group('count'))}, derived "
+                f"{uncovered_ubuntu}"
+            )
+        if DEBIAN_EVERY_CLAIM.search(normalized) and uncovered_ubuntu:
+            problems.append(
+                f"{rel}: says every Debian-only action has a story, but the tree "
+                f"leaves {uncovered_ubuntu} Ubuntu-only actions uncovered"
+            )
+    return problems
 
 
 def check_bare_story_counts(
@@ -272,9 +518,16 @@ def check_bare_story_counts(
     A bare count is allowed if it equals a story-set size on disk (the whole
     suite, or one family) or the total of some recorded full-family run.
     Anything else names a suite that does not exist.
+
+    A family-labelled count (`N atomic`, `N Ubuntu`) is additionally checked
+    against the derived size of the family it names: both numbers being
+    individually legitimate sizes is not enough, since swapped labels would
+    otherwise pass.
     """
-    slash_form = re.compile(r"[0-9]+\s*/\s*[0-9]+\s+stor")
-    bare = re.compile(r"\b([0-9]{2,})[-\s]stor(?:y|ies)\b")
+    bare = re.compile(r"(?<!/)\b([0-9]{2,})[-\s]stor(?:y|ies)\b")
+    family = re.compile(
+        r"\b(?P<count>[0-9]{2,})\s+(?P<family>atomic|ubuntu)\b", re.IGNORECASE
+    )
 
     allowed = {
         run.get("totals", {}).get("total")
@@ -283,22 +536,33 @@ def check_bare_story_counts(
     }
     allowed.discard(None)
     allowed |= story_set_sizes(root)
+    families = story_family_sizes(root)
+    if not families:
+        raise Failure(
+            f"could not derive story coverage from {STORY_DIR}; no story families found"
+        )
 
     problems = []
     for rel, text in texts.items():
-        for line in text.splitlines():
-            # The slash form has its own, stricter check; do not report twice.
-            if slash_form.search(line):
+        normalized = re.sub(r"\s+", " ", text)
+        for match in bare.finditer(normalized):
+            count = int(match.group(1))
+            if count in allowed:
                 continue
-            for match in bare.finditer(line):
-                count = int(match.group(1))
-                if count in allowed:
-                    continue
-                known = ", ".join(str(c) for c in sorted(allowed)) or "none"
+            known = ", ".join(str(c) for c in sorted(allowed)) or "none"
+            problems.append(
+                f"{rel}: claims a {count}-story suite, which matches neither "
+                f"the stories on disk nor any recorded run (known: {known}). "
+                f"Quote a figure from {STORY_RUNS}/ or drop it."
+            )
+        for match in family.finditer(normalized):
+            count = int(match.group("count"))
+            label = match.group("family")
+            expected = families[label.lower()]
+            if count != expected:
                 problems.append(
-                    f"{rel}: claims a {count}-story suite, which matches neither "
-                    f"the stories on disk nor any recorded run (known: {known}). "
-                    f"Quote a figure from {STORY_RUNS}/ or drop it."
+                    f"{rel}: {label} family story count has published "
+                    f"{count}, derived {expected}"
                 )
     return problems
 
@@ -362,7 +626,7 @@ def replay_verified_releases(root: Path) -> set[str]:
     replays: set[str] = set()
     for path in sorted(directory.glob("*.json")):
         try:
-            run = json.loads(path.read_text())
+            run = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise Failure(f"{path.name} is not readable JSON: {exc}") from exc
         release = str(run.get("release", ""))
@@ -449,6 +713,8 @@ def main() -> int:
         )
         story_runs = load_story_runs(root)
         problems += check_story_claims(texts, story_runs)
+        problems += check_story_coverage_claims(texts, root)
+        problems += check_debian_only_prose_claims(texts, root)
         problems += check_bare_story_counts(texts, story_runs, root)
         problems += check_validated_tiers(texts, root)
         problems += check_action_figures(texts, count_actions(root))
