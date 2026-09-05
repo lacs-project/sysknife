@@ -12,6 +12,36 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-09-05
+
+The last digit moves. No shipped code changed: `crates/**`, `apps/*/src/**` and
+`packaging/**` are byte-identical to 0.13.0, so an installed copy behaves exactly
+as it did. What changed is what CI will let into the tree from here on.
+
+### Fixed
+
+- **Story-coverage figures are derived from the tree instead of maintained by
+  hand** ([#370](https://github.com/lacs-project/sysknife/pull/370), closes
+  [#229](https://github.com/lacs-project/sysknife/issues/229)). `CONTRIBUTING.md`
+  said "Every Debian-only action now has one" four lines below a row saying five
+  of them still have none, and `docs/introduction.md` carried the same false
+  sentence. Nothing derived either claim, so they drifted for a day in August,
+  somebody fixed them by hand, and the next story landing would have broken them
+  again. The claim screen now recomputes the uncovered All / Fedora / Ubuntu
+  counts from `docs/action-reference.md` and `tests/e2e/stories`, and the atomic
+  and Ubuntu family sizes from the story headers, using the same line-2 rule
+  `tests/e2e/run-stories.sh` reads so the checker and the harness cannot disagree
+  about how big a family is. Both directions of the Debian-only prose are
+  screened in every claim file: a stated gap must equal the derived count, and a
+  universal "every ... has a story" is accepted only when that count is zero, so
+  two contradictory sentences can never pass together. Family-labelled counts are
+  checked against the family they name, so swapping the labels no longer passes
+  on the strength of both numbers being legitimate sizes somewhere.
+
+  The guard fails loudly rather than inspecting nothing: a story header off line
+  2, a mangled catalogue table, an empty story directory and a story set with no
+  quoted identifiers each stop the screen with a message naming the file.
+
 ## [0.13.0] — 2026-09-03
 
 The middle digit moves because of [#360](https://github.com/lacs-project/sysknife/pull/360).
