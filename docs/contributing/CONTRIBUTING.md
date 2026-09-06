@@ -41,7 +41,7 @@ rather answer questions than lose a contributor to a misunderstanding.
 - **`help wanted`** — higher-impact tasks where outside help is
   especially welcome.
 - **`security`** — security issues take priority over everything else.
-  See [SECURITY.md](../../SECURITY.md) for the disclosure process.
+   See [SECURITY.md](https://github.com/lacs-project/sysknife/blob/main/SECURITY.md) for the disclosure process.
 
 High-impact areas where contributions are most needed:
 

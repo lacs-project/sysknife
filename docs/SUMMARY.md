@@ -10,6 +10,7 @@
 - [MCP Server](mcp.md)
 - [Registry and Directory Listings](mcp-registry.md)
 - [CLI Reference](cli.md)
+- [User Stories](user-stories.md)
 - [Configure Your LLM](configuration.md)
 - [Distro Support](distro-support.md)
 
@@ -43,7 +44,9 @@
 
 - [Developer Guide](developer-guide.md)
 - [Testing Guide](contributing/testing.md)
+- [Ubuntu VM Testing](contributing/ubuntu-vm-testing.md)
 - [Contributing](contributing/CONTRIBUTING.md)
 - [Ubuntu Story Audit](contributing/ubuntu-story-audit.md)
 - [Release Process](release.md)
 - [Release Readiness](release-readiness.md)
+- [Testing User Stories](testing/user-stories.md)
