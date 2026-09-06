@@ -330,7 +330,7 @@ the model that produced it are recorded in `tests/evidence/story-runs/`, written
 by the run itself. The `ubuntu-vm.sh` script mirrors the `atomic-vm.sh` workflow but
 uses a Ubuntu 24.04 cloud image instead of a Fedora Atomic ISO.
 
-See [docs/contributing/ubuntu-vm-testing.md](ubuntu-vm-testing.md) for the
+See [docs/contributing/ubuntu-vm-testing.md](https://github.com/lacs-project/sysknife/blob/main/docs/contributing/ubuntu-vm-testing.md) for the
 full setup and daily-use instructions. Quick reference:
 
 ```sh
@@ -453,7 +453,7 @@ Per-story timeout defaults to 10 minutes (`SYSKNIFE_STORY_TIMEOUT=600`) —
 small tool-capable models on 4 vCPUs need that much headroom.
 
 For the full history of what we tried and why, see
-[HACKING.md](../../HACKING.md) §8.
+[HACKING.md](https://github.com/lacs-project/sysknife/blob/main/HACKING.md) §8.
 
 **Tip:** once provision succeeds end-to-end, immediately `stop` the VM
 and `snapshot baseline`. Then every subsequent test cycle becomes
