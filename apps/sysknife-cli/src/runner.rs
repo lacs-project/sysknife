@@ -1047,11 +1047,11 @@ pub async fn run_audit_checkpoint(
     {
         Some(u) => u,
         None => {
-            eprintln!(
+            return Err(CliError::ConfigOrDaemon(
                 "no checkpoint database configured; pass --db <URL> or set \
                  SYSKNIFE_CHECKPOINT_DB (preferred, keeps credentials off argv)"
-            );
-            return Err(CliError::Exit(2));
+                    .into(),
+            ));
         }
     };
 

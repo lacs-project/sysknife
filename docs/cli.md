@@ -309,7 +309,7 @@ All flags apply to every subcommand and to free-form intents.
 | `--dry-run` | Print the plan and exit without executing anything. |
 | `--step-by-step` | Prompt for approval before each individual step instead of once for the whole plan.  Each prompt comes *after* that step's daemon preview is printed. |
 | `--json` | Emit NDJSON to stdout — one JSON object per event (plan, preview, result).  All colour and spinner output is suppressed.  Safe to pipe. |
-| `--timeout SECS` | Hard wall-clock timeout in seconds.  Aborts the whole operation if exceeded. |
+| `--timeout SECS` | Hard wall-clock limit for the CLI invocation in seconds. Stops waiting when exceeded; see exit codes below. |
 | `--log-to FILE` | Tee all stdout output to FILE in addition to the terminal.  Appends if the file exists. |
 | `--dangerously-skip-approval` | Auto-approve HIGH-risk steps as well, with no human confirmation.  Refuses to run unless `SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1` is also set.  See [Unattended mode](#unattended-mode). |
 
@@ -400,12 +400,21 @@ snapshot beforehand costs less than the alternative.
 |---|---|
 | `0` | Success |
 | `1` | Plan or step **refused** — you rejected it, it exceeded the configured risk ceiling, or approval was required but the session is non-interactive |
-| `2` | **Execution failed** — the action ran but returned an error (also returned when `--timeout` expires) |
+| `2` | **Execution failed**, a command-line usage error, or the whole-command `--timeout` expired (see below) |
 | `3` | **Planning failed** — LLM error, provider unreachable, or the intent could not be turned into a plan |
 | `4` | **Configuration or daemon error** — invalid configuration, or the daemon could not be reached |
 
 Subcommands with their own semantics (for example `sysknife audit verify`) pass
 through their own exit code.
+
+Clap returns `2` for malformed command-line arguments, such as an invalid
+`--max-risk` value, before planning or execution starts. `--timeout` also returns
+`2` and reports `operation timed out after Ns`; it applies to the whole command
+and can expire during planning, execution, or another subcommand. Inspect the
+diagnostic to distinguish these cases: exit `2` alone does not mean an action ran.
+The timeout diagnostic does not identify which phase timed out. A CLI timeout
+stops waiting; it does not guarantee cancellation of work already submitted to
+the daemon.
 
 ---
 
