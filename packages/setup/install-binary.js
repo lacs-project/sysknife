@@ -227,7 +227,8 @@ function fetchBuffer(url, opts = {}) {
 
 /**
  * Perform an HTTPS GET with progress reporting.
- * Prints a CR-overwritten progress line: [ 12.3 MB / 23.5 MB ]
+ * Overwrites a progress line in a terminal; captured logs get at most one
+ * progress row per second, plus the final byte count.
  *
  * @param {string} url
  * @param {string} label  - short label shown in the progress line
@@ -255,17 +256,28 @@ function fetchWithProgress(url, label, redirectsLeft = 5) {
       const total = parseInt(res.headers['content-length'] || '0', 10);
       const chunks = [];
       let received = 0;
+      const isTTY = process.stdout.isTTY;
+      let lastProgressAt = null;
+
+      const reportProgress = () => {
+        const recMb = (received / 1_048_576).toFixed(1);
+        const totMb = total ? (total / 1_048_576).toFixed(1) : '?';
+        process.stdout.write(`${isTTY ? '\r' : ''}  ${D}↓${X}  ${label}: [ ${recMb} MB / ${totMb} MB ]${isTTY ? '' : '\n'}`);
+      };
 
       res.on('data', (chunk) => {
         chunks.push(chunk);
         received += chunk.length;
-        const recMb  = (received / 1_048_576).toFixed(1);
-        const totMb  = total ? (total / 1_048_576).toFixed(1) : '?';
-        process.stdout.write(`\r  ${D}↓${X}  ${label}: [ ${recMb} MB / ${totMb} MB ]`);
+        const now = Date.now();
+        if (isTTY || lastProgressAt === null || now - lastProgressAt >= 1000) {
+          reportProgress();
+          lastProgressAt = now;
+        }
       });
 
       res.on('end', () => {
-        process.stdout.write('\n');
+        if (isTTY) process.stdout.write('\n');
+        else reportProgress();
         resolve(Buffer.concat(chunks));
       });
 

@@ -36,6 +36,13 @@ npx sysknife-setup --claude --no-prompts --daemon-mode=system
 actions work, and anything mutating (installing packages, restarting services)
 does not, because the sudoers grants belong to the `sysknife` system user.
 
+For system mode, follow the printed installation commands; the wizard does not
+install the system service itself. A skipped install or a host without systemd
+gets manual daemon steps instead of commands for a user unit that was never
+installed. With `--no-prompts`, supply any required API key through the
+environment (see Step 2); the wizard does not collect one interactively.
+Redirected downloads print periodic progress lines and a final byte count.
+
 ### From source
 
 **Prerequisites:** Rust stable (`rustup update stable`), **a C compiler and
