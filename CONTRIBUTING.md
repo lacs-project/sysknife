@@ -166,8 +166,10 @@ git diff --name-only upstream/main... | grep '\.rs$'   # empty means the gate do
 For such a diff the gate is the Node suite for the package you touched,
 `scripts/check_evidence_claims.py`, and CI on Ubuntu. Run the claim screen even
 for a JavaScript change: `packages/setup/index.js` is in `CLAIM_FILES`, and the
-screen is pure Python with no subprocess calls, so it runs anywhere Python does.
-Say which of the three you ran.
+screen remains the claim-screen entry point. Story-family derivation delegates to
+`tests/e2e/run-stories.sh --metadata`, so story-related claim checks require
+Bash and the repository's normal POSIX-style environment. Say which of the
+three you ran.
 
 **Which release your change lands in.** While SysKnife is in the `0.y` series, a
 change that breaks a consumer moves the middle digit and everything else moves the

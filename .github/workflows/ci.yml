@@ -47,6 +47,9 @@ jobs:
       - name: Check release version consistency
         run: bash scripts/check_release_versions.sh
 
+      - name: Test internal dependency pin coverage
+        run: bash tests/release/release-version-pins.test.sh
+
       - name: Check public support and approval claims
         run: bash tests/release/public-claims.test.sh
 

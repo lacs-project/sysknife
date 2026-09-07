@@ -136,6 +136,10 @@ git tag -s v0.2.5 -m "SysKnife v0.2.5"
 git push origin v0.2.5
 ```
 
+The version check requires every internal path dependency to carry an inline
+`version` matching the workspace release. Removing that field is an error even
+when all remaining visible pins match.
+
 The tag pattern does not accept prerelease suffixes. Do not move or reuse a
 published tag. If publication partly fails, diagnose and rerun the workflow on
 the same commit; do not publish a different tree under the same version.
