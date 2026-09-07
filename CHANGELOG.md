@@ -12,6 +12,37 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Changed
+
+- **A CLI timeout no longer reports that an action ran, and a missing
+  checkpoint database is a configuration error** ([#381](https://github.com/lacs-project/sysknife/pull/381), closes
+  [#335](https://github.com/lacs-project/sysknife/issues/335)). `--timeout` built an `ExecutionFailed` carrying a
+  timeout string, so an operator reading `execution failed:` had no way to tell
+  a command that ran and failed from one that never started. It is now its own
+  `TimedOut` variant, still exit 2, reported as `operation timed out after Ns`.
+  Separately, `audit checkpoint` with no database printed its own diagnostic and
+  returned a hardcoded exit 2; it now returns the configuration code 4 through
+  the normal error path. `docs/cli.md` documents what exit 2 covers, including
+  clap's usage errors.
+
+### Fixed
+
+- **A release pin that lost its `version` field passed the version check**
+  ([#378](https://github.com/lacs-project/sysknife/pull/378), closes [#368](https://github.com/lacs-project/sysknife/issues/368)).
+  `check_release_versions.sh` piped its list of internal path dependencies
+  through `grep 'version = '` before validating them, so the one broken pin the
+  check exists to catch was the one the filter removed, and publication would
+  have failed later against crates.io instead. An absent pin is now its own
+  explicit failure, and `tests/release/release-version-pins.test.sh` proves it
+  by removing a pin and requiring the check to name the manifest.
+
+- **Markdown link coverage is derived rather than listed**
+  ([#376](https://github.com/lacs-project/sysknife/pull/376), closes [#372](https://github.com/lacs-project/sysknife/issues/372)).
+
+- **The daemon's `sysknife-apt-pin-edit` lock arm was unreachable**
+  ([#375](https://github.com/lacs-project/sysknife/pull/375), closes [#248](https://github.com/lacs-project/sysknife/issues/248)).
+
+
 ## [0.13.1] — 2026-09-05
 
 The last digit moves. No shipped code changed: `crates/**`, `apps/*/src/**` and
