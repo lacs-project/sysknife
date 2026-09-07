@@ -135,6 +135,24 @@ if ! bash "$mutant/run-stories.sh" --metadata >/dev/null 2>&1; then
     report "the unmutated copy also fails — the unknown-tag result is meaningless"
 fi
 
+# #390: the vocabulary is per-word, so a combination of known words that does
+# not exist in the tree today — `(ubuntu, destructive)` is exactly that — is
+# perfectly meaningful and must be derived, not rejected. A whole-string
+# whitelist fails CI on it until somebody edits a `case` arm, which is the
+# brittleness in the direction this repository grows that #390 names.
+cp "$story_dir/story-63.sh" "$mutant/stories/story-9999.sh"
+sed -i '2s/.*/# Story 9999 (ubuntu, destructive): New combination/' \
+    "$mutant/stories/story-9999.sh"
+if ! bash "$mutant/run-stories.sh" --metadata >/dev/null 2>&1; then
+    report "a valid new tag combination was rejected by the vocabulary"
+fi
+combo_family="$(bash "$mutant/run-stories.sh" --metadata 2>/dev/null \
+    | awk -F'\t' '$1 == "9999" { print $2 }')"
+if [ "$combo_family" != ubuntu ]; then
+    report "story 9999 (ubuntu, destructive) derived family '$combo_family', expected ubuntu"
+fi
+rm -f "$mutant/stories/story-9999.sh"
+
 # #252: the grammar says the Story header lives on line 2. A valid header
 # shifted to line 3 must fail rather than derive a row from the wrong line.
 cp "$story_dir/story-63.sh" "$mutant/stories/story-9999.sh"
