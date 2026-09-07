@@ -12,6 +12,20 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-09-07
+
+The middle digit moves because an exit code changed. `sysknife audit checkpoint`
+with no database configured returned 2 and now returns 4, and an exit code is
+the contract a wrapper script reads. Nothing was removed and no signature
+changed; under the rule in [docs/release.md](docs/release.md#version-numbering)
+that is still a compatibility break, the same way v0.9.0 was when
+`sysknife-setup` began refusing a malformed `.mcp.json` it used to overwrite.
+
+Two of these are security fixes in the daemon's authorization path. A cancelled
+transaction could keep a live approval receipt, and a peer the kernel could not
+pin was still credited with the supplementary groups of whatever process held
+that PID by the time `/proc` was read.
+
 ### Changed
 
 - **A CLI timeout no longer reports that an action ran, and a missing
