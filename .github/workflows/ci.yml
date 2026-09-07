@@ -53,6 +53,9 @@ jobs:
       - name: Check public support and approval claims
         run: bash tests/release/public-claims.test.sh
 
+      - name: Check test-baseline artifact contract
+        run: bash tests/release/test-baseline-provenance.test.sh
+
       - name: Test setup package contracts
         run: npm test --prefix packages/setup
 

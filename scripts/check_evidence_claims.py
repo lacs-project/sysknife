@@ -30,6 +30,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+# The release contract tests import this module to derive CLAIM_FILES. Keep the
+# sibling baseline schema available in both direct-script and importlib modes.
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from record_test_baseline import validate_document
+
 # Files that carry public claims. Kept in step with claim_files in
 # check_public_claims.sh; a file listed there but not here is simply unchecked
 # for numbers, which is why the pristine-fixture guard in the test matters.
@@ -261,10 +269,12 @@ def _canonical_story_metadata(root: Path) -> list[tuple[str, str, str]]:
             f"could not derive story families: canonical metadata runner is "
             f"missing: {STORY_METADATA_RUNNER}"
         )
+    runner_arg = runner.relative_to(root).as_posix()
     try:
         completed = subprocess.run(
-            ["bash", str(runner), "--metadata"],
+            ["bash", runner_arg, "--metadata"],
             capture_output=True,
+            cwd=root,
             text=True,
             encoding="utf-8",
             timeout=120,
@@ -754,21 +764,30 @@ def check_validated_tiers(texts: dict[str, str], root: Path) -> list[str]:
     return problems
 
 
+def load_test_baseline(root: Path) -> dict:
+    path = root / TEST_BASELINE
+    if not path.exists():
+        raise Failure(
+            f"{TEST_BASELINE} is missing; record it with "
+            "UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh"
+        )
+    try:
+        baseline = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise Failure(f"{TEST_BASELINE} is not readable JSON: {exc}") from exc
+
+    problems = validate_document(baseline, require_all_fields=True)
+    if problems:
+        raise Failure(f"{TEST_BASELINE} is invalid: {'; '.join(problems)}")
+    return baseline
+
+
 def main() -> int:
     root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     try:
         texts = read_claim_files(root)
 
-        baseline_path = root / TEST_BASELINE
-        if not baseline_path.exists():
-            raise Failure(
-                f"{TEST_BASELINE} is missing; record it with "
-                "UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh"
-            )
-        baseline = json.loads(baseline_path.read_text())
-        for field in ("tests", "frontend_tests"):
-            if not isinstance(baseline.get(field), int):
-                raise Failure(f"{TEST_BASELINE} has no integer '{field}' field")
+        baseline = load_test_baseline(root)
 
         problems = []
         problems += check_figure(texts, "Rust tests", baseline["tests"])
