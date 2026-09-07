@@ -267,26 +267,36 @@ async fn list_job_history_rejects_non_integer_since_hours() {
 }
 
 // ---------------------------------------------------------------------------
-// query_action blocks non-Observer actions
+// query_action blocks every action that requires approval
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn query_action_rejects_non_observer_action() {
-    // UpdateSystem requires Admin role — query_action only allows Observer-level.
-    // Even an Admin caller should be blocked from using query_action for this.
+async fn query_action_rejects_actions_that_require_approval() {
+    // An action can require approval either because its risk tier is above Low,
+    // or because it mutates the host despite being Low/Observer-callable. Even
+    // an Admin caller must not bypass preview + approval through query_action.
     let dir = tempdir().unwrap();
-    let state = test_state(&dir);
+    let mut state = test_state(&dir);
+    state.host_distro = Some(sysknife_core::distro::DistroId::Ubuntu {
+        major: 24,
+        minor: 4,
+    });
     let mut framed = spawn_handler_with_role(state, CallerRole::Admin).await;
-    let resp = query_action(&mut framed, "UpdateSystem", json!({}), "non-observer-req").await;
 
-    assert_eq!(
-        resp["type"], "error_response",
-        "expected error_response for non-observer action, got: {resp}"
-    );
-    assert_eq!(
-        resp["category"], "authorization_failure",
-        "non-observer action must return authorization_failure, got: {resp}"
-    );
+    for (action_name, request_id) in [
+        ("UpdateSystem", "non-observer-req"),
+        ("AptUpdate", "observer-mutation-req"),
+    ] {
+        let resp = query_action(&mut framed, action_name, json!({}), request_id).await;
+        assert_eq!(
+            resp["type"], "error_response",
+            "expected error_response for approval-gated {action_name}, got: {resp}"
+        );
+        assert_eq!(
+            resp["category"], "authorization_failure",
+            "approval-gated {action_name} must return authorization_failure, got: {resp}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

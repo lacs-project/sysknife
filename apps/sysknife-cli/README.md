@@ -57,7 +57,8 @@ sysknife mcp-server
 `npx sysknife-setup` wires the MCP server into your AI IDE and installs the
 privileged daemon for you. The server exposes `sysknife_plan`,
 `sysknife_execute`, `sysknife_history`, `sysknife_doctor`, and
-`sysknife_audit_verify` as MCP tools.
+`sysknife_audit_verify`, plus distro-compatible direct read-only queries such as
+`sysknife_get_disk_usage`, as MCP tools. Mutations remain approval-gated.
 
 ## Links
 

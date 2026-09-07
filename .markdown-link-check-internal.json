@@ -1,0 +1,11 @@
+{
+  "ignorePatterns": [
+    {
+      "pattern": "^https?://"
+    },
+    {
+      "pattern": "\\.html(?:[#?].*)?$"
+    }
+  ],
+  "_comment": "The repository-wide pass checks source-relative links without making network requests. Relative .html links target mdBook output and are checked after the book is built, not against the Markdown source tree. The bounded external pass uses .markdown-link-check.json."
+}

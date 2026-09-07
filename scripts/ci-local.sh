@@ -236,21 +236,12 @@ hygiene_markdownlint() (
 
 hygiene_markdown_link_check() (
     cd "$repo_root" || exit 1
-    files=(
-        README.md
-        CONTRIBUTING.md
-        SECURITY.md
-        CODE_OF_CONDUCT.md
-        ROADMAP.md
-        docs/architecture.md
-        docs/developer-guide.md
-        docs/adr/0001-system-boundaries.md
-        docs/adr/0002-brain-provider-layer.md
-        docs/adr/0003-ipc-wire-protocol.md
-    )
-    for f in "${files[@]}"; do
+    while IFS= read -r -d '' f; do
+        markdown-link-check --config .markdown-link-check-internal.json "$f" || exit 1
+    done < <(scripts/markdown-link-files.sh)
+    while IFS= read -r -d '' f; do
         markdown-link-check --config .markdown-link-check.json "$f" || exit 1
-    done
+    done < <(scripts/markdown-link-files.sh --external)
 )
 
 hygiene_yamllint() (
@@ -289,6 +280,7 @@ run_hygiene_group() {
     run_step 'hygiene: install-paths.test.sh' bash "$repo_root/tests/release/install-paths.test.sh"
     run_step 'hygiene: postgres-contract-guard.test.sh' bash "$repo_root/tests/release/postgres-contract-guard.test.sh"
     run_step 'hygiene: audit-export-confidentiality.test.sh' bash "$repo_root/tests/release/audit-export-confidentiality.test.sh"
+    run_step 'hygiene: markdown-link-files.test.sh' bash "$repo_root/tests/release/markdown-link-files.test.sh"
 
     if have markdownlint-cli2; then
         run_step 'hygiene: markdownlint-cli2' hygiene_markdownlint

@@ -104,6 +104,9 @@ jobs:
       - name: Check the audit export states its confidentiality class
         run: bash tests/release/audit-export-confidentiality.test.sh
 
+      - name: Check markdown link file discovery
+        run: bash tests/release/markdown-link-files.test.sh
+
       - name: Check provider parity across E2E entry points
         run: bash tests/e2e/provider-parity.test.sh
 
@@ -134,20 +137,15 @@ jobs:
             docs/developer-guide.md \
             docs/adr/*.md
 
-      - name: Check markdown links
+      - name: Check internal markdown links
         run: |
-          for file in \
-            README.md \
-            CONTRIBUTING.md \
-            SECURITY.md \
-            CODE_OF_CONDUCT.md \
-            ROADMAP.md \
-            docs/architecture.md \
-            docs/developer-guide.md \
-            docs/adr/0001-system-boundaries.md \
-            docs/adr/0002-brain-provider-layer.md \
-            docs/adr/0003-ipc-wire-protocol.md
-          do
+          while IFS= read -r -d '' file; do
+            markdown-link-check --config .markdown-link-check-internal.json "$file"
+          done < <(scripts/markdown-link-files.sh)
+
+      - name: Check external markdown links
+        run: |
+          while IFS= read -r -d '' file; do
             # Retry on transient network failure. `retryOn429` in the config only
             # covers rate limiting, and the failures actually seen here were
             # Status 0 — a connection/DNS blip on the runner against hosts that
@@ -168,7 +166,7 @@ jobs:
               echo "link check for $file failed (attempt $attempt/3); retrying in 10s"
               sleep 10
             done
-          done
+          done < <(scripts/markdown-link-files.sh --external)
 
       - name: Lint GitHub issue templates
         run: yamllint .github/ISSUE_TEMPLATE/*.yml .github/workflows/*.yml
@@ -288,6 +286,11 @@ jobs:
 
       - name: Run live Postgres migration and store contract
         run: cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored
+
+      - name: Run live CLI anchor exit-code contract
+        run: >-
+          cargo test -p sysknife-cli --test cli_smoke --locked
+          audit_verify_exits_with_code_1_when_anchor_is_truncated -- --ignored --exact
 
   security-audit:
     runs-on: ubuntu-latest

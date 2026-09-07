@@ -251,12 +251,14 @@ Desktop, Cursor, Codex, and any other MCP-capable agent can drive SysKnife.
 sysknife mcp-server
 ```
 
-It exposes five tools backed by the SysKnife daemon: `sysknife_plan`,
+It exposes five fixed tools backed by the SysKnife daemon: `sysknife_plan`,
 `sysknife_execute`, `sysknife_history`, `sysknife_doctor`, and
-`sysknife_audit_verify`. Planning and execution stay behind the same approval
-interlock as the CLI — `sysknife_plan` returns typed steps with daemon-issued
-transaction IDs, and each step still requires an explicit
-`sysknife approve <transaction-id>` in a real terminal before it can run.
+`sysknife_audit_verify`. It also generates direct read-only query tools for the
+detected distro, such as `sysknife_get_disk_usage`. Planning and execution stay
+behind the same approval interlock as the CLI — `sysknife_plan` returns typed
+steps with daemon-issued transaction IDs, and each step still requires an
+explicit `sysknife approve <transaction-id>` in a real terminal before it can
+run. Low risk is not treated as read-only: `AptUpdate` remains plan-only.
 
 Register it with your agent by pointing it at the binary, e.g. in
 `claude_desktop_config.json`:

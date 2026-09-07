@@ -10,8 +10,8 @@
 ```sh
 git clone https://github.com/lacs-project/sysknife
 cd sysknife
-pip install pre-commit && pre-commit install
-cd apps/sysknife-shell && pnpm install && cd ../..
+scripts/ci-local.sh --install-hooks
+npm ci --prefix apps/sysknife-shell
 
 # Run the whole suite (≈ 90s)
 cargo nextest run --workspace --locked
@@ -47,7 +47,7 @@ table below.
 | **Ubuntu LTS support** | All three LTS releases are validated against the full story suite on a live VM, each with a committed replay twin that reproduces it: 22.04, 24.04 and 26.04 all at 79/79. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: story coverage for the cross-family actions, and five Debian-only ones that still have none: the four fail2ban actions and `GrubSetKargs`. | medium |
 | **Distro detection coverage** | Robust `/etc/os-release` parsing for every release we claim to support. Pure-function tests against real fixture files, no integration mocks. The existing fixtures at the bottom of `crates/sysknife-core/src/distro.rs` show the shape. | easy |
 | **Action catalogue gaps** | Add a typed action (for example `EnableFirewallZone`). Small and isolated, and every PR carries the policy entry, the risk level and the tests. | easy |
-| **E2E story coverage** | Real prompts, real LLM, real daemon. The suite is 133 stories: 54 atomic + 79 Ubuntu. Every Debian-only action now has one. What is left is the cross-family middle: of the action names available on both families, 59 are still untouched by any story, plus 10 Fedora-only and 5 Ubuntu-only ones. See #233 for the clustered map. | medium |
+| **E2E story coverage** | Real prompts, real LLM, real daemon. The suite is 133 stories: 54 atomic + 79 Ubuntu. What is left is the cross-family middle: of the action names available on both families, 59 are still untouched by any story, plus 10 Fedora-only and 5 Ubuntu-only ones. See #233 for the clustered map. | medium |
 | **Fedora Atomic validation** | The action families exist and `DistroId::is_supported()` returns true for Atomic 41 and up. Nobody has run `tests/e2e/atomic-vm.sh` against a current release. Needs Fedora Atomic hardware or a VM host. | tedious |
 | **Demo recording on real hardware** | Replace the bundled demo GIF with a 30-second recording on real Ubuntu 26.04 with rollback visible. | easy |
 
@@ -115,16 +115,31 @@ UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh
 grep -rn 'Rust tests' README.md docs/introduction.md docs/distro-support.md
 ```
 
+`cargo-nextest` itself needs no system packages. If it is the missing piece,
+install it directly:
+
+```sh
+cargo install cargo-nextest --locked
+```
+
+The GUI workspace members still need the platform libraries named in CI. If
+you cannot install those, do not estimate a count or edit the evidence metadata
+by hand. Leave `tests/evidence/workspace-tests.json` and the three prose files
+untouched. In the PR body, name the command you could not run and the missing
+tool or system library that blocked it. A maintainer will run the full suite and
+regenerate all four files before merge. This is the supported fallback; an
+honest missing measurement is better than metadata that describes a run which
+never happened.
+
 CI gates both halves, so bumping the artifact alone turns `docs-and-hygiene` red
 after `rust` goes green.
 
 **Do not chase the figure.** It moved fifteen times in the twenty days to
 2026-08-24, so on any PR that waits a day or two the number you recorded stops
 being the answer, and that is not your problem to solve. Record it once, say in
-the PR how many tests you added, and if it has expired by the time the PR is
-ready the maintainer regenerates it at merge. Whoever merges is what moves the
-figure, so whoever merges carries it. If `rust` is red only on the baseline, the
-PR is not blocked on you.
+the PR how many tests you added, and let the maintainer refresh it after later
+merges. Whoever merges is what moves the figure, so whoever merges carries it.
+If `rust` is red only on the baseline, the PR is not blocked on you.
 
 `scripts/test_baseline.sh` names both numbers when they disagree, in the form
 `rust suite has <measured> tests, baseline says <recorded>`, so a red run tells
@@ -132,6 +147,13 @@ you the answer rather than setting a puzzle. (Real digits are not written here o
 purpose: this file is screened by `scripts/check_evidence_claims.py`, and an
 illustrative figure reads as a published claim. That screen caught this very
 paragraph.)
+
+**Markdown links are discovered from the tracked tree.** Both local and remote
+CI call `scripts/markdown-link-files.sh`: every tracked Markdown file gets the
+deterministic source-relative check, while external URLs stay bounded to
+`scripts/markdown-link-external-files.txt`. Add a documented entry to
+`scripts/markdown-link-exclusions.txt` only when a source file must be skipped;
+the discovery test rejects exclusions that no longer name a tracked file.
 
 **A change that touches no Rust skips the Rust gate.** The workspace suite exists
 to stop a Rust regression reaching `main`, and a diff with no `.rs` file in it

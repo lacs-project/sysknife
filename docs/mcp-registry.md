@@ -174,8 +174,9 @@ pays to be precise about which half of the model still applies.
 It claimed a sandbox would show SysKnife with an empty tool list, because there
 is no daemon to ask. That is not what happens. Glama's build of `v0.3.0`
 enumerated all five tools, and its Schema tab lists them, with no daemon
-anywhere. `tools/list` is **static metadata** the server answers from its own
-tool definitions; it never touches the socket.
+anywhere. Current builds also generate direct read-only query definitions from
+the local action catalogue and detected distro. `tools/list` still never touches
+the daemon socket.
 
 The empty `"tools": []` that prompted the wrong explanation meant something
 duller: no build had been run against the spec yet, so there was no inventory to
@@ -194,11 +195,14 @@ executed action lands in the signed chain. See
 So the split is between **describing** and **doing**:
 
 1. **Discovery works, and should.** `initialize` and `tools/list` are answered
-   from the binary's own definitions, so a sandbox sees all five tools with
-   correct schemas. Nothing is missing from the listing.
+   from the binary's own definitions, so a sandbox sees the five fixed tools and
+   the direct read-only queries compatible with the distro it detects (only
+   cross-distro queries if detection fails), all with schemas.
 2. **Every tool that needs the daemon fails there, and should.** `sysknife_plan`,
    `sysknife_execute`, `sysknife_history` and `sysknife_doctor` all reach
-   `sysknife-daemon` over a unix socket at `/run/sysknife/daemon.sock`
+   `sysknife-daemon` over a unix socket at `/run/sysknife/daemon.sock`; the
+   generated direct queries use the same socket and daemon authorization fence.
+   The socket is
    (`0750 sysknife:sysknife`), which holds the sudoers, polkit and helper policy
    `sudo make install` owns. In a container there is nothing listening, so
    `doctor` reports the socket absent and the rest return errors. That is the
@@ -207,7 +211,7 @@ So the split is between **describing** and **doing**:
 3. **stdio needs a wrapper.** Container-based hosts front the binary with a proxy
    (Glama uses `mcp-proxy --`). Strip that prefix while editing a build spec and
    the listing stops working.
-4. **A green sandbox run still proves little.** "It booted and listed five tools"
+4. **A green sandbox run still proves little.** "It booted and listed tools"
    says the binary starts and its schemas parse. It says nothing about whether
    SysKnife administers a real Ubuntu host correctly, because the only thing it
    could have administered was a throwaway container.
