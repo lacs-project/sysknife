@@ -431,15 +431,33 @@ struct JobResult {
 #[cfg(target_os = "linux")]
 const SO_PEERPIDFD: libc::c_int = 77;
 
+#[cfg(target_os = "linux")]
+enum PeerPin {
+    Pinned(OwnedFd),
+    Unsupported,
+    Unpinnable,
+}
+
+#[cfg(target_os = "linux")]
+impl PeerPin {
+    fn from_error(error: &std::io::Error) -> Self {
+        if error.raw_os_error() == Some(libc::ENOPROTOOPT) {
+            Self::Unsupported
+        } else {
+            Self::Unpinnable
+        }
+    }
+}
+
 /// Obtain a pidfd pinned to the process that opened this connection, via
 /// `SO_PEERPIDFD`. Unlike `pidfd_open(pid)`, this has no PID-based lookup and so
 /// no reuse race — the kernel pins the actual peer captured at `connect()`.
 ///
-/// Returns `None` when the kernel does not support the option (e.g. Ubuntu
-/// 22.04's 5.15 kernel), in which case the caller falls back to the best-effort
-/// `/proc/{pid}` path.
+/// Only `ENOPROTOOPT` means the kernel does not support the option (e.g.
+/// Ubuntu 22.04's 5.15 kernel). Other failures, including `EINVAL` for a
+/// reaped peer and fd exhaustion, must not enable the best-effort `/proc` path.
 #[cfg(target_os = "linux")]
-fn peer_pidfd(stream: &UnixStream) -> Option<OwnedFd> {
+fn peer_pidfd(stream: &UnixStream) -> PeerPin {
     let mut fd: libc::c_int = -1;
     let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
     // SAFETY: getsockopt writes at most `len` bytes into `fd` (a c_int) and
@@ -453,12 +471,48 @@ fn peer_pidfd(stream: &UnixStream) -> Option<OwnedFd> {
             &mut len,
         )
     };
-    if rc != 0 || fd < 0 {
-        return None;
+    if rc != 0 {
+        return PeerPin::from_error(&std::io::Error::last_os_error());
+    }
+    if fd < 0 {
+        return PeerPin::Unpinnable;
     }
     // SAFETY: getsockopt returned a fresh, owned fd; take sole ownership so it is
     // closed on drop.
-    Some(unsafe { OwnedFd::from_raw_fd(fd) })
+    PeerPin::Pinned(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// The pin is acquired before this function; the injected reader keeps the
+/// ordering and the unpinnable-peer case testable without forcing PID reuse.
+#[cfg(target_os = "linux")]
+fn groups_for_pinned_peer(
+    pid: u32,
+    pin: PeerPin,
+    read_groups: impl FnOnce() -> Vec<String>,
+) -> Vec<String> {
+    match pin {
+        PeerPin::Unsupported => read_groups(),
+        PeerPin::Unpinnable => {
+            eprintln!(
+                "[sysknife-daemon] WARNING: cannot pin peer PID {pid}; ignoring supplementary \
+                 groups and using the SO_PEERCRED primary GID only"
+            );
+            Vec::new()
+        }
+        PeerPin::Pinned(fd) => {
+            let groups = read_groups();
+            if pidfd_peer_still_live(&fd) {
+                groups
+            } else {
+                eprintln!(
+                    "[sysknife-daemon] WARNING: peer PID {pid} was reaped while resolving its \
+                     groups (possible PID reuse); ignoring supplementary groups and using the \
+                     SO_PEERCRED primary GID only"
+                );
+                Vec::new()
+            }
+        }
+    }
 }
 
 /// Returns `true` while the pinned peer process has not yet been reaped — i.e.
@@ -507,10 +561,24 @@ fn pidfd_peer_still_live(pidfd: &OwnedFd) -> bool {
 /// Linux 6.5+ (Ubuntu 24.04 / 26.04) we pin the peer with a pidfd via
 /// `peer_pidfd` and, after reading `/proc`, confirm the pinned process was not
 /// reaped during the read; if it was, the supplementary set is untrustworthy and
-/// is dropped, keeping only the race-free primary GID. On older kernels (e.g.
-/// Ubuntu 22.04) the pidfd is unavailable and the read is best-effort, as before
-/// — no worse than the previous behavior.
+/// is dropped, keeping only the race-free primary GID. Only `ENOPROTOOPT`
+/// disables the pin check and permits a best-effort read on older kernels
+/// (e.g. Ubuntu 22.04). Every other pin failure, including `EINVAL` for an
+/// already-reaped peer, skips the supplementary read and keeps the primary GID.
 pub fn resolve_caller(stream: &UnixStream) -> CallerAttribution {
+    // Pin before any /proc read. The kernel's peer identity does not depend on
+    // the PID lookup performed later, even if the peer has already exited.
+    resolve_caller_with_pin(
+        stream,
+        #[cfg(target_os = "linux")]
+        peer_pidfd(stream),
+    )
+}
+
+fn resolve_caller_with_pin(
+    stream: &UnixStream,
+    #[cfg(target_os = "linux")] pin: PeerPin,
+) -> CallerAttribution {
     let (pid, primary_gid, uid) = match stream.peer_cred() {
         Ok(cred) => {
             let pid = match cred.pid() {
@@ -538,30 +606,13 @@ pub fn resolve_caller(stream: &UnixStream) -> CallerAttribution {
         }
     };
 
-    // Pin the connecting peer *before* the /proc read so PID reuse can be
-    // detected afterward. None on kernels without SO_PEERPIDFD (< 6.5).
-    #[cfg(target_os = "linux")]
-    let peer_fd = peer_pidfd(stream);
-
     // Read /etc/group once and build a lookup map — avoids N+1 file reads when
     // a process has many supplementary groups (one read per GID in the old code).
     let gid_map = read_gid_map();
-    let mut groups = groups_for_pid(pid, &gid_map);
-
-    // If the pinned peer was reaped while we read /proc, its PID may have been
-    // recycled and the supplementary groups belong to a different process — drop
-    // them and fall back to the race-free primary GID only.
     #[cfg(target_os = "linux")]
-    if let Some(ref fd) = peer_fd {
-        if !pidfd_peer_still_live(fd) {
-            eprintln!(
-                "[sysknife-daemon] WARNING: peer PID {pid} was reaped while resolving its \
-                 groups (possible PID reuse); ignoring supplementary groups and using the \
-                 SO_PEERCRED primary GID only"
-            );
-            groups.clear();
-        }
-    }
+    let mut groups = groups_for_pinned_peer(pid, pin, || groups_for_pid(pid, &gid_map));
+    #[cfg(not(target_os = "linux"))]
+    let mut groups = groups_for_pid(pid, &gid_map);
 
     // Include the primary GID from SO_PEERCRED. It is not listed in the
     // supplementary Groups: line so must be resolved and added explicitly.
@@ -3298,14 +3349,54 @@ mod tests {
         let (a, _b) = UnixStream::pair().unwrap();
         // On kernels with SO_PEERPIDFD the pinned peer is this very test process,
         // which is obviously still alive, so the liveness check must return true.
-        // On older kernels peer_pidfd returns None and there is nothing to assert
-        // (the fallback path is exercised by `resolve_caller` below).
-        if let Some(fd) = peer_pidfd(&a) {
-            assert!(
+        // Only an unsupported option may take the compatibility path.
+        match peer_pidfd(&a) {
+            PeerPin::Pinned(fd) => assert!(
                 pidfd_peer_still_live(&fd),
                 "the connecting (self) process must read as live"
-            );
+            ),
+            PeerPin::Unsupported => {}
+            PeerPin::Unpinnable => panic!("a live peer must not silently lose its pin"),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn peer_pin_only_unsupported_option_allows_best_effort_groups() {
+        assert!(matches!(
+            PeerPin::from_error(&std::io::Error::from_raw_os_error(libc::ENOPROTOOPT)),
+            PeerPin::Unsupported
+        ));
+        for errno in [
+            libc::EINVAL,
+            libc::ESRCH,
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::EPERM,
+        ] {
+            let pin = PeerPin::from_error(&std::io::Error::from_raw_os_error(errno));
+            assert!(matches!(pin, PeerPin::Unpinnable), "errno {errno}");
+            let groups = groups_for_pinned_peer(123, pin, || {
+                panic!("an unpinnable peer must not read a potentially recycled PID")
+            });
+            assert_eq!(highest_role_from_groups(groups), CallerRole::Observer);
+        }
+        let groups = groups_for_pinned_peer(123, PeerPin::Unsupported, || {
+            vec!["sysknife-admin".to_string()]
+        });
+        assert_eq!(highest_role_from_groups(groups), CallerRole::Admin);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn unpinnable_peer_keeps_only_its_primary_group() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let cred = a.peer_cred().unwrap();
+        let gid_map = read_gid_map();
+        let expected = highest_role_from_groups(gid_map.get(&cred.gid()));
+        let caller = resolve_caller_with_pin(&a, PeerPin::Unpinnable);
+        assert_eq!(caller.role(), expected);
+        assert_eq!(caller.principal(), CallerPrincipal::Uid(cred.uid()));
     }
 
     /// The uid must come from the kernel, not from anything the peer says. A

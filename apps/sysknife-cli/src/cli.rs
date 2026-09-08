@@ -48,7 +48,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// Hard timeout in seconds; abort the whole operation after this.
+    /// Stop waiting in the CLI after this many seconds; daemon work may continue.
     #[arg(long, value_name = "SECS", global = true)]
     pub timeout: Option<u64>,
 

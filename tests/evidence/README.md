@@ -57,7 +57,9 @@ Two things this cost, worth stating because both are easy to repeat:
 
 ## `workspace-tests.json`
 
-Suite sizes, one field per suite, each written by the command that measured it:
+Suite sizes, one field per suite, are the only claims in this artifact. Schema
+version 2 also records the canonical command string for each field. Readers reject
+other versions and extra top-level fields:
 
 ```sh
 UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh              # Rust workspace
@@ -67,6 +69,11 @@ UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh --frontend   # vitest
 Without `UPDATE_TEST_BASELINE` those commands *verify* instead, and they are what
 CI runs in place of the bare test commands — so a suite that grows without the
 baseline moving fails in the job that knows the real number.
+
+`workspace-tests.json` stores the expected count for each suite and the canonical
+command that measures it. Verification re-runs the suite on the current
+checkout and requires the observed count to match. It makes no historical claim
+about a Git commit or measurement timestamp.
 
 ## `story-runs/*.json`
 

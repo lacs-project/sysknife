@@ -478,13 +478,8 @@ async function collectTarget(rl, lineQueue, idx) {
       ok(`Daemon socket reachable: ${socket}`);
     } else if (reachable === false) {
       warn(`Daemon socket not reachable: ${socket}`);
-      // A socket under /run/user/<uid> belongs to the user service; telling
-      // someone to `sudo systemctl start` it sends them to a unit that does
-      // not exist on their machine.
-      step(socket.includes('/run/user/')
-        ? `Start the daemon:  systemctl --user start sysknife-daemon`
-        : `Start the daemon:  sudo systemctl start sysknife-daemon`);
-      step(`       or build:   cargo run -p sysknife-daemon`);
+      // Installation has not happened yet. Defer commands until its outcome
+      // tells us which service, if any, exists.
     }
   }
 
@@ -509,7 +504,7 @@ async function collectTarget(rl, lineQueue, idx) {
 // Next-step hint for a single target
 // ---------------------------------------------------------------------------
 
-function targetNextStep(target) {
+function targetNextStep(target, daemonInstall) {
   const { socket, name } = target;
   const label = name ? `${name} (${socket})` : socket;
 
@@ -524,18 +519,17 @@ function targetNextStep(target) {
 
   if (socket.startsWith('vsock://')) {
     step(`Start daemon in ${label} guest:  sudo systemctl start sysknife-daemon`);
-  } else if (socket === userServiceSocket) {
-    // Default: a per-user daemon managed by a `systemctl --user` unit.
-    step('Start the daemon:  systemctl --user enable --now sysknife-daemon');
-    step('              or:  cargo run -p sysknife-daemon');
   } else if (!localSockets.has(socket)) {
     // Likely an SSH tunnel socket — remind user to open the tunnel
     step(`Open SSH tunnel for ${label}:  ssh -fN -L ${socket}:/run/sysknife/daemon.sock <user>@<host>`);
     step(`Then start the daemon in the guest:  sudo systemctl start sysknife-daemon`);
-  } else {
-    step('Start the daemon:  sudo systemctl start sysknife-daemon');
+  } else if (socket === userServiceSocket
+      && daemonInstall?.mode === 'user' && daemonInstall.daemonInstalled) {
+    step('Start the daemon:  systemctl --user enable --now sysknife-daemon');
     step('              or:  cargo run -p sysknife-daemon');
   }
+  // System, skipped and no-systemd installs supply their own manual steps in
+  // the outstanding-steps block; a socket path alone does not establish a unit.
 }
 
 // ---------------------------------------------------------------------------
@@ -623,7 +617,7 @@ async function main() {
     const existing = process.env[envVar];
     if (existing) {
       ok(`${envVar} already set in environment — will not embed in config files`);
-    } else {
+    } else if (!NO_PROMPTS) {
       console.log();
       console.log(`  ${Y}Note:${X} The key will be stored in plain text in the generated config files.`);
       console.log(`  Leave blank to set ${envVar} in your shell profile instead.`);
@@ -884,7 +878,7 @@ async function main() {
   // ── Daemon service install ────────────────────────────────────────────────
   //
   // Offer to install the systemd service now that the binary is in place.
-  // The user may skip; they can always run `systemctl --user enable sysknife-daemon` later.
+  // A skipped install leaves manual steps, not an installed service unit.
 
   const daemonBinPath = binaryPath.replace(/\/sysknife$/, '/sysknife-daemon');
   const daemonInstall = await installDaemonService({
@@ -908,7 +902,10 @@ async function main() {
       ok(`Daemon socket reachable: ${firstLocalSocket.socket}`);
     } else if (daemonSocketReachable === false) {
       warn(`Daemon socket not reachable after 6s: ${firstLocalSocket.socket}`);
-      step('Check it with:  systemctl --user status sysknife-daemon');
+      if (firstLocalSocket.socket === runtimeSocketPath()
+          && daemonInstall?.mode === 'user' && daemonInstall.daemonInstalled) {
+        step('Check it with:  systemctl --user status sysknife-daemon');
+      }
     }
   }
 
@@ -952,7 +949,7 @@ async function main() {
   }
 
   for (const t of targets) {
-    targetNextStep(t);
+    targetNextStep(t, daemonInstall);
   }
 
   console.log();

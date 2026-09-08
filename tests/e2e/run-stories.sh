@@ -155,6 +155,15 @@ declare -A STORY_FAMILY
 ALL_STORY_IDS=()
 UBUNTU_STORY_IDS=()
 
+# Closed per-word tag vocabulary (#390). An unrecognised word exits like an
+# unparseable header, naming the file: a typo in one header must not silently
+# move a story between families and change every derived count. The inventory
+# this was settled against is every distinct tag word in tests/e2e/stories.
+STORY_TAG_VOCAB=(
+    ubuntu destructive medium-risk high-risk read-only low-risk
+    rejection compound "hard compound"
+)
+
 for _story_file in "$STORY_DIR"/story-*.sh; do
     [ -f "$_story_file" ] || continue
     _header="$(sed -n '2p' "$_story_file")"
@@ -169,6 +178,45 @@ for _story_file in "$STORY_DIR"/story-*.sh; do
         # derived sets without a word, which is the failure this replaced.
         printf 'ERROR: unparseable story header in %s: %s\n' "$_story_file" "$_header" >&2
         exit 1
+    fi
+    # The tag vocabulary is closed: anything not listed here fails the run.
+    # Only the substring `ubuntu` ever decided the family, so a typo like
+    # `ubunut` silently moved a story from the ubuntu family (run by the
+    # documented suite) into the atomic family (run by default with
+    # SYSKNIFE_ALLOW_DESTRUCTIVE=1). An empty tag string — a header with no
+    # parenthesized field, which many atomic stories carry — is valid atomic.
+    #
+    # The vocabulary is per comma-separated word, not per whole string: a new
+    # story tagged `(ubuntu, destructive)` is a combination that does not
+    # exist in the tree today and is perfectly meaningful, and a whole-string
+    # whitelist would fail it in CI until somebody edited a `case` arm (#390).
+    # The words are historical labels, not a redesigned schema, and they are
+    # not one semantic dimension: `ubuntu` is family metadata,
+    # `read-only` / `medium-risk` / `high-risk` follow the execution/risk
+    # convention from #219, atomic `destructive` names the host-changing gated
+    # subset (not ActionSpec `high-risk`), `rejection` marks a negative
+    # planner-behavior test, and `compound` / `hard compound` are scenario
+    # labels. `low-risk` stays distinct from `read-only` as legacy vocabulary:
+    # story 55 asserts risk `low` for AptUpdate, which mutates host state, so
+    # it is not a spelling of `read-only` and must not be normalized into one.
+    if [[ -n "$_tags" ]]; then
+        IFS=',' read -r -a _tag_parts <<< "$_tags"
+        for _tag in "${_tag_parts[@]}"; do
+            _tag="${_tag#"${_tag%%[![:space:]]*}"}"
+            _tag="${_tag%"${_tag##*[![:space:]]}"}"
+            _tag_known=false
+            for _vocab in "${STORY_TAG_VOCAB[@]}"; do
+                if [[ "$_tag" == "$_vocab" ]]; then
+                    _tag_known=true
+                    break
+                fi
+            done
+            if [[ "$_tag_known" != true ]]; then
+                printf 'ERROR: %s: unrecognised story tag %q (vocabulary: %s)\n' \
+                    "$_story_file" "$_tag" "${STORY_TAG_VOCAB[*]}" >&2
+                exit 1
+            fi
+        done
     fi
     STORY_NAMES[$_id]="$_title"
     if [[ "$_tags" == *ubuntu* ]]; then

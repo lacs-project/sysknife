@@ -616,16 +616,26 @@ impl TransactionStore {
             ))?;
         let mut conn = self.connection()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let revoked = Self::revoke_unconsumed_approval_in_tx(&tx, key, transaction_id)?;
+        tx.commit()?;
+        Ok(revoked)
+    }
+
+    fn revoke_unconsumed_approval_in_tx(
+        conn: &Connection,
+        key: &AuditKey,
+        transaction_id: &str,
+    ) -> Result<bool, TransactionStoreError> {
         // Capture the digest before the DELETE: the event has to name which
         // receipt was retracted, and after the delete there is nothing to name.
         let digest: Option<String> = query_optional(
-            &tx,
+            conn,
             "SELECT receipt_digest FROM transaction_approvals \
              WHERE transaction_id = ?1 AND consumed_at IS NULL",
             params![transaction_id],
             |row| row.get(0),
         )?;
-        let rows_affected = tx.execute(
+        let rows_affected = conn.execute(
             "DELETE FROM transaction_approvals \
              WHERE transaction_id = ?1 AND consumed_at IS NULL",
             params![transaction_id],
@@ -637,14 +647,13 @@ impl TransactionStore {
                 ))
             })?;
             Self::append_event(
-                &tx,
+                conn,
                 key,
                 AuditEventKind::ApprovalRevoked,
                 transaction_id,
                 &digest,
             )?;
         }
-        tx.commit()?;
         Ok(rows_affected > 0)
     }
 
@@ -713,18 +722,41 @@ impl TransactionStore {
     /// `cleanup_stale_queued_does_not_clobber_running_rows` regression test
     /// in `tests/coverage_gaps.rs` pins this guarantee.
     pub fn cleanup_stale_queued(&self) -> Result<u64, TransactionStoreError> {
-        let conn = self.connection()?;
+        let key = self
+            .audit_key
+            .as_ref()
+            .ok_or(TransactionStoreError::AuditChainMissing(
+                "this TransactionStore was opened read-only; cannot clean up",
+            ))?;
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let canceled_json = serialize_field(&JobState::Canceled)?;
         let queued_json = serialize_field(&JobState::Queued)?;
-        let rows_affected = conn.execute(
-            &format!(
-                "UPDATE transactions SET status = ?1 \
-                 WHERE status = ?2 \
+        let stale_ids: Vec<String> = {
+            let mut statement = tx.prepare(&format!(
+                "SELECT transaction_id FROM transactions \
+                 WHERE status = ?1 \
                    AND julianday(created_at) <= julianday('now', '-{APPROVAL_RECEIPT_TTL_MINUTES} minutes')"
-            ),
-            params![canceled_json, queued_json],
-        )?;
-        Ok(rows_affected as u64)
+            ))?;
+            let stale_ids = statement
+                .query_map(params![queued_json], |row| row.get(0))?
+                .collect::<Result<_, _>>()?;
+            stale_ids
+        };
+        let mut canceled = 0;
+        for transaction_id in stale_ids {
+            let rows_affected = tx.execute(
+                "UPDATE transactions SET status = ?1 \
+                 WHERE transaction_id = ?2 AND status = ?3",
+                params![canceled_json, transaction_id, queued_json],
+            )?;
+            if rows_affected > 0 {
+                Self::revoke_unconsumed_approval_in_tx(&tx, key, &transaction_id)?;
+                canceled += rows_affected;
+            }
+        }
+        tx.commit()?;
+        Ok(canceled as u64)
     }
 
     /// Cancel one still-`Queued` transaction (`Queued → Canceled`). Returns
@@ -736,14 +768,25 @@ impl TransactionStore {
     /// a `Canceled` record. Missing or already-terminal transactions return
     /// `false`.
     pub fn cancel_queued(&self, transaction_id: &str) -> Result<bool, TransactionStoreError> {
-        let conn = self.connection()?;
+        let key = self
+            .audit_key
+            .as_ref()
+            .ok_or(TransactionStoreError::AuditChainMissing(
+                "this TransactionStore was opened read-only; cannot cancel",
+            ))?;
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let canceled_json = serialize_field(&JobState::Canceled)?;
         let queued_json = serialize_field(&JobState::Queued)?;
-        let rows_affected = conn.execute(
+        let rows_affected = tx.execute(
             "UPDATE transactions SET status = ?1 \
              WHERE transaction_id = ?2 AND status = ?3",
             params![canceled_json, transaction_id, queued_json],
         )?;
+        if rows_affected > 0 {
+            Self::revoke_unconsumed_approval_in_tx(&tx, key, transaction_id)?;
+        }
+        tx.commit()?;
         Ok(rows_affected > 0)
     }
 
@@ -2436,6 +2479,43 @@ mod tests {
             !store.cancel_queued("no-such-transaction").unwrap(),
             "a missing transaction is not cancelable"
         );
+        assert!(
+            store.fetch_event_rows().unwrap().is_empty(),
+            "canceling an unapproved transaction must not append an approval event"
+        );
+    }
+
+    #[test]
+    fn cancel_queued_revokes_an_unconsumed_approval_and_appends_event() {
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let tx = store.record(queued_transaction()).unwrap();
+        let receipt = store
+            .approve_transaction(&tx.transaction_id)
+            .unwrap()
+            .expect("queued transaction is approvable");
+        let digest = audit_chain::approval_receipt_digest(&receipt);
+
+        assert!(store.cancel_queued(&tx.transaction_id).unwrap());
+        assert_eq!(
+            store.get(&tx.transaction_id).unwrap().unwrap().status,
+            JobState::Canceled
+        );
+        assert!(
+            !store
+                .claim_approved_for_execution(&tx.transaction_id, &digest)
+                .unwrap(),
+            "canceling must revoke the unconsumed receipt"
+        );
+        assert_eq!(
+            store
+                .fetch_event_rows()
+                .unwrap()
+                .iter()
+                .map(|event| event.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["approval_granted", "approval_revoked"]
+        );
     }
 
     #[test]
@@ -2650,6 +2730,64 @@ mod tests {
         // The fresh record should still be Queued.
         let fresh_record = store.get(&fresh.transaction_id).unwrap().unwrap();
         assert_eq!(fresh_record.status, JobState::Queued);
+    }
+
+    #[test]
+    fn cleanup_stale_queued_revokes_every_unconsumed_approval() {
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let transactions: Vec<_> = (0..3)
+            .map(|_| {
+                let transaction = store.record(queued_transaction()).unwrap();
+                store
+                    .approve_transaction(&transaction.transaction_id)
+                    .unwrap()
+                    .expect("stale transaction is approvable");
+                transaction
+            })
+            .collect();
+
+        let conn = store.connection().unwrap();
+        for transaction in &transactions {
+            conn.execute(
+                "UPDATE transactions \
+                 SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-20 minutes') \
+                 WHERE transaction_id = ?1",
+                params![transaction.transaction_id],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(store.cleanup_stale_queued().unwrap(), 3);
+        for transaction in &transactions {
+            assert_eq!(
+                store
+                    .get(&transaction.transaction_id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                JobState::Canceled
+            );
+            assert!(!store
+                .revoke_unconsumed_approval(&transaction.transaction_id)
+                .unwrap());
+        }
+        assert_eq!(
+            store
+                .fetch_event_rows()
+                .unwrap()
+                .iter()
+                .map(|event| event.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "approval_granted",
+                "approval_granted",
+                "approval_granted",
+                "approval_revoked",
+                "approval_revoked",
+                "approval_revoked"
+            ]
+        );
     }
 
     // ── State-machine validation tests ──────────────────────────────────────

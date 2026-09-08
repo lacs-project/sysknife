@@ -11,6 +11,9 @@ pub enum CliError {
     #[error("execution failed: {0}")]
     ExecutionFailed(String),
 
+    #[error("operation timed out after {0}s")]
+    TimedOut(u64),
+
     #[error("planning failed: {0}")]
     PlanningFailed(String),
 
@@ -92,7 +95,7 @@ impl CliError {
             | Self::NonInteractive
             | Self::UnattendedConsentMissing(_)
             | Self::ApprovalNeedsTerminal => 1,
-            Self::ExecutionFailed(_) => 2,
+            Self::ExecutionFailed(_) | Self::TimedOut(_) => 2,
             Self::PlanningFailed(_) => 3,
             Self::ConfigOrDaemon(_) => 4,
             Self::Exit(code) => *code,
