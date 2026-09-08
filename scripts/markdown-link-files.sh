@@ -36,6 +36,13 @@ while IFS= read -r path || [[ -n "$path" ]]; do
     exclusions+=("$path")
 done < "$exclusions_file"
 
+file_list="$(mktemp)"
+trap 'rm -f "$file_list"' EXIT
+if ! git -C "$repo_root" ls-files -z -- '*.md' > "$file_list"; then
+    printf 'markdown-link-files: failed to enumerate tracked Markdown files\n' >&2
+    exit 1
+fi
+count=0
 while IFS= read -r -d '' path; do
     skip=false
     for excluded in "${exclusions[@]}"; do
@@ -44,5 +51,12 @@ while IFS= read -r -d '' path; do
             break
         fi
     done
-    [[ "$skip" == true ]] || printf '%s\0' "$path"
-done < <(git -C "$repo_root" ls-files -z -- '*.md')
+    if [[ "$skip" != true ]]; then
+        printf '%s\0' "$path"
+        count=$((count + 1))
+    fi
+done < "$file_list"
+if [[ "$count" -eq 0 ]]; then
+    printf 'markdown-link-files: no tracked Markdown files to check\n' >&2
+    exit 1
+fi
