@@ -15,7 +15,7 @@
  * pick it up automatically.
  */
 
-/** Providers the wizard prompts for. Index 0 (`openai`) is the default. */
+/** Providers in display order; this also breaks ties between configured keys. */
 const PROVIDERS = [
   'openai',
   'anthropic',
@@ -58,4 +58,11 @@ const API_KEY_VARS = {
   xai:      'XAI_API_KEY',
 };
 
-module.exports = { PROVIDERS, MODEL_DEFAULTS, API_KEY_VARS };
+/** Choose a suggestion without contacting providers or exposing key values. */
+function defaultProvider(env) {
+  const explicit = env.SYSKNIFE_LLM_PROVIDER?.trim();
+  if (explicit) return explicit.toLowerCase();
+  return PROVIDERS.find(p => API_KEY_VARS[p] && env[API_KEY_VARS[p]]?.trim()) ?? 'ollama';
+}
+
+module.exports = { PROVIDERS, MODEL_DEFAULTS, API_KEY_VARS, defaultProvider };
