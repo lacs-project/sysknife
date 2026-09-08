@@ -66,6 +66,7 @@ run_case() {
         PATH="$fake_bin:$PATH" \
         SYSKNIFE_LLM_MODEL=fixture \
         SYSKNIFE_LLM_PROVIDER=ollama \
+        SYSKNIFE_ALLOW_DESTRUCTIVE=0 \
         SYSKNIFE_STORY_DELAY=0 \
         SYSKNIFE_STORY_DELAY_SECS=0 \
         SYSKNIFE_STORY_TIMEOUT=30 \
@@ -199,13 +200,24 @@ dev_socket="$dev_root/daemon.sock"
 touch "$dev_socket"
 sed -i "s|SOCKET_PATH=\"/tmp/sysknife-daemon.sock\"|SOCKET_PATH=\"$dev_socket\"|" \
     "$dev_runner"
-write_story "$dev_e2e/stories" story- 1 pass
+for story_file in "$repo_root"/tests/e2e/stories/story-*.sh; do
+    story_name="${story_file##*/}"
+    story_id="${story_name#story-}"
+    story_id="${story_id%.sh}"
+    write_story "$dev_e2e/stories" story- "$story_id" pass
+done
 write_story "$dev_e2e/stories" story- 2 skip
 write_story "$dev_e2e/stories" story- 3 silent
 
 run_case 'dev-stories rejects SKIP' 1 "$dev_runner" 1 2
 run_case 'dev-stories rejects an unmarked zero exit' 1 "$dev_runner" 3
 run_case 'dev-stories accepts an explicit PASS' 0 "$dev_runner" 1
+
+write_story "$dev_e2e/stories" story- 2 pass
+write_story "$dev_e2e/stories" story- 3 pass
+write_story "$dev_e2e/stories" story- 28 skip
+run_case 'dev-stories default set accepts portable stories' 0 "$dev_runner"
+assert_output_not_contains 'dev-stories default set omits Fedora-only story 28' 'Story 28'
 
 if [[ "$failures" -ne 0 ]]; then
     printf '\n%d story-runner verdict failure(s).\n' "$failures" >&2

@@ -1,0 +1,13 @@
+# External URLs remain checked in the documents covered before issue #372.
+# Keeping this bounded avoids multiplying network requests and CI flakiness as
+# the derived internal-link set grows.
+README.md
+CONTRIBUTING.md
+SECURITY.md
+CODE_OF_CONDUCT.md
+ROADMAP.md
+docs/architecture.md
+docs/developer-guide.md
+docs/adr/0001-system-boundaries.md
+docs/adr/0002-brain-provider-layer.md
+docs/adr/0003-ipc-wire-protocol.md

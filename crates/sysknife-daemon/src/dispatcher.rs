@@ -1833,6 +1833,25 @@ async fn handle_query_action(
         .await;
     }
 
+    // Risk answers how much authorization an action needs; it does not prove
+    // that an action is read-only. `AptUpdate`, for example, is Low/Observer but
+    // runs `sudo apt-get update`, writes the root apt index and takes the dpkg
+    // lock. The shared catalogue exception keeps this raw IPC path aligned with
+    // the generated MCP surface instead of letting direct clients bypass the
+    // preview, receipt and exclusion gates.
+    if crate::actions::OBSERVER_MUTATING_ACTIONS.contains(&action_name) {
+        return send_error(
+            framed,
+            request_id,
+            "authorization_failure",
+            format!(
+                "{action_name} mutates the host and is not available through query_action; \
+                 use preview+execute instead"
+            ),
+        )
+        .await;
+    }
+
     // Same fence preview and execute apply. Without it a Fedora-only read-only
     // action reached the executor on a Debian host and failed as "rpm-ostree:
     // No such file or directory" — an execution error where the other paths

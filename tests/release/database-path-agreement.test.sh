@@ -41,7 +41,7 @@ js_path="$(HOME=/home/testuser node -e "
 
 # The daemon's answer, read out of the source rather than executed, so this stays
 # a fast host-side check that needs no build.
-rs_suffix="$(grep -oE '"\.local/state/sysknife/daemon\.sqlite"|"\.local/share/sysknife/daemon\.sqlite"' "$core_rs" | head -1 | tr -d '"')"
+rs_suffix="$(grep -oE '"\.local/state/sysknife/daemon\.sqlite"|"\.local/share/sysknife/daemon\.sqlite"' "$core_rs" | head -1 | tr -d '"' || true)"
 if [ -z "$rs_suffix" ]; then
     printf 'FAIL: could not find the fallback database path in %s.\n' "$core_rs" >&2
     printf '      default_database_path() changed shape; update this guard rather than deleting it.\n' >&2

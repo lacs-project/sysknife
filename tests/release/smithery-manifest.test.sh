@@ -45,7 +45,7 @@ if grep -qE '^[[:space:]]*runtime:' "$manifest"; then
     fail 'smithery.yaml declares a runtime; hosted runtimes need Streamable HTTP and a daemonless container cannot serve SysKnife'
 fi
 
-start_type="$(grep -A2 '^startCommand:' "$manifest" | grep -oP '^\s*type:\s*"?\K[a-z]+' | head -1)"
+start_type="$(grep -A2 '^startCommand:' "$manifest" | grep -oP '^\s*type:\s*"?\K[a-z]+' | head -1 || true)"
 [[ "$start_type" == "stdio" ]] \
     || fail "startCommand.type is '${start_type:-<missing>}', expected stdio"
 
@@ -56,7 +56,7 @@ grep -q 'commandFunction:' "$manifest" \
 grep -q "command: *'sysknife'" "$manifest" \
     || fail "commandFunction does not spawn the 'sysknife' binary"
 
-subcommand="$(grep -oP "args: *\[ *'\K[a-z-]+" "$manifest" | head -1)"
+subcommand="$(grep -oP "args: *\[ *'\K[a-z-]+" "$manifest" | head -1 || true)"
 [[ -n "$subcommand" ]] || fail 'commandFunction passes no subcommand'
 
 # Cross-check against the CLI itself: #[command(name = "mcp-server")] is the

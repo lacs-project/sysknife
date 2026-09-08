@@ -29,8 +29,8 @@ failures=0
 report() { printf 'FAIL  %s\n' "$1" >&2; failures=$((failures + 1)); }
 
 # The code fact. An empty line number is a failure, not a pass over nothing.
-hash_line="$(grep -n 'let request_hash = compute_request_hash(' "$dispatcher" | head -1 | cut -d: -f1)"
-redact_line="$(grep -n 'let redacted_params = redact_params(' "$dispatcher" | head -1 | cut -d: -f1)"
+hash_line="$(grep -n 'let request_hash = compute_request_hash(' "$dispatcher" | head -1 | cut -d: -f1 || true)"
+redact_line="$(grep -n 'let redacted_params = redact_params(' "$dispatcher" | head -1 | cut -d: -f1 || true)"
 
 if [ -z "$hash_line" ] || [ -z "$redact_line" ]; then
     printf 'FAIL: cannot locate compute_request_hash / redact_params in %s\n' "$dispatcher" >&2
