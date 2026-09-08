@@ -63,4 +63,63 @@ grep -Fq 'excluded path is not a tracked Markdown file: docs/missing.md' <<< "$o
     exit 1
 }
 
+# Remove exclusions so a failed enumeration reaches git ls-files itself.
+: > "$fixture/scripts/markdown-link-exclusions.txt"
+mv "$fixture/.git" "$fixture/git-backup"
+if output="$("$fixture/scripts/markdown-link-files.sh" 2>&1)"; then
+    printf 'markdown-link-files: failed git enumeration unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'markdown-link-files' <<< "$output"
+mv "$fixture/git-backup" "$fixture/.git"
+
+git -C "$fixture" rm --cached -q -- '*.md'
+if output="$("$fixture/scripts/markdown-link-files.sh" 2>&1)"; then
+    printf 'markdown-link-files: empty derived set unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq 'markdown-link-files' <<< "$output"
+
+# Exercise the real consumer bodies with an offline checker and producer.
+python3 - "$repo_root" "$fixture" <<'PYTEST'
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+root, fixture = map(Path, sys.argv[1:])
+local = (root / "scripts/ci-local.sh").read_text()
+body = re.search(r"hygiene_markdown_link_check\(\) \(\n(.*?)\n\)", local, re.S).group(1)
+workflow = (root / ".github/workflows/ci.yml").read_text()
+bodies = {"local": body}
+for kind in ("internal", "external"):
+    match = re.search(r"      - name: Check " + kind + r" markdown links\n        run: \|\n(.*?)(?=\n      - name:)", workflow, re.S)
+    bodies[kind] = "\n".join(line[10:] for line in match.group(1).splitlines())
+bin_dir = fixture / "bin"
+bin_dir.mkdir()
+checker = bin_dir / "markdown-link-check"
+checker.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "${@: -1}" >> "$CHECK_LOG"\n')
+checker.chmod(0o755)
+env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ["PATH"], CHECK_LOG=str(fixture / "checked"))
+producer = fixture / "scripts/markdown-link-files.sh"
+for scenario, script in {
+    "failed": "exit 1",
+    "empty": "exit 0",
+    "partial failure": "printf 'README.md\\0'; exit 1",
+    "valid": "printf 'README.md\\0docs/a guide.md\\0'",
+}.items():
+    producer.write_text("#!/usr/bin/env bash\n" + script + "\n")
+    for name, body in bodies.items():
+        log = fixture / "checked"
+        log.unlink(missing_ok=True)
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", 'repo_root="$1"\n' + body, "consumer", str(fixture)], cwd=fixture, env=env, capture_output=True, text=True)
+        if scenario != "valid":
+            assert result.returncode != 0, f"{name} consumer accepted {scenario} producer"
+        else:
+            assert result.returncode == 0, (name, result.stderr)
+            expected = ["README.md", "docs/a guide.md"] * (2 if name == "local" else 1)
+            assert log.read_text().splitlines() == expected, f"{name} consumer did not check every file"
+PYTEST
+
 printf 'markdown-link-files: derived files and exclusions validated.\n'
