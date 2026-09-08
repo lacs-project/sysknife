@@ -145,12 +145,22 @@ jobs:
 
       - name: Check internal markdown links
         run: |
+          file_list="$(mktemp)"
+          trap 'rm -f "$file_list"' EXIT
+          scripts/markdown-link-files.sh > "$file_list" || exit 1
+          count=0
           while IFS= read -r -d '' file; do
             markdown-link-check --config .markdown-link-check-internal.json "$file"
-          done < <(scripts/markdown-link-files.sh)
+            count=$((count + 1))
+          done < "$file_list"
+          [[ "$count" -gt 0 ]] || { printf 'markdown-link-files: no files checked\n' >&2; exit 1; }
 
       - name: Check external markdown links
         run: |
+          file_list="$(mktemp)"
+          trap 'rm -f "$file_list"' EXIT
+          scripts/markdown-link-files.sh --external > "$file_list" || exit 1
+          count=0
           while IFS= read -r -d '' file; do
             # Retry on transient network failure. `retryOn429` in the config only
             # covers rate limiting, and the failures actually seen here were
@@ -172,7 +182,9 @@ jobs:
               echo "link check for $file failed (attempt $attempt/3); retrying in 10s"
               sleep 10
             done
-          done < <(scripts/markdown-link-files.sh --external)
+            count=$((count + 1))
+          done < "$file_list"
+          [[ "$count" -gt 0 ]] || { printf 'markdown-link-files: no files checked\n' >&2; exit 1; }
 
       - name: Lint GitHub issue templates
         run: yamllint .github/ISSUE_TEMPLATE/*.yml .github/workflows/*.yml
