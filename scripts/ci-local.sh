@@ -236,12 +236,22 @@ hygiene_markdownlint() (
 
 hygiene_markdown_link_check() (
     cd "$repo_root" || exit 1
+    file_list="$(mktemp)"
+    trap 'rm -f "$file_list"' EXIT
+    scripts/markdown-link-files.sh > "$file_list" || exit 1
+    count=0
     while IFS= read -r -d '' f; do
         markdown-link-check --config .markdown-link-check-internal.json "$f" || exit 1
-    done < <(scripts/markdown-link-files.sh)
+        count=$((count + 1))
+    done < "$file_list"
+    [[ "$count" -gt 0 ]] || { printf 'markdown-link-files: no files checked\n' >&2; exit 1; }
+    scripts/markdown-link-files.sh --external > "$file_list" || exit 1
+    count=0
     while IFS= read -r -d '' f; do
         markdown-link-check --config .markdown-link-check.json "$f" || exit 1
-    done < <(scripts/markdown-link-files.sh --external)
+        count=$((count + 1))
+    done < "$file_list"
+    [[ "$count" -gt 0 ]] || { printf 'markdown-link-files: no files checked\n' >&2; exit 1; }
 )
 
 hygiene_yamllint() (
