@@ -17,7 +17,7 @@ function runWizard({ daemonMode = 'skip', daemonInstall, cwd: suppliedCwd, env =
   const ownsCwd = suppliedCwd === undefined;
   const entry = path.join(setupDir, 'index.js');
   const setupArgs = ['--claude', '--no-prompts', '--no-binary', `--daemon-mode=${daemonMode}`];
-  const childEnv = { ...process.env, HOME: cwd, ...env };
+  const childEnv = { ...process.env, HOME: cwd, XDG_RUNTIME_DIR: cwd, OPENAI_API_KEY: '', ...env };
   const bootstrap = [
     "if (typeof process.getuid !== 'function') process.getuid = () => 1000;",
   ];
@@ -233,3 +233,63 @@ test(
     }
   },
 );
+
+for (const mode of ['system', 'skip', 'none']) {
+  test(`next steps for ${mode} do not claim a user service was installed`, () => {
+    const manualSteps = mode === 'system'
+      ? ['sudo make install', 'sudo systemctl enable --now sysknife-daemon']
+      : ['Start manually:  /fixture/sysknife-daemon'];
+    const result = runWizard({
+      daemonMode: mode === 'none' ? 'skip' : mode,
+      daemonInstall: { mode, daemonInstalled: false, manualSteps },
+    });
+    const output = `${result.stdout}${result.stderr}`;
+    assert.equal(result.status, 3, output);
+    assert.doesNotMatch(output, /systemctl --user (?:start|enable|status)/);
+    if (mode !== 'system') assert.doesNotMatch(output, /sudo systemctl/);
+    for (const command of manualSteps) assert.ok(output.includes(command), output);
+  });
+}
+
+test('an installed user service retains its start and status guidance', () => {
+  const result = runWizard({
+    daemonMode: 'user',
+    daemonInstall: { mode: 'user', daemonInstalled: true, manualSteps: [] },
+  });
+  const output = `${result.stdout}${result.stderr}`;
+  assert.equal(result.status, 0, output);
+  assert.match(output, /systemctl --user enable --now sysknife-daemon/);
+  assert.match(output, /systemctl --user status sysknife-daemon/);
+  assert.doesNotMatch(output, /sudo systemctl/);
+});
+
+test('unattended key setup explains the missing environment key without offering a prompt', () => {
+  const result = runWizard({
+    daemonInstall: { mode: 'skip', daemonInstalled: false, manualSteps: ['Start manually: fixture'] },
+  });
+  const output = `${result.stdout}${result.stderr}`;
+  assert.equal(result.status, 3, output);
+  assert.doesNotMatch(output, /The key will be stored in plain text|Leave blank to set/);
+  assert.match(output, /export OPENAI_API_KEY=your-key-here/);
+});
+
+test('unattended setup keeps a supplied environment key out of generated config and output', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-setup-env-key-'));
+  const fixtureKey = 'synthetic-key-for-wizard-test';
+  try {
+    const result = runWizard({
+      cwd,
+      env: { OPENAI_API_KEY: fixtureKey },
+      daemonInstall: { mode: 'skip', daemonInstalled: false, manualSteps: ['Start manually: fixture'] },
+    });
+    const output = `${result.stdout}${result.stderr}`;
+    const config = fs.readFileSync(path.join(cwd, '.mcp.json'), 'utf8');
+    assert.equal(result.status, 3, output);
+    assert.match(output, /OPENAI_API_KEY already set in environment/);
+    assert.doesNotMatch(output, /Leave blank to set|export OPENAI_API_KEY=your-key-here/);
+    assert.ok(!output.includes(fixtureKey), output);
+    assert.ok(!config.includes(fixtureKey), config);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});

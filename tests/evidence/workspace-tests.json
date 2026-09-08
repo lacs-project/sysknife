@@ -3,15 +3,7 @@
     "frontend_tests": "vitest run (apps/sysknife-shell)",
     "tests": "cargo nextest run --workspace --locked"
   },
-  "commit": {
-    "frontend_tests": "656b399035ee5fc81bd949e871daee65b4a1f3c4",
-    "tests": "5bef5e6c48f73d23d10404b72901be9a920bc46f"
-  },
   "frontend_tests": 72,
-  "measured_at": {
-    "frontend_tests": "2026-08-05T09:23:15-06:00",
-    "tests": "2026-09-07T14:24:31-06:00"
-  },
   "tests": 1845,
-  "version": 1
+  "version": 2
 }

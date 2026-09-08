@@ -115,6 +115,12 @@ UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh
 grep -rn 'Rust tests' README.md docs/introduction.md docs/distro-support.md
 ```
 
+`workspace-tests.json` stores the expected count for each suite and the canonical
+command that measures it. Verification re-runs the suite on the current
+checkout and requires the observed count to match. It makes no historical claim
+about a Git commit or measurement timestamp. Do not add provenance metadata by
+hand.
+
 `cargo-nextest` itself needs no system packages. If it is the missing piece,
 install it directly:
 
