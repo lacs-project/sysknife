@@ -863,9 +863,8 @@ impl LlmPlanner {
             None => provider,
         };
 
-        let mut planner =
-            Self::new(provider, state_client, config.max_turns)
-                .with_audit_log(SafetyAuditLog::new(SafetyAuditLog::default_path()));
+        let mut planner = Self::new(provider, state_client, config.max_turns)
+            .with_audit_log(SafetyAuditLog::new(SafetyAuditLog::default_path()));
         // `from_config` is the production construction path used by the CLI,
         // MCP server, and shell. Attach the default safety log here so every
         // runtime planner records fence rejections; direct `new` remains
@@ -1536,7 +1535,6 @@ mod tests {
             "from_config must attach the safety audit log"
         );
     }
-
 
     #[test]
     fn into_authorized_replaces_every_step_risk() {
