@@ -336,7 +336,7 @@ run_security_group() {
 
 run_postgres_contract_group() {
     printf '\n### postgres-contract (optional)\n'
-    local label="postgres-contract: cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored"
+    local label="postgres-contract: live Postgres contract (store + CLI anchor exit code)"
 
     if [[ "$run_postgres" != true ]]; then
         record SKIP "${label} (--no-postgres)"
@@ -345,7 +345,12 @@ run_postgres_contract_group() {
 
     if [[ -n "${SYSKNIFE_TEST_POSTGRES_URL:-}" ]]; then
         SYSKNIFE_REQUIRE_POSTGRES=1 \
-            run_step "$label" cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored
+            run_step "postgres-contract: cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored" \
+            cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored
+        SYSKNIFE_REQUIRE_POSTGRES=1 \
+            run_step "postgres-contract: cargo test -p sysknife-cli --test cli_smoke --locked audit_verify_exits_with_code_1_when_anchor_is_truncated -- --ignored --exact" \
+            cargo test -p sysknife-cli --test cli_smoke --locked \
+            audit_verify_exits_with_code_1_when_anchor_is_truncated -- --ignored --exact
         return
     fi
 
@@ -386,9 +391,16 @@ run_postgres_contract_group() {
         sleep "$POSTGRES_HEALTH_INTERVAL_SECS"
     done
 
-    SYSKNIFE_TEST_POSTGRES_URL="postgres://sysknife:sysknife@127.0.0.1:${POSTGRES_HOST_PORT}/sysknife_test?sslmode=disable" \
+    local container_url="postgres://sysknife:sysknife@127.0.0.1:${POSTGRES_HOST_PORT}/sysknife_test?sslmode=disable"
+    SYSKNIFE_TEST_POSTGRES_URL="$container_url" \
     SYSKNIFE_REQUIRE_POSTGRES=1 \
-        run_step "$label" cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored
+        run_step "postgres-contract: cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored" \
+        cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored
+    SYSKNIFE_TEST_POSTGRES_URL="$container_url" \
+    SYSKNIFE_REQUIRE_POSTGRES=1 \
+        run_step "postgres-contract: cargo test -p sysknife-cli --test cli_smoke --locked audit_verify_exits_with_code_1_when_anchor_is_truncated -- --ignored --exact" \
+        cargo test -p sysknife-cli --test cli_smoke --locked \
+        audit_verify_exits_with_code_1_when_anchor_is_truncated -- --ignored --exact
 
     "$runtime" rm -f "$POSTGRES_CONTAINER_NAME" >/dev/null 2>&1 || true
 }
