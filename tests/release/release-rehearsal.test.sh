@@ -4,6 +4,27 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 rehearsal="${repo_root}/scripts/release_rehearsal.sh"
 
+# Invalid registry versions must fail validation before attempting any network
+# requests, including when no positional argument was supplied.
+assert_invalid_registry_version() {
+    local output status
+    if output="$(bash "${repo_root}/scripts/check_registry_versions.sh" "$@" 2>&1)"; then
+        printf 'FAIL: registry preflight accepted an invalid version\n' >&2
+        exit 1
+    else
+        status=$?
+    fi
+    if [[ "$status" -ne 2 ]]; then
+        printf 'FAIL: registry preflight expected exit 2, got %s: %s\n' "$status" "$output" >&2
+        exit 1
+    fi
+    grep -Fq 'ERROR: expected a semantic version' <<<"$output"
+}
+
+assert_invalid_registry_version nope
+assert_invalid_registry_version
+assert_invalid_registry_version ''
+
 if [[ ! -x "$rehearsal" ]]; then
     printf 'FAIL: release rehearsal is missing or not executable: %s\n' "$rehearsal" >&2
     exit 1
