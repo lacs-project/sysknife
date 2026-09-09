@@ -12,6 +12,14 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Fixed
+
+- Guard each live PostgreSQL test invocation independently, including the CLI
+  anchor exit-code contract, and run that CLI contract in both local CI paths.
+  Missing ignore flags, unresolved test filters, missing contract targets and
+  disabled required-database settings now fail the guard. Quoted step labels
+  cannot substitute for the arguments that actually execute (#362).
+
 ## [0.14.0] — 2026-09-07
 
 The middle digit moves because an exit code changed. `sysknife audit checkpoint`
