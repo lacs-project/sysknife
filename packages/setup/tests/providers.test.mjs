@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
-const { PROVIDERS, MODEL_DEFAULTS, API_KEY_VARS } = require('../providers.js');
+const { PROVIDERS, MODEL_DEFAULTS, API_KEY_VARS, defaultProvider } = require('../providers.js');
 
 // The wizard must offer every provider the engine (sysknife-brain) supports, so
 // a user never has to hand-edit config.toml just to pick groq/deepseek/mistral/xai.
@@ -26,8 +26,35 @@ test('offers every provider the engine supports', () => {
   assert.equal(PROVIDERS.length, ENGINE_PROVIDERS.length, 'PROVIDERS has unexpected extras');
 });
 
-test('openai stays the first/default provider', () => {
+test('openai stays first in the displayed provider list', () => {
   assert.equal(PROVIDERS[0], 'openai');
+});
+
+test('keyless and blank-key environments suggest Ollama', () => {
+  assert.equal(defaultProvider({}), 'ollama');
+  const env = Object.fromEntries(Object.values(API_KEY_VARS).filter(Boolean).map(key => [key, ' \t ']));
+  assert.equal(defaultProvider(env), 'ollama');
+});
+
+test('each configured cloud key suggests its provider', () => {
+  for (const [provider, key] of Object.entries(API_KEY_VARS)) {
+    if (key) assert.equal(defaultProvider({ [key]: 'synthetic-key' }), provider);
+  }
+});
+
+test('multiple configured keys retain the displayed OpenAI-first preference', () => {
+  assert.equal(defaultProvider({ OPENAI_API_KEY: 'synthetic-openai', ANTHROPIC_API_KEY: 'synthetic-anthropic' }), 'openai');
+});
+
+test('explicit provider suggestions take precedence and normalize surrounding whitespace', () => {
+  assert.equal(defaultProvider({ SYSKNIFE_LLM_PROVIDER: '  OLLAMA\t', OPENAI_API_KEY: 'synthetic-openai' }), 'ollama');
+  assert.equal(defaultProvider({ SYSKNIFE_LLM_PROVIDER: ' GEMINI ', ANTHROPIC_API_KEY: 'synthetic-anthropic' }), 'gemini');
+});
+
+test('blank explicit providers fall back while unknown values remain available for validation', () => {
+  assert.equal(defaultProvider({ SYSKNIFE_LLM_PROVIDER: ' \t ' }), 'ollama');
+  assert.equal(defaultProvider({ SYSKNIFE_LLM_PROVIDER: '', OPENAI_API_KEY: 'synthetic-openai' }), 'openai');
+  assert.equal(defaultProvider({ SYSKNIFE_LLM_PROVIDER: 'unknown-fixture' }), 'unknown-fixture');
 });
 
 test('maps each new provider to its engine API-key env var', () => {
