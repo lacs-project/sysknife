@@ -70,7 +70,7 @@ if output="$("$fixture/scripts/markdown-link-files.sh" 2>&1)"; then
     printf 'markdown-link-files: failed git enumeration unexpectedly passed\n' >&2
     exit 1
 fi
-grep -Fq 'markdown-link-files' <<< "$output"
+grep -Fq 'failed to enumerate tracked Markdown files' <<< "$output"
 mv "$fixture/git-backup" "$fixture/.git"
 
 git -C "$fixture" rm --cached -q -- '*.md'
@@ -78,7 +78,7 @@ if output="$("$fixture/scripts/markdown-link-files.sh" 2>&1)"; then
     printf 'markdown-link-files: empty derived set unexpectedly passed\n' >&2
     exit 1
 fi
-grep -Fq 'markdown-link-files' <<< "$output"
+grep -Fq 'no tracked Markdown files to check' <<< "$output"
 
 # Exercise the real consumer bodies with an offline checker and producer.
 python3 - "$repo_root" "$fixture" <<'PYTEST'
@@ -113,7 +113,9 @@ for scenario, script in {
     for name, body in bodies.items():
         log = fixture / "checked"
         log.unlink(missing_ok=True)
-        result = subprocess.run(["bash", "-euo", "pipefail", "-c", 'repo_root="$1"\n' + body, "consumer", str(fixture)], cwd=fixture, env=env, capture_output=True, text=True)
+        # ci-local.sh enables strict mode; the workflow uses GitHub's default bash -e.
+        shell = ["bash", "-euo", "pipefail"] if name == "local" else ["bash", "-e"]
+        result = subprocess.run([*shell, "-c", 'repo_root="$1"\n' + body, "consumer", str(fixture)], cwd=fixture, env=env, capture_output=True, text=True)
         if scenario != "valid":
             assert result.returncode != 0, f"{name} consumer accepted {scenario} producer"
         else:
