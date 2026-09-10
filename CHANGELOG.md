@@ -35,6 +35,13 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Fixed
 
+- Sanitise the distro version string before it reaches the prompt header. A
+  crafted `/etc/os-release` could put tag syntax into the version and open a
+  second `<user_preferences>` envelope around the constraints, risk tables and
+  params blocks that follow it. Both the Fedora and the Debian renderer
+  interpolate that value and both now route it through `normalise_free_text`
+  (#272).
+
 - `check_no_secrets.sh --staged` fails closed when git cannot answer. The
   pre-commit credential scanner built its file list through process
   substitution, which `set -euo pipefail` cannot see into, so a failing
