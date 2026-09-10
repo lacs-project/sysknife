@@ -1315,6 +1315,8 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "GetFirewallState" => Ok(network::get_firewall_state()),
         "GetNetworkStatus" => Ok(network::get_network_status()),
         "GetListeningPorts" => Ok(network::get_listening_ports()),
+        "GetNftablesRuleset" => Ok(network::get_nftables_ruleset()),
+        "GetFirewallBackendState" => Ok(network::get_firewall_backend_state()),
         "ConfigureWifi" => {
             let ssid = validated_safe_arg(require_str(params, "ssid")?, "ssid")?;
             // password is optional — open networks connect without one.

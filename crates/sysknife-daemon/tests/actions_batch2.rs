@@ -244,6 +244,8 @@ fn network_family_covers_wifi_dns_and_firewall() {
             "GetFirewallState",
             "GetNetworkStatus",
             "GetListeningPorts",
+            "GetNftablesRuleset",
+            "GetFirewallBackendState",
         ]
     );
 }

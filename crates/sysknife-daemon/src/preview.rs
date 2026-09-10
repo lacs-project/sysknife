@@ -143,6 +143,8 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "GetMemoryInfo"
         | "GetNetworkStatus"
         | "GetListeningPorts"
+        | "GetNftablesRuleset"
+        | "GetFirewallBackendState"
         | "GetJournalLog"
         | "GetLvmReport"
         | "GetSysctl"

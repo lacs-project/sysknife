@@ -118,6 +118,7 @@ daemon-install: daemon-install-preflight build
 	# sysknife-daemon --test helper_install_coverage` derives the required set
 	# from the daemon source and fails if one is missing.
 	install -Dm 755 packaging/sysknife-apt-pin-edit $(HELPERS)/apt-pin-edit
+	install -Dm 755 packaging/sysknife-firewall-state $(HELPERS)/firewall-state
 	install -Dm 755 packaging/sysknife-audit-edit $(HELPERS)/audit-edit
 	install -Dm 755 packaging/sysknife-fail2ban-jail-edit $(HELPERS)/fail2ban-jail-edit
 	install -Dm 755 packaging/sysknife-grub-kargs-edit $(HELPERS)/grub-kargs-edit
@@ -148,6 +149,7 @@ daemon-uninstall:
 	rm -f $(SYSUSERS)/sysknife.conf
 	rm -f $(TMPFILES)/sysknife.conf
 	rm -f $(HELPERS)/apt-pin-edit
+	rm -f $(HELPERS)/firewall-state
 	rm -f $(HELPERS)/audit-edit
 	rm -f $(HELPERS)/fail2ban-jail-edit
 	rm -f $(HELPERS)/grub-kargs-edit

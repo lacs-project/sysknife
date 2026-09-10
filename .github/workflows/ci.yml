@@ -32,6 +32,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Firewall backend reporter fixtures
+        run: python tests/test_firewall_state.py
+
       # Pinned, because this job holds the workflow token: an unpinned global
       # install lets a compromised release of any of these three run arbitrary
       # code on the trusted side of the build. Bump deliberately.

@@ -14,6 +14,9 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Changed
 
+- Add read-only nftables ruleset and firewall-backend observations. General
+  firewall queries preserve failed/unknown probes and do not equate inactive
+  ufw with an unfiltered host; mutating nftables actions remain out of scope (#239).
 - Separate Ubuntu identity requirements from Debian-family mechanisms and
   planner defaults. Canonical services, PPAs and the reboot sentinel require
   Ubuntu itself; portable tools are no longer refused merely for being another

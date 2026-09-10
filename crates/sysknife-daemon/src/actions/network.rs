@@ -9,6 +9,8 @@ pub fn specs() -> Vec<ActionSpec> {
         get_firewall_state(),
         get_network_status(),
         get_listening_ports(),
+        get_nftables_ruleset(),
+        get_firewall_backend_state(),
     ]
 }
 
@@ -115,6 +117,28 @@ pub fn get_network_status() -> ActionSpec {
     }
 }
 
+/// Inspect nftables without modifying rules or accepting caller-controlled argv.
+pub fn get_nftables_ruleset() -> ActionSpec {
+    ActionSpec {
+        action_name: "GetNftablesRuleset",
+        mechanism: command_mechanism("sudo", ["nft", "list", "ruleset"]),
+        risk_level: RiskLevel::Low,
+        reboot_required: false,
+        rollback_available: false,
+    }
+}
+
+/// Report nftables and frontend observations, preserving unknown probe results.
+pub fn get_firewall_backend_state() -> ActionSpec {
+    ActionSpec {
+        action_name: "GetFirewallBackendState",
+        mechanism: command_mechanism("/usr/lib/sysknife/firewall-state", [] as [&str; 0]),
+        risk_level: RiskLevel::Low,
+        reboot_required: false,
+        rollback_available: false,
+    }
+}
+
 /// List listening TCP/UDP sockets and, where the daemon has permission, the
 /// owning process (`ss -tulpnH`). Read-only; answers "what is listening on port
 /// X?". Run without sudo (like `GetNetworkStatus`'s `ip`); the socket/port list
@@ -128,5 +152,37 @@ pub fn get_listening_ports() -> ActionSpec {
         risk_level: RiskLevel::Low,
         reboot_required: false,
         rollback_available: false,
+    }
+}
+
+#[cfg(test)]
+mod firewall_tests {
+    use super::*;
+    use crate::actions::ActionMechanism;
+
+    #[test]
+    fn firewall_queries_have_fixed_read_only_mechanisms() {
+        for (spec, program, args) in [
+            (
+                get_nftables_ruleset(),
+                "sudo",
+                vec!["nft", "list", "ruleset"],
+            ),
+            (
+                get_firewall_backend_state(),
+                "/usr/lib/sysknife/firewall-state",
+                vec![],
+            ),
+        ] {
+            assert_eq!(spec.risk_level, RiskLevel::Low);
+            assert!(!spec.reboot_required && !spec.rollback_available);
+            assert_eq!(
+                spec.mechanism,
+                ActionMechanism::Command {
+                    program,
+                    args: args.into_iter().map(String::from).collect(),
+                }
+            );
+        }
     }
 }

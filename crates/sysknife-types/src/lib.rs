@@ -138,6 +138,8 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     "GetFirewallState",
     "GetNetworkStatus",
     "GetListeningPorts",
+    "GetNftablesRuleset",
+    "GetFirewallBackendState",
     "ConfigureWifi",
     "SetDnsServers",
     "ConfigureFirewall",

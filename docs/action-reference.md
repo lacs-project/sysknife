@@ -182,6 +182,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `GetFirewallState` | `firewall-cmd --list-all` | Low | All | – | – | show current firewalld zones, open services, and port rules — no params |
 | `GetNetworkStatus` | `ip -brief addr` | Low | All | – | – | show LIVE network state: interfaces, IP addresses, and connection state — no params; this is runtime status, NOT the saved configuration; on Ubuntu the saved config is NetplanGetConfig |
 | `GetListeningPorts` | `ss -tulpnH` | Low | All | – | – | show listening TCP/UDP sockets and the process bound to each (ss -tulpn) — no params; read-only; use for "what is listening on port X?" |
+| `GetNftablesRuleset` | `sudo nft list ruleset` | Low | All | – | – | read the current nftables ruleset — no params; read-only; rules do not by themselves prove that traffic is blocked |
+| `GetFirewallBackendState` | `/usr/lib/sysknife/firewall-state` | Low | All | – | – | inspect nftables, ufw and firewalld observations — no params; read-only; use for general firewall status; unavailable or inactive frontends do not prove the host is unfiltered |
 
 ## resolvectl
 
@@ -396,4 +398,4 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 ---
 
-_189 actions have an `ActionSpec` and are tabled above. The full catalogue (`KNOWN_ACTION_NAMES`) also includes `ListJobHistory`, which the dispatcher handles before the executor, for **190** total._
+_191 actions have an `ActionSpec` and are tabled above. The full catalogue (`KNOWN_ACTION_NAMES`) also includes `ListJobHistory`, which the dispatcher handles before the executor, for **192** total._

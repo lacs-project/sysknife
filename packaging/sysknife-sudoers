@@ -14,6 +14,9 @@
 # not this file. See each grant's comment for its exact call sites and rationale.
 #
 # IMPORTANT: test with `visudo -cf /etc/sudoers.d/sysknife` before deploying.
+# Fixed read-only nftables probes; no wildcard or rule-changing command.
+sysknife ALL=(root) NOPASSWD: /usr/sbin/nft list ruleset
+sysknife ALL=(root) NOPASSWD: /usr/sbin/nft -j list ruleset
 #
 # Note: `Defaults:sysknife !requiretty` was removed. Ubuntu 26.04 ships sudo-rs
 # (0.2.x — the memory-safe Rust reimplementation, now the default; verified on a
