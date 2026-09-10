@@ -398,7 +398,7 @@ if [[ -z "${intro_published:-}" || -z "${intro_new:-}" ]]; then
     printf 'FAIL: introduction-count mutation produced no values\n' >&2
     exit 1
 fi
-if ! grep -Eq "$intro_new Debian-only actions still have no story" \
+if ! grep -Eq "$intro_new Debian-only (actions still have|action still has) no story" \
     "$fixture/docs/introduction.md"; then
     printf 'FAIL: introduction-count mutation did not apply\n' >&2
     exit 1
