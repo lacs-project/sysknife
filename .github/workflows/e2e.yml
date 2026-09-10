@@ -76,9 +76,11 @@ jobs:
 
       - name: ShellCheck maintained scripts
         run: |
-          find tests/e2e tests/release scripts assets/demo \
-            -type f -name '*.sh' -print0 \
-            | xargs -0 shellcheck --severity=warning
+          file_list="$(mktemp)"
+          trap 'rm -f "$file_list"' EXIT
+          scripts/shellcheck-files.sh >"$file_list"
+          mapfile -d '' files <"$file_list"
+          shellcheck --severity=warning "${files[@]}"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable

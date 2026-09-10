@@ -263,9 +263,11 @@ hygiene_yamllint() (
 # since every script this task adds/touches must stay shellcheck-clean.
 hygiene_shellcheck() (
     cd "$repo_root" || exit 1
-    find tests/e2e tests/release scripts assets/demo \
-        -type f -name '*.sh' -print0 \
-        | xargs -0 shellcheck --severity=warning
+    file_list="$(mktemp)"
+    trap 'rm -f "$file_list"' EXIT
+    scripts/shellcheck-files.sh >"$file_list" || exit 1
+    mapfile -d '' files <"$file_list"
+    shellcheck --severity=warning "${files[@]}"
 )
 
 run_hygiene_group() {
@@ -282,6 +284,7 @@ run_hygiene_group() {
     run_step 'hygiene: database-path-agreement.test.sh' bash "$repo_root/tests/release/database-path-agreement.test.sh"
     run_step 'hygiene: node-eol.test.sh' bash "$repo_root/tests/release/node-eol.test.sh"
     run_step 'hygiene: tracked-eol.test.sh' bash "$repo_root/tests/release/tracked-eol.test.sh"
+    run_step 'hygiene: shellcheck-coverage.test.sh' bash "$repo_root/tests/release/shellcheck-coverage.test.sh"
     run_step 'hygiene: systemd-directory-modes.test.sh' bash "$repo_root/tests/release/systemd-directory-modes.test.sh"
     run_step 'hygiene: ubuntu-vm-bootstrap.test.sh' bash "$repo_root/tests/e2e/ubuntu-vm-bootstrap.test.sh"
     run_step 'hygiene: provider-parity.test.sh' bash "$repo_root/tests/e2e/provider-parity.test.sh"

@@ -89,6 +89,9 @@ jobs:
       - name: Check tracked files use portable line endings
         run: bash tests/release/tracked-eol.test.sh
 
+      - name: Check ShellCheck covers every tracked shell file
+        run: bash tests/release/shellcheck-coverage.test.sh
+
       - name: Check systemd directory modes match tmpfiles
         run: bash tests/release/systemd-directory-modes.test.sh
 
