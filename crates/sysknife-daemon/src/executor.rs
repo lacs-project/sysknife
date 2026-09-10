@@ -1608,7 +1608,15 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             Ok(ufw::ufw_deny(&port_or_service))
         }
         "UfwReset" => Ok(ufw::ufw_reset()),
-        "UfwStatus" => Ok(ufw::ufw_status()),
+        "UfwStatus" => {
+            let numbered = match params.get("numbered") {
+                None => false,
+                Some(value) => value
+                    .as_bool()
+                    .ok_or(ExecutorError::InvalidParam("numbered"))?,
+            };
+            Ok(ufw::ufw_status_with_numbered(numbered))
+        }
 
         // ── distrobox ────────────────────────────────────────────────────
         "DistroboxList" => Ok(distrobox::distrobox_list()),

@@ -271,7 +271,7 @@ function serverToToml(key, server) {
 // the "wizard offers what the engine supports" invariant is unit-testable. All
 // eight sysknife-brain providers are offered; the flow below is data-driven off
 // these maps, so no per-provider branching is needed.
-const { PROVIDERS, MODEL_DEFAULTS, API_KEY_VARS } = require('./providers.js');
+const { PROVIDERS, MODEL_DEFAULTS, API_KEY_VARS, defaultProvider } = require('./providers.js');
 
 const ARG_SET = new Set(process.argv.slice(2));
 const WANT_CLAUDE     = ARG_SET.has('--claude');
@@ -597,9 +597,10 @@ async function main() {
   // uses the same model, only the daemon socket differs.
 
   console.log();
-  const providerList = PROVIDERS.map((p, i) => (i === 0 ? `${B}${p}${X}` : p)).join(' / ');
+  const suggestedProvider = defaultProvider(process.env);
+  const providerList = PROVIDERS.map(p => (p === suggestedProvider ? `${B}${p}${X}` : p)).join(' / ');
   console.log(`  LLM providers: ${providerList}`);
-  let provider = await ask(rl, lineQueue, 'LLM provider', 'openai');
+  let provider = await ask(rl, lineQueue, 'LLM provider', suggestedProvider);
   provider = provider.toLowerCase();
 
   if (!PROVIDERS.includes(provider)) {
@@ -629,6 +630,9 @@ async function main() {
 
   console.log();
   const model = await ask(rl, lineQueue, 'Model name', MODEL_DEFAULTS[provider]);
+  if (provider === 'ollama') {
+    step(`For Ollama, start the server with ollama serve and load the model: ollama pull ${model}`);
+  }
 
   // ── 5. Integration selection ─────────────────────────────────────────────
 
@@ -1092,6 +1096,11 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
   Run from the root of your project directory.
 
 \x1b[1mENVIRONMENT\x1b[0m
+  SYSKNIFE_LLM_PROVIDER
+      Provider suggestion (interactive answers can override it).
+      Otherwise use the first configured cloud key in displayed order,
+      or keyless Ollama. Server and model availability are not checked.
+
   OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY /
   GROQ_API_KEY / DEEPSEEK_API_KEY / MISTRAL_API_KEY / XAI_API_KEY
       The provider's key var (Ollama needs none). If set in your shell

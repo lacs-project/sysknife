@@ -78,6 +78,24 @@ A one-line comment prevents it. If an issue already carries `claimed` and the
 thread has been quiet for a week, say you are taking it over rather than opening
 a competing PR.
 
+**Windows and WSL line endings.** This repository pins tracked text to LF via
+`.gitattributes`. On Windows or WSL, configure this checkout with:
+
+```sh
+git config core.autocrlf false
+```
+
+If an existing checkout already has CRLF line endings, first make sure the
+working tree is clean, then renormalise it:
+
+```sh
+git config core.autocrlf false
+git rm --cached -r . && git reset --hard
+```
+
+`git reset --hard` discards local changes, so do not run the recovery sequence
+with work you have not committed or stashed.
+
 ### 2. Branch, code, test
 
 ```sh

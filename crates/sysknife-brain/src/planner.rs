@@ -684,9 +684,7 @@ impl LlmPlanner {
         t.extend(query_tools());
         t.push(crate::planning_tools::preferences::remember_tool_def());
         t.push(crate::planning_tools::preferences::forget_tool_def());
-        t.push(propose_plan_tool_def(
-            self.distro_hint.as_ref().map(|h| h.family),
-        ));
+        t.push(propose_plan_tool_def(self.distro_hint.as_ref()));
         t.push(crate::planning_tools::refuse::refuse_tool_def());
         t
     }
@@ -753,6 +751,10 @@ impl LlmPlanner {
     /// Uses Rig provider clients for all backends. Returns an error if the
     /// HTTP client cannot be initialised (rare; only fails if the TLS
     /// subsystem is unavailable).
+    ///
+    /// Safety-fence rejection logging is enabled by default and writes to
+    /// [`SafetyAuditLog::default_path`]. Use [`Self::new`] for a planner
+    /// without runtime defaults.
     ///
     /// Rate limiting is **enabled by default** at [`DEFAULT_MAX_RPM`] requests
     /// per minute. Override with the `SYSKNIFE_MAX_RPM` environment variable.
@@ -859,9 +861,13 @@ impl LlmPlanner {
             None => provider,
         };
 
-        let mut planner = Self::new(provider, state_client, config.max_turns);
+        let mut planner = Self::new(provider, state_client, config.max_turns)
+            .with_audit_log(SafetyAuditLog::new(SafetyAuditLog::default_path()));
+        // `from_config` is the production construction path used by the CLI,
+        // MCP server, and shell. Attach the default safety log here so every
+        // runtime planner records fence rejections; direct `new` remains
+        // opt-in for callers such as tests and embedded consumers.
         planner.prefs_path = Some(sysknife_core::config::prefs_path());
-
         if replaying {
             // No rate limiter under replay. It exists to bound spend and load on a
             // provider, and a replay reaches neither: every answer comes off disk.
@@ -1514,6 +1520,18 @@ mod tests {
     fn ollama_planner() -> LlmPlanner {
         LlmPlanner::from_config(BrainConfig::ollama_defaults(), Box::new(UnusedState))
             .expect("ollama defaults need no credentials")
+    }
+
+    /// The integration test exercises the rejection path and reads the JSONL;
+    /// this test pins that the production constructor actually attaches the
+    /// log without mutating process-global path configuration.
+    #[test]
+    fn configured_planner_attaches_audit_log() {
+        let planner = ollama_planner();
+        assert!(
+            planner.audit_log.is_some(),
+            "from_config must attach the safety audit log"
+        );
     }
 
     #[test]

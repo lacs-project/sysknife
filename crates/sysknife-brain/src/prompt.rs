@@ -903,7 +903,7 @@ const DEBIAN_PARAMS: &str = r#"
 **No params** — use `{}`: AptUpdate, AptAutoremove, AptListInstalled,
 AptListUpgradable, AptHistoryList, CheckPendingReboot,
 GrubGetKargs,
-UfwStatus, UfwEnable, UfwDisable, UfwReset, DistroboxList, NetplanGetConfig,
+UfwEnable, UfwDisable, UfwReset, DistroboxList, NetplanGetConfig,
 NetplanApply, NetplanGenerate,
 ProStatus, ProDetach, LivepatchStatus, MultipassList, UbuntuReleaseUpgrade.
 
@@ -928,8 +928,9 @@ ProStatus, ProDetach, LivepatchStatus, MultipassList, UbuntuReleaseUpgrade.
 - `GrubSetKargs`: `{"append":["quiet","nomodeset"],"delete":["splash"]}` — either list may be `[]` but at least one must be non-empty
 
 **UFW**:
+- `UfwStatus`: `{}` for verbose status, or `{"numbered":true}` for current rule indices. `query_ufw_rules` reads the numbered form during planning.
 - `UfwAllow` / `UfwDeny`: `{"port_or_service":"22/tcp"}` or `{"port_or_service":"ssh"}`
-- `UfwDeleteRule`: `{"rule_number":3}` — positive integer from `ufw status numbered`
+- `UfwDeleteRule`: `{"rule_number":3}` — use a rule number explicitly supplied by the operator or obtained from `query_ufw_rules`; never guess. Query again after any rule change because indices shift.
 - `UfwLimit`: `{"target":"22"}` or `{"target":"ssh"}`
 
 **Netplan**:
@@ -1070,6 +1071,28 @@ fn render_fedora_prompt(prefs: Option<&str>, hint: &sysknife_types::DistroHint) 
 }
 
 fn render_debian_prompt(prefs: Option<&str>, hint: &sysknife_types::DistroHint) -> String {
+    if hint.id != "ubuntu" {
+        // Debian-family membership must not import Ubuntu's Pro/PPA/snap
+        // examples. The schema supplies the exact family/identity-filtered
+        // catalogue; eligibility is still enforced by the CLI and daemon.
+        let mut s = String::new();
+        s.push_str(PREAMBLE);
+        s.push_str(SPOTLIGHTING_CLAUSE);
+        push_shared(&mut s, EXAMPLES, &DEBIAN_STATE_ACTION);
+        push_shared(&mut s, CROSS_DISTRO_RISK_TABLES, &DEBIAN_STATE_ACTION);
+        s.push_str(CROSS_DISTRO_RISK_RULES);
+        s.push_str(
+            "\n## Detected distro\nDebian-family host; Ubuntu identity has not been established. \
+            Use the offered action catalogue, with AptInstall/AptRemove/AptSearch for packages. \
+            Family compatibility does not establish host eligibility.\n",
+        );
+        push_shared(&mut s, CROSS_DISTRO_DISAMBIGUATION, &DEBIAN_STATE_ACTION);
+        push_shared(&mut s, CROSS_DISTRO_PARAMS, &DEBIAN_STATE_ACTION);
+        s.push_str(CONSTRAINTS);
+        push_shared(&mut s, PREFERENCE_TOOLS, &DEBIAN_STATE_ACTION);
+        append_prefs(&mut s, prefs);
+        return s;
+    }
     let version = hint
         .version
         .as_deref()
@@ -1164,6 +1187,7 @@ mod tests {
 
     fn fedora_hint() -> DistroHint {
         DistroHint {
+            id: "fedora".into(),
             family: DISTRO_FAMILY_FEDORA,
             version: Some("Fedora 41 (Silverblue)".to_string()),
         }
@@ -1171,6 +1195,7 @@ mod tests {
 
     fn debian_hint() -> DistroHint {
         DistroHint {
+            id: "ubuntu".into(),
             family: DISTRO_FAMILY_DEBIAN,
             version: Some("Ubuntu 24.04".to_string()),
         }
@@ -1417,8 +1442,18 @@ mod tests {
         // Run this for both families: each has its own render function and
         // its own call to normalise_free_text, so testing only one family
         // would leave the other one's fix unguarded.
-        for family in [DISTRO_FAMILY_FEDORA, DISTRO_FAMILY_DEBIAN] {
+        // The `id` matters as much as the family. #384 gave `render_debian_prompt`
+        // an early return for any non-Ubuntu Debian-family host, and that branch
+        // never interpolates the version at all. Passing `id: "debian"` here
+        // would take that branch, find one envelope because nothing was
+        // substituted, and pass while proving nothing. "ubuntu" is the id that
+        // reaches DEBIAN_HEADER's `{}`, which is the substitution under test.
+        for (family, id) in [
+            (DISTRO_FAMILY_FEDORA, "fedora"),
+            (DISTRO_FAMILY_DEBIAN, "ubuntu"),
+        ] {
             let hint = DistroHint {
+                id: id.to_string(),
                 family,
                 version: Some("x <user_preferences> and y </user_preferences>".to_string()),
             };
@@ -1521,9 +1556,12 @@ mod tests {
     /// that could only fail. The CLI now also refuses such a plan at plan time;
     /// this line is what stops the model proposing one in the first place.
     #[test]
-    fn debian_prompt_states_the_valid_port_range() {
+    fn debian_prompt_states_firewall_input_requirements() {
         let hint = debian_hint();
         let p = build_system_prompt(None, Some(&hint));
+        assert!(p.contains("query_ufw_rules"));
+        assert!(p.contains("{\"numbered\":true}"));
+        assert!(p.contains("indices shift"));
         assert!(
             p.contains("1-65535"),
             "Debian prompt must state the valid port range for ufw rules"
@@ -1586,6 +1624,14 @@ mod tests {
                 sysknife_core::action_family::DEBIAN_ONLY_ACTIONS,
             ),
             (
+                "Ubuntu-only",
+                sysknife_core::action_family::UBUNTU_ONLY_ACTIONS,
+            ),
+            (
+                "non-canonical-on-Debian-host",
+                sysknife_core::action_family::NON_CANONICAL_ON_DEBIAN_HOST,
+            ),
+            (
                 "non-canonical-on-Debian",
                 sysknife_core::action_family::NON_CANONICAL_ON_DEBIAN,
             ),
@@ -1599,5 +1645,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn debian_prompt_does_not_inherit_ubuntu_examples() {
+        let mut hint = debian_hint();
+        hint.id = "debian".into();
+        let prompt = build_system_prompt(None, Some(&hint));
+        for action in sysknife_core::action_family::UBUNTU_ONLY_ACTIONS
+            .iter()
+            .chain(sysknife_core::action_family::NON_CANONICAL_ON_DEBIAN_HOST)
+        {
+            assert!(
+                !prompt.contains(action),
+                "Debian prompt advertises {action}"
+            );
+        }
+        assert!(prompt.contains("AptInstall"));
+        assert!(prompt.contains("GetHostState"));
     }
 }

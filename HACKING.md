@@ -802,8 +802,13 @@ The family lists are one source of truth in
 
 | Constant | Meaning |
 |---|---|
-| `DEBIAN_ONLY_ACTIONS` | `Apt*`, `Snap*`, `Ufw*`, `Distrobox*`, `Netplan*`, … |
+| `DEBIAN_ONLY_ACTIONS` | apt/dpkg and Debian's GRUB interface |
+| `UBUNTU_ONLY_ACTIONS` | Canonical services, Ubuntu PPAs, release upgrades, reboot sentinel |
 | `FEDORA_ONLY_ACTIONS` | `RebaseSystem`, `AddLayeredPackage`, … |
+| `NON_CANONICAL_ON_*` | Planner defaults for portable tools; never execution fences |
+
+See [action compatibility](docs/action-compatibility.md) for the distinction
+between distribution identity, family, planner defaults and host eligibility.
 
 Three places consume them, so they cannot drift apart:
 

@@ -93,8 +93,8 @@ pub const FEDORA_ONLY_ACTIONS: &[&str] = &[
 /// `UfwStatus` answered `Status: inactive` — a confident wrong answer instead of
 /// a refusal.
 ///
-/// Consumed only by `sysknife-brain`'s catalogue filter. The fence must not read
-/// it: preference is not impossibility.
+/// Used by catalogue filtering and the conservative supported-host routing
+/// guard, never as a mechanism incompatibility on an eligible host.
 pub const NON_CANONICAL_ON_DEBIAN: &[&str] = &[
     // Ubuntu's canonical firewall is ufw (UfwStatus, UfwAllow/UfwDeny).
     "GetFirewallState",
@@ -107,12 +107,10 @@ pub const NON_CANONICAL_ON_DEBIAN: &[&str] = &[
 
 /// Debian-family action names that are NOT available on Fedora-family distros.
 ///
-/// Grouped by underlying tool: apt, snap, ufw, distrobox, netplan, grub, plus
-/// the Ubuntu-only tiers (AppArmor, cloud-init, flatpak, fail2ban, Pro, …).
+/// These drive apt/dpkg or Debian's GRUB configuration/update interface.
+/// Ubuntu-specific services live in [`UBUNTU_ONLY_ACTIONS`]; installable tools
+/// are planner preferences, not execution fences.
 pub const DEBIAN_ONLY_ACTIONS: &[&str] = &[
-    // The Debian answer to "what is this host?" — counterpart to Fedora's
-    // `GetSystemState`, which describes deployments an apt host has none of.
-    "GetHostState",
     "AptUpdate",
     "AptUpgrade",
     "AptInstall",
@@ -130,8 +128,56 @@ pub const DEBIAN_ONLY_ACTIONS: &[&str] = &[
     "GetAptPins",
     "SetAptPin",
     "RemoveAptPin",
+    "GrubGetKargs",
+    "GrubSetKargs",
+];
+
+/// Ubuntu-specific services and repository formats. A Debian-family hint alone
+/// is insufficient: PPAs serve packages built for an Ubuntu series, even when
+/// add-apt-repository itself is installed on Debian.
+///
+/// CheckPendingReboot relies on Ubuntu's update-notifier sentinel. Until a
+/// Debian producer is validated, do not interpret a missing sentinel there as
+/// evidence that no reboot is needed. Debian eligibility is unchanged.
+pub const UBUNTU_ONLY_ACTIONS: &[&str] = &[
     "AddPpa",
     "RemovePpa",
+    "CheckPendingReboot",
+    "UbuntuReleaseUpgrade",
+    "ProStatus",
+    "ProAttach",
+    "ProDetach",
+    "EnableProService",
+    "DisableProService",
+    "LivepatchStatus",
+];
+
+/// Installable on Debian itself, but not its default administrative tools.
+/// Unlike [`NON_CANONICAL_ON_DEBIAN`], this applies only to non-Ubuntu members
+/// of the Debian family. It does not impose a mechanism execution fence.
+pub const NON_CANONICAL_ON_DEBIAN_HOST: &[&str] = &[
+    "SnapInstall",
+    "SnapRemove",
+    "SnapRefresh",
+    "SnapHold",
+    "SnapUnhold",
+    "SnapList",
+    "SnapInfo",
+    "SnapRevert",
+    "SnapClassicInstall",
+    "NetplanGetConfig",
+    "NetplanApply",
+    "NetplanSet",
+    "NetplanGenerate",
+    "MultipassList",
+];
+
+/// Ubuntu's default catalogue contains these portable tools. Keep the Fedora
+/// planner on its existing defaults while allowing operators to execute tools
+/// they installed. Mechanism-derived tests prevent preference from creeping
+/// back into either hard family fence.
+pub const NON_CANONICAL_ON_FEDORA: &[&str] = &[
+    "GetHostState",
     "SnapInstall",
     "SnapRemove",
     "SnapRefresh",
@@ -154,10 +200,6 @@ pub const DEBIAN_ONLY_ACTIONS: &[&str] = &[
     "NetplanApply",
     "NetplanSet",
     "NetplanGenerate",
-    "GrubGetKargs",
-    "GrubSetKargs",
-    "CheckPendingReboot",
-    // Tier 2 — Ubuntu-only
     "AppArmorStatus",
     "AppArmorEnforce",
     "AppArmorComplain",
@@ -170,18 +212,55 @@ pub const DEBIAN_ONLY_ACTIONS: &[&str] = &[
     "Fail2banBanIp",
     "Fail2banUnbanIp",
     "ConfigureFail2banJail",
-    // Tier 3
-    "UbuntuReleaseUpgrade",
-    "ProStatus",
-    "ProAttach",
-    "ProDetach",
-    "EnableProService",
-    "DisableProService",
-    "LivepatchStatus",
     "MultipassList",
     "UfwDeleteRule",
     "UfwLimit",
 ];
+
+/// Whether the action requires a detected distro before even a read can run.
+pub fn action_requires_distro(action: &str) -> bool {
+    [
+        FEDORA_ONLY_ACTIONS,
+        DEBIAN_ONLY_ACTIONS,
+        UBUNTU_ONLY_ACTIONS,
+    ]
+    .iter()
+    .any(|list| list.contains(&action))
+}
+
+/// Whether planning and client routing require a supported host for this action.
+///
+/// Includes portable tools with distro-specific defaults, not just hard
+/// mechanism fences. Splitting those tools out of a hard fence must not let
+/// an ineligible host reach approval for a mutation the daemon will refuse.
+/// On eligible hosts, only [`action_matches_distro`] restricts mechanisms.
+/// This conservative client/catalogue gate also withholds portable reads;
+/// the daemon's read-only detection exemption remains separate.
+pub fn action_requires_supported_host(action: &str) -> bool {
+    action_requires_distro(action)
+        || [
+            NON_CANONICAL_ON_DEBIAN,
+            NON_CANONICAL_ON_DEBIAN_HOST,
+            NON_CANONICAL_ON_FEDORA,
+        ]
+        .iter()
+        .any(|list| list.contains(&action))
+}
+
+/// Mechanism compatibility only; callers must separately check host eligibility.
+/// Unknown action names remain the catalogue validator's responsibility.
+pub fn action_matches_distro(action: &str, distro: &crate::distro::DistroId) -> bool {
+    use crate::distro::{DistroFamily, DistroId};
+    if UBUNTU_ONLY_ACTIONS.contains(&action) {
+        matches!(distro, DistroId::Ubuntu { .. })
+    } else if DEBIAN_ONLY_ACTIONS.contains(&action) {
+        distro.family() == DistroFamily::Debian
+    } else if FEDORA_ONLY_ACTIONS.contains(&action) {
+        distro.family() == DistroFamily::Fedora
+    } else {
+        true
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -191,23 +270,96 @@ mod tests {
     /// and Debian-only would make the family fence contradict itself.
     #[test]
     fn family_lists_are_disjoint() {
-        for action in FEDORA_ONLY_ACTIONS {
-            assert!(
-                !DEBIAN_ONLY_ACTIONS.contains(action),
-                "{action} is listed as both Fedora-only and Debian-only"
-            );
+        let lists = [
+            FEDORA_ONLY_ACTIONS,
+            DEBIAN_ONLY_ACTIONS,
+            UBUNTU_ONLY_ACTIONS,
+        ];
+        for (index, list) in lists.iter().enumerate() {
+            for action in *list {
+                for other in &lists[index + 1..] {
+                    assert!(
+                        !other.contains(action),
+                        "{action} has conflicting hard fences"
+                    );
+                }
+            }
         }
     }
 
     /// No accidental duplicate entries within a single list.
     #[test]
     fn family_lists_have_no_duplicates() {
-        for list in [FEDORA_ONLY_ACTIONS, DEBIAN_ONLY_ACTIONS] {
+        for list in [
+            FEDORA_ONLY_ACTIONS,
+            DEBIAN_ONLY_ACTIONS,
+            UBUNTU_ONLY_ACTIONS,
+            NON_CANONICAL_ON_DEBIAN,
+            NON_CANONICAL_ON_DEBIAN_HOST,
+            NON_CANONICAL_ON_FEDORA,
+        ] {
             let mut sorted = list.to_vec();
             sorted.sort_unstable();
             let unique = sorted.len();
             sorted.dedup();
             assert_eq!(unique, sorted.len(), "duplicate action in family list");
         }
+    }
+
+    #[test]
+    fn planner_preferences_are_not_execution_fences() {
+        for action in NON_CANONICAL_ON_DEBIAN
+            .iter()
+            .chain(NON_CANONICAL_ON_DEBIAN_HOST)
+            .chain(NON_CANONICAL_ON_FEDORA)
+        {
+            for fence in [
+                FEDORA_ONLY_ACTIONS,
+                DEBIAN_ONLY_ACTIONS,
+                UBUNTU_ONLY_ACTIONS,
+            ] {
+                assert!(
+                    !fence.contains(action),
+                    "{action} is both portable and hard-fenced"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ubuntu_identity_is_stricter_than_debian_family() {
+        use crate::distro::DistroId;
+        let ubuntu = DistroId::Ubuntu {
+            major: 24,
+            minor: 4,
+        };
+        let debian = DistroId::Debian { version: Some(13) };
+        let derivative = DistroId::Other {
+            id: "linuxmint".into(),
+            version_id: None,
+            id_like: vec!["ubuntu".into(), "debian".into()],
+        };
+        // #237: name the expected boundaries independently of the production
+        // lists, so moving a PPA back to the Debian fence fails this test.
+        for action in [
+            "AddPpa",
+            "RemovePpa",
+            "ProAttach",
+            "LivepatchStatus",
+            "CheckPendingReboot",
+        ] {
+            assert!(action_matches_distro(action, &ubuntu), "{action}");
+            assert!(!action_matches_distro(action, &debian), "{action}");
+            assert!(!action_matches_distro(action, &derivative), "{action}");
+            assert!(action_requires_distro(action), "{action}");
+        }
+        for action in ["AptInstall", "AptUpdate"] {
+            assert!(action_matches_distro(action, &ubuntu), "{action}");
+            assert!(action_matches_distro(action, &debian), "{action}");
+        }
+        assert!(
+            !derivative.is_supported(),
+            "Debian-family membership must not enable an unrecognised derivative"
+        );
     }
 }

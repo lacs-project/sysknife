@@ -35,6 +35,10 @@ pub const OLDEST_ELIGIBLE_FEDORA_ATOMIC: u32 = 41;
 /// every release in a year, interim ones included.
 pub const OLDEST_SUPPORTED_UBUNTU_MAJOR: u32 = 20;
 
+/// Oldest eligible Debian stable release. Debian 11 LTS ended in August 2026;
+/// Debian 12 remains in LTS through June 2028.
+pub const OLDEST_SUPPORTED_DEBIAN: u32 = 12;
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -231,6 +235,10 @@ impl DistroId {
     ///   Ubuntu is validation effort, not support, because Ubuntu has far more
     ///   users. See `docs/distro-support.md`.
     ///
+    /// - Debian stable releases 12 and later are eligible. An absent version
+    ///   (including testing/sid) is refused: security support cannot be inferred
+    ///   from Debian identity alone.
+    ///
     /// # Eligibility is not validation coverage
     ///
     /// This predicate answers "may SysKnife act on this host at all" — the
@@ -249,7 +257,8 @@ impl DistroId {
             Self::Fedora { .. } => false,
             Self::FedoraSilverblue { version } => *version >= OLDEST_ELIGIBLE_FEDORA_ATOMIC,
             Self::Ubuntu { major, .. } => *major >= OLDEST_SUPPORTED_UBUNTU_MAJOR,
-            Self::UbuntuCore { .. } | Self::Debian { .. } | Self::Other { .. } => false,
+            Self::Debian { version } => version.is_some_and(|v| v >= OLDEST_SUPPORTED_DEBIAN),
+            Self::UbuntuCore { .. } | Self::Other { .. } => false,
         }
     }
 }
@@ -651,6 +660,20 @@ SUPPORT_URL="https://www.debian.org/support"
 BUG_REPORT_URL="https://bugs.debian.org/"
 "#;
 
+    const DEBIAN_13: &str = r#"PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
+NAME="Debian GNU/Linux"
+VERSION_ID="13"
+VERSION="13 (trixie)"
+VERSION_CODENAME=trixie
+ID=debian
+"#;
+
+    const DEBIAN_TESTING: &str = r#"PRETTY_NAME="Debian GNU/Linux forky/sid"
+NAME="Debian GNU/Linux"
+VERSION_CODENAME=forky
+ID=debian
+"#;
+
     /// Linux Mint 22 (ID=linuxmint, ID_LIKE="ubuntu debian").
     const LINUX_MINT_22: &str = r#"NAME="Linux Mint"
 VERSION="22 (Wilma)"
@@ -955,9 +978,17 @@ SUPPORT_END="2028-03-15"
     }
 
     #[test]
-    fn detect_debian_12() {
-        let r = parse_os_release(DEBIAN_12).unwrap();
-        assert_eq!(detect_distro(&r), DistroId::Debian { version: Some(12) });
+    fn detect_debian_stable_and_testing() {
+        for (fixture, version, eligible) in [
+            (DEBIAN_12, Some(12), true),
+            (DEBIAN_13, Some(13), true),
+            (DEBIAN_TESTING, None, false),
+        ] {
+            let r = parse_os_release(fixture).unwrap();
+            let distro = detect_distro(&r);
+            assert_eq!(distro, DistroId::Debian { version });
+            assert_eq!(distro.is_supported(), eligible);
+        }
     }
 
     #[test]
@@ -1091,8 +1122,19 @@ SUPPORT_END="2028-03-15"
     }
 
     #[test]
-    fn unsupported_debian() {
-        assert!(!DistroId::Debian { version: Some(12) }.is_supported());
+    fn debian_eligibility_requires_a_supported_known_version() {
+        for (version, expected) in [
+            (Some(11), false),
+            (Some(12), true),
+            (Some(13), true),
+            (None, false),
+        ] {
+            assert_eq!(
+                DistroId::Debian { version }.is_supported(),
+                expected,
+                "{version:?}"
+            );
+        }
     }
 
     #[test]

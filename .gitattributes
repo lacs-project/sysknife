@@ -1,0 +1,11 @@
+# Keep tracked text byte-stable across Linux, Windows, and WSL checkouts.
+* text=auto eol=lf
+
+# Shell entry points must keep an LF shebang even on Windows.
+*.sh text eol=lf
+.githooks/* text eol=lf
+
+# Binary assets must never be line-ending normalized.
+*.gif -text
+*.ico -text
+*.png -text

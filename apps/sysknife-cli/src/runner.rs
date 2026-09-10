@@ -53,6 +53,15 @@ pub fn distro_id_to_hint(distro: &sysknife_core::distro::DistroId) -> DistroHint
         DistroFamily::Other => DISTRO_FAMILY_OTHER,
     };
     DistroHint {
+        id: match distro {
+            sysknife_core::distro::DistroId::Ubuntu { .. } => "ubuntu",
+            sysknife_core::distro::DistroId::UbuntuCore { .. } => "ubuntu-core",
+            sysknife_core::distro::DistroId::Debian { .. } => "debian",
+            sysknife_core::distro::DistroId::Fedora { .. }
+            | sysknife_core::distro::DistroId::FedoraSilverblue { .. } => "fedora",
+            sysknife_core::distro::DistroId::Other { id, .. } => id,
+        }
+        .to_string(),
         family,
         version: Some(distro.to_string()),
     }

@@ -1380,6 +1380,7 @@ async fn run_and_capture_system(
 #[tokio::test]
 async fn prompt_with_fedora_hint_contains_fedora_actions_and_excludes_apt() {
     let hint = DistroHint {
+        id: "fedora".into(),
         family: DISTRO_FAMILY_FEDORA,
         version: Some("Fedora 41".to_string()),
     };
@@ -1436,6 +1437,7 @@ async fn prompt_with_fedora_hint_contains_fedora_actions_and_excludes_apt() {
 #[tokio::test]
 async fn prompt_with_ubuntu_hint_contains_apt_and_excludes_rpm_ostree() {
     let hint = DistroHint {
+        id: "ubuntu".into(),
         family: DISTRO_FAMILY_DEBIAN,
         version: Some("Ubuntu 24.04".to_string()),
     };
@@ -1555,6 +1557,7 @@ fn story_coverage_cases() -> &'static [StoryCoverage] {
 #[tokio::test]
 async fn story_coverage_fedora_prompt_contains_fedora_actions_and_excludes_ubuntu() {
     let fedora_hint = DistroHint {
+        id: "fedora".into(),
         family: DISTRO_FAMILY_FEDORA,
         version: Some("Fedora 41".to_string()),
     };
@@ -1586,6 +1589,7 @@ async fn story_coverage_fedora_prompt_contains_fedora_actions_and_excludes_ubunt
 #[tokio::test]
 async fn story_coverage_ubuntu_prompt_contains_ubuntu_actions_and_excludes_fedora() {
     let ubuntu_hint = DistroHint {
+        id: "ubuntu".into(),
         family: DISTRO_FAMILY_DEBIAN,
         version: Some("Ubuntu 24.04".to_string()),
     };
@@ -1618,6 +1622,7 @@ async fn story_coverage_ubuntu_prompt_contains_ubuntu_actions_and_excludes_fedor
 async fn story_coverage_second_fedora_case_install_packages() {
     // "install a system package" — Fedora uses AddLayeredPackage / InstallPackages, not AptInstall
     let fedora_hint = DistroHint {
+        id: "fedora".into(),
         family: DISTRO_FAMILY_FEDORA,
         version: Some("FedoraSilverblue 41".to_string()),
     };
@@ -1644,6 +1649,7 @@ async fn story_coverage_second_fedora_case_install_packages() {
 async fn story_coverage_third_fedora_case_rollback() {
     // "rollback system" — Fedora uses RollbackDeployment, not an apt command
     let fedora_hint = DistroHint {
+        id: "fedora".into(),
         family: DISTRO_FAMILY_FEDORA,
         version: Some("Fedora 42".to_string()),
     };
@@ -1670,6 +1676,7 @@ async fn story_coverage_third_fedora_case_rollback() {
 async fn story_coverage_second_ubuntu_case_snap_install() {
     // "install via snap" — Ubuntu uses SnapInstall, not AddLayeredPackage
     let ubuntu_hint = DistroHint {
+        id: "ubuntu".into(),
         family: DISTRO_FAMILY_DEBIAN,
         version: Some("Ubuntu 22.04".to_string()),
     };
@@ -1696,6 +1703,7 @@ async fn story_coverage_second_ubuntu_case_snap_install() {
 async fn story_coverage_third_ubuntu_case_apt_search() {
     // "search for a package" — Ubuntu uses AptSearch, not SearchFlatpakApps alone
     let ubuntu_hint = DistroHint {
+        id: "ubuntu".into(),
         family: DISTRO_FAMILY_DEBIAN,
         version: Some("Ubuntu 26.04".to_string()),
     };

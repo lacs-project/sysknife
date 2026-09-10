@@ -236,12 +236,22 @@ hygiene_markdownlint() (
 
 hygiene_markdown_link_check() (
     cd "$repo_root" || exit 1
+    file_list="$(mktemp)"
+    trap 'rm -f "$file_list"' EXIT
+    scripts/markdown-link-files.sh > "$file_list" || exit 1
+    count=0
     while IFS= read -r -d '' f; do
         markdown-link-check --config .markdown-link-check-internal.json "$f" || exit 1
-    done < <(scripts/markdown-link-files.sh)
+        count=$((count + 1))
+    done < "$file_list"
+    [[ "$count" -gt 0 ]] || { printf 'markdown-link-files: no files checked\n' >&2; exit 1; }
+    scripts/markdown-link-files.sh --external > "$file_list" || exit 1
+    count=0
     while IFS= read -r -d '' f; do
         markdown-link-check --config .markdown-link-check.json "$f" || exit 1
-    done < <(scripts/markdown-link-files.sh --external)
+        count=$((count + 1))
+    done < "$file_list"
+    [[ "$count" -gt 0 ]] || { printf 'markdown-link-files: no files checked\n' >&2; exit 1; }
 )
 
 hygiene_yamllint() (
@@ -271,6 +281,7 @@ run_hygiene_group() {
     run_step 'hygiene: release-rehearsal.test.sh' bash "$repo_root/tests/release/release-rehearsal.test.sh"
     run_step 'hygiene: database-path-agreement.test.sh' bash "$repo_root/tests/release/database-path-agreement.test.sh"
     run_step 'hygiene: node-eol.test.sh' bash "$repo_root/tests/release/node-eol.test.sh"
+    run_step 'hygiene: tracked-eol.test.sh' bash "$repo_root/tests/release/tracked-eol.test.sh"
     run_step 'hygiene: systemd-directory-modes.test.sh' bash "$repo_root/tests/release/systemd-directory-modes.test.sh"
     run_step 'hygiene: ubuntu-vm-bootstrap.test.sh' bash "$repo_root/tests/e2e/ubuntu-vm-bootstrap.test.sh"
     run_step 'hygiene: provider-parity.test.sh' bash "$repo_root/tests/e2e/provider-parity.test.sh"
@@ -336,7 +347,7 @@ run_security_group() {
 
 run_postgres_contract_group() {
     printf '\n### postgres-contract (optional)\n'
-    local label="postgres-contract: cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored"
+    local label="postgres-contract: live Postgres contract (store + CLI anchor exit code)"
 
     if [[ "$run_postgres" != true ]]; then
         record SKIP "${label} (--no-postgres)"
@@ -345,7 +356,12 @@ run_postgres_contract_group() {
 
     if [[ -n "${SYSKNIFE_TEST_POSTGRES_URL:-}" ]]; then
         SYSKNIFE_REQUIRE_POSTGRES=1 \
-            run_step "$label" cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored
+            run_step "postgres-contract: cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored" \
+            cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored
+        SYSKNIFE_REQUIRE_POSTGRES=1 \
+            run_step "postgres-contract: cargo test -p sysknife-cli --test cli_smoke --locked audit_verify_exits_with_code_1_when_anchor_is_truncated -- --ignored --exact" \
+            cargo test -p sysknife-cli --test cli_smoke --locked \
+            audit_verify_exits_with_code_1_when_anchor_is_truncated -- --ignored --exact
         return
     fi
 
@@ -386,9 +402,16 @@ run_postgres_contract_group() {
         sleep "$POSTGRES_HEALTH_INTERVAL_SECS"
     done
 
-    SYSKNIFE_TEST_POSTGRES_URL="postgres://sysknife:sysknife@127.0.0.1:${POSTGRES_HOST_PORT}/sysknife_test?sslmode=disable" \
+    local container_url="postgres://sysknife:sysknife@127.0.0.1:${POSTGRES_HOST_PORT}/sysknife_test?sslmode=disable"
+    SYSKNIFE_TEST_POSTGRES_URL="$container_url" \
     SYSKNIFE_REQUIRE_POSTGRES=1 \
-        run_step "$label" cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored
+        run_step "postgres-contract: cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored" \
+        cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored
+    SYSKNIFE_TEST_POSTGRES_URL="$container_url" \
+    SYSKNIFE_REQUIRE_POSTGRES=1 \
+        run_step "postgres-contract: cargo test -p sysknife-cli --test cli_smoke --locked audit_verify_exits_with_code_1_when_anchor_is_truncated -- --ignored --exact" \
+        cargo test -p sysknife-cli --test cli_smoke --locked \
+        audit_verify_exits_with_code_1_when_anchor_is_truncated -- --ignored --exact
 
     "$runtime" rm -f "$POSTGRES_CONTAINER_NAME" >/dev/null 2>&1 || true
 }

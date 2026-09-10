@@ -9,6 +9,11 @@ pub fn query_tools() -> Vec<ToolDefinition> {
     let empty_schema = serde_json::json!({"type": "object", "properties": {}, "required": [], "additionalProperties": false});
     vec![
         ToolDefinition {
+            name: "query_ufw_rules".into(),
+            description: "Read ufw status numbered to obtain current rule indices for UfwDeleteRule. Never guess an index; query again after any rule change because indices can shift.".into(),
+            input_schema: empty_schema.clone(),
+        },
+        ToolDefinition {
             name: "query_services".into(),
             description: "List all running systemd services. Returns one service name per line."
                 .into(),
@@ -225,6 +230,7 @@ pub fn query_tool_to_action(
     input: &serde_json::Value,
 ) -> Result<Option<(&'static str, serde_json::Value)>, String> {
     match tool_name {
+        "query_ufw_rules" => Ok(Some(("UfwStatus", serde_json::json!({"numbered": true})))),
         "query_services" => Ok(Some(("ListServices", serde_json::json!({})))),
         "query_firewall" => Ok(Some(("GetFirewallState", serde_json::json!({})))),
         "query_deployments" => Ok(Some(("ListDeployments", serde_json::json!({})))),
@@ -298,6 +304,10 @@ mod tests {
     #[test]
     fn known_query_tools_map_to_actions() {
         let empty = empty_input();
+        assert_eq!(
+            query_tool_to_action("query_ufw_rules", &empty),
+            Ok(Some(("UfwStatus", serde_json::json!({"numbered": true}))))
+        );
         assert_eq!(
             query_tool_to_action("query_services", &empty),
             Ok(Some(("ListServices", serde_json::json!({}))))
@@ -449,9 +459,16 @@ mod tests {
     }
 
     #[test]
-    fn query_tools_returns_twenty_three_definitions() {
+    fn query_tools_returns_twenty_four_definitions() {
         let tools = query_tools();
-        assert_eq!(tools.len(), 23);
+        assert_eq!(tools.len(), 24);
+        let ufw = tools
+            .iter()
+            .find(|tool| tool.name == "query_ufw_rules")
+            .unwrap();
+        assert!(ufw.description.contains("UfwDeleteRule"));
+        assert!(ufw.description.contains("Never guess"));
+        assert_eq!(ufw.input_schema["additionalProperties"], false);
         for tool in &tools {
             assert!(tool.name.starts_with("query_"));
             assert!(!tool.description.is_empty());

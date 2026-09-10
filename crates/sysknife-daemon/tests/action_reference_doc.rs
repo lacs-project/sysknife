@@ -15,7 +15,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use sysknife_brain::planning_tools::propose_plan::KNOWN_ACTIONS;
-use sysknife_core::action_family::{DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS};
+use sysknife_core::action_family::{
+    DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS, NON_CANONICAL_ON_FEDORA, UBUNTU_ONLY_ACTIONS,
+};
 use sysknife_daemon::actions::{catalogue, ActionMechanism, ActionSpec};
 
 /// Ordered (section title, specs) pairs — one per action module. The order and
@@ -79,7 +81,10 @@ fn command(m: &ActionMechanism) -> String {
 fn distro(name: &str) -> &'static str {
     if FEDORA_ONLY_ACTIONS.contains(&name) {
         "Fedora"
-    } else if DEBIAN_ONLY_ACTIONS.contains(&name) {
+    } else if DEBIAN_ONLY_ACTIONS.contains(&name)
+        || UBUNTU_ONLY_ACTIONS.contains(&name)
+        || NON_CANONICAL_ON_FEDORA.contains(&name)
+    {
         "Ubuntu"
     } else {
         "All"
@@ -99,8 +104,9 @@ fn build_reference() -> String {
          Every row is derived from the live code: the command from each action's \
          `ActionSpec` mechanism, the risk from its `risk_level`, the distro from \
          `sysknife-core::action_family`, and the description from the brain's \
-         `KNOWN_ACTIONS` list. **Distro** is `All` (cross-distro), `Ubuntu` \
-         (Debian-family only), or `Fedora` (atomic-host only). **Rb** = requires \
+         `KNOWN_ACTIONS` list. **Distro** identifies the default supported catalogue: \
+         `All`, `Ubuntu`, or `Fedora`. It includes planner preferences, not just \
+         hard execution fences; see [action compatibility](action-compatibility.md). **Rb** = requires \
          reboot; **Ro** = automatic rollback available.\n\n",
     );
 

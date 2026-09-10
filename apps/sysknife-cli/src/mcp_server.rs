@@ -61,7 +61,7 @@ use sysknife_brain::config::BrainConfig;
 use sysknife_brain::planner::LlmPlanner;
 use sysknife_brain::planning_tools::propose_plan::KNOWN_ACTIONS;
 use sysknife_brain::state_client::StateClient as _;
-use sysknife_core::action_family::{DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS};
+use sysknife_core::action_family::action_requires_distro;
 use sysknife_core::distro::DistroId;
 use sysknife_daemon::actions::OBSERVER_MUTATING_ACTIONS;
 
@@ -506,10 +506,7 @@ fn action_is_available_on_distro(action_name: &str, distro: Option<&DistroId>) -
         Some(distro) => {
             crate::distro_routing::check_action_distro(action_name, Some(distro)).is_ok()
         }
-        None => {
-            !DEBIAN_ONLY_ACTIONS.contains(&action_name)
-                && !FEDORA_ONLY_ACTIONS.contains(&action_name)
-        }
+        None => !action_requires_distro(action_name),
     }
 }
 
@@ -1896,11 +1893,34 @@ mod tests {
         assert!(!unknown_names.contains("sysknife_apt_search"));
         assert!(!unknown_names.contains("sysknife_get_system_state"));
 
+        let debian = DistroId::Debian { version: Some(13) };
+        let debian_names: std::collections::HashSet<String> =
+            direct_read_only_tool_router(Some(&debian))
+                .list_all()
+                .into_iter()
+                .map(|tool| tool.name.to_string())
+                .collect();
+        for action in sysknife_core::action_family::UBUNTU_ONLY_ACTIONS {
+            let name = direct_action_tool_name(action);
+            for routed in [&fedora_names, &debian_names, &unknown_names] {
+                assert!(
+                    !routed.contains(&name),
+                    "Ubuntu-only direct tool leaked: {name}"
+                );
+            }
+            if MCP_READ_ONLY_ACTIONS.contains(action) {
+                assert!(
+                    ubuntu_names.contains(&name),
+                    "Ubuntu direct tool lost: {name}"
+                );
+            }
+        }
+
         let read_only_names: std::collections::HashSet<String> = MCP_READ_ONLY_ACTIONS
             .iter()
             .map(|action| direct_action_tool_name(action))
             .collect();
-        for routed_names in [&ubuntu_names, &fedora_names, &unknown_names] {
+        for routed_names in [&ubuntu_names, &fedora_names, &debian_names, &unknown_names] {
             let unexpected: Vec<_> = routed_names.difference(&read_only_names).collect();
             assert!(
                 unexpected.is_empty(),

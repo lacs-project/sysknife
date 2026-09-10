@@ -139,6 +139,8 @@ podman run -d --name sysknife-pg -p 55987:5432 \
 export SYSKNIFE_TEST_POSTGRES_URL=postgres://sysknife:sysknife@127.0.0.1:55987/sysknife_test
 export SYSKNIFE_REQUIRE_POSTGRES=1
 cargo test -p sysknife-daemon --test postgres_store --locked -- --include-ignored
+cargo test -p sysknife-cli --test cli_smoke --locked \
+  audit_verify_exits_with_code_1_when_anchor_is_truncated -- --ignored --exact
 
 podman rm -f sysknife-pg
 ```

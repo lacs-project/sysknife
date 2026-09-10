@@ -94,15 +94,23 @@ fn labelled_risks(prompt: &str, known: &BTreeMap<String, String>) -> BTreeMap<St
 /// Every distro render, so a per-family table cannot drift on its own.
 fn rendered_prompts() -> Vec<(&'static str, String)> {
     let fedora = DistroHint {
+        id: "fedora".into(),
         family: DISTRO_FAMILY_FEDORA,
         version: Some("Fedora Silverblue 44".to_string()),
     };
-    let debian = DistroHint {
+    let ubuntu = DistroHint {
+        id: "ubuntu".into(),
         family: DISTRO_FAMILY_DEBIAN,
         version: Some("Ubuntu 24.04".to_string()),
     };
+    let debian = DistroHint {
+        id: "debian".into(),
+        family: DISTRO_FAMILY_DEBIAN,
+        version: Some("Debian 13".to_string()),
+    };
     vec![
         ("fedora", build_system_prompt(None, Some(&fedora))),
+        ("ubuntu", build_system_prompt(None, Some(&ubuntu))),
         ("debian", build_system_prompt(None, Some(&debian))),
         ("generic", build_system_prompt(None, None)),
     ]

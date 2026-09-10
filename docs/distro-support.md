@@ -20,7 +20,8 @@ the bug this section now documents:
 - **Eligibility** — will the daemon act on this host at all? That is
   `DistroId::is_supported()` in `crates/sysknife-core/src/distro.rs`, and the
   daemon refuses every *mutating* action when it is false. It is true for all
-  Ubuntu releases from 20.04 up, and for Fedora Atomic 41 and later.
+  Ubuntu releases from 20.04 up, Fedora Atomic 41 and later, and Debian stable
+  releases with a known version of 12 or later.
 - **Validation tier** — has the full story suite been run on that release?
   That is the table below, and it will always be narrower than eligibility.
 
@@ -30,6 +31,13 @@ supported OS were told their host was unsupported. Releases below 20.04 stay
 ineligible because they no longer receive Ubuntu security updates, and Ubuntu
 Core stays ineligible for a structural reason rather than an age one — it has no
 apt and a read-only root, so the Debian-family action set cannot apply.
+
+Debian 11 is below the floor because its LTS ended on 2026-08-31. Debian 12
+remains eligible during LTS; Debian 13 is eligible as well. Testing/sid images
+without `VERSION_ID` remain ineligible: Debian identity alone does not establish
+security support. This enables the existing Debian mechanisms, not Ubuntu-only
+services, PPAs or reboot-sentinel assumptions. Firewall backend coverage remains
+tracked separately in [#239](https://github.com/lacs-project/sysknife/issues/239).
 
 ## Status definitions
 
@@ -52,6 +60,7 @@ apt and a read-only root, so the Debian-family action set cannot apply.
 | **Fedora Silverblue 44** | rpm-ostree, Flatpak, toolbox, firewalld, systemd, containers | Harness and fixture coverage; no live-VM run on this release | **Blocked** (`make install` does not complete on rpm-ostree, [#301](https://github.com/lacs-project/sysknife/issues/301)) |
 | **Other Fedora Atomic 41+ variants** | rpm-ostree family | Detection and shared action tests, plus a live VM run on Fedora 43 Silverblue (2026-08-24) that provisioned and then stopped at `make install` | **Blocked** (`make install` does not complete on rpm-ostree, [#301](https://github.com/lacs-project/sysknife/issues/301)) |
 | **Fedora Workstation / Server** | `dnf` family incomplete | Detection tests only | **Experimental** |
+| **Debian stable 12+** | Existing apt/dpkg and portable actions; Ubuntu-only actions excluded | Version and routing fixtures; no live Debian story-suite run | **Current validation required** |
 
 ## Fedora Atomic cannot be installed yet
 
@@ -82,7 +91,7 @@ family and the atomic story family are implemented and covered by the workspace
 suite. What is missing is a way to put the helpers somewhere the daemon's own
 grants already point.
 
-The deterministic workspace baseline is 1,845 Rust tests plus 72 frontend
+The deterministic workspace baseline is 1,851 Rust tests plus 72 frontend
 tests. Those tests verify action construction, policy, approval, storage, and
 UI behavior, but they do not replace a real distribution VM run.
 
@@ -117,7 +126,7 @@ Fedora-family systems receive a warning rather than a false support claim.
 
 | Distro | State |
 |---|---|
-| Debian stable/testing | Planned after Ubuntu hardening |
+| Debian testing / sid without `VERSION_ID` | Ineligible; no known supported stable version |
 | Arch / EndeavourOS | Planned; requires a `pacman` action family |
 | openSUSE Leap / Tumbleweed | Planned; requires `zypper` and transactional-update design |
 | NixOS | Out of scope; configuration evaluation does not fit per-action mutation |

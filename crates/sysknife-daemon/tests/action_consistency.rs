@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 
 use serde_json::json;
 use sysknife_brain::planning_tools::propose_plan::KNOWN_ACTIONS;
-use sysknife_core::action_family::{DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS};
+use sysknife_core::action_family::{DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS, UBUNTU_ONLY_ACTIONS};
 use sysknife_daemon::actions::{all_specs, ActionSpec};
 use sysknife_daemon::executor::build_action_spec;
 use sysknife_daemon::policy::{min_role_for_action, role_for_risk_level};
@@ -323,27 +323,28 @@ const FEDORA_PATHS: &[&str] = &["/etc/yum.repos.d"];
 
 /// Tokens that mean Debian-family only.
 const DEBIAN_TOOLS: &[&str] = &[
+    "apt",
     "apt-get",
     "apt-mark",
     "apt-cache",
     "dpkg",
-    "snap",
-    "ufw",
-    "netplan",
-    "add-apt-repository",
-    "do-release-upgrade",
-    "canonical-livepatch",
-    "multipass",
-    "aa-status",
-    "aa-enforce",
-    "aa-complain",
-    "cloud-init",
-    "fail2ban-client",
+    "apt-pin-edit",
+    // Shipped helpers encapsulate /etc/apt writes and update-grub respectively.
+    "unattended-upgrades-edit",
+    "grub-kargs-edit",
     "update-grub",
     "unattended-upgrade",
 ];
 
-const DEBIAN_PATHS: &[&str] = &["/etc/apt/", "/etc/default/grub", "/var/run/reboot-required"];
+const DEBIAN_PATHS: &[&str] = &["/etc/apt/", "/var/log/apt/", "/etc/default/grub"];
+
+const UBUNTU_TOOLS: &[&str] = &[
+    "pro",
+    "add-apt-repository",
+    "do-release-upgrade",
+    "canonical-livepatch",
+];
+const UBUNTU_PATHS: &[&str] = &["/var/run/reboot-required"];
 
 /// The full command line (or file path) an action drives, as one searchable
 /// string. `sudo sh -c "…"` wrappers hide the real tool inside an argument, so
@@ -381,8 +382,20 @@ const UNFENCED_BY_DECISION: &[&str] = &[];
 #[test]
 fn family_fence_agrees_with_each_action_s_mechanism() {
     let mut wrong = Vec::new();
+    let specs = all_specs();
+    for name in FEDORA_ONLY_ACTIONS
+        .iter()
+        .chain(DEBIAN_ONLY_ACTIONS)
+        .chain(UBUNTU_ONLY_ACTIONS)
+    {
+        if !specs.iter().any(|spec| spec.action_name == *name) {
+            wrong.push(format!(
+                "{name}: hard fence names an action absent from the catalogue"
+            ));
+        }
+    }
 
-    for spec in all_specs() {
+    for spec in specs {
         let name = spec.action_name;
         let text = mechanism_text(&spec);
 
@@ -390,10 +403,17 @@ fn family_fence_agrees_with_each_action_s_mechanism() {
             || FEDORA_PATHS.iter().any(|p| text.contains(p));
         let debian_shaped = DEBIAN_TOOLS.iter().any(|t| mentions_tool(&text, t))
             || DEBIAN_PATHS.iter().any(|p| text.contains(p));
+        let ubuntu_shaped = UBUNTU_TOOLS.iter().any(|t| mentions_tool(&text, t))
+            || UBUNTU_PATHS.iter().any(|p| text.contains(p));
 
         // An action cannot be shaped by both families' tooling; if one ever is,
         // the token lists need splitting rather than the fence.
-        if fedora_shaped && debian_shaped {
+        if [fedora_shaped, debian_shaped, ubuntu_shaped]
+            .iter()
+            .filter(|x| **x)
+            .count()
+            > 1
+        {
             wrong.push(format!(
                 "{name}: mechanism mentions both families' tooling: {text}"
             ));
@@ -412,6 +432,23 @@ fn family_fence_agrees_with_each_action_s_mechanism() {
                 "{name}: drives Debian-only tooling but is not in DEBIAN_ONLY_ACTIONS ({text})"
             ));
         }
+        if ubuntu_shaped != UBUNTU_ONLY_ACTIONS.contains(&name) {
+            wrong.push(format!(
+                "{name}: Ubuntu fence disagrees with mechanism ({text})"
+            ));
+        }
+        // Reverse direction: a portable mechanism cannot be hard-fenced just
+        // because it is the planner's preferred tool on one supported distro.
+        if FEDORA_ONLY_ACTIONS.contains(&name) && !fedora_shaped {
+            wrong.push(format!(
+                "{name}: Fedora fence exceeds its mechanism ({text})"
+            ));
+        }
+        if DEBIAN_ONLY_ACTIONS.contains(&name) && !debian_shaped {
+            wrong.push(format!(
+                "{name}: Debian fence exceeds its mechanism ({text})"
+            ));
+        }
     }
 
     assert!(
@@ -428,7 +465,9 @@ fn the_unfenced_by_decision_list_is_still_load_bearing() {
     // fenced properly.
     for name in UNFENCED_BY_DECISION {
         assert!(
-            !FEDORA_ONLY_ACTIONS.contains(name) && !DEBIAN_ONLY_ACTIONS.contains(name),
+            !FEDORA_ONLY_ACTIONS.contains(name)
+                && !DEBIAN_ONLY_ACTIONS.contains(name)
+                && !UBUNTU_ONLY_ACTIONS.contains(name),
             "{name} is now fenced; remove it from UNFENCED_BY_DECISION"
         );
         let spec = all_specs()

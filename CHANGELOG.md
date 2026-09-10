@@ -12,6 +12,52 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Changed
+
+- Make Debian stable releases 12 and later eligible, while refusing an unknown
+  version and releases below the security-support floor. Debian eligibility is
+  separate from live-VM validation; Ubuntu-only actions remain excluded (#238).
+- Let `UfwStatus` return numbered rules with `numbered: true`, retaining verbose
+  output by default. Add `query_ufw_rules` so the planner can read the indices
+  required by `UfwDeleteRule` instead of guessing them (#234).
+- Separate Ubuntu identity requirements from Debian-family mechanisms and
+  planner defaults. Canonical services, PPAs and the reboot sentinel require
+  Ubuntu itself; portable tools are no longer refused merely for being another
+  distribution's default. Ubuntu and Fedora default catalogues and host
+  eligibility remain unchanged (#237).
+- Keep portable tools behind the CLI supported-host gate and out of unknown-family
+  planner catalogues. At the daemon, portable Observer reads such as `UfwStatus`
+  can now run without distro detection; mutations and hard-fenced reads still
+  require an eligible host. `AptUpdate` remains hard-fenced despite its Low risk.
+- `DistroHint` now carries a distribution `id`, and `propose_plan_tool_def`
+  accepts the full hint rather than a family string. This is a public Rust API
+  change requiring a middle-digit release while the project is in `0.y`.
+
+### Fixed
+
+- `check_no_secrets.sh --staged` fails closed when git cannot answer. The
+  pre-commit credential scanner built its file list through process
+  substitution, which `set -euo pipefail` cannot see into, so a failing
+  `git diff --cached` left the loop with nothing to do and the scanner exited 0
+  having read no bytes. A staged blob git cannot read now stops the commit with
+  its own message instead of the credential-found banner, and an honest empty
+  staged set still passes in silence (#406).
+- Attach the default safety audit log in `LlmPlanner::from_config`, the
+  construction path the CLI, the MCP server and the shell all take. Fence
+  rejections were built and tested and never written anywhere, so a rejected
+  plan left no record on any real machine. Direct `LlmPlanner::new` stays
+  without runtime defaults for embedded callers and tests (#236).
+- `sysknife-setup` prefers keyless Ollama over a cloud provider with no
+  credentials, so a first run on a machine with no API key reaches a working
+  provider instead of one it cannot authenticate to (#337).
+- The release helper refuses a missing registry version argument rather than
+  carrying an empty string into the publish path (#396).
+- Guard each live PostgreSQL test invocation independently, including the CLI
+  anchor exit-code contract, and run that CLI contract in both local CI paths.
+  Missing ignore flags, unresolved test filters, missing contract targets and
+  disabled required-database settings now fail the guard. Quoted step labels
+  cannot substitute for the arguments that actually execute (#362).
+
 ## [0.14.0] — 2026-09-07
 
 The middle digit moves because an exit code changed. `sysknife audit checkpoint`

@@ -86,6 +86,9 @@ jobs:
       - name: Check no workflow pins an end-of-life Node release
         run: bash tests/release/node-eol.test.sh
 
+      - name: Check tracked files use portable line endings
+        run: bash tests/release/tracked-eol.test.sh
+
       - name: Check systemd directory modes match tmpfiles
         run: bash tests/release/systemd-directory-modes.test.sh
 
@@ -145,12 +148,22 @@ jobs:
 
       - name: Check internal markdown links
         run: |
+          file_list="$(mktemp)"
+          trap 'rm -f "$file_list"' EXIT
+          scripts/markdown-link-files.sh > "$file_list" || exit 1
+          count=0
           while IFS= read -r -d '' file; do
             markdown-link-check --config .markdown-link-check-internal.json "$file"
-          done < <(scripts/markdown-link-files.sh)
+            count=$((count + 1))
+          done < "$file_list"
+          [[ "$count" -gt 0 ]] || { printf 'markdown-link-files: no files checked\n' >&2; exit 1; }
 
       - name: Check external markdown links
         run: |
+          file_list="$(mktemp)"
+          trap 'rm -f "$file_list"' EXIT
+          scripts/markdown-link-files.sh --external > "$file_list" || exit 1
+          count=0
           while IFS= read -r -d '' file; do
             # Retry on transient network failure. `retryOn429` in the config only
             # covers rate limiting, and the failures actually seen here were
@@ -172,7 +185,9 @@ jobs:
               echo "link check for $file failed (attempt $attempt/3); retrying in 10s"
               sleep 10
             done
-          done < <(scripts/markdown-link-files.sh --external)
+            count=$((count + 1))
+          done < "$file_list"
+          [[ "$count" -gt 0 ]] || { printf 'markdown-link-files: no files checked\n' >&2; exit 1; }
 
       - name: Lint GitHub issue templates
         run: yamllint .github/ISSUE_TEMPLATE/*.yml .github/workflows/*.yml
@@ -250,7 +265,7 @@ jobs:
         run: cargo doc --no-deps --workspace --locked
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d  # v2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2
         with:
           tool: cargo-nextest
 
@@ -305,7 +320,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d  # v2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2
         with:
           tool: cargo-audit
 
