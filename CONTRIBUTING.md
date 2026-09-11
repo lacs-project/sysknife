@@ -179,6 +179,12 @@ deterministic source-relative check, while external URLs stay bounded to
 `scripts/markdown-link-exclusions.txt` only when a source file must be skipped;
 the discovery test rejects exclusions that no longer name a tracked file.
 
+**Every release and E2E test must be reachable from a gate.**
+`scripts/check_test_reachability.sh` discovers `tests/release/*.test.sh` and
+`tests/e2e/*.test.sh`, then requires each exact path to appear in `ci.yml`,
+`e2e.yml`, or `release.yml`. Add the invocation in the same
+change as a new test; an uninvoked test makes both local and remote CI fail.
+
 **A change that touches no Rust skips the Rust gate.** The workspace suite exists
 to stop a Rust regression reaching `main`, and a diff with no `.rs` file in it
 cannot cause one:

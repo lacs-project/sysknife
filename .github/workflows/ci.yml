@@ -44,6 +44,12 @@ jobs:
       - name: Check required repository files
         run: bash scripts/check_repo_completeness.sh
 
+      - name: Check every release and E2E test is invoked by a gate
+        run: bash scripts/check_test_reachability.sh
+
+      - name: Test the reachability gate
+        run: bash tests/release/test-reachability.test.sh
+
       - name: Check release version consistency
         run: bash scripts/check_release_versions.sh
 
