@@ -33,9 +33,10 @@ set -euo pipefail
 # Literal values that look like credentials and are published as examples by
 # their own vendors. Exact matches only — never a prefix.
 ALLOWED_EXAMPLES=(
-    "AKIAIOSFODNN7EXAMPLE"                      # AWS docs, every IAM example
-    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"  # its matching secret
+    "AKIAIOSFODNN7EXAMPLE"  # AWS docs, every IAM example
 )
+# AWS secret access keys have no distinctive prefix; no pattern covers their
+# generic base64 format, so the matching secret example needs no exemption.
 
 # provider:regex. Bodies are sized to the real format so fixtures fall short.
 PATTERNS=(

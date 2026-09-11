@@ -26,34 +26,68 @@ trap 'rm -rf "$tmp"' EXIT
 
 fail=0
 
+# --- 0. Read the scanner's pattern and allowlist tables ---------------------
+# Read the quoted entries without executing the scanner or hiding read errors.
+read_array() {
+    sed -n "/^$1=(/,/^)/p" "$CHECK" |
+        sed -nE 's/^[[:space:]]*"(.*)"([[:space:]]+#.*)?$/\1/p'
+}
+if ! patterns_text="$(read_array PATTERNS)" ||
+    ! allowlist_text="$(read_array ALLOWED_EXAMPLES)" ||
+    [ -z "$patterns_text" ] || [ -z "$allowlist_text" ]; then
+    echo "FAIL: could not read PATTERNS / ALLOWED_EXAMPLES out of $CHECK"
+    exit 1
+fi
+mapfile -t scanner_patterns <<< "$patterns_text"
+mapfile -t scanner_allowlist <<< "$allowlist_text"
+declare -A scanner_providers=() case_providers=()
+for entry in "${scanner_patterns[@]}"; do
+    scanner_providers["${entry%%:*}"]=1
+done
+
 # --- 1. Real-shaped credentials must be caught ------------------------------
 # Synthesised, never a live key: prefix + filler at the real body length.
 make_key() { printf '%s%s' "$1" "$(head -c "$2" < /dev/zero | tr '\0' 'A')"; }
 
 declare -a POSITIVES=(
-    "$(make_key 'gsk_' 52)"          # Groq
-    "$(make_key 'sk-' 48)"           # OpenAI classic
-    "$(make_key 'sk-proj-' 64)"      # OpenAI project
-    "$(make_key 'sk-ant-' 95)"       # Anthropic
-    "$(make_key 'ghp_' 36)"          # GitHub PAT
-    "$(make_key 'github_pat_' 82)"   # GitHub fine-grained
-    "$(make_key 'AIza' 35)"          # Google
+    "Groq|$(make_key 'gsk_' 52)"
+    "OpenAI|$(make_key 'sk-' 48)"
+    "OpenAI project|$(make_key 'sk-proj-' 64)"
+    "Anthropic|$(make_key 'sk-ant-' 95)"
+    "GitHub PAT|$(make_key 'ghp_' 36)"
+    "GitHub fine-grained PAT|$(make_key 'github_pat_' 82)"
+    "Google API key|$(make_key 'AIza' 35)"
+    "Slack token|$(make_key 'xoxb-' 24)"
+    # Fixed-length AWS examples are separated from findings by exact allowlisting.
+    "AWS access key|$(printf 'AKIA%s' '0123456789ABCDEF')"
 )
-for key in "${POSITIVES[@]}"; do
+for entry in "${POSITIVES[@]}"; do
+    provider="${entry%%|*}"
+    key="${entry#*|}"
+    case_providers["$provider"]=1
     printf 'API_KEY = "%s"\n' "$key" > "$tmp/leak.txt"
-    if "$CHECK" "$tmp/leak.txt" >/dev/null 2>&1; then
-        echo "FAIL: a ${key:0:8}… credential ($(printf '%s' "$key" | wc -c) chars) was NOT caught"
+    if out="$("$CHECK" "$tmp/leak.txt" 2>&1)"; then
+        echo "FAIL: the '$provider' credential (${#key} chars) was NOT caught"
+        fail=1
+    elif ! grep -qF "SECRET: $provider key in " <<< "$out"; then
+        echo "FAIL: the '$provider' case was caught, but not under its own provider name"
         fail=1
     fi
 done
 
-# AWS keys are fixed-length, so the example and a real one are the same shape:
-# only the exact-match allowlist separates them.
-printf 'aws = "AKIA%s"\n' "0123456789ABCDEF" > "$tmp/aws.txt"
-if "$CHECK" "$tmp/aws.txt" >/dev/null 2>&1; then
-    echo "FAIL: an AWS access key was NOT caught"
-    fail=1
-fi
+# Compare both directions: adding or deleting a pattern must change its case.
+for provider in "${!scanner_providers[@]}"; do
+    if [ -z "${case_providers[$provider]+present}" ]; then
+        echo "FAIL: the scanner has a '$provider' pattern with no positive case"
+        fail=1
+    fi
+done
+for provider in "${!case_providers[@]}"; do
+    if [ -z "${scanner_providers[$provider]+present}" ]; then
+        echo "FAIL: this file has a '$provider' case and the scanner has no such pattern"
+        fail=1
+    fi
+done
 
 # --- 2. The repo's own fixtures must NOT be caught --------------------------
 declare -a NEGATIVES=(
@@ -74,15 +108,47 @@ for fixture in "${NEGATIVES[@]}"; do
     fi
 done
 
+# Exact-match exemptions must be producible as a complete scanner match.
+for example in "${scanner_allowlist[@]}"; do
+    matched=0
+    for entry in "${scanner_patterns[@]}"; do
+        if grep -qxE "${entry#*:}" <<< "$example"; then
+            matched=1
+            break
+        fi
+    done
+    if [ "$matched" != 1 ]; then
+        echo "FAIL: allowlist entry '${example:0:12}…' is matched by no complete pattern"
+        fail=1
+    fi
+done
+
 # --- 3. The whole tracked tree must be clean --------------------------------
 # The assertion that keeps this scanner usable. If it ever fails, the answer is
 # to shorten the offending fixture, not to loosen a pattern.
 cd "$ROOT"
-mapfile -t tracked < <(git ls-files)
-if ! "$CHECK" "${tracked[@]}" >/dev/null 2>&1; then
-    echo "FAIL: the tracked tree does not pass its own secret scan:"
-    "$CHECK" "${tracked[@]}" 2>&1 | head -10
+# Check Git's status before consuming its output, including partial output.
+if ! git ls-files -z > "$tmp/tracked"; then
+    echo "FAIL: git could not enumerate tracked files"
     fail=1
+else
+    mapfile -d '' -t tracked < "$tmp/tracked"
+    has_scanner=0
+    for path in "${tracked[@]}"; do
+        if [ "$path" = 'scripts/check_no_secrets.sh' ]; then
+            has_scanner=1
+            break
+        fi
+    done
+    if [ "$has_scanner" != 1 ]; then
+        echo "FAIL: git ls-files returned ${#tracked[@]} path(s) without the scanner; the tree scan cannot be trusted"
+        fail=1
+    elif ! scan_out="$("$CHECK" "${tracked[@]}" 2>&1)"; then
+        echo "FAIL: the tracked tree does not pass its own secret scan (first 10 diagnostic lines):"
+        # Capture first so head cannot terminate the scanner with SIGPIPE.
+        head -10 <<< "$scan_out"
+        fail=1
+    fi
 fi
 
 # --- 4. It must never print the credential it found -------------------------
