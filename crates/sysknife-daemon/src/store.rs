@@ -49,6 +49,28 @@ use crate::transactions::{
 
 pub mod postgres;
 
+/// Column list every `ChainRow` read shares, on both backends. The SQLite
+/// path (`transactions.rs`) maps rows positionally and the Postgres path
+/// (`store/postgres.rs`) maps them by name, but both SELECT this exact list
+/// in this exact order, so the list, the column count, and the mapper order
+/// are one invariant.
+///
+/// This used to be declared twice — once per backend — kept in sync only by
+/// a "Mirrors" doc comment. Adding the caller-identity columns updated the
+/// mapper and one of the two queries, and the miss showed up only as a
+/// runtime "no column found for name: chain_version" from the live-Postgres
+/// test — the unit tests, which never touch this SQL, stayed green. One
+/// declaration means that class of drift is a compile-time impossibility
+/// rather than a live-database surprise (#397).
+///
+/// Parameter placeholders stay per-backend on purpose: SQLite binds `?1`,
+/// Postgres binds `$1`. Only the column list is shared.
+pub(crate) const CHAIN_ROW_COLUMNS: &str =
+    "seq, key_id, transaction_id, request_id, request_hash, \
+     action_name, risk_level, summary, approval_id, warnings_json, \
+     created_at, prev_chain_hash, chain_hash, chain_version, caller_role, event_tip, \
+     caller_principal";
+
 /// Async, polymorphic interface to the audit log. Implemented by
 /// [`SqliteStore`] (rusqlite, blocking under the hood) and
 /// [`postgres::PostgresStore`] (sqlx, native async).
@@ -415,6 +437,47 @@ mod tests {
     fn sqlite_store(path: std::path::PathBuf) -> SqliteStore {
         let key = Arc::new(AuditKey::from_bytes(vec![0x42; 32]));
         SqliteStore::new(crate::transactions::TransactionStore::open_with_key(path, key).unwrap())
+    }
+
+    /// `CHAIN_ROW_COLUMNS` is now declared once (store.rs), so there is no
+    /// second copy left to compare — the drift test that justified the hoist
+    /// ran green first, was mutated red on purpose (see #397's PR), and is
+    /// replaced by this pin. The invariant that matters is the one the
+    /// positional mapper (`chain_row_from_sqlite`) and the by-name mapper
+    /// (`row_to_chain_row`) both depend on: 17 columns, in this exact order.
+    /// Adding a column to the chain means updating this list deliberately,
+    /// together with both mappers.
+    #[test]
+    fn chain_row_columns_pinned() {
+        let columns: Vec<&str> = crate::store::CHAIN_ROW_COLUMNS
+            .split(',')
+            .map(str::trim)
+            .collect();
+        assert_eq!(
+            columns,
+            [
+                "seq",
+                "key_id",
+                "transaction_id",
+                "request_id",
+                "request_hash",
+                "action_name",
+                "risk_level",
+                "summary",
+                "approval_id",
+                "warnings_json",
+                "created_at",
+                "prev_chain_hash",
+                "chain_hash",
+                "chain_version",
+                "caller_role",
+                "event_tip",
+                "caller_principal",
+            ],
+            "CHAIN_ROW_COLUMNS changed — both ChainRow mappers read these \
+             columns in this order, so update them in the same change"
+        );
+        assert_eq!(columns.len(), 17, "column count drifted from 17");
     }
 
     fn new_tx(request_id: &str) -> NewTransaction {
