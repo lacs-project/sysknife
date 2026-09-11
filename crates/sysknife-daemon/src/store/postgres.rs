@@ -48,17 +48,15 @@ use crate::transactions::{
 
 const MIGRATION_LOCK_ID: i64 = 0x5359_534b_4e49_4645;
 
-/// Column list every `ChainRow` read shares, kept next to `row_to_chain_row`.
+/// Column list every `ChainRow` read shares, declared once in `store.rs`
+/// (#397) and kept next to `row_to_chain_row` here by import.
 ///
 /// The two read paths each spelled the list out. Adding the caller-identity
 /// columns updated the mapper and one of the two queries, and the miss showed
 /// up only as a runtime "no column found for name: chain_version" from the
 /// live-Postgres test — the unit tests, which never touch this SQL, stayed
-/// green. Mirrors `CHAIN_ROW_COLUMNS` in `transactions.rs`.
-const CHAIN_ROW_COLUMNS: &str = "seq, key_id, transaction_id, request_id, request_hash, \
-     action_name, risk_level, summary, approval_id, warnings_json, \
-     created_at, prev_chain_hash, chain_hash, chain_version, caller_role, event_tip, \
-     caller_principal";
+/// green. That history now lives on the single declaration.
+use crate::store::CHAIN_ROW_COLUMNS;
 
 struct Migration {
     version: i64,
