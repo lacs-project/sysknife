@@ -63,7 +63,7 @@ needs `SYSKNIFE_LLM_PROVIDER` **and** its key:
 |---|---|---|
 | `openai` | `OPENAI_API_KEY` | `gpt-4.1` |
 | `gemini` | `GEMINI_API_KEY` | `gemini-2.0-flash` |
-| `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
+| `groq` | `GROQ_API_KEY` | `openai/gpt-oss-120b` |
 | `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
 | `mistral` | `MISTRAL_API_KEY` | `mistral-large-latest` |
 | `xai` | `XAI_API_KEY` | `grok-3` |

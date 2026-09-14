@@ -376,6 +376,43 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
             .status,
         JobState::Canceled
     );
+    assert_eq!(
+        store.fetch_event_rows().await.expect("fetch events").len(),
+        2,
+        "canceling an unapproved transaction must not append an event"
+    );
+
+    let approved = store
+        .record(new_transaction())
+        .await
+        .expect("record approved");
+    let receipt = store
+        .approve_transaction(&approved.transaction_id)
+        .await
+        .expect("approve fresh transaction")
+        .expect("fresh transaction is approvable");
+    assert!(store
+        .cancel_queued(&approved.transaction_id)
+        .await
+        .expect("cancel approved transaction"));
+    let receipt_digest = sysknife_daemon::audit_chain::approval_receipt_digest(&receipt);
+    assert!(!store
+        .claim_approved_for_execution(&approved.transaction_id, &receipt_digest)
+        .await
+        .expect("revoked receipt must not execute"));
+    let events = store.fetch_event_rows().await.expect("fetch events");
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.kind.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "approval_granted",
+            "approval_consumed",
+            "approval_granted",
+            "approval_revoked"
+        ]
+    );
 
     let _reconnected = PostgresStore::connect(&config, Arc::clone(&key))
         .await

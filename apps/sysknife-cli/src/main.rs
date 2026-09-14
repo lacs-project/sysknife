@@ -68,11 +68,7 @@ async fn run(cli: Cli, socket: crate::client::SocketTarget) {
                 dispatch(&cli, socket, &log),
             )
             .await
-            .unwrap_or_else(|_| {
-                Err(crate::error::CliError::ExecutionFailed(format!(
-                    "operation timed out after {secs}s"
-                )))
-            })
+            .unwrap_or(Err(crate::error::CliError::TimedOut(secs)))
         } else {
             dispatch(&cli, socket, &log).await
         }

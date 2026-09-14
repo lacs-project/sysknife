@@ -122,9 +122,21 @@ pub fn ufw_reset() -> ActionSpec {
 ///
 /// Risk: Low / Observer. Read-only; no system changes.
 pub fn ufw_status() -> ActionSpec {
+    ufw_status_with_numbered(false)
+}
+
+/// Show numbered rule indices for `UfwDeleteRule`, or verbose status otherwise.
+pub fn ufw_status_with_numbered(numbered: bool) -> ActionSpec {
     ActionSpec {
         action_name: "UfwStatus",
-        mechanism: command_mechanism("sudo", ["ufw", "status", "verbose"]),
+        mechanism: command_mechanism(
+            "sudo",
+            [
+                "ufw",
+                "status",
+                if numbered { "numbered" } else { "verbose" },
+            ],
+        ),
         risk_level: RiskLevel::Low,
         reboot_required: false,
         rollback_available: false,
@@ -326,6 +338,39 @@ mod tests {
         let (_, args) = extract_args(&spec);
         assert!(args.contains(&"status"));
         assert!(args.contains(&"verbose"));
+        for (numbered, rendering) in [(false, "verbose"), (true, "numbered")] {
+            let spec = ufw_status_with_numbered(numbered);
+            assert_eq!(
+                extract_args(&spec),
+                ("sudo", vec!["ufw", "status", rendering])
+            );
+            assert_eq!(spec.risk_level, RiskLevel::Low);
+            assert!(!spec.reboot_required && !spec.rollback_available);
+        }
+        for (params, rendering) in [
+            (serde_json::json!({}), "verbose"),
+            (serde_json::json!({"numbered": false}), "verbose"),
+            (serde_json::json!({"numbered": true}), "numbered"),
+        ] {
+            let spec = crate::executor::build_action_spec("UfwStatus", &params).unwrap();
+            assert_eq!(
+                extract_args(&spec),
+                ("sudo", vec!["ufw", "status", rendering])
+            );
+        }
+        for invalid in [
+            serde_json::json!("true"),
+            serde_json::json!(1),
+            serde_json::Value::Null,
+        ] {
+            assert!(matches!(
+                crate::executor::build_action_spec(
+                    "UfwStatus",
+                    &serde_json::json!({"numbered": invalid})
+                ),
+                Err(crate::executor::ExecutorError::InvalidParam("numbered"))
+            ));
+        }
     }
 
     #[test]

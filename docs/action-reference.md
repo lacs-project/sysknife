@@ -3,7 +3,7 @@
 **This file is generated. Do not edit by hand.**
 Regenerate with `UPDATE_ACTION_REFERENCE=1 cargo test -p sysknife-daemon --test action_reference_doc`; a plain `cargo test` fails if it drifts from the catalogue.
 
-Every row is derived from the live code: the command from each action's `ActionSpec` mechanism, the risk from its `risk_level`, the distro from `sysknife-core::action_family`, and the description from the brain's `KNOWN_ACTIONS` list. **Distro** is `All` (cross-distro), `Ubuntu` (Debian-family only), or `Fedora` (atomic-host only). **Rb** = requires reboot; **Ro** = automatic rollback available.
+Every row is derived from the live code: the command from each action's `ActionSpec` mechanism, the risk from its `risk_level`, the distro from `sysknife-core::action_family`, and the description from the brain's `KNOWN_ACTIONS` list. **Distro** identifies the default supported catalogue: `All`, `Ubuntu`, or `Fedora`. It includes planner preferences, not just hard execution fences; see [action compatibility](action-compatibility.md). **Rb** = requires reboot; **Ro** = automatic rollback available.
 
 ## Deployment (atomic host)
 
@@ -256,7 +256,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `CheckPendingReboot` | `bash -c "if test -f /var/run/reboot-required; then cat /var/run/reboot-required; cat /var/run/reboot-required.pkgs 2>/dev/null; true; else echo 'No reboot required.'; fi"` | Low | Ubuntu | – | – | check whether a reboot is pending (/var/run/reboot-required) — no params; Ubuntu/Debian only; read-only |
+| `CheckPendingReboot` | `bash -c "if test -f /var/run/reboot-required; then cat /var/run/reboot-required; cat /var/run/reboot-required.pkgs 2>/dev/null; true; else echo 'No reboot required.'; fi"` | Low | Ubuntu | – | – | check whether a reboot is pending (/var/run/reboot-required) — no params; Ubuntu only; read-only |
 
 ## AppArmor
 
@@ -338,8 +338,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `UfwAllow` | `sudo ufw allow 22` | High | Ubuntu | – | – | allow inbound traffic on a port or service — param: port_or_service\* (e.g. 22, 22/tcp, OpenSSH); Ubuntu only; High risk |
 | `UfwDeny` | `sudo ufw deny 23` | High | Ubuntu | – | – | deny inbound traffic on a port or service — param: port_or_service\*; Ubuntu only; High risk |
 | `UfwReset` | `sudo ufw --force reset` | High | Ubuntu | – | – | reset ufw to defaults, removing all rules — no params; Ubuntu only; High risk; irreversible |
-| `UfwStatus` | `sudo ufw status verbose` | Low | Ubuntu | – | – | show current ufw status and rules — no params; Ubuntu only; read-only |
-| `UfwDeleteRule` | `sudo ufw --force delete 1` | High | Ubuntu | – | – | delete a ufw rule by number — param: rule_number\* (positive integer from 'ufw status numbered'); Ubuntu only; High risk |
+| `UfwStatus` | `sudo ufw status verbose` | Low | Ubuntu | – | – | show current ufw status and rules — optional param: numbered (boolean, default false); true runs ufw status numbered and exposes rule_number values for UfwDeleteRule, false keeps verbose status; read-only |
+| `UfwDeleteRule` | `sudo ufw --force delete 1` | High | Ubuntu | – | – | delete a ufw rule by number — param: rule_number\* (positive integer from query_ufw_rules or UfwStatus with numbered=true); never guess a rule number, and refresh after rule changes; High risk |
 | `UfwLimit` | `sudo ufw limit 22` | High | Ubuntu | – | – | add rate-limiting rule on a port/service (&gt;6 connections/30s blocked) — param: target\* (e.g. '22' or 'ssh'); Ubuntu only; High risk; use for SSH brute-force mitigation |
 
 ## netplan

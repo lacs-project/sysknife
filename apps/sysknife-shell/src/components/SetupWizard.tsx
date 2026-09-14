@@ -100,7 +100,7 @@ const DEFAULT_CLOUD_MODELS: Record<CloudProvider, string> = {
   anthropic: "claude-sonnet-4-20250514",
   openai: "gpt-4.1",
   gemini: "gemini-2.0-flash",
-  groq: "llama-3.3-70b-versatile",
+  groq: "openai/gpt-oss-120b",
   deepseek: "deepseek-chat",
   mistral: "mistral-large-latest",
   xai: "grok-3",

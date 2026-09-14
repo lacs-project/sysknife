@@ -114,8 +114,9 @@ contain Fedora action names.** This is structural isolation — the model cannot
 propose `AptInstall` on a Fedora host or `AddLayeredPackage` on Ubuntu, even if
 it hallucinates.
 
-When adding or renaming an action, update the `FEDORA_ONLY_ACTIONS` and
-`DEBIAN_ONLY_ACTIONS` string-slice constants that back the safety-fence unit tests.
+When adding or renaming an action, update the appropriate `FEDORA_ONLY_ACTIONS`,
+`DEBIAN_ONLY_ACTIONS` or `UBUNTU_ONLY_ACTIONS` hard fence. Portable-tool defaults
+belong in `NON_CANONICAL_ON_*`; see `docs/action-compatibility.md`.
 
 ### The six worked examples are not optional
 

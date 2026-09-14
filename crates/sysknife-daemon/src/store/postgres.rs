@@ -377,6 +377,47 @@ impl PostgresStore {
 
         tx.commit().await.map_err(map_sqlx_err)
     }
+
+    async fn revoke_unconsumed_approval_in_tx(
+        tx: &mut sqlx_core::transaction::Transaction<'_, sqlx_postgres::Postgres>,
+        key: &AuditKey,
+        transaction_id: &str,
+    ) -> Result<bool, TransactionStoreError> {
+        // Read the digest before the DELETE: the event names which receipt was
+        // retracted, and after the delete there is nothing left to name.
+        let digest: Option<String> = sqlx_core::query_scalar::query_scalar(
+            "SELECT receipt_digest FROM transaction_approvals \
+             WHERE transaction_id = $1 AND consumed_at IS NULL",
+        )
+        .bind(transaction_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(map_sqlx_err)?;
+        let result = sqlx_core::query::query(
+            "DELETE FROM transaction_approvals \
+             WHERE transaction_id = $1 AND consumed_at IS NULL",
+        )
+        .bind(transaction_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_sqlx_err)?;
+        if result.rows_affected() > 0 {
+            let digest = digest.ok_or_else(|| {
+                TransactionStoreError::DatabaseInvariant(format!(
+                    "revoked an approval for {transaction_id} that had no receipt digest"
+                ))
+            })?;
+            append_event(
+                tx,
+                key,
+                AuditEventKind::ApprovalRevoked,
+                transaction_id,
+                &digest,
+            )
+            .await?;
+        }
+        Ok(result.rows_affected() > 0)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -615,41 +656,11 @@ impl AuditStore for PostgresStore {
         transaction_id: &str,
     ) -> Result<bool, TransactionStoreError> {
         let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
-        // Read the digest before the DELETE: the event names which receipt was
-        // retracted, and after the delete there is nothing left to name.
-        let digest: Option<String> = sqlx_core::query_scalar::query_scalar(
-            "SELECT receipt_digest FROM transaction_approvals \
-             WHERE transaction_id = $1 AND consumed_at IS NULL",
-        )
-        .bind(transaction_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(map_sqlx_err)?;
-        let result = sqlx_core::query::query(
-            "DELETE FROM transaction_approvals \
-             WHERE transaction_id = $1 AND consumed_at IS NULL",
-        )
-        .bind(transaction_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_sqlx_err)?;
-        if result.rows_affected() > 0 {
-            let digest = digest.ok_or_else(|| {
-                TransactionStoreError::DatabaseInvariant(format!(
-                    "revoked an approval for {transaction_id} that had no receipt digest"
-                ))
-            })?;
-            append_event(
-                &mut tx,
-                &self.audit_key,
-                AuditEventKind::ApprovalRevoked,
-                transaction_id,
-                &digest,
-            )
-            .await?;
-        }
+        let revoked =
+            Self::revoke_unconsumed_approval_in_tx(&mut tx, &self.audit_key, transaction_id)
+                .await?;
         tx.commit().await.map_err(map_sqlx_err)?;
-        Ok(result.rows_affected() > 0)
+        Ok(revoked)
     }
 
     async fn claim_approved_for_execution(
@@ -707,19 +718,38 @@ impl AuditStore for PostgresStore {
     async fn cleanup_stale_queued(&self) -> Result<u64, TransactionStoreError> {
         let queued = serialize(&JobState::Queued)?;
         let canceled = serialize(&JobState::Canceled)?;
-        let result = sqlx_core::query::query(
+        let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
+        let stale_ids: Vec<String> = sqlx_core::query_scalar::query_scalar(
             sqlx_core::sql_str::AssertSqlSafe(format!(
-                "UPDATE transactions SET status = $1 \
-                 WHERE status = $2 \
+                "SELECT transaction_id FROM transactions \
+                 WHERE status = $1 \
                    AND created_at::timestamptz <= now() - INTERVAL '{APPROVAL_RECEIPT_TTL_MINUTES} minutes'"
             )),
         )
-        .bind(&canceled)
         .bind(&queued)
-        .execute(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(map_sqlx_err)?;
-        Ok(result.rows_affected())
+        let mut canceled_count = 0;
+        for transaction_id in stale_ids {
+            let result = sqlx_core::query::query(
+                "UPDATE transactions SET status = $1 \
+                 WHERE transaction_id = $2 AND status = $3",
+            )
+            .bind(&canceled)
+            .bind(&transaction_id)
+            .bind(&queued)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sqlx_err)?;
+            if result.rows_affected() > 0 {
+                Self::revoke_unconsumed_approval_in_tx(&mut tx, &self.audit_key, &transaction_id)
+                    .await?;
+                canceled_count += result.rows_affected();
+            }
+        }
+        tx.commit().await.map_err(map_sqlx_err)?;
+        Ok(canceled_count)
     }
 
     async fn cancel_queued(&self, transaction_id: &str) -> Result<bool, TransactionStoreError> {
@@ -727,6 +757,7 @@ impl AuditStore for PostgresStore {
         // transaction is never cancelled.
         let queued = serialize(&JobState::Queued)?;
         let canceled = serialize(&JobState::Canceled)?;
+        let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
         let result = sqlx_core::query::query(
             "UPDATE transactions SET status = $1 \
              WHERE transaction_id = $2 AND status = $3",
@@ -734,9 +765,14 @@ impl AuditStore for PostgresStore {
         .bind(&canceled)
         .bind(transaction_id)
         .bind(&queued)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(map_sqlx_err)?;
+        if result.rows_affected() > 0 {
+            Self::revoke_unconsumed_approval_in_tx(&mut tx, &self.audit_key, transaction_id)
+                .await?;
+        }
+        tx.commit().await.map_err(map_sqlx_err)?;
         Ok(result.rows_affected() > 0)
     }
 

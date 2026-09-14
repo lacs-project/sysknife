@@ -78,6 +78,24 @@ A one-line comment prevents it. If an issue already carries `claimed` and the
 thread has been quiet for a week, say you are taking it over rather than opening
 a competing PR.
 
+**Windows and WSL line endings.** This repository pins tracked text to LF via
+`.gitattributes`. On Windows or WSL, configure this checkout with:
+
+```sh
+git config core.autocrlf false
+```
+
+If an existing checkout already has CRLF line endings, first make sure the
+working tree is clean, then renormalise it:
+
+```sh
+git config core.autocrlf false
+git rm --cached -r . && git reset --hard
+```
+
+`git reset --hard` discards local changes, so do not run the recovery sequence
+with work you have not committed or stashed.
+
 ### 2. Branch, code, test
 
 ```sh
@@ -114,6 +132,12 @@ the artifact and update those three files in the same commit:
 UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh
 grep -rn 'Rust tests' README.md docs/introduction.md docs/distro-support.md
 ```
+
+`workspace-tests.json` stores the expected count for each suite and the canonical
+command that measures it. Verification re-runs the suite on the current
+checkout and requires the observed count to match. It makes no historical claim
+about a Git commit or measurement timestamp. Do not add provenance metadata by
+hand.
 
 `cargo-nextest` itself needs no system packages. If it is the missing piece,
 install it directly:
@@ -172,8 +196,10 @@ git diff --name-only upstream/main... | grep '\.rs$'   # empty means the gate do
 For such a diff the gate is the Node suite for the package you touched,
 `scripts/check_evidence_claims.py`, and CI on Ubuntu. Run the claim screen even
 for a JavaScript change: `packages/setup/index.js` is in `CLAIM_FILES`, and the
-screen is pure Python with no subprocess calls, so it runs anywhere Python does.
-Say which of the three you ran.
+screen remains the claim-screen entry point. Story-family derivation delegates to
+`tests/e2e/run-stories.sh --metadata`, so story-related claim checks require
+Bash and the repository's normal POSIX-style environment. Say which of the
+three you ran.
 
 **Which release your change lands in.** While SysKnife is in the `0.y` series, a
 change that breaks a consumer moves the middle digit and everything else moves the

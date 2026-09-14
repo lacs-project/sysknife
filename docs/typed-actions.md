@@ -6,6 +6,15 @@ allowlist or a regex over a shell command string. SysKnife answers it
 differently — the model is never given a channel to produce a shell string
 in the first place.
 
+## Reading ufw rule numbers
+
+For ufw rule deletion, read current indices with `UfwStatus` and
+`{"numbered":true}` (`sysknife_ufw_status` in MCP). During planning,
+`query_ufw_rules` performs that read. The default `{}` still returns verbose
+status. Pass the selected index to `UfwDeleteRule`; refresh the listing after
+rule changes, because indices shift. This does not make listing and deletion
+atomic or change the deletion approval requirement.
+
 ## Why string allowlists fail
 
 The independent security research known as **GuardFall** tested AI coding

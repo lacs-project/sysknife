@@ -36,6 +36,20 @@ npx sysknife-setup --claude --no-prompts --daemon-mode=system
 actions work, and anything mutating (installing packages, restarting services)
 does not, because the sudoers grants belong to the `sysknife` system user.
 
+For system mode, follow the printed installation commands; the wizard does not
+install the system service itself. A skipped install or a host without systemd
+gets manual daemon steps instead of commands for a user unit that was never
+installed. With `--no-prompts`, supply any required API key through the
+environment (see Step 2); the wizard does not collect one interactively.
+Redirected downloads print periodic progress lines and a final byte count.
+
+The wizard suggests `SYSKNIFE_LLM_PROVIDER` when set, otherwise the first provider
+with a nonblank API key in the displayed order (OpenAI first), otherwise keyless
+Ollama. Interactive answers can override that suggestion; `--no-prompts` uses it.
+This selects a configuration, without checking server or model availability.
+For Ollama, start `ollama serve` and load the selected model with `ollama pull`
+(the default model is `qwen3:8b`).
+
 ### From source
 
 **Prerequisites:** Rust stable (`rustup update stable`), **a C compiler and

@@ -61,8 +61,14 @@ done
 # suite and family sizes counted from these headers, so without them a legitimate
 # figure (the 54-story atomic family, which no recorded run covers) reads as
 # fabricated and the pristine fixture fails.
+#
+# The canonical parser travels with them. The checker derives families by
+# running tests/e2e/run-stories.sh --metadata out of the tree under check, not
+# by parsing headers itself, so the fixture carries that runner too — without
+# it the derivation fails closed and the pristine check below fails.
 mkdir -p "$fixture/tests/e2e/stories"
 cp "$repo_root"/tests/e2e/stories/story-*.sh "$fixture/tests/e2e/stories/"
+cp "$repo_root/tests/e2e/run-stories.sh" "$fixture/tests/e2e/run-stories.sh"
 
 # Guard against re-introducing the vacuous-fixture bug: the pristine copy must
 # PASS, proving rejections below come from the mutation, not a missing input.
@@ -475,9 +481,10 @@ if ! "$checker" "$fixture" >/dev/null 2>&1; then
     exit 1
 fi
 
-# The harness parses the story header from line 2, so the checker must too. A
-# header shifted off line 2 is rejected by the runner; the evidence derivation
-# has to fail loudly rather than silently derive a different family table.
+# The harness parses the story header from line 2, and the checker delegates to
+# the harness rather than parsing headers itself. A header shifted off line 2
+# is rejected by the runner; the evidence derivation has to fail loudly through
+# that same path rather than silently derive a different family table.
 read -r moved_story < <(
     python3 - "$fixture/tests/e2e/stories" <<'PY'
 import sys
@@ -505,7 +512,7 @@ if sed -n '2p' "$fixture/tests/e2e/stories/$moved_story" | grep -q '^# Story'; t
 fi
 assert_rejected_with_diagnostic \
     'story header moved from the production line-2 location' \
-    'could not derive a family' "$moved_story"
+    'could not derive story families' "$moved_story"
 cp "$repo_root"/tests/e2e/stories/story-*.sh "$fixture/tests/e2e/stories/"
 if ! "$checker" "$fixture" >/dev/null 2>&1; then
     printf 'FAIL: restored header fixture rejected — mutation result is meaningless\n' >&2

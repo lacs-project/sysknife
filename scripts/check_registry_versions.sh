@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version="${1#v}"
+version="${1:-}"
+version="${version#v}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-    printf 'ERROR: expected a semantic version, got %q\n' "$1" >&2
+    printf 'ERROR: expected a semantic version, got %q\n' "${1:-}" >&2
     exit 2
 }
 

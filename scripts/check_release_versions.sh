@@ -62,8 +62,7 @@ fi
 pins="$(grep -rn '^sysknife-[a-z-]* = {' \
     "$repo_root"/crates/*/Cargo.toml \
     "$repo_root"/apps/sysknife-cli/Cargo.toml \
-    "$repo_root"/apps/sysknife-shell/src-tauri/Cargo.toml |
-    grep 'version = ' || true)"
+    "$repo_root"/apps/sysknife-shell/src-tauri/Cargo.toml || true)"
 
 # An empty result means the manifests moved, not that every pin agrees. Fail
 # loudly rather than reporting success for a check that inspected nothing.
@@ -77,6 +76,11 @@ pin_count=0
 while IFS= read -r pin; do
     pin_count=$((pin_count + 1))
     pinned="$(printf '%s' "$pin" | sed -n 's/.*version = "\([^"]*\)".*/\1/p')"
+    if [[ -z "$pinned" ]]; then
+        printf 'Internal dependency is missing an explicit version pin:\n  %s\n' \
+            "$pin" >&2
+        exit 1
+    fi
     if [[ "$pinned" != "$baseline" ]]; then
         printf 'Internal dependency pin does not match package version %s:\n  %s\n' \
             "$baseline" "$pin" >&2

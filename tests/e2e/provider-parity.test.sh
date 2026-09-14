@@ -151,7 +151,7 @@ else
             || report "docs/contributing/testing.md has no provider table row for $provider"
     done
 
-    # `pub const DEFAULT_GROQ_MODEL: &str = "llama-3.3-70b-versatile";`
+    # `pub const DEFAULT_GROQ_MODEL: &str = "openai/gpt-oss-120b";`
     mapfile -t default_models < <(
         grep -oE 'DEFAULT_[A-Z0-9]+_MODEL: &str = "[^"]+"' "$config_rs" |
             sed -E 's/.*"([^"]+)"$/\1/'

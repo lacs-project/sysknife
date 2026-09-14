@@ -25,8 +25,8 @@ pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 /// Planner-facing distro snapshot injected into the system prompt.
 ///
 /// This is a deliberately lightweight type: it captures only what the planner
-/// needs to pick the right action family (`family`) and to produce accurate
-/// human-readable output (`version`).  Heavy detection logic and the full
+/// needs to pick the right action family (`family`), distinguish Ubuntu-only
+/// mechanisms (`id`), and produce human-readable output (`version`). Detection and the full
 /// `DistroId` enum stay in `sysknife-core`; the CLI converts `DistroId` →
 /// `DistroHint` at startup so the brain never depends on `sysknife-core`.
 ///
@@ -38,6 +38,10 @@ pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 /// it needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DistroHint {
+    /// Detected distribution ID, e.g. `ubuntu` or `debian`. Family membership
+    /// alone cannot authorize an Ubuntu-only mechanism. Never derive this from
+    /// the human-readable version string.
+    pub id: String,
     /// Broad distro family: `"fedora"`, `"debian"`, or `"other"`.
     ///
     /// Use `DISTRO_FAMILY_FEDORA`, `DISTRO_FAMILY_DEBIAN`, and

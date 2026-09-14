@@ -12,12 +12,18 @@ const setupDir = path.resolve(here, '..');
 const source = fs.readFileSync(path.join(setupDir, 'index.js'), 'utf8');
 const daemonInstaller = fs.readFileSync(path.join(setupDir, 'install-daemon.js'), 'utf8');
 
-function runWizard({ daemonMode = 'skip', daemonInstall, cwd: suppliedCwd, env = {} } = {}) {
+function runWizard({ daemonMode = 'skip', daemonInstall, cwd: suppliedCwd, env = {}, noPrompts = true, input = '' } = {}) {
   const cwd = suppliedCwd ?? fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-setup-contract-'));
   const ownsCwd = suppliedCwd === undefined;
   const entry = path.join(setupDir, 'index.js');
-  const setupArgs = ['--claude', '--no-prompts', '--no-binary', `--daemon-mode=${daemonMode}`];
-  const childEnv = { ...process.env, HOME: cwd, ...env };
+  const setupArgs = ['--claude', '--no-binary', `--daemon-mode=${daemonMode}`];
+  if (noPrompts) setupArgs.push('--no-prompts');
+  const childEnv = { ...process.env, HOME: cwd, XDG_RUNTIME_DIR: cwd };
+  for (const name of ['SYSKNIFE_LLM_PROVIDER', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
+    'GEMINI_API_KEY', 'GROQ_API_KEY', 'DEEPSEEK_API_KEY', 'MISTRAL_API_KEY', 'XAI_API_KEY']) {
+    delete childEnv[name];
+  }
+  Object.assign(childEnv, env);
   const bootstrap = [
     "if (typeof process.getuid !== 'function') process.getuid = () => 1000;",
   ];
@@ -41,7 +47,7 @@ function runWizard({ daemonMode = 'skip', daemonInstall, cwd: suppliedCwd, env =
     return spawnSync(process.execPath, ['-e', bootstrap.join(' ')], {
       cwd,
       encoding: 'utf8',
-      input: '',
+      input,
       timeout: 30_000,
       env: childEnv,
     });
@@ -233,3 +239,126 @@ test(
     }
   },
 );
+
+for (const mode of ['system', 'skip', 'none']) {
+  test(`next steps for ${mode} do not claim a user service was installed`, () => {
+    const manualSteps = mode === 'system'
+      ? ['sudo make install', 'sudo systemctl enable --now sysknife-daemon']
+      : ['Start manually:  /fixture/sysknife-daemon'];
+    const result = runWizard({
+      daemonMode: mode === 'none' ? 'skip' : mode,
+      daemonInstall: { mode, daemonInstalled: false, manualSteps },
+    });
+    const output = `${result.stdout}${result.stderr}`;
+    assert.equal(result.status, 3, output);
+    assert.doesNotMatch(output, /systemctl --user (?:start|enable|status)/);
+    if (mode !== 'system') assert.doesNotMatch(output, /sudo systemctl/);
+    for (const command of manualSteps) assert.ok(output.includes(command), output);
+  });
+}
+
+test('an installed user service retains its start and status guidance', () => {
+  const result = runWizard({
+    daemonMode: 'user',
+    daemonInstall: { mode: 'user', daemonInstalled: true, manualSteps: [] },
+  });
+  const output = `${result.stdout}${result.stderr}`;
+  assert.equal(result.status, 0, output);
+  assert.match(output, /systemctl --user enable --now sysknife-daemon/);
+  assert.match(output, /systemctl --user status sysknife-daemon/);
+  assert.doesNotMatch(output, /sudo systemctl/);
+});
+
+test('unattended key setup explains the missing environment key without offering a prompt', () => {
+  const result = runWizard({
+    env: { SYSKNIFE_LLM_PROVIDER: 'openai' },
+    daemonInstall: { mode: 'skip', daemonInstalled: false, manualSteps: ['Start manually: fixture'] },
+  });
+  const output = `${result.stdout}${result.stderr}`;
+  assert.equal(result.status, 3, output);
+  assert.doesNotMatch(output, /The key will be stored in plain text|Leave blank to set/);
+  assert.match(output, /export OPENAI_API_KEY=your-key-here/);
+});
+
+for (const { label, env, provider, model } of [
+  { label: 'keyless environment', env: {}, provider: 'ollama', model: 'qwen3:8b' },
+  { label: 'blank cloud keys', env: { OPENAI_API_KEY: '  ', ANTHROPIC_API_KEY: '\t' }, provider: 'ollama', model: 'qwen3:8b' },
+  { label: 'OpenAI key', env: { OPENAI_API_KEY: 'synthetic-openai' }, provider: 'openai', model: 'gpt-4.1' },
+  { label: 'Anthropic key', env: { ANTHROPIC_API_KEY: 'synthetic-anthropic' }, provider: 'anthropic', model: 'claude-sonnet-4-6' },
+  { label: 'explicit Ollama over a cloud key', env: { SYSKNIFE_LLM_PROVIDER: 'OLLAMA', OPENAI_API_KEY: 'synthetic-openai' }, provider: 'ollama', model: 'qwen3:8b' },
+  { label: 'explicit Gemini', env: { SYSKNIFE_LLM_PROVIDER: 'gemini', GEMINI_API_KEY: 'synthetic-gemini' }, provider: 'gemini', model: 'gemini-2.0-flash' },
+]) {
+  test(`unattended provider selection respects ${label}`, () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-setup-provider-'));
+    try {
+      const result = runWizard({ cwd, env,
+        daemonInstall: { mode: 'skip', daemonInstalled: false, manualSteps: ['Start manually: fixture'] },
+      });
+      const output = `${result.stdout}${result.stderr}`;
+      assert.equal(result.status, 3, output);
+      const configText = fs.readFileSync(path.join(cwd, '.mcp.json'), 'utf8');
+      const config = JSON.parse(configText).mcpServers.sysknife.env;
+      assert.equal(config.SYSKNIFE_LLM_PROVIDER, provider);
+      assert.equal(config.SYSKNIFE_LLM_MODEL, model);
+      assert.ok(!configText.includes('synthetic-'), configText);
+      assert.ok(!output.includes('synthetic-'), output);
+      if (process.platform !== 'win32') {
+        assert.equal(fs.statSync(path.join(cwd, '.mcp.json')).mode & 0o777, 0o600);
+      }
+      if (provider === 'ollama') {
+        assert.doesNotMatch(output, /Set your API key|export OPENAI_API_KEY/);
+        assert.match(output, /ollama pull qwen3:8b/);
+        assert.doesNotMatch(output, /Ollama (?:detected|is running)/);
+      }
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+}
+
+test('an interactive provider answer overrides the environment suggestion', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-setup-provider-answer-'));
+  try {
+    const result = runWizard({ cwd, noPrompts: false, input: 'openai\n\n\nn\n',
+      env: { SYSKNIFE_LLM_PROVIDER: 'ollama', OPENAI_API_KEY: 'synthetic-openai' },
+      daemonInstall: { mode: 'skip', daemonInstalled: false, manualSteps: ['Start manually: fixture'] },
+    });
+    assert.equal(result.status, 3, `${result.stdout}${result.stderr}`);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(cwd, '.mcp.json'), 'utf8')).mcpServers.sysknife.env.SYSKNIFE_LLM_PROVIDER, 'openai');
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('an unknown explicit unattended provider fails before writing config', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-setup-provider-invalid-'));
+  try {
+    const result = runWizard({ cwd, env: { SYSKNIFE_LLM_PROVIDER: 'unknown-fixture' } });
+    assert.equal(result.status, 1, `${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, /Unknown provider "unknown-fixture"/);
+    assert.equal(fs.existsSync(path.join(cwd, '.mcp.json')), false);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('unattended setup keeps a supplied environment key out of generated config and output', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-setup-env-key-'));
+  const fixtureKey = 'synthetic-key-for-wizard-test';
+  try {
+    const result = runWizard({
+      cwd,
+      env: { OPENAI_API_KEY: fixtureKey },
+      daemonInstall: { mode: 'skip', daemonInstalled: false, manualSteps: ['Start manually: fixture'] },
+    });
+    const output = `${result.stdout}${result.stderr}`;
+    const config = fs.readFileSync(path.join(cwd, '.mcp.json'), 'utf8');
+    assert.equal(result.status, 3, output);
+    assert.match(output, /OPENAI_API_KEY already set in environment/);
+    assert.doesNotMatch(output, /Leave blank to set|export OPENAI_API_KEY=your-key-here/);
+    assert.ok(!output.includes(fixtureKey), output);
+    assert.ok(!config.includes(fixtureKey), config);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});

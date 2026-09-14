@@ -104,6 +104,98 @@ fn every_installed_helper_is_removed_by_uninstall() {
     }
 }
 
+/// Helpers are installed under the basename after `sysknife-` (`apt-pin-edit`,
+/// not `sysknife-apt-pin-edit`). `exclusive_resource` matches argv program
+/// names, so a source-filename arm can never fire.
+fn packaged_helper_scripts() -> Vec<(String, String)> {
+    let packaging = repo_root().join("packaging");
+    let mut helpers = Vec::new();
+    for entry in std::fs::read_dir(&packaging).unwrap_or_else(|e| panic!("read {packaging:?}: {e}"))
+    {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            continue;
+        }
+        let source_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("utf-8 packaging filename")
+            .to_string();
+        // Helper scripts are extensionless `sysknife-*` files. Skip sudoers,
+        // unit files, and sysusers/tmpfiles snippets.
+        if !source_name.starts_with("sysknife-") || source_name.contains('.') {
+            continue;
+        }
+        if source_name == "sysknife-sudoers" {
+            continue;
+        }
+        let installed = source_name
+            .strip_prefix("sysknife-")
+            .expect("prefix already checked")
+            .to_string();
+        helpers.push((source_name, installed));
+    }
+    helpers.sort();
+    assert!(
+        helpers.len() >= 8,
+        "packaging/ helper scan found only {helpers:?}; the scan itself is probably broken"
+    );
+    helpers
+}
+
+fn exclusive_resource_matcher_source() -> String {
+    let path = repo_root().join("crates/sysknife-daemon/src/actions/mod.rs");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    let start = text
+        .find("pub fn exclusive_resource")
+        .expect("exclusive_resource must exist in actions/mod.rs");
+    let rest = &text[start..];
+    let end = rest[1..]
+        .find("\npub fn ")
+        .expect("exclusive_resource must be followed by another pub fn")
+        + 1;
+    rest[..end].to_string()
+}
+
+/// Every helper in `packaging/` must be named in `exclusive_resource` under the
+/// basename installers emit, never the source filename. Helpers that do not
+/// contend for a package-manager lock are absent under both names.
+#[test]
+fn exclusive_resource_matches_packaging_helpers_by_installed_basename() {
+    use sysknife_daemon::actions::{all_specs, exclusive_resource, ExclusiveResource};
+
+    let matcher = exclusive_resource_matcher_source();
+    let helpers = packaged_helper_scripts();
+
+    for (source_name, installed) in &helpers {
+        let source_arm = format!("\"{source_name}\"");
+        let installed_arm = format!("\"{installed}\"");
+        assert!(
+            !matcher.contains(&source_arm),
+            "exclusive_resource must not match packaging source filename `{source_name}`; \
+             both installers emit `{installed}`"
+        );
+        if matcher.contains(&source_arm) || matcher.contains(&installed_arm) {
+            assert!(
+                matcher.contains(&installed_arm),
+                "`{source_name}` belongs in exclusive_resource as installed basename \
+                 `{installed}`, not the source filename"
+            );
+        }
+    }
+
+    let specs = all_specs();
+    let pin = specs
+        .iter()
+        .find(|s| s.action_name == "SetAptPin")
+        .expect("SetAptPin must exist");
+    assert_eq!(
+        exclusive_resource(pin),
+        Some(ExclusiveResource::Dpkg),
+        "apt-pin-edit is the installed basename and must contend for the dpkg lock"
+    );
+}
+
 #[test]
 fn every_referenced_helper_has_a_sudoers_grant() {
     let sudoers = std::fs::read_to_string(repo_root().join("packaging/sysknife-sudoers"))

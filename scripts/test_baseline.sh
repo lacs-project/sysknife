@@ -101,8 +101,7 @@ if [[ "${UPDATE_TEST_BASELINE:-0}" == "1" ]]; then
     python3 "$recorder" \
         --artifact "$artifact" \
         --field "$field" \
-        --count "$count" \
-        --commit "$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf 'unknown')"
+        --count "$count"
     printf '\ntest_baseline: recorded %s %s tests in %s\n' \
         "$count" "$suite" "${artifact#"$repo_root"/}"
     exit 0

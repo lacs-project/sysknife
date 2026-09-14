@@ -26,8 +26,17 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
+
+# The release contract tests import this module to derive CLAIM_FILES. Keep the
+# sibling baseline schema available in both direct-script and importlib modes.
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from record_test_baseline import validate_document
 
 # Files that carry public claims. Kept in step with claim_files in
 # check_public_claims.sh; a file listed there but not here is simply unchecked
@@ -236,42 +245,113 @@ def check_story_claims(texts: dict[str, str], runs: list[dict]) -> list[str]:
     return problems
 
 
-STORY_HEADER = re.compile(r"^#\s*Story\s+\d+\s*(?:\(([^)]*)\))?\s*:")
+# The Story-header grammar has exactly one implementation:
+# `tests/e2e/run-stories.sh`, surfaced as `run-stories.sh --metadata`
+# (tab-separated `id`, `family`, `title` rows). This checker must not parse
+# story files itself — a second parser is a second answer, and the two have
+# already disagreed about which line the header lives on and what an
+# unparseable header means. Family counts are derived by running the runner
+# and counting column 2.
+STORY_METADATA_RUNNER = "tests/e2e/run-stories.sh"
+STORY_FAMILIES = ("ubuntu", "atomic")
+
+
+def _canonical_story_metadata(root: Path) -> list[tuple[str, str, str]]:
+    """Load `(id, family, title)` rows from the canonical story parser.
+
+    Every failure here raises `Failure` naming the cause: a broken or missing
+    parser must never read as "zero stories", which would let the guards that
+    consume these counts pass vacuously over an empty set.
+    """
+    runner = root / STORY_METADATA_RUNNER
+    if not runner.is_file():
+        raise Failure(
+            f"could not derive story families: canonical metadata runner is "
+            f"missing: {STORY_METADATA_RUNNER}"
+        )
+    runner_arg = runner.relative_to(root).as_posix()
+    try:
+        completed = subprocess.run(
+            ["bash", runner_arg, "--metadata"],
+            capture_output=True,
+            cwd=root,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+    except (OSError, UnicodeDecodeError) as exc:
+        raise Failure(
+            f"could not derive story families: could not run "
+            f"{STORY_METADATA_RUNNER} --metadata: {exc}"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise Failure(
+            f"could not derive story families: {STORY_METADATA_RUNNER} "
+            f"--metadata timed out: {exc}"
+        ) from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip().splitlines()
+        detail = "; ".join(line for line in detail if line.strip())
+        raise Failure(
+            f"could not derive story families: {STORY_METADATA_RUNNER} "
+            f"--metadata exited {completed.returncode}"
+            + (f": {detail}" if detail else "")
+        )
+    rows: list[tuple[str, str, str]] = []
+    for lineno, line in enumerate(completed.stdout.splitlines(), 1):
+        fields = line.split("\t")
+        if len(fields) != 3:
+            raise Failure(
+                f"could not derive story families: malformed metadata row "
+                f"{lineno} from {STORY_METADATA_RUNNER} --metadata: {line!r}"
+            )
+        story_id, family, title = fields
+        if not story_id.isdigit():
+            raise Failure(
+                f"could not derive story families: malformed story id in "
+                f"metadata row {lineno}: {line!r}"
+            )
+        if family not in STORY_FAMILIES:
+            raise Failure(
+                f"could not derive story families: unknown family "
+                f"{family!r} in metadata row {lineno}: {line!r}"
+            )
+        if not title.strip():
+            raise Failure(
+                f"could not derive story families: empty title in metadata "
+                f"row {lineno}: {line!r}"
+            )
+        rows.append((story_id, family, title))
+    if not rows:
+        raise Failure(
+            f"could not derive story families: {STORY_METADATA_RUNNER} "
+            f"--metadata returned no stories while {STORY_DIR}/ holds story "
+            f"files; refusing to treat the suite as empty"
+        )
+    return rows
 
 
 def story_family_sizes(root: Path) -> dict[str, int]:
-    """Return story-family sizes using the harness's header classification.
+    """Return story-family sizes counted from the canonical story metadata.
 
-    A story whose header tags name `ubuntu` is in the ubuntu family; everything
-    else is atomic. This is the same rule as `tests/e2e/run-stories.sh`, rather
-    than a second classification maintained by the claims checker.
+    Runs `tests/e2e/run-stories.sh --metadata` and counts column 2, rather
+    than reimplementing the header grammar. A story whose tags name `ubuntu`
+    is in the ubuntu family; everything else is atomic — that classification
+    lives in the runner, not here.
     """
     directory = root / STORY_DIR
     if not directory.is_dir():
         return {}
-    families: dict[str, int] = {"ubuntu": 0, "atomic": 0}
-    paths = sorted(directory.glob("story-*.sh"))
-    if not paths:
+    if not sorted(directory.glob("story-*.sh")):
         return {}
-    for path in paths:
-        # The header lives on line 2, exactly where `tests/e2e/run-stories.sh`
-        # reads it (`sed -n '2p'`). Scanning a wider window would accept a
-        # header the harness itself rejects, letting this checker derive a
-        # different family table from the runner it is supposed to agree with.
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        match = STORY_HEADER.match(lines[1]) if len(lines) > 1 else None
-        if not match:
-            raise Failure(
-                f"could not derive a family from {STORY_DIR}/{path.name}; "
-                "expected the '# Story N (...): title' header on line 2"
-            )
-        tags = match.group(1) or ""
-        families["ubuntu" if "ubuntu" in tags else "atomic"] += 1
+    families: dict[str, int] = {"ubuntu": 0, "atomic": 0}
+    for _, family, _ in _canonical_story_metadata(root):
+        families[family] += 1
     return families
 
 
 def story_set_sizes(root: Path) -> set[int]:
-    """Legitimate story-suite sizes, derived from the story files themselves."""
+    """Legitimate story-suite sizes, derived from the canonical story metadata."""
     families = story_family_sizes(root)
     if not families:
         return set()
@@ -684,21 +764,30 @@ def check_validated_tiers(texts: dict[str, str], root: Path) -> list[str]:
     return problems
 
 
+def load_test_baseline(root: Path) -> dict:
+    path = root / TEST_BASELINE
+    if not path.exists():
+        raise Failure(
+            f"{TEST_BASELINE} is missing; record it with "
+            "UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh"
+        )
+    try:
+        baseline = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise Failure(f"{TEST_BASELINE} is not readable JSON: {exc}") from exc
+
+    problems = validate_document(baseline, require_all_fields=True)
+    if problems:
+        raise Failure(f"{TEST_BASELINE} is invalid: {'; '.join(problems)}")
+    return baseline
+
+
 def main() -> int:
     root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     try:
         texts = read_claim_files(root)
 
-        baseline_path = root / TEST_BASELINE
-        if not baseline_path.exists():
-            raise Failure(
-                f"{TEST_BASELINE} is missing; record it with "
-                "UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh"
-            )
-        baseline = json.loads(baseline_path.read_text())
-        for field in ("tests", "frontend_tests"):
-            if not isinstance(baseline.get(field), int):
-                raise Failure(f"{TEST_BASELINE} has no integer '{field}' field")
+        baseline = load_test_baseline(root)
 
         problems = []
         problems += check_figure(texts, "Rust tests", baseline["tests"])

@@ -271,7 +271,7 @@ function serverToToml(key, server) {
 // the "wizard offers what the engine supports" invariant is unit-testable. All
 // eight sysknife-brain providers are offered; the flow below is data-driven off
 // these maps, so no per-provider branching is needed.
-const { PROVIDERS, MODEL_DEFAULTS, API_KEY_VARS } = require('./providers.js');
+const { PROVIDERS, MODEL_DEFAULTS, API_KEY_VARS, defaultProvider } = require('./providers.js');
 
 const ARG_SET = new Set(process.argv.slice(2));
 const WANT_CLAUDE     = ARG_SET.has('--claude');
@@ -478,13 +478,8 @@ async function collectTarget(rl, lineQueue, idx) {
       ok(`Daemon socket reachable: ${socket}`);
     } else if (reachable === false) {
       warn(`Daemon socket not reachable: ${socket}`);
-      // A socket under /run/user/<uid> belongs to the user service; telling
-      // someone to `sudo systemctl start` it sends them to a unit that does
-      // not exist on their machine.
-      step(socket.includes('/run/user/')
-        ? `Start the daemon:  systemctl --user start sysknife-daemon`
-        : `Start the daemon:  sudo systemctl start sysknife-daemon`);
-      step(`       or build:   cargo run -p sysknife-daemon`);
+      // Installation has not happened yet. Defer commands until its outcome
+      // tells us which service, if any, exists.
     }
   }
 
@@ -509,7 +504,7 @@ async function collectTarget(rl, lineQueue, idx) {
 // Next-step hint for a single target
 // ---------------------------------------------------------------------------
 
-function targetNextStep(target) {
+function targetNextStep(target, daemonInstall) {
   const { socket, name } = target;
   const label = name ? `${name} (${socket})` : socket;
 
@@ -524,18 +519,17 @@ function targetNextStep(target) {
 
   if (socket.startsWith('vsock://')) {
     step(`Start daemon in ${label} guest:  sudo systemctl start sysknife-daemon`);
-  } else if (socket === userServiceSocket) {
-    // Default: a per-user daemon managed by a `systemctl --user` unit.
-    step('Start the daemon:  systemctl --user enable --now sysknife-daemon');
-    step('              or:  cargo run -p sysknife-daemon');
   } else if (!localSockets.has(socket)) {
     // Likely an SSH tunnel socket — remind user to open the tunnel
     step(`Open SSH tunnel for ${label}:  ssh -fN -L ${socket}:/run/sysknife/daemon.sock <user>@<host>`);
     step(`Then start the daemon in the guest:  sudo systemctl start sysknife-daemon`);
-  } else {
-    step('Start the daemon:  sudo systemctl start sysknife-daemon');
+  } else if (socket === userServiceSocket
+      && daemonInstall?.mode === 'user' && daemonInstall.daemonInstalled) {
+    step('Start the daemon:  systemctl --user enable --now sysknife-daemon');
     step('              or:  cargo run -p sysknife-daemon');
   }
+  // System, skipped and no-systemd installs supply their own manual steps in
+  // the outstanding-steps block; a socket path alone does not establish a unit.
 }
 
 // ---------------------------------------------------------------------------
@@ -603,9 +597,10 @@ async function main() {
   // uses the same model, only the daemon socket differs.
 
   console.log();
-  const providerList = PROVIDERS.map((p, i) => (i === 0 ? `${B}${p}${X}` : p)).join(' / ');
+  const suggestedProvider = defaultProvider(process.env);
+  const providerList = PROVIDERS.map(p => (p === suggestedProvider ? `${B}${p}${X}` : p)).join(' / ');
   console.log(`  LLM providers: ${providerList}`);
-  let provider = await ask(rl, lineQueue, 'LLM provider', 'openai');
+  let provider = await ask(rl, lineQueue, 'LLM provider', suggestedProvider);
   provider = provider.toLowerCase();
 
   if (!PROVIDERS.includes(provider)) {
@@ -623,7 +618,7 @@ async function main() {
     const existing = process.env[envVar];
     if (existing) {
       ok(`${envVar} already set in environment — will not embed in config files`);
-    } else {
+    } else if (!NO_PROMPTS) {
       console.log();
       console.log(`  ${Y}Note:${X} The key will be stored in plain text in the generated config files.`);
       console.log(`  Leave blank to set ${envVar} in your shell profile instead.`);
@@ -635,6 +630,9 @@ async function main() {
 
   console.log();
   const model = await ask(rl, lineQueue, 'Model name', MODEL_DEFAULTS[provider]);
+  if (provider === 'ollama') {
+    step(`For Ollama, start the server with ollama serve and load the model: ollama pull ${model}`);
+  }
 
   // ── 5. Integration selection ─────────────────────────────────────────────
 
@@ -884,7 +882,7 @@ async function main() {
   // ── Daemon service install ────────────────────────────────────────────────
   //
   // Offer to install the systemd service now that the binary is in place.
-  // The user may skip; they can always run `systemctl --user enable sysknife-daemon` later.
+  // A skipped install leaves manual steps, not an installed service unit.
 
   const daemonBinPath = binaryPath.replace(/\/sysknife$/, '/sysknife-daemon');
   const daemonInstall = await installDaemonService({
@@ -908,7 +906,10 @@ async function main() {
       ok(`Daemon socket reachable: ${firstLocalSocket.socket}`);
     } else if (daemonSocketReachable === false) {
       warn(`Daemon socket not reachable after 6s: ${firstLocalSocket.socket}`);
-      step('Check it with:  systemctl --user status sysknife-daemon');
+      if (firstLocalSocket.socket === runtimeSocketPath()
+          && daemonInstall?.mode === 'user' && daemonInstall.daemonInstalled) {
+        step('Check it with:  systemctl --user status sysknife-daemon');
+      }
     }
   }
 
@@ -952,7 +953,7 @@ async function main() {
   }
 
   for (const t of targets) {
-    targetNextStep(t);
+    targetNextStep(t, daemonInstall);
   }
 
   console.log();
@@ -1095,6 +1096,11 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
   Run from the root of your project directory.
 
 \x1b[1mENVIRONMENT\x1b[0m
+  SYSKNIFE_LLM_PROVIDER
+      Provider suggestion (interactive answers can override it).
+      Otherwise use the first configured cloud key in displayed order,
+      or keyless Ollama. Server and model availability are not checked.
+
   OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY /
   GROQ_API_KEY / DEEPSEEK_API_KEY / MISTRAL_API_KEY / XAI_API_KEY
       The provider's key var (Ollama needs none). If set in your shell

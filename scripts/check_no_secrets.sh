@@ -75,11 +75,26 @@ scan_text() {
 status=0
 if [ "${1:-}" = "--staged" ]; then
     # The staged content itself, not the working tree: those differ, and it is
-    # the staged bytes that become the commit.
-    while IFS= read -r path; do
+    # the staged bytes that become the commit. Capture the producer status
+    # explicitly: strict mode cannot see failures inside process substitution.
+    staged_list=""
+    if ! staged_list="$(git diff --cached --name-only --diff-filter=ACMR)"; then
+        echo "Refusing to commit: git could not enumerate staged files." >&2
+        exit 1
+    fi
+    staged_paths=()
+    if [ -n "$staged_list" ]; then
+        mapfile -t staged_paths <<< "$staged_list"
+    fi
+    for path in "${staged_paths[@]}"; do
         [ -n "$path" ] || continue
-        git show ":$path" 2>/dev/null | scan_text "staged $path" || status=1
-    done < <(git diff --cached --name-only --diff-filter=ACMR)
+        staged_content=""
+        if ! staged_content="$(git show ":$path" 2>/dev/null)"; then
+            printf 'Refusing to commit: git could not read staged bytes for %s.\n' "$path" >&2
+            exit 1
+        fi
+        printf '%s' "$staged_content" | scan_text "staged $path" || status=1
+    done
 else
     for path in "$@"; do
         [ -f "$path" ] || continue

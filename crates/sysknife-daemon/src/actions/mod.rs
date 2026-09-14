@@ -149,16 +149,8 @@ pub fn exclusive_resource(spec: &ActionSpec) -> Option<ExclusiveResource> {
             // Match on the binary name so an absolute path still resolves.
             let name = token.rsplit('/').next().unwrap_or(token);
             match name {
-                "apt-get"
-                | "apt"
-                | "apt-mark"
-                | "aptitude"
-                | "dpkg"
-                | "dpkg-reconfigure"
-                | "add-apt-repository"
-                | "do-release-upgrade"
-                | "unattended-upgrade"
-                | "sysknife-apt-pin-edit"
+                "apt-get" | "apt" | "apt-mark" | "aptitude" | "dpkg" | "dpkg-reconfigure"
+                | "add-apt-repository" | "do-release-upgrade" | "unattended-upgrade"
                 | "apt-pin-edit" => Some(ExclusiveResource::Dpkg),
                 "snap" => Some(ExclusiveResource::Snap),
                 "rpm-ostree" | "ostree" => Some(ExclusiveResource::RpmOstree),

@@ -112,6 +112,63 @@ if ! grep -qF "$leak" <<< "$out"; then
 fi
 CHECK="$real_check"
 
+# --- 5. The pre-commit --staged path must fail closed -----------------------
+staged_repo="$tmp/staged-repo"
+mkdir -p "$staged_repo"
+git -C "$staged_repo" init -q
+git -C "$staged_repo" config user.name 'SysKnife test'
+git -C "$staged_repo" config user.email 'sysknife-test@example.invalid'
+printf 'clean\n' > "$staged_repo/README.md"
+git -C "$staged_repo" add README.md
+git -C "$staged_repo" commit -qm 'fixture baseline'
+
+printf 'k = "%s"\n' "$leak" > "$staged_repo/leak.txt"
+git -C "$staged_repo" add leak.txt
+if staged_output="$(cd "$staged_repo" && "$CHECK" --staged 2>&1)"; then
+    echo "FAIL: --staged accepted content that the explicit-file path rejects"
+    fail=1
+elif ! grep -Fq 'Refusing to commit' <<< "$staged_output"; then
+    echo "FAIL: --staged did not report the staged finding"
+    fail=1
+fi
+
+cp "$staged_repo/.git/index" "$staged_repo/index.good"
+printf 'DIRT' > "$staged_repo/.git/index"
+if git_error_output="$(cd "$staged_repo" && "$CHECK" --staged 2>&1)"; then
+    echo "FAIL: --staged passed when git could not enumerate the index"
+    fail=1
+elif ! grep -Fq 'could not enumerate staged files' <<< "$git_error_output"; then
+    echo "FAIL: --staged did not explain that staged-file enumeration failed"
+    fail=1
+fi
+mv "$staged_repo/index.good" "$staged_repo/.git/index"
+
+git -C "$staged_repo" reset -q HEAD -- leak.txt
+rm -f "$staged_repo/leak.txt"
+if empty_output="$(cd "$staged_repo" && "$CHECK" --staged 2>&1)"; then
+    if [ -n "$empty_output" ]; then
+        echo "FAIL: --staged printed output for an honest empty staged set"
+        fail=1
+    fi
+else
+    echo "FAIL: --staged rejected an honest empty staged set"
+    fail=1
+fi
+
+# --- 6. A staged blob read failure must not masquerade as a finding ----------
+fake_oid='1111111111111111111111111111111111111111'
+git -C "$staged_repo" update-index --add --cacheinfo 100644,$fake_oid,unreadable.txt
+if unreadable_output="$(cd "$staged_repo" && "$CHECK" --staged 2>&1)"; then
+    echo "FAIL: --staged passed when git could not read staged bytes"
+    fail=1
+elif ! grep -Fq 'could not read staged bytes for unreadable.txt' <<< "$unreadable_output"; then
+    echo "FAIL: --staged did not distinguish an unreadable staged blob"
+    fail=1
+elif grep -Fq 'staged content contains' <<< "$unreadable_output"; then
+    echo "FAIL: unreadable staged bytes were reported as a credential finding"
+    fail=1
+fi
+git -C "$staged_repo" update-index --force-remove unreadable.txt
 if [ "$fail" != 0 ]; then exit 1; fi
 echo "ok: catches real-shaped credentials, ignores this repo's fixtures"
 echo "ok: the whole tracked tree scans clean, and findings never echo the secret"

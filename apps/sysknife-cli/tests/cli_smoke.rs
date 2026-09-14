@@ -51,7 +51,8 @@ fn help_lists_every_top_level_subcommand() {
         .stdout(predicate::str::contains("history"))
         .stdout(predicate::str::contains("audit"))
         .stdout(predicate::str::contains("mcp-server"))
-        .stdout(predicate::str::contains("completions"));
+        .stdout(predicate::str::contains("completions"))
+        .stdout(predicate::str::contains("daemon work may continue"));
     drop(output);
 }
 
@@ -64,7 +65,7 @@ fn unknown_subcommand_via_clap_usage_error() {
     cli()
         .arg("--no-such-flag")
         .assert()
-        .failure()
+        .code(2)
         .stderr(predicate::str::contains("unexpected").or(predicate::str::contains("unknown")));
 }
 
@@ -330,6 +331,77 @@ fn audit_export_rejects_an_invalid_since_timestamp() {
         .stderr(predicate::str::contains("--since"));
 }
 
+/// Missing checkpoint configuration has the same exit code as invalid audit
+/// export configuration, before any key, database, or daemon is consulted.
+#[test]
+fn audit_checkpoint_without_a_database_is_a_configuration_error() {
+    let dir = tempfile::tempdir().unwrap();
+    cli()
+        .env_clear()
+        .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("XDG_DATA_HOME", dir.path())
+        .env("HOME", dir.path())
+        .args(["audit", "checkpoint"])
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("config/daemon error"))
+        .stderr(predicate::str::contains(
+            "no checkpoint database configured",
+        ))
+        .stdout(predicate::str::is_empty());
+}
+
+/// An empty intent fails inside the planner before any provider request, so
+/// this pins the real process's planning-failure exit without an LLM service.
+#[test]
+fn a_blank_intent_returns_the_planning_failure_exit_code() {
+    let dir = tempfile::tempdir().unwrap();
+    cli()
+        .env_clear()
+        .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("XDG_DATA_HOME", dir.path())
+        .env("HOME", dir.path())
+        .env("SYSKNIFE_LLM_PROVIDER", "ollama")
+        .env("SYSKNIFE_LLM_MODEL", "test-model")
+        .args(["--dry-run", " "])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("planning failed"))
+        .stdout(predicate::str::is_empty());
+}
+
+/// A listening TCP socket completes the local provider's connection but never
+/// returns an HTTP response. No real provider or daemon can be contacted.
+#[test]
+fn a_planning_timeout_does_not_claim_an_execution_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let provider_url = format!("http://{}", listener.local_addr().unwrap());
+
+    cli()
+        .env_clear()
+        .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("XDG_DATA_HOME", dir.path())
+        .env("HOME", dir.path())
+        .env("SYSKNIFE_LLM_PROVIDER", "ollama")
+        .env("SYSKNIFE_LLM_MODEL", "test-model")
+        .env("SYSKNIFE_OLLAMA_URL", provider_url)
+        .args(["--dry-run", "--json", "--timeout", "1", "check disk usage"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("operation timed out after 1s"))
+        .stderr(predicate::str::contains("execution failed").not())
+        .stdout(predicate::str::is_empty());
+
+    listener
+        .accept()
+        .expect("the CLI reached the local provider");
+}
+
 #[test]
 fn completions_subcommand_emits_a_shell_script() {
     cli()
@@ -370,10 +442,10 @@ fn timeout_flag_bounds_a_daemon_that_accepts_but_never_replies() {
         .env("SYSKNIFE_SOCKET", &socket_path)
         .args(["--timeout", "1", "doctor"])
         .assert()
-        // ExecutionFailed → exit 2, with the timeout named so an operator can
-        // tell it apart from the daemon rejecting the request.
+        // A command timeout keeps exit 2 but must not claim an action ran.
         .code(2)
-        .stderr(predicate::str::contains("timed out"));
+        .stderr(predicate::str::contains("operation timed out after 1s"))
+        .stderr(predicate::str::contains("execution failed").not());
 
     let elapsed = started.elapsed();
     assert!(
@@ -457,7 +529,7 @@ fn the_skip_approval_flag_alone_refuses_and_names_the_second_key() {
         .env_remove("SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT")
         .args(["--dangerously-skip-approval", "doctor"])
         .assert()
-        .failure()
+        .code(1)
         .stderr(
             predicate::str::contains("SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT")
                 .and(predicate::str::contains("as root")),

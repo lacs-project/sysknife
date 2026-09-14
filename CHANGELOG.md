@@ -12,6 +12,127 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-09-10
+
+### Changed
+
+- Make Debian stable releases 12 and later eligible, while refusing an unknown
+  version and releases below the security-support floor. Debian eligibility is
+  separate from live-VM validation; Ubuntu-only actions remain excluded (#238).
+- Let `UfwStatus` return numbered rules with `numbered: true`, retaining verbose
+  output by default. Add `query_ufw_rules` so the planner can read the indices
+  required by `UfwDeleteRule` instead of guessing them (#234).
+- Separate Ubuntu identity requirements from Debian-family mechanisms and
+  planner defaults. Canonical services, PPAs and the reboot sentinel require
+  Ubuntu itself; portable tools are no longer refused merely for being another
+  distribution's default. Ubuntu and Fedora default catalogues and host
+  eligibility remain unchanged (#237).
+- Keep portable tools behind the CLI supported-host gate and out of unknown-family
+  planner catalogues. At the daemon, portable Observer reads such as `UfwStatus`
+  can now run without distro detection; mutations and hard-fenced reads still
+  require an eligible host. `AptUpdate` remains hard-fenced despite its Low risk.
+- `DistroHint` now carries a distribution `id`, and `propose_plan_tool_def`
+  accepts the full hint rather than a family string. This is a public Rust API
+  change requiring a middle-digit release while the project is in `0.y`.
+
+### Fixed
+
+- The default Groq model is `openai/gpt-oss-120b`. Groq decommissioned
+  `llama-3.3-70b-versatile`, so every SysKnife user on the Groq provider who had
+  not overridden `SYSKNIFE_LLM_MODEL` was getting an HTTP 404 from the planner.
+  Found by running the planner against the live API rather than a cassette:
+
+  ```
+  llama-3.3-70b-versatile      HTTP 404   model_not_found
+  openai/gpt-oss-120b          HTTP 200
+  ```
+
+  The replacement was chosen by running SysKnife's real prompt and tool schema
+  against it: a three-part read-only intent planned `GetDiskUsage`,
+  `GetMemoryInfo` and `ListServices` with no query preamble, and a Debian 12
+  host planned `AptInstall` with no Ubuntu-only action offered. All seven
+  reference sites move together, which `tests/e2e/provider-parity.test.sh`
+  enforces.
+
+- Sanitise the distro version string before it reaches the prompt header. A
+  crafted `/etc/os-release` could put tag syntax into the version and open a
+  second `<user_preferences>` envelope around the constraints, risk tables and
+  params blocks that follow it. Both the Fedora and the Debian renderer
+  interpolate that value and both now route it through `normalise_free_text`
+  (#272).
+
+- `check_no_secrets.sh --staged` fails closed when git cannot answer. The
+  pre-commit credential scanner built its file list through process
+  substitution, which `set -euo pipefail` cannot see into, so a failing
+  `git diff --cached` left the loop with nothing to do and the scanner exited 0
+  having read no bytes. A staged blob git cannot read now stops the commit with
+  its own message instead of the credential-found banner, and an honest empty
+  staged set still passes in silence (#406).
+- Attach the default safety audit log in `LlmPlanner::from_config`, the
+  construction path the CLI, the MCP server and the shell all take. Fence
+  rejections were built and tested and never written anywhere, so a rejected
+  plan left no record on any real machine. Direct `LlmPlanner::new` stays
+  without runtime defaults for embedded callers and tests (#236).
+- `sysknife-setup` prefers keyless Ollama over a cloud provider with no
+  credentials, so a first run on a machine with no API key reaches a working
+  provider instead of one it cannot authenticate to (#337).
+- The release helper refuses a missing registry version argument rather than
+  carrying an empty string into the publish path (#396).
+- Guard each live PostgreSQL test invocation independently, including the CLI
+  anchor exit-code contract, and run that CLI contract in both local CI paths.
+  Missing ignore flags, unresolved test filters, missing contract targets and
+  disabled required-database settings now fail the guard. Quoted step labels
+  cannot substitute for the arguments that actually execute (#362).
+
+## [0.14.0] — 2026-09-07
+
+The middle digit moves because an exit code changed. `sysknife audit checkpoint`
+with no database configured returned 2 and now returns 4, and an exit code is
+the contract a wrapper script reads. Nothing was removed and no signature
+changed; under the rule in [docs/release.md](docs/release.md#version-numbering)
+that is still a compatibility break, the same way v0.9.0 was when
+`sysknife-setup` began refusing a malformed `.mcp.json` it used to overwrite.
+
+Two of these are security fixes in the daemon's authorization path. A cancelled
+transaction could keep a live approval receipt, and a peer the kernel could not
+pin was still credited with the supplementary groups of whatever process held
+that PID by the time `/proc` was read.
+
+### Changed
+
+- **A CLI timeout no longer reports that an action ran, and a missing
+  checkpoint database is a configuration error** ([#381](https://github.com/lacs-project/sysknife/pull/381), closes
+  [#335](https://github.com/lacs-project/sysknife/issues/335)). `--timeout` built an `ExecutionFailed` carrying a
+  timeout string, so an operator reading `execution failed:` had no way to tell
+  a command that ran and failed from one that never started. It is now its own
+  `TimedOut` variant, still exit 2, reported as `operation timed out after Ns`.
+  Separately, `audit checkpoint` with no database printed its own diagnostic and
+  returned a hardcoded exit 2; it now returns the configuration code 4 through
+  the normal error path. `docs/cli.md` documents what exit 2 covers, including
+  clap's usage errors.
+
+### Fixed
+
+- Keep supplementary groups out of caller authorization when `SO_PEERPIDFD`
+  cannot pin the peer, including an already-reaped peer or fd exhaustion.
+  Only `ENOPROTOOPT` retains the older-kernel best-effort path; every other
+  failure keeps only the primary GID captured by `SO_PEERCRED` (#250).
+
+- **A release pin that lost its `version` field passed the version check**
+  ([#378](https://github.com/lacs-project/sysknife/pull/378), closes [#368](https://github.com/lacs-project/sysknife/issues/368)).
+  `check_release_versions.sh` piped its list of internal path dependencies
+  through `grep 'version = '` before validating them, so the one broken pin the
+  check exists to catch was the one the filter removed, and publication would
+  have failed later against crates.io instead. An absent pin is now its own
+  explicit failure, and `tests/release/release-version-pins.test.sh` proves it
+  by removing a pin and requiring the check to name the manifest.
+
+- **Markdown link coverage is derived rather than listed**
+  ([#376](https://github.com/lacs-project/sysknife/pull/376), closes [#372](https://github.com/lacs-project/sysknife/issues/372)).
+
+- **The daemon's `sysknife-apt-pin-edit` lock arm was unreachable**
+  ([#375](https://github.com/lacs-project/sysknife/pull/375), closes [#248](https://github.com/lacs-project/sysknife/issues/248)).
+
 ## [0.13.1] — 2026-09-05
 
 The last digit moves. No shipped code changed: `crates/**`, `apps/*/src/**` and
