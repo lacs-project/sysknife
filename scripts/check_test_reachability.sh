@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 gate_files=(
     "$repo_root/.github/workflows/ci.yml"
     "$repo_root/.github/workflows/e2e.yml"
@@ -24,7 +24,20 @@ check_suite() {
 
     for test_file in "${tests[@]}"; do
         relative_path="${test_file#"$repo_root/"}"
-        if ! grep -Fq -- "$relative_path" "${gate_files[@]}"; then
+        # Require the standalone inline command used by our workflows. Merely
+        # naming a test in a comment, artifact path, or another command is not
+        # an invocation. Compare the path literally, not as a regular expression.
+        if ! awk -v path="$relative_path" '
+            {
+                line = $0
+                if (sub(/^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]+bash[[:space:]]+/, "", line)) {
+                    sub(/[[:space:]]+#.*$/, "", line)
+                    sub(/[[:space:]]+$/, "", line)
+                    if (line == path) found = 1
+                }
+            }
+            END { exit !found }
+        ' "${gate_files[@]}"; then
             printf 'test-reachability: test is not invoked by a gate: %s\n' \
                 "$relative_path" >&2
             return 1
