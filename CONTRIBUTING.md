@@ -181,12 +181,18 @@ the discovery test rejects exclusions that no longer name a tracked file.
 
 **Every release and E2E test must be reachable from a gate.**
 `scripts/check_test_reachability.sh` discovers `tests/release/*.test.sh` and
-`tests/e2e/*.test.sh`, then requires a standalone inline `run: bash <path>`
+`tests/e2e/*.test.sh`, then requires a standalone `bash <path>` command in a `run`
 step for each exact path in `ci.yml`, `e2e.yml`, or `release.yml`. Trailing
 comments are allowed; comments alone, artifact paths, shell compound commands,
-and mentions in `ci-local.sh` do not count. Keep these test steps in that
-explicit form and add the invocation in the same change as a new test; a test
-without one makes both local and remote CI fail.
+heredoc text, and mentions in `ci-local.sh` do not count. Keep these test steps
+in that explicit form and add the invocation in the same change as a new test;
+a test without one makes both local and remote CI fail. This is a static
+invocation check; it does not evaluate job conditions or prove runtime execution.
+
+The workflow parser uses PyYAML, already installed with CI's `yamllint`
+prerequisite. Install it into the same Python environment used to run the gate:
+`python3 -m pip install yamllint==1.38.0`. A missing parser or unreadable workflow
+fails the gate instead of falling back to text matching.
 
 **A change that touches no Rust skips the Rust gate.** The workspace suite exists
 to stop a Rust regression reaching `main`, and a diff with no `.rs` file in it

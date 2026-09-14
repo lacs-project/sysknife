@@ -10,8 +10,12 @@ mkdir -p "$fixture/.github/workflows" "$fixture/scripts" \
 cp "$repo_root/scripts/check_test_reachability.sh" "$fixture/scripts/"
 touch "$fixture/tests/release/reachable.test.sh" "$fixture/tests/e2e/reachable.test.sh"
 cat > "$fixture/.github/workflows/ci.yml" <<'EOF'
-run: bash tests/release/reachable.test.sh
-run: bash tests/e2e/reachable.test.sh
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: bash tests/release/reachable.test.sh
+      - run: bash tests/e2e/reachable.test.sh
 EOF
 touch "$fixture/.github/workflows/e2e.yml" "$fixture/.github/workflows/release.yml" \
     "$fixture/scripts/ci-local.sh"
@@ -62,7 +66,7 @@ for mention in \
     'run: bash tests/release/not-executedXtestXsh' \
     'run: bash tests/release/not-executed.test.sh || true'; do
     cp "$fixture/base-ci.yml" "$fixture/.github/workflows/ci.yml"
-    printf '%s\n' "$mention" >> "$fixture/.github/workflows/ci.yml"
+    printf '      - name: Not an invocation\n        %s\n' "$mention" >> "$fixture/.github/workflows/ci.yml"
     if output="$(bash "$fixture/scripts/check_test_reachability.sh" 2>&1)"; then
         printf 'test-reachability test: non-invocation unexpectedly passed: %s\n' "$mention" >&2
         exit 1
@@ -70,10 +74,37 @@ for mention in \
     grep -Fq 'test is not invoked by a gate: tests/release/not-executed.test.sh' <<< "$output"
 done
 
+# Scalar text can look like a step while only being data passed to an action.
+for scalar in '|' '>' '"'; do
+    cp "$fixture/base-ci.yml" "$fixture/.github/workflows/ci.yml"
+    printf '%s\n' '      - uses: actions/upload-artifact@v4' '        with:' \
+        "          path: $scalar" '            run: bash tests/release/not-executed.test.sh' \
+        >> "$fixture/.github/workflows/ci.yml"
+    if [[ "$scalar" == '"' ]]; then
+        printf '            "\n' >> "$fixture/.github/workflows/ci.yml"
+    fi
+    if bash "$fixture/scripts/check_test_reachability.sh" >/dev/null 2>&1; then
+        printf 'test-reachability test: artifact scalar unexpectedly passed: %s\n' "$scalar" >&2
+        exit 1
+    fi
+done
+cp "$fixture/base-ci.yml" "$fixture/.github/workflows/ci.yml"
+cat >> "$fixture/.github/workflows/ci.yml" <<'EOF'
+      - run: |
+          cat <<'TEXT'
+          run: bash tests/release/not-executed.test.sh
+          TEXT
+EOF
+if bash "$fixture/scripts/check_test_reachability.sh" >/dev/null 2>&1; then
+    printf 'test-reachability test: heredoc text unexpectedly passed\n' >&2
+    exit 1
+fi
+
 # Each supported workflow can satisfy the gate with a standalone invocation.
 for workflow in ci e2e release; do
     cp "$fixture/base-ci.yml" "$fixture/.github/workflows/ci.yml"
-    printf '%s\n' '  - run: bash tests/release/not-executed.test.sh  # run the test' \
+    cp "$fixture/base-ci.yml" "$fixture/.github/workflows/$workflow.yml"
+    printf '%s\n' '      - run: bash tests/release/not-executed.test.sh  # run the test' \
         >> "$fixture/.github/workflows/$workflow.yml"
     bash "$fixture/scripts/check_test_reachability.sh" >/dev/null
     if [[ "$workflow" != ci ]]; then
@@ -83,7 +114,7 @@ done
 
 # A missing workflow must fail even when an earlier file contains every match.
 cp "$fixture/base-ci.yml" "$fixture/.github/workflows/ci.yml"
-printf '%s\n' 'run: bash tests/release/not-executed.test.sh' >> "$fixture/.github/workflows/ci.yml"
+printf '%s\n' '      - run: bash tests/release/not-executed.test.sh' >> "$fixture/.github/workflows/ci.yml"
 rm "$fixture/.github/workflows/release.yml"
 if bash "$fixture/scripts/check_test_reachability.sh" >/dev/null 2>&1; then
     printf 'test-reachability test: missing workflow unexpectedly passed\n' >&2

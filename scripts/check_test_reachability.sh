@@ -8,6 +8,36 @@ gate_files=(
     "$repo_root/.github/workflows/release.yml"
 )
 
+# PyYAML is installed by the existing yamllint prerequisite. Parse actual run
+# fields so strings in action inputs, comments, and heredocs cannot count.
+invoked_tests="$(python3 - "${gate_files[@]}" <<'PYTHON'
+import re
+import sys
+
+try:
+    import yaml
+except ImportError:
+    sys.exit("test-reachability: PyYAML is required; install yamllint with python3 -m pip install yamllint==1.38.0")
+
+command = re.compile(r"bash[ \t]+(tests/(?:release|e2e)/[A-Za-z0-9_.-]+\.test\.sh)[ \t]*(?:#.*)?")
+for path in sys.argv[1:]:
+    try:
+        with open(path, encoding="utf-8") as stream:
+            workflow = yaml.safe_load(stream)
+        for job in (workflow or {}).get("jobs", {}).values():
+            for step in job.get("steps", []):
+                if not isinstance(step, dict):
+                    continue
+                run = step.get("run")
+                if isinstance(run, str):
+                    match = command.fullmatch(run.strip())
+                    if match:
+                        print(match.group(1))
+    except (OSError, yaml.YAMLError, AttributeError, TypeError) as error:
+        sys.exit(f"test-reachability: cannot read workflow {path}: {error}")
+PYTHON
+)"
+
 check_suite() {
     local suite="$1"
     local test_file relative_path
@@ -24,20 +54,7 @@ check_suite() {
 
     for test_file in "${tests[@]}"; do
         relative_path="${test_file#"$repo_root/"}"
-        # Require the standalone inline command used by our workflows. Merely
-        # naming a test in a comment, artifact path, or another command is not
-        # an invocation. Compare the path literally, not as a regular expression.
-        if ! awk -v path="$relative_path" '
-            {
-                line = $0
-                if (sub(/^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]+bash[[:space:]]+/, "", line)) {
-                    sub(/[[:space:]]+#.*$/, "", line)
-                    sub(/[[:space:]]+$/, "", line)
-                    if (line == path) found = 1
-                }
-            }
-            END { exit !found }
-        ' "${gate_files[@]}"; then
+        if ! grep -Fxq -- "$relative_path" <<< "$invoked_tests"; then
             printf 'test-reachability: test is not invoked by a gate: %s\n' \
                 "$relative_path" >&2
             return 1
