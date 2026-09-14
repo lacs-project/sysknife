@@ -62,6 +62,7 @@ for mention in \
     'path: tests/release/not-executed.test.sh*' \
     'run: echo bash tests/release/not-executed.test.sh' \
     'run: bash tests/release/not-executed.test.sh.backup' \
+    'run: bash tests/release/not-executed.test.sh#backup' \
     'run: bash prefix/tests/release/not-executed.test.sh' \
     'run: bash tests/release/not-executedXtestXsh' \
     'run: bash tests/release/not-executed.test.sh || true'; do

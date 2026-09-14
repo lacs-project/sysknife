@@ -19,7 +19,7 @@ try:
 except ImportError:
     sys.exit("test-reachability: PyYAML is required; install yamllint with python3 -m pip install yamllint==1.38.0")
 
-command = re.compile(r"bash[ \t]+(tests/(?:release|e2e)/[A-Za-z0-9_.-]+\.test\.sh)[ \t]*(?:#.*)?")
+command = re.compile(r"bash[ \t]+(tests/(?:release|e2e)/[A-Za-z0-9_.-]+\.test\.sh)(?:[ \t]+#.*)?[ \t]*")
 for path in sys.argv[1:]:
     try:
         with open(path, encoding="utf-8") as stream:
