@@ -90,23 +90,79 @@ grep -Eq 'needs: \[release\]' "$release_workflow"
 # @stable, @main, per-tool tags like @cargo-nextest, and short SHAs), across
 # all workflows — not just the publishing one — for a uniform supply-chain
 # posture that cannot silently drift.
-for workflow in "${repo_root}"/.github/workflows/*.yml; do
-    while IFS= read -r uses_line; do
-        # A reusable workflow in this same repository is referenced by path and
-        # cannot carry a SHA at all: GitHub resolves `./...` at the caller's own
-        # commit, so it is pinned by construction and always to this tree. The
-        # exemption is deliberately anchored to `./` so a third-party
-        # `owner/repo/.github/workflows/x.yml@ref` still has to be pinned.
-        if printf '%s\n' "$uses_line" | grep -Eq 'uses:[[:space:]]+\./'; then
-            continue
-        fi
-        if ! printf '%s\n' "$uses_line" | grep -Eq 'uses:[[:space:]]+[^@[:space:]]+@[0-9a-f]{40}([[:space:]]|$)'; then
-            printf 'FAIL: %s action is not pinned to a 40-hex SHA: %s\n' \
-                "$(basename "$workflow")" "$uses_line" >&2
-            exit 1
-        fi
-    done < <(grep -E '^[[:space:]]*(-[[:space:]]+)?uses:' "$workflow")
-done
+#
+# The extraction has to say how many lines it saw. A broken grep, an unmatched
+# glob, or a spelling the regex does not read all used to print
+# "Release rehearsal contract passed." over nothing. See #407.
+#
+# The floor is 20. This tree currently has 55 `uses:` lines, 19 of them
+# actions/checkout. A regex that only matches checkout, or that only matches
+# the `- uses:` spelling (one hit, in docs.yml), falls below it. Adding a
+# workflow cannot trip it; extracting a subset can.
+assert_action_pins() {
+    local workflows_dir="$1"
+    local min_uses="$2"
+    local old_nullglob uses_count workflow uses_line
+    old_nullglob="$(shopt -p nullglob || true)"
+    shopt -s nullglob
+    local -a workflows=("$workflows_dir"/*.yml "$workflows_dir"/*.yaml)
+    eval "$old_nullglob"
+
+    ((${#workflows[@]})) || {
+        printf 'FAIL: no workflow files matched under %s\n' "$workflows_dir" >&2
+        return 1
+    }
+
+    uses_count=0
+    for workflow in "${workflows[@]}"; do
+        while IFS= read -r uses_line; do
+            [ -n "$uses_line" ] || continue
+            uses_count=$((uses_count + 1))
+            # A reusable workflow in this same repository is referenced by path
+            # and cannot carry a SHA at all: GitHub resolves `./...` at the
+            # caller's own commit, so it is pinned by construction and always
+            # to this tree. The exemption is deliberately anchored to `./` so a
+            # third-party `owner/repo/.github/workflows/x.yml@ref` still has to
+            # be pinned.
+            if printf '%s\n' "$uses_line" | grep -Eq 'uses:[[:space:]]+\./'; then
+                continue
+            fi
+            if ! printf '%s\n' "$uses_line" | grep -Eq 'uses:[[:space:]]+[^@[:space:]]+@[0-9a-f]{40}([[:space:]]|$)'; then
+                printf 'FAIL: %s action is not pinned to a 40-hex SHA: %s\n' \
+                    "$(basename "$workflow")" "$uses_line" >&2
+                return 1
+            fi
+        done < <(grep -E '^[[:space:]]*(-[[:space:]]+)?uses:' "$workflow" || true)
+    done
+
+    if [ "$uses_count" -lt "$min_uses" ]; then
+        printf 'FAIL: extracted %s uses: line(s) under %s; need at least %s (extraction is broken, not the workflows)\n' \
+            "$uses_count" "$workflows_dir" "$min_uses" >&2
+        return 1
+    fi
+}
+
+assert_action_pins "${repo_root}/.github/workflows" 20
+
+# Negative twin: a workflow whose only `uses:` is a flow-style mapping, which
+# the extractor above does not read. Before the floor this check printed
+# success over zero lines.
+pin_fixture="$(mktemp -d)"
+trap 'rm -rf "$pin_fixture"' EXIT
+mkdir -p "$pin_fixture/workflows"
+cat > "$pin_fixture/workflows/missed.yml" <<'EOF'
+on: push
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    steps:
+      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 }
+EOF
+if pin_output="$(assert_action_pins "$pin_fixture/workflows" 1 2>&1)"; then
+    printf 'FAIL: pin check passed over a uses: spelling the extraction does not read\n' >&2
+    exit 1
+fi
+grep -Fq 'extraction is broken, not the workflows' <<<"$pin_output"
 if grep -Fq -- '--no-verify' "$release_workflow"; then
     printf 'FAIL: release publication skips generated crate verification\n' >&2
     exit 1
