@@ -12,6 +12,11 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Fixed
+
+- The release-rehearsal pin check now fails when it extracted too few `uses:`
+  lines, instead of reporting the invariant holding over an empty set (#407).
+
 ## [0.16.0] — 2026-09-15
 
 ### Added
@@ -38,8 +43,6 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 - Discover release/e2e shell guards in local CI instead of maintaining a stale
   list. Report skipped required Postgres validation in the final summary and
   prefer Podman when both container runtimes are available (#346).
-- The release-rehearsal pin check now fails when it extracted too few `uses:`
-  lines, instead of reporting the invariant holding over an empty set (#407).
 
 ## [0.15.0] — 2026-09-10
 
