@@ -265,6 +265,8 @@ install -Dm 755 packaging/sysknife-grub-kargs-edit /usr/lib/sysknife/grub-kargs-
 install -Dm 755 packaging/sysknife-unattended-upgrades-edit /usr/lib/sysknife/unattended-upgrades-edit \
     || fail "Install sysknife-unattended-upgrades-edit"
 # sshd-option-edit: invoked by SetSshdOption.
+install -Dm 755 packaging/sysknife-action-steps /usr/lib/sysknife/action-steps \
+    || fail "Install sysknife-action-steps"
 install -Dm 755 packaging/sysknife-sshd-option-edit /usr/lib/sysknife/sshd-option-edit \
     || fail "Install sysknife-sshd-option-edit"
 # scheduled-job-edit: invoked by CreateScheduledJob.

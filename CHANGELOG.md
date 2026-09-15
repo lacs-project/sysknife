@@ -12,6 +12,24 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-09-15
+
+### Added
+
+- Add read-only nftables ruleset and firewall-backend observations. General
+  firewall queries preserve failed/unknown probes and do not equate inactive
+  ufw with an unfiltered host. Safety notes precede bounded diagnostic excerpts
+  so large rulesets retain valid JSON and the interpretation caveat within the
+  planner output cap; mutating nftables actions remain out of scope (#239).
+
+### Changed
+
+- Remove whole-binary shell and runuser sudo grants. Firewall, group, Snap,
+  SSH-key and user-scoped Flatpak/Podman/Toolbox operations now use a bounded
+  helper with fixed command grammars. User operations refuse UID 0 and drop
+  groups/GID/UID before file access or execution; SSH edits reject symlinks.
+  Install the new helper together with the daemon and sudoers fragment (#417).
+
 ### Fixed
 
 - Align planner action descriptions with the Ubuntu execution fence, including

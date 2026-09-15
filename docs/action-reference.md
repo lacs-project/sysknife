@@ -47,27 +47,27 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `InstallFlatpak` | `sudo runuser -u testuser -- flatpak install --user -y flathub app-id` | Medium | All | – | – | install a Flatpak app — params: username\* (Linux user), app_id\* (e.g. org.mozilla.firefox), remote\* (e.g. flathub) |
-| `RemoveFlatpak` | `sudo runuser -u testuser -- flatpak uninstall --user -y app-id` | Medium | All | – | – | uninstall a Flatpak app — params: username\*, app_id\* |
+| `InstallFlatpak` | `sudo /usr/lib/sysknife/action-steps flatpak testuser install --user -y flathub app-id` | Medium | All | – | – | install a Flatpak app — params: username\* (Linux user), app_id\* (e.g. org.mozilla.firefox), remote\* (e.g. flathub) |
+| `RemoveFlatpak` | `sudo /usr/lib/sysknife/action-steps flatpak testuser uninstall --user -y app-id` | Medium | All | – | – | uninstall a Flatpak app — params: username\*, app_id\* |
 | `SearchFlatpakApps` | `flatpak search search-term` | Low | All | – | – | search Flatpak remotes for apps — param: term\* (query string) — no username needed |
-| `ListFlatpakRemotes` | `sudo runuser -u testuser -- flatpak remotes --user --columns=name,url` | Low | All | – | – | list configured Flatpak remotes — param: username\* |
-| `ListInstalledFlatpaks` | `sudo runuser -u testuser -- flatpak list --user --app --columns=application,name,version,origin` | Low | All | – | – | list installed Flatpak apps for a user — param: username\* |
-| `AddFlatpakRemote` | `sudo runuser -u testuser -- flatpak remote-add --user --if-not-exists remote https://example.invalid` | Medium | All | – | – | add a Flatpak remote — params: username\*, remote\* (name), url\* |
-| `RemoveFlatpakRemote` | `sudo runuser -u testuser -- flatpak remote-delete --user remote` | Medium | All | – | – | remove a Flatpak remote — params: username\*, remote\* (name) |
-| `GetFlatpakAppInfo` | `sudo runuser -u testuser -- flatpak info --user app-id` | Low | All | – | – | show metadata for an installed Flatpak — params: username\*, app_id\* |
-| `UpdateFlatpak` | `sudo runuser -u testuser -- flatpak update --user -y com.example.App` | Medium | All | – | – | update Flatpak apps — params: username\* (required); app_id (optional — omit to update all) |
-| `UbuntuInstallFlatpak` | `sudo runuser -u testuser -- flatpak install --user -y flathub app-id` | Medium | Ubuntu | – | – | install a Flatpak app — params: username\*, app_id\*, remote\* (e.g. flathub); Medium risk |
-| `UbuntuRemoveFlatpak` | `sudo runuser -u testuser -- flatpak uninstall --user -y app-id` | Medium | Ubuntu | – | – | remove a Flatpak app — params: username\*, app_id\*; Medium risk |
-| `UbuntuUpdateFlatpak` | `sudo runuser -u testuser -- flatpak update --user -y com.example.App` | Medium | Ubuntu | – | – | update Flatpak app(s) — param: username\*; optional: app_id (omit for all); Medium risk |
-| `UbuntuListFlatpaks` | `sudo runuser -u testuser -- flatpak list --user --app --columns=application,name,version,origin` | Low | Ubuntu | – | – | list installed Flatpak apps — param: username\*; read-only |
+| `ListFlatpakRemotes` | `sudo /usr/lib/sysknife/action-steps flatpak testuser remotes --user --columns=name,url` | Low | All | – | – | list configured Flatpak remotes — param: username\* |
+| `ListInstalledFlatpaks` | `sudo /usr/lib/sysknife/action-steps flatpak testuser list --user --app --columns=application,name,version,origin` | Low | All | – | – | list installed Flatpak apps for a user — param: username\* |
+| `AddFlatpakRemote` | `sudo /usr/lib/sysknife/action-steps flatpak testuser remote-add --user --if-not-exists remote https://example.invalid` | Medium | All | – | – | add a Flatpak remote — params: username\*, remote\* (name), url\* |
+| `RemoveFlatpakRemote` | `sudo /usr/lib/sysknife/action-steps flatpak testuser remote-delete --user remote` | Medium | All | – | – | remove a Flatpak remote — params: username\*, remote\* (name) |
+| `GetFlatpakAppInfo` | `sudo /usr/lib/sysknife/action-steps flatpak testuser info --user app-id` | Low | All | – | – | show metadata for an installed Flatpak — params: username\*, app_id\* |
+| `UpdateFlatpak` | `sudo /usr/lib/sysknife/action-steps flatpak testuser update --user -y com.example.App` | Medium | All | – | – | update Flatpak apps — params: username\* (required); app_id (optional — omit to update all) |
+| `UbuntuInstallFlatpak` | `sudo /usr/lib/sysknife/action-steps flatpak testuser install --user -y flathub app-id` | Medium | Ubuntu | – | – | install a Flatpak app — params: username\*, app_id\*, remote\* (e.g. flathub); Medium risk |
+| `UbuntuRemoveFlatpak` | `sudo /usr/lib/sysknife/action-steps flatpak testuser uninstall --user -y app-id` | Medium | Ubuntu | – | – | remove a Flatpak app — params: username\*, app_id\*; Medium risk |
+| `UbuntuUpdateFlatpak` | `sudo /usr/lib/sysknife/action-steps flatpak testuser update --user -y com.example.App` | Medium | Ubuntu | – | – | update Flatpak app(s) — param: username\*; optional: app_id (omit for all); Medium risk |
+| `UbuntuListFlatpaks` | `sudo /usr/lib/sysknife/action-steps flatpak testuser list --user --app --columns=application,name,version,origin` | Low | Ubuntu | – | – | list installed Flatpak apps — param: username\*; read-only |
 
 ## Toolbox
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `ListToolboxes` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox list"` | Low | All | – | – | list toolbox containers for a user — param: username\* |
-| `CreateToolbox` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox create --container 'sysknife-dev' --release '41'"` | Medium | All | – | – | create a toolbox container — params: username\*, name\*; optional: image, release |
-| `RemoveToolbox` | `sudo runuser -l testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox rm 'sysknife-dev'"` | Medium | All | – | – | remove a toolbox container — params: username\*, name\* |
+| `ListToolboxes` | `sudo /usr/lib/sysknife/action-steps toolbox testuser list` | Low | All | – | – | list toolbox containers for a user — param: username\* |
+| `CreateToolbox` | `sudo /usr/lib/sysknife/action-steps toolbox testuser create --container sysknife-dev --release 41` | Medium | All | – | – | create a toolbox container — params: username\*, name\*; optional: image, release |
+| `RemoveToolbox` | `sudo /usr/lib/sysknife/action-steps toolbox testuser rm sysknife-dev` | Medium | All | – | – | remove a toolbox container — params: username\*, name\* |
 
 ## Services
 
@@ -178,10 +178,12 @@ Every row is derived from the live code: the command from each action's `ActionS
 |---|---|---|---|---|---|---|
 | `ConfigureWifi` | `sudo nmcli device wifi connect CafeHotspot` | High | All | – | – | connect to a Wi-Fi network — params: ssid\*, password (optional for open networks) |
 | `SetDnsServers` | `sudo resolvectl dns wlp1s0 1.1.1.1 8.8.8.8` | High | All | – | – | set DNS servers for an interface — params: interface\* (e.g. wlp1s0), servers\* (string\[\]) |
-| `ConfigureFirewall` | `sudo sh -c "firewall-cmd --permanent --zone='public' --add-service='ssh' && firewall-cmd --reload"` | High | All | – | – | add/remove a service in a firewalld zone — params: zone\*, service\*, enabled\* (bool) |
+| `ConfigureFirewall` | `sudo /usr/lib/sysknife/action-steps firewall public ssh add-service` | High | All | – | – | add/remove a service in a firewalld zone — params: zone\*, service\*, enabled\* (bool) |
 | `GetFirewallState` | `firewall-cmd --list-all` | Low | All | – | – | show current firewalld zones, open services, and port rules — no params |
 | `GetNetworkStatus` | `ip -brief addr` | Low | All | – | – | show LIVE network state: interfaces, IP addresses, and connection state — no params; this is runtime status, NOT the saved configuration; on Ubuntu the saved config is NetplanGetConfig |
 | `GetListeningPorts` | `ss -tulpnH` | Low | All | – | – | show listening TCP/UDP sockets and the process bound to each (ss -tulpn) — no params; read-only; use for "what is listening on port X?" |
+| `GetNftablesRuleset` | `sudo nft list ruleset` | Low | All | – | – | read the current nftables ruleset — no params; read-only; rules do not by themselves prove that traffic is blocked |
+| `GetFirewallBackendState` | `/usr/lib/sysknife/firewall-state` | Low | All | – | – | inspect nftables, ufw and firewalld observations — no params; read-only; use for general firewall status; unavailable or inactive frontends do not prove the host is unfiltered |
 
 ## resolvectl
 
@@ -208,8 +210,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `ListGroups` | `getent group` | Low | All | – | – | list all local groups — no params |
 | `CreateUser` | `sudo useradd --create-home --home-dir /home/alice --shell /bin/bash alice` | High | All | – | – | create a local user account — param: username\*; optional: shell, home |
 | `DeleteUser` | `sudo userdel alice` | High | All | – | – | delete a local user account — param: username\* |
-| `AddUserToGroup` | `sudo sh -c "grep -q '^wheel:' /etc/group \|\| getent group 'wheel' >> /etc/group; usermod --append --groups 'wheel' 'alice'"` | High | All | – | – | add a user to a group — params: username\*, group\* |
-| `RemoveUserFromGroup` | `sudo sh -c "grep -q '^wheel:' /etc/group \|\| getent group 'wheel' >> /etc/group; gpasswd --delete 'alice' 'wheel'"` | High | All | – | – | remove a user from a group — params: username\*, group\* |
+| `AddUserToGroup` | `sudo /usr/lib/sysknife/action-steps group-add alice wheel` | High | All | – | – | add a user to a group — params: username\*, group\* |
+| `RemoveUserFromGroup` | `sudo /usr/lib/sysknife/action-steps group-remove alice wheel` | High | All | – | – | remove a user from a group — params: username\*, group\* |
 | `CreateGroup` | `sudo groupadd developers` | Medium | All | – | – | create a local group — param: group\*; optional: system (bool → system GID range) |
 | `DeleteGroup` | `sudo groupdel developers` | High | All | – | – | delete a local group — param: group\*; irreversible |
 | `LockUserAccount` | `sudo usermod --lock alice` | High | All | – | – | disable password login for a user without deleting it — param: username\* |
@@ -220,8 +222,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GetAuthorizedKeys` | `cat /home/alice/.ssh/authorized_keys` | Low | All | – | – | list SSH authorized_keys for a user — param: username\* |
-| `AddAuthorizedKey` | `sudo runuser -u alice -- sh -c "key=$1; path=$2; grep -Fxq -- \\"$key\\" \\"$path\\" 2>/dev/null \|\| printf '%s\\n' \\"$key\\" >> \\"$path\\"" sh "ssh-ed25519 AAAA..." /home/alice/.ssh/authorized_keys` | High | All | – | – | append an SSH public key to a user's authorized_keys — params: username\*, public_key\* (full key string) |
-| `RemoveAuthorizedKey` | `sudo runuser -u alice -- sh -c "key=$1; path=$2; tmp=$(mktemp) \|\| exit 1; grep -Fxv -- \\"$key\\" \\"$path\\" > \\"$tmp\\"; rc=$?; if [ $rc -gt 1 ]; then rm -f \\"$tmp\\"; exit $rc; fi; cat \\"$tmp\\" > \\"$path\\"; rm -f \\"$tmp\\"" sh "ssh-ed25519 AAAA..." /home/alice/.ssh/authorized_keys` | High | All | – | – | remove an SSH public key from a user's authorized_keys — params: username\*, public_key\* (full key string) |
+| `AddAuthorizedKey` | `sudo /usr/lib/sysknife/action-steps ssh-add alice "ssh-ed25519 AAAA..."` | High | All | – | – | append an SSH public key to a user's authorized_keys — params: username\*, public_key\* (full key string) |
+| `RemoveAuthorizedKey` | `sudo /usr/lib/sysknife/action-steps ssh-remove alice "ssh-ed25519 AAAA..."` | High | All | – | – | remove an SSH public key from a user's authorized_keys — params: username\*, public_key\* (full key string) |
 | `SetSshdOption` | `sudo /usr/lib/sysknife/sshd-option-edit --option PermitRootLogin --value prohibit-password` | High | All | – | – | harden sshd by setting an allowlisted option via a validated drop-in — params: option\* (one of PermitRootLogin, PasswordAuthentication, PubkeyAuthentication, X11Forwarding, PermitEmptyPasswords), value\* (per-option: yes/no, or prohibit-password/forced-commands-only for PermitRootLogin) |
 
 ## Package repositories
@@ -245,12 +247,12 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `ListContainers` | `sudo runuser -l testuser -c "podman ps --all --format json"` | Low | All | – | – | list Podman containers for a user — param: username\* |
-| `CreateContainer` | `sudo runuser -l testuser -c "podman create --name 'sysknife-dev' 'registry.fedoraproject.org/fedora-toolbox:41'"` | Medium | All | – | – | create a Podman container — params: username\*, name\*, image\* (e.g. ubuntu:22.04) |
-| `StartContainer` | `sudo runuser -l testuser -c "podman start 'sysknife-dev'"` | Medium | All | – | – | start a Podman container — params: username\*, name\* |
-| `StopContainer` | `sudo runuser -l testuser -c "podman stop 'sysknife-dev'"` | Medium | All | – | – | stop a Podman container — params: username\*, name\* |
-| `RemoveContainer` | `sudo runuser -l testuser -c "podman rm 'sysknife-dev'"` | Medium | All | – | – | remove a stopped Podman container — params: username\*, name\* |
-| `GetContainerInfo` | `sudo runuser -l testuser -c "podman inspect 'sysknife-dev'"` | Low | All | – | – | inspect a Podman container — params: username\*, name\* |
+| `ListContainers` | `sudo /usr/lib/sysknife/action-steps podman testuser ps --all --format json` | Low | All | – | – | list Podman containers for a user — param: username\* |
+| `CreateContainer` | `sudo /usr/lib/sysknife/action-steps podman testuser create --name sysknife-dev registry.fedoraproject.org/fedora-toolbox:41` | Medium | All | – | – | create a Podman container — params: username\*, name\*, image\* (e.g. ubuntu:22.04) |
+| `StartContainer` | `sudo /usr/lib/sysknife/action-steps podman testuser start sysknife-dev` | Medium | All | – | – | start a Podman container — params: username\*, name\* |
+| `StopContainer` | `sudo /usr/lib/sysknife/action-steps podman testuser stop sysknife-dev` | Medium | All | – | – | stop a Podman container — params: username\*, name\* |
+| `RemoveContainer` | `sudo /usr/lib/sysknife/action-steps podman testuser rm sysknife-dev` | Medium | All | – | – | remove a stopped Podman container — params: username\*, name\* |
+| `GetContainerInfo` | `sudo /usr/lib/sysknife/action-steps podman testuser inspect sysknife-dev` | Low | All | – | – | inspect a Podman container — params: username\*, name\* |
 
 ## Reboot
 
@@ -319,7 +321,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `SnapInstall` | `sudo sh -c "snap install --channel=stable firefox && snap refresh --hold firefox"` | Medium | Ubuntu | – | – | install a snap (auto-holds to prevent auto-refresh) — params: name\*; optional: channel (default stable), auto_update (bool, default false) |
+| `SnapInstall` | `sudo /usr/lib/sysknife/action-steps snap-install-hold firefox stable` | Medium | Ubuntu | – | – | install a snap (auto-holds to prevent auto-refresh) — params: name\*; optional: channel (default stable), auto_update (bool, default false) |
 | `SnapRemove` | `sudo snap remove firefox` | Medium | Ubuntu | – | – | remove a snap — param: name\* |
 | `SnapRefresh` | `sudo snap refresh firefox` | Medium | Ubuntu | – | – | update a snap or all snaps — param: name (optional, omit for all) |
 | `SnapHold` | `sudo snap refresh --hold firefox` | Medium | Ubuntu | – | – | pin a snap at its current version (snap refresh --hold) — param: name\* |
@@ -396,4 +398,4 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 ---
 
-_189 actions have an `ActionSpec` and are tabled above. The full catalogue (`KNOWN_ACTION_NAMES`) also includes `ListJobHistory`, which the dispatcher handles before the executor, for **190** total._
+_191 actions have an `ActionSpec` and are tabled above. The full catalogue (`KNOWN_ACTION_NAMES`) also includes `ListJobHistory`, which the dispatcher handles before the executor, for **192** total._

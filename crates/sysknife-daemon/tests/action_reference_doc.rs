@@ -149,6 +149,50 @@ fn doc_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/action-reference.md")
 }
 
+/// First 1-based line at which two documents differ, `None` when they are
+/// byte-identical. When one document is a prefix of the other, reports the line
+/// at which the shorter one ends, so a truncated file is named rather than
+/// silently swallowed.
+fn first_diff_line(committed: &str, generated: &str) -> Option<usize> {
+    if committed == generated {
+        return None;
+    }
+
+    let committed_lines = committed.split('\n').collect::<Vec<_>>();
+    let generated_lines = generated.split('\n').collect::<Vec<_>>();
+    committed_lines
+        .iter()
+        .zip(generated_lines.iter())
+        .position(|(cli, gli)| cli != gli)
+        .map(|i| i + 1)
+        .or_else(|| {
+            (committed_lines.len() != generated_lines.len())
+                .then(|| committed_lines.len().min(generated_lines.len()) + 1)
+        })
+}
+
+/// Failure message naming the first differing line and both sides, or `None`
+/// when the documents match. Regeneration instructions stay in the message so
+/// the failure still says how to fix it.
+fn diff_message(committed: &str, generated: &str) -> Option<String> {
+    let line = first_diff_line(committed, generated)?;
+
+    // `.lines()` has no trailing empty element for a final newline, so a
+    // document that ends here reports "<end of file>" rather than a blank line.
+    let committed_line = committed.lines().nth(line - 1).unwrap_or("<end of file>");
+    let generated_line = generated.lines().nth(line - 1).unwrap_or("<end of file>");
+    Some(format!(
+        "docs/action-reference.md is out of date with the action catalogue.\n\
+         First difference at line {line}:\n\
+         \x20 committed: {}\n\
+         \x20 generated: {}\n\
+         Regenerate: UPDATE_ACTION_REFERENCE=1 cargo test -p sysknife-daemon \
+         --test action_reference_doc",
+        committed_line.trim_end_matches('\r'),
+        generated_line.trim_end_matches('\r'),
+    ))
+}
+
 #[test]
 fn action_reference_doc_is_current() {
     let generated = build_reference();
@@ -160,10 +204,82 @@ fn action_reference_doc_is_current() {
     }
 
     let committed = std::fs::read_to_string(&path).unwrap_or_default();
+    if let Some(message) = diff_message(&committed, &generated) {
+        panic!("{message}");
+    }
+}
+
+#[test]
+fn first_diff_line_names_a_differing_line() {
+    let committed = "line one\nline two\nline three\n";
+    let generated = "line one\nline two\nline THREE\n";
+    assert_eq!(first_diff_line(committed, generated), Some(3));
+}
+
+#[test]
+fn first_diff_line_returns_none_for_identical_documents() {
+    assert_eq!(first_diff_line("hello", "hello"), None);
+    assert_eq!(first_diff_line("", ""), None);
+    assert_eq!(first_diff_line("a\nb\n", "a\nb\n"), None);
+}
+
+#[test]
+fn first_diff_line_reports_a_truncated_document() {
+    // Missing trailing content without a final newline on the shorter side,
+    // which the line-by-line zip alone cannot see.
+    assert_eq!(first_diff_line("a\nb\nc", "a\nb\nc\nd"), Some(4));
+    assert_eq!(first_diff_line("a\nb\nc\nd", "a\nb\nc"), Some(4));
+    // A missing final newline is a difference at the line it terminates.
+    assert_eq!(first_diff_line("a\nb", "a\nb\n"), Some(3));
     assert_eq!(
-        committed, generated,
-        "docs/action-reference.md is out of date with the action catalogue. \
-         Regenerate: UPDATE_ACTION_REFERENCE=1 cargo test -p sysknife-daemon \
-         --test action_reference_doc"
+        first_diff_line("heads\nsay\n", "heads\nonly\nsay\nheads\n"),
+        Some(2)
     );
+}
+
+#[test]
+fn diff_message_names_the_line_and_both_sides() {
+    let committed = "line one\nline two\nline three\n";
+    let generated = "line one\nline two\nline THREE\n";
+    let message = diff_message(committed, generated).unwrap();
+
+    assert!(message.contains("First difference at line 3:"), "{message}");
+    assert!(
+        message.contains("committed: line three"),
+        "message must show the committed side: {message}"
+    );
+    assert!(
+        message.contains("generated: line THREE"),
+        "message must show the generated side: {message}"
+    );
+    assert!(
+        message.contains("Regenerate: UPDATE_ACTION_REFERENCE=1"),
+        "message must keep the regeneration command: {message}"
+    );
+    assert!(
+        !message.contains("line one"),
+        "message must not echo the equal prefix: {message}"
+    );
+}
+
+#[test]
+fn diff_message_names_the_missing_tail() {
+    let committed = "line one\nline two";
+    let generated = "line one\nline two\nline three";
+    let message = diff_message(committed, generated).unwrap();
+
+    assert!(message.contains("First difference at line 3:"), "{message}");
+    assert!(
+        message.contains("committed: <end of file>"),
+        "message must say the committed side ends: {message}"
+    );
+    assert!(
+        message.contains("generated: line three"),
+        "message must show the generated side: {message}"
+    );
+}
+
+#[test]
+fn diff_message_returns_none_when_documents_match() {
+    assert_eq!(diff_message("same\ncontent\n", "same\ncontent\n"), None);
 }

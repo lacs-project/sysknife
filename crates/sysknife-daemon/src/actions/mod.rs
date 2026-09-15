@@ -152,7 +152,7 @@ pub fn exclusive_resource(spec: &ActionSpec) -> Option<ExclusiveResource> {
                 "apt-get" | "apt" | "apt-mark" | "aptitude" | "dpkg" | "dpkg-reconfigure"
                 | "add-apt-repository" | "do-release-upgrade" | "unattended-upgrade"
                 | "apt-pin-edit" => Some(ExclusiveResource::Dpkg),
-                "snap" => Some(ExclusiveResource::Snap),
+                "snap" | "snap-install-hold" => Some(ExclusiveResource::Snap),
                 "rpm-ostree" | "ostree" => Some(ExclusiveResource::RpmOstree),
                 "flatpak" => Some(ExclusiveResource::Flatpak),
                 _ => None,

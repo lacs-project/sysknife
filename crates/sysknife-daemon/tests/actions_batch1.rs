@@ -80,11 +80,10 @@ fn flatpak_family_covers_install_remove_and_query_actions() {
 }
 
 #[test]
-fn flatpak_install_routes_through_runuser() {
+fn flatpak_install_routes_through_bounded_helper() {
     // InstallFlatpak must run as the target user (user-scoped Flatpak store).
-    // The daemon runs as `sysknife`; `sudo runuser -u <username> -- flatpak ...`
-    // switches to the correct UID and bypasses the shell entirely so each argv
-    // element is passed to flatpak verbatim (no metacharacter expansion).
+    // The daemon runs as `sysknife`; the fixed helper validates argv and drops
+    // credentials before executing Flatpak without a shell.
     let spec = flatpak::install_flatpak("testuser", "org.mozilla.firefox", "flathub");
 
     assert_eq!(spec.action_name, "InstallFlatpak");
@@ -94,11 +93,9 @@ fn flatpak_install_routes_through_runuser() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
-                "runuser".to_string(),
-                "-u".to_string(),
-                "testuser".to_string(),
-                "--".to_string(),
+                "/usr/lib/sysknife/action-steps".to_string(),
                 "flatpak".to_string(),
+                "testuser".to_string(),
                 "install".to_string(),
                 "--user".to_string(),
                 "-y".to_string(),
@@ -123,10 +120,10 @@ fn toolbox_family_covers_create_enter_list_and_remove() {
 }
 
 #[test]
-fn toolbox_create_routes_through_runuser_with_xdg_runtime_dir() {
+fn toolbox_create_routes_through_bounded_helper_with_xdg_runtime_dir() {
     // CreateToolbox must run as the target user (rootless Podman per-user).
-    // XDG_RUNTIME_DIR must be set explicitly because `runuser -l` does not
-    // trigger pam_systemd — without it toolbox fails to locate its Podman socket.
+    // The helper sets XDG_RUNTIME_DIR explicitly after dropping credentials;
+    // without it toolbox fails to locate its Podman socket.
     let spec = toolbox::create_toolbox("testuser", "sysknife-dev", Some("41"), None);
 
     assert_eq!(spec.action_name, "CreateToolbox");
@@ -136,11 +133,14 @@ fn toolbox_create_routes_through_runuser_with_xdg_runtime_dir() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
-                "runuser".to_string(),
-                "-l".to_string(),
+                "/usr/lib/sysknife/action-steps".to_string(),
+                "toolbox".to_string(),
                 "testuser".to_string(),
-                "-c".to_string(),
-                "XDG_RUNTIME_DIR=/run/user/$(id -u) toolbox create --container 'sysknife-dev' --release '41'".to_string(),
+                "create".to_string(),
+                "--container".to_string(),
+                "sysknife-dev".to_string(),
+                "--release".to_string(),
+                "41".to_string(),
             ],
         }
     );
@@ -318,11 +318,9 @@ fn update_flatpak_with_app_id_appends_it() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
-                "runuser".to_string(),
-                "-u".to_string(),
-                "testuser".to_string(),
-                "--".to_string(),
+                "/usr/lib/sysknife/action-steps".to_string(),
                 "flatpak".to_string(),
+                "testuser".to_string(),
                 "update".to_string(),
                 "--user".to_string(),
                 "-y".to_string(),
@@ -343,11 +341,9 @@ fn update_flatpak_without_app_id_omits_it() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
-                "runuser".to_string(),
-                "-u".to_string(),
-                "testuser".to_string(),
-                "--".to_string(),
+                "/usr/lib/sysknife/action-steps".to_string(),
                 "flatpak".to_string(),
+                "testuser".to_string(),
                 "update".to_string(),
                 "--user".to_string(),
                 "-y".to_string(),
@@ -448,7 +444,7 @@ fn container_family_covers_runtime_lifecycle() {
 }
 
 #[test]
-fn container_create_routes_through_runuser() {
+fn container_create_routes_through_bounded_helper() {
     // CreateContainer must run in the user's rootless Podman context.
     // Direct podman invocation as `sysknife` would use an empty, unrelated store.
     let spec = containers::create_container(
@@ -463,11 +459,13 @@ fn container_create_routes_through_runuser() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
-                "runuser".to_string(),
-                "-l".to_string(),
+                "/usr/lib/sysknife/action-steps".to_string(),
+                "podman".to_string(),
                 "testuser".to_string(),
-                "-c".to_string(),
-                "podman create --name 'sysknife-dev' 'registry.fedoraproject.org/fedora-toolbox:41'".to_string(),
+                "create".to_string(),
+                "--name".to_string(),
+                "sysknife-dev".to_string(),
+                "registry.fedoraproject.org/fedora-toolbox:41".to_string(),
             ],
         }
     );
