@@ -192,11 +192,11 @@ this is runtime status, NOT the saved configuration; on Ubuntu the saved config 
      "disable a swap file, remove it, and drop its /etc/fstab entry — param: file* (must already be a swap file per /proc/swaps or /etc/fstab, and not a symlink); High risk"),
     // apt pinning (preferences.d) — Ubuntu/Debian only
     ("GetAptPins",
-     "show apt pin priorities (apt-cache policy) — param: package (optional); Ubuntu only; read-only"),
+     "show apt pin priorities (apt-cache policy) — param: package (optional); read-only"),
     ("SetAptPin",
-     "pin a package to a version/release via /etc/apt/preferences.d — params: name*, package* (glob), pin* (e.g. 'version 1.24.*' or 'release a=noble-security'), priority* (int -1..1000); Ubuntu only; Medium risk"),
+     "pin a package to a version/release via /etc/apt/preferences.d — params: name*, package* (glob), pin* (e.g. 'version 1.24.*' or 'release a=noble-security'), priority* (int -1..1000); Medium risk"),
     ("RemoveAptPin",
-     "remove a SysKnife-managed apt pin — param: name*; Ubuntu only; Medium risk"),
+     "remove a SysKnife-managed apt pin — param: name*; Medium risk"),
     // Scoped sudoers.d
     ("GetSudoGrants",
      "list SysKnife-managed sudoers.d drop-ins — no params; read-only"),
@@ -294,33 +294,33 @@ this is runtime status, NOT the saved configuration; on Ubuntu the saved config 
      "show SysKnife's own job log — optional params: limit (int), status_filter, action_filter, since_hours (int)"),
     // ── Ubuntu / apt — package management ────────────────────────────────────
     ("AptUpdate",
-     "refresh apt package index (apt-get update) — no params; Ubuntu only"),
+     "refresh apt package index (apt-get update) — no params"),
     ("AptUpgrade",
-     "upgrade all installed packages via dist-upgrade — no params; Ubuntu only; High risk"),
+     "upgrade all installed packages via dist-upgrade — no params; High risk"),
     ("AptInstall",
-     "install a package — param: package* (string, e.g. nginx); Ubuntu only"),
+     "install a package — param: package* (string, e.g. nginx)"),
     ("AptRemove",
-     "remove a package, keep config files — param: package*; Ubuntu only"),
+     "remove a package, keep config files — param: package*"),
     ("AptPurge",
-     "remove a package AND its config files — param: package*; Ubuntu only"),
+     "remove a package AND its config files — param: package*"),
     ("AptAutoremove",
-     "remove automatically-installed packages no longer needed — no params; Ubuntu only"),
+     "remove automatically-installed packages no longer needed — no params"),
     ("AptHold",
-     "pin a package at its current version (apt-mark hold) — param: package*; Ubuntu only"),
+     "pin a package at its current version (apt-mark hold) — param: package*"),
     ("AptUnhold",
-     "unpin a package to allow upgrades (apt-mark unhold) — param: package*; Ubuntu only"),
+     "unpin a package to allow upgrades (apt-mark unhold) — param: package*"),
     ("AptSearch",
-     "search apt repos for packages — param: term*; Ubuntu only; read-only"),
+     "search apt repos for packages — param: term*; read-only"),
     ("AptListInstalled",
-     "list all installed packages (dpkg -l) — no params; Ubuntu only; read-only"),
+     "list all installed packages (dpkg -l) — no params; read-only"),
     ("AptShow",
-     "show package details (version, deps, description) — param: package*; Ubuntu only; read-only"),
+     "show package details (version, deps, description) — param: package*; read-only"),
     ("AptListUpgradable",
-     "list packages with available upgrades — no params; Ubuntu only; read-only. Use for 'are there pending updates?' or 'what updates are available?'"),
+     "list packages with available upgrades — no params; read-only. Use for 'are there pending updates?' or 'what updates are available?'"),
     ("AptHistoryList",
-     "show recent apt transaction history — no params; Ubuntu only; read-only"),
+     "show recent apt transaction history — no params; read-only"),
     ("ConfigureUnattendedUpgrades",
-     "enable or disable automatic security updates (unattended-upgrades) — param: enabled* (bool); Ubuntu only; High risk"),
+     "enable or disable automatic security updates (unattended-upgrades) — param: enabled* (bool); High risk"),
     // ── Ubuntu / ppa — Launchpad PPAs ─────────────────────────────────────────
     ("AddPpa",
      "add a Launchpad PPA — param: name* in <user>/<ppa> format (e.g. 'deadsnakes/ppa'); Ubuntu only; requires software-properties-common"),
@@ -328,55 +328,55 @@ this is runtime status, NOT the saved configuration; on Ubuntu the saved config 
      "remove a Launchpad PPA — param: name* in <user>/<ppa> format; Ubuntu only"),
     // ── Ubuntu / snap ─────────────────────────────────────────────────────────
     ("SnapInstall",
-     "install a snap (auto-holds to prevent auto-refresh) — params: name*; optional: channel (default stable), auto_update (bool, default false); Ubuntu only"),
+     "install a snap (auto-holds to prevent auto-refresh) — params: name*; optional: channel (default stable), auto_update (bool, default false)"),
     ("SnapRemove",
-     "remove a snap — param: name*; Ubuntu only"),
+     "remove a snap — param: name*"),
     ("SnapRefresh",
-     "update a snap or all snaps — param: name (optional, omit for all); Ubuntu only"),
+     "update a snap or all snaps — param: name (optional, omit for all)"),
     ("SnapHold",
-     "pin a snap at its current version (snap refresh --hold) — param: name*; Ubuntu only"),
+     "pin a snap at its current version (snap refresh --hold) — param: name*"),
     ("SnapUnhold",
-     "allow a held snap to auto-refresh again — param: name*; Ubuntu only"),
+     "allow a held snap to auto-refresh again — param: name*"),
     ("SnapList",
-     "list installed snaps — no params; Ubuntu only; read-only"),
+     "list installed snaps — no params; read-only"),
     ("SnapInfo",
-     "show snap details (version, channel, description) — param: name*; Ubuntu only; read-only"),
+     "show snap details (version, channel, description) — param: name*; read-only"),
     ("SnapRevert",
-     "revert a snap to its previous revision — param: name*; Ubuntu only"),
+     "revert a snap to its previous revision — param: name*"),
     ("SnapClassicInstall",
-     "install a snap with classic confinement (full system access) — param: name*; Ubuntu only"),
+     "install a snap with classic confinement (full system access) — param: name*"),
     // ── Ubuntu / ufw — firewall ───────────────────────────────────────────────
     ("UfwEnable",
-     "enable the ufw firewall — no params; Ubuntu only; High risk"),
+     "enable the ufw firewall — no params; High risk"),
     ("UfwDisable",
-     "disable the ufw firewall — no params; Ubuntu only; High risk"),
+     "disable the ufw firewall — no params; High risk"),
     ("UfwAllow",
-     "allow inbound traffic on a port or service — param: port_or_service* (e.g. 22, 22/tcp, OpenSSH); Ubuntu only; High risk"),
+     "allow inbound traffic on a port or service — param: port_or_service* (e.g. 22, 22/tcp, OpenSSH); High risk"),
     ("UfwDeny",
-     "deny inbound traffic on a port or service — param: port_or_service*; Ubuntu only; High risk"),
+     "deny inbound traffic on a port or service — param: port_or_service*; High risk"),
     ("UfwReset",
-     "reset ufw to defaults, removing all rules — no params; Ubuntu only; High risk; irreversible"),
+     "reset ufw to defaults, removing all rules — no params; High risk; irreversible"),
     ("UfwStatus",
      "show current ufw status and rules — optional param: numbered (boolean, default false); true runs ufw status numbered and exposes rule_number values for UfwDeleteRule, false keeps verbose status; read-only"),
     // ── Ubuntu / distrobox — container environment ────────────────────────────
     ("DistroboxList",
-     "list distrobox containers — no params; Ubuntu only; read-only"),
+     "list distrobox containers — no params; read-only"),
     ("DistroboxCreate",
-     "create a distrobox container — params: name*, image* (e.g. ubuntu:24.04, fedora:41); Ubuntu only"),
+     "create a distrobox container — params: name*, image* (e.g. ubuntu:24.04, fedora:41)"),
     ("DistroboxRemove",
-     "remove a distrobox container — param: name*; Ubuntu only"),
+     "remove a distrobox container — param: name*"),
     // ── Ubuntu / netplan — server network config ──────────────────────────────
     ("NetplanGetConfig",
-     "read the SAVED network configuration: the netplan YAML in /etc/netplan/ — no params; Ubuntu only; \
+     "read the SAVED network configuration: the netplan YAML in /etc/netplan/ — no params; \
 read-only; on Ubuntu this is what \"the network config\" means, as opposed to GetNetworkStatus which \
 reports live interface state"),
     ("NetplanApply",
-     "apply netplan network configuration immediately — no params; Ubuntu only; High risk; can disconnect SSH"),
+     "apply netplan network configuration immediately — no params; High risk; can disconnect SSH"),
     // ── Ubuntu / grub — kernel arguments ─────────────────────────────────────
     ("GrubGetKargs",
-     "read current GRUB_CMDLINE_LINUX from /etc/default/grub — no params; Ubuntu only; read-only"),
+     "read current GRUB_CMDLINE_LINUX from /etc/default/grub — no params; read-only"),
     ("GrubSetKargs",
-     "modify GRUB kernel arguments and run update-grub — params: append (list), delete (list), bare tokens only (no '='); both lists are screened for boot-security downgrades; Ubuntu only; High risk; requires reboot"),
+     "modify GRUB kernel arguments and run update-grub — params: append (list), delete (list), bare tokens only (no '='); both lists are screened for boot-security downgrades; High risk; requires reboot"),
     // ── Ubuntu / reboot ───────────────────────────────────────────────────────
     ("CheckPendingReboot",
      "check whether a reboot is pending (/var/run/reboot-required) — no params; Ubuntu only; read-only"),
@@ -387,32 +387,32 @@ reports live interface state"),
      "set DNS servers for a network interface — params: interface* (e.g. eth0), servers* (string[]); cross-distro; High risk"),
     // ── Ubuntu / AppArmor ─────────────────────────────────────────────────────
     ("AppArmorStatus",
-     "show status of all loaded AppArmor profiles (aa-status) — no params; Ubuntu only; read-only"),
+     "show status of all loaded AppArmor profiles (aa-status) — no params; read-only"),
     ("AppArmorEnforce",
-     "put an AppArmor profile into enforce mode (aa-enforce) — param: profile_path* (e.g. /etc/apparmor.d/usr.bin.firefox); Ubuntu only; High risk"),
+     "put an AppArmor profile into enforce mode (aa-enforce) — param: profile_path* (e.g. /etc/apparmor.d/usr.bin.firefox); High risk"),
     ("AppArmorComplain",
-     "put an AppArmor profile into complain/learning mode (aa-complain) — param: profile_path*; Ubuntu only; High risk (disables MAC enforcement for the profile)"),
+     "put an AppArmor profile into complain/learning mode (aa-complain) — param: profile_path*; High risk (disables MAC enforcement for the profile)"),
     // ── Ubuntu / cloud-init ───────────────────────────────────────────────────
     ("CloudInitStatus",
-     "show cloud-init provisioning status (cloud-init status --long) — no params; Ubuntu only; read-only"),
+     "show cloud-init provisioning status (cloud-init status --long) — no params; read-only"),
     // ── Ubuntu / Flatpak (Ubuntu-specific routing) ────────────────────────────
     ("UbuntuInstallFlatpak",
-     "install a Flatpak app on Ubuntu — params: username*, app_id*, remote* (e.g. flathub); Ubuntu only; Medium risk"),
+     "install a Flatpak app — params: username*, app_id*, remote* (e.g. flathub); Medium risk"),
     ("UbuntuRemoveFlatpak",
-     "remove a Flatpak app on Ubuntu — params: username*, app_id*; Ubuntu only; Medium risk"),
+     "remove a Flatpak app — params: username*, app_id*; Medium risk"),
     ("UbuntuUpdateFlatpak",
-     "update Flatpak app(s) on Ubuntu — param: username*; optional: app_id (omit for all); Ubuntu only; Medium risk"),
+     "update Flatpak app(s) — param: username*; optional: app_id (omit for all); Medium risk"),
     ("UbuntuListFlatpaks",
-     "list installed Flatpak apps on Ubuntu — param: username*; Ubuntu only; read-only"),
+     "list installed Flatpak apps — param: username*; read-only"),
     // ── Ubuntu / fail2ban ─────────────────────────────────────────────────────
     ("Fail2banStatus",
-     "show fail2ban jail status — optional param: jail (omit for all jails); Ubuntu only; read-only"),
+     "show fail2ban jail status — optional param: jail (omit for all jails); read-only"),
     ("Fail2banBanIp",
-     "ban an IP address in a fail2ban jail — params: jail* (string), ip* (IPv4 or IPv6); Ubuntu only; High risk"),
+     "ban an IP address in a fail2ban jail — params: jail* (string), ip* (IPv4 or IPv6); High risk"),
     ("Fail2banUnbanIp",
-     "unban an IP address from a fail2ban jail — params: jail*, ip*; Ubuntu only; Medium risk"),
+     "unban an IP address from a fail2ban jail — params: jail*, ip*; Medium risk"),
     ("ConfigureFail2banJail",
-     "write a fail2ban jail override (/etc/fail2ban/jail.d/) — params: name*, plus at least one of enabled (bool), maxretry (1-100), bantime/findtime (seconds 0-2592000); Ubuntu only; High risk; needs fail2ban installed"),
+     "write a fail2ban jail override (/etc/fail2ban/jail.d/) — params: name*, plus at least one of enabled (bool), maxretry (1-100), bantime/findtime (seconds 0-2592000); High risk; needs fail2ban installed"),
     // ── auditd file-watch rules (cross-distro) ───────────────────────────────
     ("GetAuditRules",
      "list loaded audit rules (auditctl -l) — no params; read-only; needs auditd installed"),
@@ -429,14 +429,14 @@ reports live interface state"),
      "renew due certbot certificates (certbot renew) — no params; Medium risk; needs certbot + network"),
     // ── Ubuntu / Tier 3 — netplan extensions ─────────────────────────────────
     ("NetplanSet",
-     "set a single netplan key to a value — params: key* (e.g. 'ethernets.eth0.dhcp4'), value*; Ubuntu only; High risk; run NetplanApply to activate"),
+     "set a single netplan key to a value — params: key* (e.g. 'ethernets.eth0.dhcp4'), value*; High risk; run NetplanApply to activate"),
     ("NetplanGenerate",
-     "regenerate netplan backend config without applying — no params; Ubuntu only; Medium risk; dry-run before NetplanApply"),
+     "regenerate netplan backend config without applying — no params; Medium risk; dry-run before NetplanApply"),
     // ── Ubuntu / Tier 3 — ufw extensions ─────────────────────────────────────
     ("UfwDeleteRule",
      "delete a ufw rule by number — param: rule_number* (positive integer from query_ufw_rules or UfwStatus with numbered=true); never guess a rule number, and refresh after rule changes; High risk"),
     ("UfwLimit",
-     "add rate-limiting rule on a port/service (>6 connections/30s blocked) — param: target* (e.g. '22' or 'ssh'); Ubuntu only; High risk; use for SSH brute-force mitigation"),
+     "add rate-limiting rule on a port/service (>6 connections/30s blocked) — param: target* (e.g. '22' or 'ssh'); High risk; use for SSH brute-force mitigation"),
     // ── Ubuntu / Tier 3 — release upgrade ────────────────────────────────────
     ("UbuntuReleaseUpgrade",
      "upgrade to the next Ubuntu release (do-release-upgrade) — no params; Ubuntu only; High risk; takes 20–45 min; requires reboot; only for explicit distribution upgrade requests"),
@@ -456,7 +456,7 @@ reports live interface state"),
      "show Canonical Livepatch kernel-patch status — no params; Ubuntu only; read-only; requires canonical-livepatch installed and Ubuntu Pro"),
     // ── Ubuntu / Tier 3 — Multipass ──────────────────────────────────────────
     ("MultipassList",
-     "list Multipass VMs and their state — no params; Ubuntu only; read-only"),
+     "list Multipass VMs and their state — no params; read-only"),
 ];
 
 /// Should `action` be offered on the detected distribution?
@@ -723,6 +723,25 @@ pub fn parse_proposed_plan(intent: &str, input: &serde_json::Value) -> Result<Pl
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ubuntu_only_descriptions_match_execution_fence() {
+        assert!(!KNOWN_ACTIONS.is_empty());
+        assert!(!UBUNTU_ONLY_ACTIONS.is_empty());
+        for (name, description) in KNOWN_ACTIONS {
+            assert_eq!(
+                description.to_ascii_lowercase().contains("ubuntu only"),
+                UBUNTU_ONLY_ACTIONS.contains(name),
+                "{name}: Ubuntu-only description must match the execution fence"
+            );
+        }
+        for name in UBUNTU_ONLY_ACTIONS {
+            assert!(
+                KNOWN_ACTIONS.iter().any(|(action, _)| action == name),
+                "Ubuntu-only action {name} must have a catalogue description"
+            );
+        }
+    }
 
     fn tool_def_for_family(family: Option<&'static str>) -> ToolDefinition {
         let hint = family.map(|family| sysknife_types::DistroHint {

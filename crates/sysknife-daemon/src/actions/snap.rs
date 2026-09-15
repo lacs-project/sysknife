@@ -10,9 +10,8 @@
 //! `snap refresh --hold <name>` to pin the snap at the installed version.
 //! Set `auto_update: true` in the plan params to skip the hold.
 //!
-//! The hold is applied by building a two-command spec using a shell fragment
-//! via `sh -c "snap install … && snap refresh --hold …"`. `name` and
-//! `channel` are validated by [`snap_install`] itself before interpolation
+//! The bounded helper installs and then holds, stopping on either failure.
+//! `name` and `channel` are validated by [`snap_install`] and the helper
 //! (in addition to, not instead of, the executor's own `validated_safe_arg`
 //! check) — see the `SnapInstallError` doc below.
 
@@ -31,10 +30,8 @@ pub enum SnapInstallError {
     ///
     /// Defense in depth: the executor already validates both via
     /// `validated_safe_arg` before calling this constructor, but the
-    /// `auto_update: false` path interpolates `name`/`channel` into a
-    /// `sh -c "snap install … && snap refresh --hold …"` fragment — a future
-    /// internal Rust caller (fleet plan/execute path) that skipped the
-    /// executor could not otherwise be blocked from injecting through it.
+    /// helper also revalidates them. Keep constructor validation so internal
+    /// callers cannot produce an invalid spec by skipping the executor.
     InvalidArg { param: &'static str, value: String },
 }
 
@@ -132,16 +129,19 @@ pub fn snap_install(
             rollback_available: false,
         })
     } else {
-        // Install + hold in one shell fragment to avoid a window where the snap
-        // can be auto-refreshed between install and hold.
+        // Sequential install and hold: the helper does not hold a failed install.
         let channel_arg = channel.unwrap_or("stable");
-        let cmd = format!(
-            "snap install --channel={} {} && snap refresh --hold {}",
-            channel_arg, name, name
-        );
         Ok(ActionSpec {
             action_name: "SnapInstall",
-            mechanism: super::command_mechanism("sudo", ["sh", "-c", &cmd]),
+            mechanism: super::command_mechanism(
+                "sudo",
+                [
+                    "/usr/lib/sysknife/action-steps",
+                    "snap-install-hold",
+                    name,
+                    channel_arg,
+                ],
+            ),
             risk_level: RiskLevel::Medium,
             reboot_required: false,
             rollback_available: false,
@@ -299,15 +299,18 @@ mod tests {
         let spec = snap_install("firefox", None, false).unwrap();
         let (prog, args) = extract_args(&spec);
         assert_eq!(prog, "sudo");
-        // When auto_update=false the hold is embedded in a sh -c fragment.
-        let full = args.join(" ");
-        assert!(
-            full.contains("snap install"),
-            "missing 'snap install': {full}"
+        assert_eq!(
+            args,
+            [
+                "/usr/lib/sysknife/action-steps",
+                "snap-install-hold",
+                "firefox",
+                "stable"
+            ]
         );
-        assert!(
-            full.contains("snap refresh --hold firefox"),
-            "missing hold: {full}"
+        assert_eq!(
+            crate::actions::exclusive_resource(&spec),
+            Some(crate::actions::ExclusiveResource::Snap)
         );
     }
 

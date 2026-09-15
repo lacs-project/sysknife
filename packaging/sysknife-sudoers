@@ -6,12 +6,10 @@
 # These commands are not controllable via D-Bus / polkit and therefore
 # require a direct sudo invocation by the daemon process.
 #
-# Most grants are narrow (an exact binary, no wildcard) for defense-in-depth.
-# Two grants are intentionally broad — `/usr/bin/sh` and `/usr/sbin/runuser` —
-# because a handful of operations have no argv-only form (see the SECURITY NOTE
-# on the `sh` grant below). Those make the daemon effectively root-capable, so
-# the security boundary is the daemon's own authorization + validation + audit,
-# not this file. See each grant's comment for its exact call sites and rationale.
+# No shell or general runuser grant is permitted. Multi-step and user-scoped
+# actions use independently validated, operation-restricted helpers. Other
+# grants still cover powerful administrative tools: the daemon's authorization,
+# validation and audit remain essential. See each grant's scope below.
 #
 # IMPORTANT: test with `visudo -cf /etc/sudoers.d/sysknife` before deploying.
 #
@@ -95,36 +93,19 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/ostree
 sysknife ALL=(root) NOPASSWD: /usr/sbin/lvextend
 sysknife ALL=(root) NOPASSWD: /usr/sbin/lvcreate
 
-# Shell for the few multi-step root operations with no argv-only equivalent:
-#   - ConfigureFirewall (network.rs): `firewall-cmd --permanent … && firewall-cmd --reload`
-#
-# SECURITY NOTE — this is the widest grant in this file, and it means sudoers is NOT the
-# security boundary. `sudo sh -c '<script>'` has no argument constraint, so the sysknife
-# daemon is effectively root-capable. The real boundary is the daemon itself: IPC
-# caller-role authorization (SO_PEERCRED), the one-time approval interlock, per-argument
-# input validation (actions/validate.rs), and the signed audit chain. The narrow grants
-# above limit the blast radius of an *argv*-construction bug in a specific action; they
-# cannot contain a `sh -c` script — every script the daemon passes to `sh -c` is built
-# only from values already run through the validators in validate.rs.
-# TODO(post-launch hardening): refactor ConfigureFirewall + the ssh key ops to shell-free
-# argv forms so this grant (and the runuser `-c` grant below) can be dropped.
-sysknife ALL=(root) NOPASSWD: /usr/bin/sh
-
-# runuser — run tooling as the target (non-root) user for user-scoped operations:
-#   - Flatpak user installs (flatpak.rs): `runuser -u <user> -- flatpak …` (shell-free)
-#   - Rootless Podman / Toolbox / Distrobox (containers.rs, toolbox.rs):
-#     `runuser -l <user> -c '<cmd>'` — needs a login context for XDG_RUNTIME_DIR and the
-#     sub-UID/GID ranges rootless containers require.
-#   - AddAuthorizedKey / RemoveAuthorizedKey (ssh.rs): `runuser -u <user> -- sh -c
-#     '<script>' sh <key> <path>` runs the authorized_keys edit AS the target user, so a
-#     symlink planted at ~/.ssh/authorized_keys cannot redirect a root write into another
-#     account's files. The key and path are positional `$1`/`$2`, never interpolated.
-# Without this grant every user-scoped Flatpak/container/toolbox action fails
-# non-interactively (sudo would prompt for a password the daemon cannot supply). The
-# `-c` form is arbitrary-command and, like `sh` above, cannot be narrowed in sudoers; it
-# adds no privilege beyond the existing `sh` grant. Usernames and arguments are validated
-# upstream (validated_username / validated_safe_arg). On Ubuntu runuser is /usr/sbin/runuser.
-sysknife ALL=(root) NOPASSWD: /usr/sbin/runuser
+# Fixed multi-step operations. No generic exec, shell, runuser, path or environment
+# argument is accepted. The helper checks exact argument counts and allowlists.
+# User modes resolve the account and irreversibly drop groups/GID/UID before
+# opening authorized_keys or executing a user-configurable tool; UID 0 is refused.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps firewall *
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps group-add *
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps group-remove *
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps snap-install-hold *
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps ssh-add *
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps ssh-remove *
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps flatpak *
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps podman *
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps toolbox *
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Ubuntu / Debian-family binaries

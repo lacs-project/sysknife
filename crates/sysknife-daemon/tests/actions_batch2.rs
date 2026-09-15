@@ -337,9 +337,11 @@ fn configure_firewall_enable_uses_permanent_and_reload() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
-                "sh".to_string(),
-                "-c".to_string(),
-                "firewall-cmd --permanent --zone='public' --add-service='ssh' && firewall-cmd --reload".to_string(),
+                "/usr/lib/sysknife/action-steps".to_string(),
+                "firewall".to_string(),
+                "public".to_string(),
+                "ssh".to_string(),
+                "add-service".to_string(),
             ],
         }
     );
@@ -354,9 +356,11 @@ fn configure_firewall_disable_uses_remove_service_with_reload() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
-                "sh".to_string(),
-                "-c".to_string(),
-                "firewall-cmd --permanent --zone='public' --remove-service='ssh' && firewall-cmd --reload".to_string(),
+                "/usr/lib/sysknife/action-steps".to_string(),
+                "firewall".to_string(),
+                "public".to_string(),
+                "ssh".to_string(),
+                "remove-service".to_string(),
             ],
         }
     );
@@ -588,22 +592,14 @@ fn user_creation_and_group_changes_use_sudo_prefixed_shadow_tools() {
     // without actually modifying group membership.
     if let ActionMechanism::Command { program, args } = &add_group.mechanism {
         assert_eq!(*program, "sudo", "AddUserToGroup must use sudo");
-        assert!(
-            args.contains(&"sh".to_string()),
-            "must use sh -c for the guard script"
-        );
-        assert!(
-            args.contains(&"-c".to_string()),
-            "must use sh -c for the guard script"
-        );
-        let cmd = args.last().unwrap();
-        assert!(
-            cmd.contains("getent group"),
-            "must use getent group to resolve OSTree group layer: {cmd}"
-        );
-        assert!(
-            cmd.contains("usermod"),
-            "must call usermod to add group membership: {cmd}"
+        assert_eq!(
+            args,
+            &[
+                "/usr/lib/sysknife/action-steps",
+                "group-add",
+                "alice",
+                "wheel"
+            ]
         );
     } else {
         panic!("AddUserToGroup must use Command mechanism");
@@ -611,18 +607,14 @@ fn user_creation_and_group_changes_use_sudo_prefixed_shadow_tools() {
 
     if let ActionMechanism::Command { program, args } = &remove_group.mechanism {
         assert_eq!(*program, "sudo", "RemoveUserFromGroup must use sudo");
-        assert!(
-            args.contains(&"sh".to_string()),
-            "must use sh -c for the guard script"
-        );
-        let cmd = args.last().unwrap();
-        assert!(
-            cmd.contains("getent group"),
-            "must use getent group to resolve OSTree group layer: {cmd}"
-        );
-        assert!(
-            cmd.contains("gpasswd"),
-            "must call gpasswd to remove group membership: {cmd}"
+        assert_eq!(
+            args,
+            &[
+                "/usr/lib/sysknife/action-steps",
+                "group-remove",
+                "alice",
+                "wheel"
+            ]
         );
     } else {
         panic!("RemoveUserFromGroup must use Command mechanism");

@@ -387,12 +387,12 @@ cargo nextest run --workspace --locked
 
 `scripts/ci-local.sh` mirrors the runnable jobs from
 `.github/workflows/ci.yml` (rust, frontend, hygiene, security, and the
-optional postgres-contract job) so you catch failures before pushing,
+required postgres-contract job) so you catch failures before pushing,
 without spending GitHub Actions minutes:
 
 ```sh
-# Full run — everything CI runs, including the optional Postgres contract
-# test if docker/podman is available (or SYSKNIFE_TEST_POSTGRES_URL is set)
+# Full run — including the required Postgres contract when a URL or runtime
+# is available (Podman is preferred over Docker)
 scripts/ci-local.sh
 
 # Fast subset — rust fmt/clippy/nextest + frontend tsc/vitest only
@@ -401,6 +401,13 @@ scripts/ci-local.sh --fast
 # Skip the postgres-contract job even if a container runtime is available
 scripts/ci-local.sh --no-postgres
 ```
+
+The hygiene group discovers every `tests/release/*.test.sh` and
+`tests/e2e/*.test.sh`; there are no deliberate exclusions. A missing Postgres
+runtime/URL or `--no-postgres` produces a final **INCOMPLETE** warning naming
+the required gate. Set `SYSKNIFE_TEST_POSTGRES_URL` or install Podman and rerun
+without `--no-postgres` to satisfy it. Skips do not change the exit code; actual
+check failures still exit nonzero.
 
 It detects which tools are installed first: `cargo` and `node` are required
 (missing either is a hard failure with an install link); an optional linter
