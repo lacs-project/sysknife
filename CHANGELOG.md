@@ -12,6 +12,38 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Fixed
+
+- The release-rehearsal pin check now fails when it extracted too few `uses:`
+  lines, instead of reporting the invariant holding over an empty set (#407).
+
+## [0.16.0] — 2026-09-15
+
+### Added
+
+- Add read-only nftables ruleset and firewall-backend observations. General
+  firewall queries preserve failed/unknown probes and do not equate inactive
+  ufw with an unfiltered host. Safety notes precede bounded diagnostic excerpts
+  so large rulesets retain valid JSON and the interpretation caveat within the
+  planner output cap; mutating nftables actions remain out of scope (#239).
+
+### Changed
+
+- Remove whole-binary shell and runuser sudo grants. Firewall, group, Snap,
+  SSH-key and user-scoped Flatpak/Podman/Toolbox operations now use a bounded
+  helper with fixed command grammars. User operations refuse UID 0 and drop
+  groups/GID/UID before file access or execution; SSH edits reject symlinks.
+  Install the new helper together with the daemon and sudoers fragment (#417).
+
+### Fixed
+
+- Align planner action descriptions with the Ubuntu execution fence, including
+  Ufw and the other tool families moved to shared or Debian-family support.
+  Guard both directions of the description/fence relationship (#416).
+- Discover release/e2e shell guards in local CI instead of maintaining a stale
+  list. Report skipped required Postgres validation in the final summary and
+  prefer Podman when both container runtimes are available (#346).
+
 ## [0.15.0] — 2026-09-10
 
 ### Changed

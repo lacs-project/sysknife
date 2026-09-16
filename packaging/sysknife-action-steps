@@ -1,0 +1,200 @@
+#!/usr/bin/python3 -I
+"""Bounded multi-step actions. No command, shell, path or environment input.
+
+Install root-owned as /usr/lib/sysknife/action-steps. Each sudoers grant names
+one operation; this helper validates its entire argument grammar independently.
+User operations drop all root credentials before touching a home or invoking a
+user-configurable tool. Never add a generic exec mode or a caller-selected path.
+"""
+import os
+import re
+import stat
+import subprocess
+import sys
+
+SYSTEM_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
+
+
+def safe(value):
+    if not re.fullmatch(r"[A-Za-z0-9._:/+@][A-Za-z0-9._:/+@-]{0,253}", value):
+        raise ValueError("invalid argument")
+    return value
+
+
+def username(value):
+    if not re.fullmatch(r"[A-Za-z0-9._][A-Za-z0-9._-]{0,31}", value):
+        raise ValueError("invalid account name")
+    return value
+
+
+def public_key(value):
+    types = ("ssh-rsa", "ssh-ed25519", "ssh-ed25519-sk", "ecdsa-sha2-nistp256",
+             "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521",
+             "sk-ssh-ed25519", "sk-ecdsa-sha2-nistp256")
+    if (not value.startswith(types) or len(value) > 8192
+            or any(ord(c) < 32 or ord(c) > 126 or c in "'|;`$\\&" for c in value)):
+        raise ValueError("invalid public key")
+    return value
+
+
+def tool_argv(tool, args):
+    """Accept only argv produced by the corresponding typed constructors."""
+    if tool == "podman":
+        if args == ["ps", "--all", "--format", "json"]:
+            return ["/usr/bin/podman", *args]
+        if len(args) == 4 and args[:2] == ["create", "--name"]:
+            return ["/usr/bin/podman", "create", "--name", safe(args[2]), safe(args[3])]
+        if len(args) == 2 and args[0] in ("start", "stop", "rm", "inspect"):
+            return ["/usr/bin/podman", args[0], safe(args[1])]
+    elif tool == "toolbox":
+        if args == ["list"]:
+            return ["/usr/bin/toolbox", "list"]
+        if len(args) == 2 and args[0] == "rm":
+            return ["/usr/bin/toolbox", "rm", safe(args[1])]
+        if len(args) in (3, 5, 7) and args[:2] == ["create", "--container"]:
+            result = ["/usr/bin/toolbox", "create", "--container", safe(args[2])]
+            seen = set()
+            for flag, value in zip(args[3::2], args[4::2]):
+                if flag not in ("--release", "--image") or flag in seen:
+                    raise ValueError("invalid toolbox option")
+                seen.add(flag)
+                result.extend([flag, safe(value)])
+            return result
+    elif tool == "flatpak":
+        patterns = [
+            (["install", "--user", "-y"], 2),
+            (["uninstall", "--user", "-y"], 1),
+            (["remotes", "--user", "--columns=name,url"], 0),
+            (["remote-add", "--user", "--if-not-exists"], 2),
+            (["remote-delete", "--user"], 1),
+            (["list", "--user", "--app", "--columns=application,name,version,origin"], 0),
+            (["update", "--user", "-y"], 0),
+            (["update", "--user", "-y"], 1),
+            (["info", "--user"], 1),
+        ]
+        for prefix, count in patterns:
+            if args[:len(prefix)] == prefix and len(args) == len(prefix) + count:
+                return ["/usr/bin/flatpak", *prefix, *(safe(v) for v in args[len(prefix):])]
+    raise ValueError("unsupported user operation")
+
+
+def drop_to_user(name):
+    import pwd
+    account = pwd.getpwnam(username(name))
+    if account.pw_uid == 0 or not os.path.isabs(account.pw_dir):
+        raise ValueError("user operations require a non-root account with an absolute home")
+    # NSS lookup is the only home-related operation permitted before this point.
+    os.initgroups(account.pw_name, account.pw_gid)
+    os.setgid(account.pw_gid)
+    os.setuid(account.pw_uid)
+    if os.getuid() != account.pw_uid or os.geteuid() != account.pw_uid:
+        raise PermissionError("failed to drop root credentials")
+    os.environ.clear()
+    os.environ.update(SYSTEM_ENV, HOME=account.pw_dir, USER=account.pw_name,
+                      LOGNAME=account.pw_name, SHELL=account.pw_shell,
+                      XDG_RUNTIME_DIR=f"/run/user/{account.pw_uid}",
+                      DBUS_SESSION_BUS_ADDRESS=f"unix:path=/run/user/{account.pw_uid}/bus")
+    os.umask(0o077)
+    os.chdir(account.pw_dir)
+    return account
+
+
+def edit_key(path, key, add):
+    import fcntl
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+    if add:
+        flags |= os.O_CREAT
+    fd = os.open(path, flags, 0o600)
+    with os.fdopen(fd, "r+b") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("authorized_keys is not a regular file")
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        original = stream.read(16 * 1024 * 1024 + 1)
+        if len(original) > 16 * 1024 * 1024:
+            raise ValueError("authorized_keys exceeds size limit")
+        encoded = public_key(key).encode("ascii")
+        # Whole lines, never regex: a key comment like .* is literal text.
+        lines = original.splitlines(keepends=True)
+        if add:
+            if any(line.rstrip(b"\n") == encoded for line in lines):
+                return
+            updated = original + (b"\n" if original and not original.endswith(b"\n") else b"") + encoded + b"\n"
+        else:
+            updated = b"".join(line for line in lines if line.rstrip(b"\n") != encoded)
+        if updated != original:
+            stream.seek(0)
+            stream.write(updated)
+            stream.truncate()
+            stream.flush()
+            os.fsync(stream.fileno())
+
+
+def ensure_local_group(group):
+    import fcntl
+    import grp
+    entry = grp.getgrnam(username(group))
+    # Preserve the Fedora Atomic /usr/lib/group -> /etc/group materialization.
+    # A fixed root-owned path, a locked descriptor and no symlink following.
+    fd = os.open("/etc/group", os.O_RDWR | os.O_NOFOLLOW)
+    with os.fdopen(fd, "r+", encoding="utf-8") as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        data = stream.read()
+        if any(line.split(":", 1)[0] == group for line in data.splitlines()):
+            return
+        stream.seek(0, os.SEEK_END)
+        if data and not data.endswith("\n"):
+            stream.write("\n")
+        stream.write(f"{entry.gr_name}:{entry.gr_passwd}:{entry.gr_gid}:{','.join(entry.gr_mem)}\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def run(argv):
+    subprocess.run(argv, check=True, env=SYSTEM_ENV)
+
+
+def main(args):
+    if not args:
+        raise ValueError("operation required")
+    op, *values = args
+    if op == "firewall" and len(values) == 3:
+        zone, service, verb = values
+        if verb not in ("add-service", "remove-service"):
+            raise ValueError("invalid firewall operation")
+        first = ["/usr/bin/firewall-cmd", "--permanent", f"--zone={safe(zone)}", f"--{verb}={safe(service)}"]
+        run(first)
+        run(["/usr/bin/firewall-cmd", "--reload"])
+    elif op == "snap-install-hold" and len(values) == 2:
+        name, channel = map(safe, values)
+        run(["/usr/bin/snap", "install", f"--channel={channel}", name])
+        run(["/usr/bin/snap", "refresh", "--hold", name])
+    elif op in ("group-add", "group-remove") and len(values) == 2:
+        name, group = map(username, values)
+        ensure_local_group(group)
+        if op == "group-add":
+            run(["/usr/sbin/usermod", "--append", "--groups", group, name])
+        else:
+            run(["/usr/bin/gpasswd", "--delete", name, group])
+    elif op in ("ssh-add", "ssh-remove") and len(values) == 2:
+        name, key = values
+        public_key(key)
+        account = drop_to_user(name)
+        # No stat/open/mkdir of this user-controlled path occurs as root.
+        edit_key(os.path.join(account.pw_dir, ".ssh", "authorized_keys"), key, op == "ssh-add")
+    elif op in ("flatpak", "podman", "toolbox") and len(values) >= 2:
+        name, *parameters = values
+        argv = tool_argv(op, parameters)
+        drop_to_user(name)
+        os.execve(argv[0], argv, dict(os.environ))
+    else:
+        raise ValueError("unsupported operation or argument count")
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv[1:])
+    except subprocess.CalledProcessError as error:
+        sys.exit(error.returncode if error.returncode > 0 else 1)
+    except (ValueError, KeyError, OSError) as error:
+        print(f"action-steps: {error}", file=sys.stderr)
+        sys.exit(1)

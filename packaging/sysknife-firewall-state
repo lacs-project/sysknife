@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Read firewall observations without treating an inactive frontend as no firewall.
+
+Installed root-owned at /usr/lib/sysknife/firewall-state, executed unprivileged.
+Only the fixed nft/ufw read commands use the daemon account's exact sudo grants.
+"""
+import json
+import os
+import subprocess
+import sys
+
+
+TRUNCATION_MARKER = "\n[truncated by firewall-state]"
+# Budgets include JSON quotes/escaping, not just source characters. All six
+# streams together leave room for the summary below the brain's 8 KiB cap.
+STDOUT_JSON_BYTES = 1024
+STDERR_JSON_BYTES = 512
+
+
+def bounded_text(text, budget):
+    if len(json.dumps(text)) <= budget:
+        return text
+    remaining = budget - len(json.dumps(TRUNCATION_MARKER))
+    prefix = []
+    for char in text:
+        width = len(json.dumps(char)) - 2
+        if width > remaining:
+            break
+        prefix.append(char)
+        remaining -= width
+    return "".join(prefix) + TRUNCATION_MARKER
+
+
+def bounded_probe(observation):
+    return {**observation,
+            "stdout": bounded_text(observation["stdout"], STDOUT_JSON_BYTES),
+            "stderr": bounded_text(observation["stderr"], STDERR_JSON_BYTES)}
+
+
+def probe(argv):
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=5,
+                                env={**os.environ, "LC_ALL": "C"})
+        return {"status": "ok" if result.returncode == 0 else "failed",
+                "stdout": result.stdout, "stderr": result.stderr,
+                "returncode": result.returncode}
+    except FileNotFoundError:
+        return {"status": "unavailable", "stdout": "", "stderr": "command unavailable"}
+    except subprocess.TimeoutExpired:
+        return {"status": "timeout", "stdout": "", "stderr": "probe exceeded 5 seconds"}
+    except OSError as error:
+        return {"status": "failed", "stdout": "", "stderr": str(error)}
+
+
+def summarize(nft, ufw, firewalld):
+    backends = []
+    if ufw["status"] == "ok" and "Status: active" in ufw["stdout"].splitlines():
+        backends.append("ufw")
+    if firewalld["status"] == "ok" and firewalld["stdout"].strip():
+        backends.append("firewalld")
+    nft_state = {"status": "unknown"}
+    if nft["status"] == "ok":
+        try:
+            entries = json.loads(nft["stdout"])["nftables"]
+            if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+                raise ValueError("nftables must be a list of objects")
+            chains = [e["chain"] for e in entries if isinstance(e.get("chain"), dict)]
+            hooks = [c for c in chains if c.get("hook")]
+            rules = sum(isinstance(e.get("rule"), dict) for e in entries)
+            nft_state = {"status": "rules_present" if rules or hooks else "no_rules_observed",
+                         "rule_count": rules, "base_chain_count": len(hooks)}
+            if hooks and (rules or any(c.get("policy") == "drop" for c in hooks)):
+                backends.append("nftables")
+        except (ValueError, KeyError, TypeError):
+            nft_state = {"status": "unknown", "reason": "invalid nft JSON output"}
+    return {"state": "observations_available" if backends else "unknown",
+            "backends_observed": backends, "nftables": nft_state,
+            "note": "Frontends can share nftables. Rules or an active frontend do not prove "
+                    "that particular traffic is blocked. Empty/failed probes do not prove "
+                    "the host is unfiltered; legacy iptables and other mechanisms may exist.",
+            # Parse complete evidence above; only diagnostic excerpts are capped.
+            # Keep interpretation before diagnostics even if another layer caps it.
+            "probes": {"nftables": bounded_probe(nft), "ufw": bounded_probe(ufw),
+                       "firewalld": bounded_probe(firewalld)}}
+
+
+def main():
+    if len(sys.argv) != 1:
+        print("firewall-state accepts no arguments", file=sys.stderr)
+        return 2
+    # Resolve nft through sudo's secure_path. If /usr/sbin is unavailable there,
+    # the failed probe deliberately produces unknown, never an unfiltered claim.
+    result = summarize(probe(["sudo", "-n", "nft", "-j", "list", "ruleset"]),
+                       probe(["sudo", "-n", "ufw", "status", "verbose"]),
+                       probe(["firewall-cmd", "--list-all"]))
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

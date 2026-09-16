@@ -204,16 +204,10 @@ const SQLITE_MIGRATIONS: &[SqliteMigration] = &[
     },
 ];
 
-/// Column list for every `ChainRow` read, kept next to the mapper below.
-///
-/// The two read paths (`fetch_chain_rows`, `fetch_chain_row`) used to repeat
-/// both the SELECT and a positional `row.get(n)` block. Adding a column meant
-/// editing four places in step, and a mismatch between the two would surface
-/// as a verification failure rather than a compile error.
-const CHAIN_ROW_COLUMNS: &str = "seq, key_id, transaction_id, request_id, request_hash, \
-     action_name, risk_level, summary, approval_id, warnings_json, \
-     created_at, prev_chain_hash, chain_hash, chain_version, caller_role, event_tip, \
-     caller_principal";
+/// Column list for every `ChainRow` read, shared with the Postgres backend
+/// and declared once in `store.rs` (#397) — the mapper below reads columns
+/// positionally in exactly that order.
+use crate::store::CHAIN_ROW_COLUMNS;
 
 fn chain_row_from_sqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChainRow> {
     Ok(ChainRow {

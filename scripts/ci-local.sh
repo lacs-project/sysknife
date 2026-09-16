@@ -30,7 +30,7 @@ are caught before pushing (and before spending GitHub Actions minutes).
 
   --fast           Rust fmt/clippy/nextest + frontend tsc/vitest only (the
                     same subset the pre-push hook runs)
-  --no-postgres    Skip the optional postgres-contract job even when a
+  --no-postgres    Skip the required postgres-contract job even when a
                     container runtime or SYSKNIFE_TEST_POSTGRES_URL is present
   --install-hooks  Set git core.hooksPath to .githooks (enables the pre-push
                     gate: scripts/ci-local.sh --fast) and exit -- does not
@@ -38,7 +38,7 @@ are caught before pushing (and before spending GitHub Actions minutes).
   --help           Show this help and exit
 
 Groups (default, full run): rust, frontend, hygiene, security,
-postgres-contract (optional -- skipped if no runtime/URL is available).
+postgres-contract (required in CI; a local skip leaves validation incomplete).
 
 For a full Docker-based replay of the exact GitHub Actions workflow (all
 jobs, exact runner image), see https://github.com/nektos/act instead.
@@ -76,6 +76,7 @@ cd "$repo_root"
 
 RESULTS=()
 hard_failures=0
+required_skips=()
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -268,34 +269,30 @@ hygiene_shellcheck() (
         | xargs -0 shellcheck --severity=warning
 )
 
+run_shell_tests() {
+    # No deliberate exclusions: every release/e2e *.test.sh is a local fixture
+    # or guard, not a live VM story. Keep any future exclusion here with its
+    # reason and an explicit SKIP outcome rather than maintaining a second list.
+    local test count=0
+    for test in "$repo_root"/tests/release/*.test.sh "$repo_root"/tests/e2e/*.test.sh; do
+        [[ -f "$test" ]] || continue
+        count=$((count + 1))
+        run_step "hygiene: ${test#"$repo_root/"}" bash "$test"
+    done
+    if ((count == 0)); then
+        record FAIL 'hygiene: no release/e2e shell tests discovered'
+    fi
+}
+
 run_hygiene_group() {
     printf '\n### hygiene\n'
+    run_step 'hygiene: firewall backend reporter fixtures' python3 "$repo_root/tests/test_firewall_state.py"
     run_step 'hygiene: check_repo_completeness.sh' bash "$repo_root/scripts/check_repo_completeness.sh"
     run_step 'hygiene: check_test_reachability.sh' bash "$repo_root/scripts/check_test_reachability.sh"
     run_step 'hygiene: test-reachability.test.sh' bash "$repo_root/tests/release/test-reachability.test.sh"
     run_step 'hygiene: check_release_versions.sh' bash "$repo_root/scripts/check_release_versions.sh"
-    run_step 'hygiene: release-version-pins.test.sh' bash "$repo_root/tests/release/release-version-pins.test.sh"
-    run_step 'hygiene: public-claims.test.sh' bash "$repo_root/tests/release/public-claims.test.sh"
-    run_step 'hygiene: test-baseline-provenance.test.sh' bash "$repo_root/tests/release/test-baseline-provenance.test.sh"
     run_step 'hygiene: npm test --prefix packages/setup' npm test --prefix "$repo_root/packages/setup"
-    run_step 'hygiene: registry-manifest.test.sh' bash "$repo_root/tests/release/registry-manifest.test.sh"
-    run_step 'hygiene: smithery-manifest.test.sh' bash "$repo_root/tests/release/smithery-manifest.test.sh"
-    run_step 'hygiene: release-rehearsal.test.sh' bash "$repo_root/tests/release/release-rehearsal.test.sh"
-    run_step 'hygiene: database-path-agreement.test.sh' bash "$repo_root/tests/release/database-path-agreement.test.sh"
-    run_step 'hygiene: node-eol.test.sh' bash "$repo_root/tests/release/node-eol.test.sh"
-    run_step 'hygiene: tracked-eol.test.sh' bash "$repo_root/tests/release/tracked-eol.test.sh"
-    run_step 'hygiene: systemd-directory-modes.test.sh' bash "$repo_root/tests/release/systemd-directory-modes.test.sh"
-    run_step 'hygiene: ubuntu-vm-bootstrap.test.sh' bash "$repo_root/tests/e2e/ubuntu-vm-bootstrap.test.sh"
-    run_step 'hygiene: provider-parity.test.sh' bash "$repo_root/tests/e2e/provider-parity.test.sh"
-    run_step 'hygiene: vm-env-secrets.test.sh' bash "$repo_root/tests/e2e/vm-env-secrets.test.sh"
-    run_step 'hygiene: story-metadata.test.sh' bash "$repo_root/tests/e2e/story-metadata.test.sh"
-    run_step 'hygiene: story-runner-verdicts.test.sh' bash "$repo_root/tests/e2e/story-runner-verdicts.test.sh"
-    run_step 'hygiene: vm-sync-parity.test.sh' bash "$repo_root/tests/e2e/vm-sync-parity.test.sh"
-    run_step 'hygiene: docs-share-cards.test.sh' bash "$repo_root/tests/release/docs-share-cards.test.sh"
-    run_step 'hygiene: install-paths.test.sh' bash "$repo_root/tests/release/install-paths.test.sh"
-    run_step 'hygiene: postgres-contract-guard.test.sh' bash "$repo_root/tests/release/postgres-contract-guard.test.sh"
-    run_step 'hygiene: audit-export-confidentiality.test.sh' bash "$repo_root/tests/release/audit-export-confidentiality.test.sh"
-    run_step 'hygiene: markdown-link-files.test.sh' bash "$repo_root/tests/release/markdown-link-files.test.sh"
+    run_shell_tests
 
     if have markdownlint-cli2; then
         run_step 'hygiene: markdownlint-cli2' hygiene_markdownlint
@@ -344,15 +341,16 @@ run_security_group() {
 }
 
 # ---------------------------------------------------------------------------
-# postgres-contract (optional)
+# postgres-contract (required in CI)
 # ---------------------------------------------------------------------------
 
 run_postgres_contract_group() {
-    printf '\n### postgres-contract (optional)\n'
+    printf '\n### postgres-contract (required in CI)\n'
     local label="postgres-contract: live Postgres contract (store + CLI anchor exit code)"
 
     if [[ "$run_postgres" != true ]]; then
         record SKIP "${label} (--no-postgres)"
+        required_skips+=(postgres-contract)
         return
     fi
 
@@ -368,14 +366,15 @@ run_postgres_contract_group() {
     fi
 
     local runtime=""
-    if have docker; then
-        runtime="docker"
-    elif have podman; then
+    if have podman; then
         runtime="podman"
+    elif have docker; then
+        runtime="docker"
     fi
 
     if [[ -z "$runtime" ]]; then
         record SKIP "${label} (no SYSKNIFE_TEST_POSTGRES_URL and no docker/podman found)"
+        required_skips+=(postgres-contract)
         return
     fi
 
@@ -431,6 +430,7 @@ if [[ "$mode" == "full" ]]; then
     run_postgres_contract_group
 fi
 
+print_summary() {
 printf '\n=========================================\n'
 printf ' ci-local summary (%s run)\n' "$mode"
 printf '=========================================\n'
@@ -441,7 +441,16 @@ printf '=========================================\n'
 
 if ((hard_failures > 0)); then
     printf 'ci-local: FAIL (%d failing check(s))\n' "$hard_failures"
-    exit 1
 fi
 
-printf 'ci-local: PASS\n'
+if ((${#required_skips[@]} > 0)); then
+    printf 'WARNING: REQUIRED CI check(s) did not run: %s\n' "${required_skips[*]}"
+    printf 'To run postgres-contract, set SYSKNIFE_TEST_POSTGRES_URL or install podman, then rerun without --no-postgres.\n'
+    printf 'ci-local: INCOMPLETE (required checks skipped)\n'
+elif ((hard_failures == 0)); then
+    printf 'ci-local: PASS\n'
+fi
+}
+
+print_summary
+((hard_failures == 0))

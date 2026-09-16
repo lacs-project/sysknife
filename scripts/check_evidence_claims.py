@@ -433,7 +433,7 @@ def _claim_count(value: str) -> int:
 DEBIAN_GAP_PROSE = (
     r"\b(?P<count>\d+|zero|one|two|three|four|five|six|seven|eight|"
     r"nine|ten)\s+Debian-only\s+(?:actions?|ones?)\s+"
-    r"(?:that\s+)?still\s+have\s+no(?:ne|\s+story)\b"
+    r"(?:that\s+)?still\s+(?:have|has)\s+no(?:ne|\s+story)\b"
 )
 DEBIAN_EVERY_CLAIM = re.compile(
     r"\bEvery\s+Debian-only\s+action\s+(?:now\s+)?has\s+(?:one|a\s+story)\b",

@@ -9,6 +9,8 @@ pub fn specs() -> Vec<ActionSpec> {
         get_firewall_state(),
         get_network_status(),
         get_listening_ports(),
+        get_nftables_ruleset(),
+        get_firewall_backend_state(),
     ]
 }
 
@@ -55,37 +57,27 @@ pub fn set_dns_servers(interface: &str, servers: &[&str]) -> ActionSpec {
 
 /// Configure a firewalld rule and reload so it takes effect.
 ///
-/// Uses `sh -c` to chain `firewall-cmd --permanent ... && firewall-cmd --reload`
-/// atomically; firewalld has no single-call equivalent that updates the
-/// permanent rule and reloads runtime in one shot.
-///
-/// **Shell-injection safety:** `zone` and `service` are interpolated into the
-/// script via `format!`, so any shell metacharacter in either would be
-/// expanded by `/bin/sh`. Defence-in-depth:
-///   1. Both flow through `validated_safe_arg` upstream, which enforces a
-///      strict ASCII allowlist (`[A-Za-z0-9._:/+@-]`, no leading dash, ≤254
-///      bytes) and rejects every shell metacharacter at the boundary.
-///   2. The interpolated values are wrapped in single quotes so a future
-///      validator regression cannot escape the surrounding quotes.
-///   3. `verb` is selected from a fixed pair of literals (`add-service` /
-///      `remove-service`); it is never attacker-influenced.
+/// The bounded helper runs the permanent mutation then reloads only on success.
+/// These are sequential commands, not an atomic firewalld transaction. Arguments
+/// are validated independently by the helper and never interpreted as a shell.
 pub fn configure_firewall(zone: &str, service: &str, enabled: bool) -> ActionSpec {
     let verb = if enabled {
         "add-service"
     } else {
         "remove-service"
     };
-    let script = format!(
-        "firewall-cmd --permanent --zone='{}' --{}='{}' && firewall-cmd --reload",
-        zone, verb, service
-    );
-
     ActionSpec {
         action_name: "ConfigureFirewall",
-        mechanism: super::ActionMechanism::Command {
-            program: "sudo",
-            args: vec!["sh".to_string(), "-c".to_string(), script],
-        },
+        mechanism: command_mechanism(
+            "sudo",
+            [
+                "/usr/lib/sysknife/action-steps",
+                "firewall",
+                zone,
+                service,
+                verb,
+            ],
+        ),
         risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
@@ -115,6 +107,28 @@ pub fn get_network_status() -> ActionSpec {
     }
 }
 
+/// Inspect nftables without modifying rules or accepting caller-controlled argv.
+pub fn get_nftables_ruleset() -> ActionSpec {
+    ActionSpec {
+        action_name: "GetNftablesRuleset",
+        mechanism: command_mechanism("sudo", ["nft", "list", "ruleset"]),
+        risk_level: RiskLevel::Low,
+        reboot_required: false,
+        rollback_available: false,
+    }
+}
+
+/// Report nftables and frontend observations, preserving unknown probe results.
+pub fn get_firewall_backend_state() -> ActionSpec {
+    ActionSpec {
+        action_name: "GetFirewallBackendState",
+        mechanism: command_mechanism("/usr/lib/sysknife/firewall-state", [] as [&str; 0]),
+        risk_level: RiskLevel::Low,
+        reboot_required: false,
+        rollback_available: false,
+    }
+}
+
 /// List listening TCP/UDP sockets and, where the daemon has permission, the
 /// owning process (`ss -tulpnH`). Read-only; answers "what is listening on port
 /// X?". Run without sudo (like `GetNetworkStatus`'s `ip`); the socket/port list
@@ -128,5 +142,37 @@ pub fn get_listening_ports() -> ActionSpec {
         risk_level: RiskLevel::Low,
         reboot_required: false,
         rollback_available: false,
+    }
+}
+
+#[cfg(test)]
+mod firewall_tests {
+    use super::*;
+    use crate::actions::ActionMechanism;
+
+    #[test]
+    fn firewall_queries_have_fixed_read_only_mechanisms() {
+        for (spec, program, args) in [
+            (
+                get_nftables_ruleset(),
+                "sudo",
+                vec!["nft", "list", "ruleset"],
+            ),
+            (
+                get_firewall_backend_state(),
+                "/usr/lib/sysknife/firewall-state",
+                vec![],
+            ),
+        ] {
+            assert_eq!(spec.risk_level, RiskLevel::Low);
+            assert!(!spec.reboot_required && !spec.rollback_available);
+            assert_eq!(
+                spec.mechanism,
+                ActionMechanism::Command {
+                    program,
+                    args: args.into_iter().map(String::from).collect(),
+                }
+            );
+        }
     }
 }

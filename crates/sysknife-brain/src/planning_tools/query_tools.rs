@@ -21,7 +21,7 @@ pub fn query_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "query_firewall".into(),
-            description: "Show current firewall rules and allowed services.".into(),
+            description: "Inspect nftables, ufw and firewalld observations; preserve unknown status when probes fail. An inactive frontend does not prove the host is unfiltered.".into(),
             input_schema: empty_schema.clone(),
         },
         ToolDefinition {
@@ -232,7 +232,7 @@ pub fn query_tool_to_action(
     match tool_name {
         "query_ufw_rules" => Ok(Some(("UfwStatus", serde_json::json!({"numbered": true})))),
         "query_services" => Ok(Some(("ListServices", serde_json::json!({})))),
-        "query_firewall" => Ok(Some(("GetFirewallState", serde_json::json!({})))),
+        "query_firewall" => Ok(Some(("GetFirewallBackendState", serde_json::json!({})))),
         "query_deployments" => Ok(Some(("ListDeployments", serde_json::json!({})))),
         "query_packages" => Ok(Some(("GetLayeredPackages", serde_json::json!({})))),
         "query_containers" => Ok(Some(("ListContainers", serde_json::json!({})))),
@@ -314,7 +314,7 @@ mod tests {
         );
         assert_eq!(
             query_tool_to_action("query_firewall", &empty),
-            Ok(Some(("GetFirewallState", serde_json::json!({}))))
+            Ok(Some(("GetFirewallBackendState", serde_json::json!({}))))
         );
         assert_eq!(
             query_tool_to_action("query_deployments", &empty),
