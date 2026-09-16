@@ -12,6 +12,11 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Fixed
+
+- The release-rehearsal pin check now fails when it extracted too few `uses:`
+  lines, instead of reporting the invariant holding over an empty set (#407).
+
 ## [0.16.0] — 2026-09-15
 
 ### Added
