@@ -61,6 +61,12 @@ for mention in \
     'path: tests/release/not-executed.test.sh' \
     'path: tests/release/not-executed.test.sh*' \
     'run: echo bash tests/release/not-executed.test.sh' \
+    'run: echo sudo bash tests/release/not-executed.test.sh' \
+    'run: sudo -l bash tests/release/not-executed.test.sh' \
+    'run: sudo -v bash tests/release/not-executed.test.sh' \
+    'run: sudo -nl bash tests/release/not-executed.test.sh' \
+    'run: sudo -n -l bash tests/release/not-executed.test.sh' \
+    'run: sudo -n bash tests/release/not-executed.test.sh#backup' \
     'run: bash tests/release/not-executed.test.sh.backup' \
     'run: bash tests/release/not-executed.test.sh#backup' \
     'run: bash prefix/tests/release/not-executed.test.sh' \
@@ -98,6 +104,32 @@ cat >> "$fixture/.github/workflows/ci.yml" <<'EOF'
 EOF
 if bash "$fixture/scripts/check_test_reachability.sh" >/dev/null 2>&1; then
     printf 'test-reachability test: heredoc text unexpectedly passed\n' >&2
+    exit 1
+fi
+
+# Privileged test steps must still be command invocations, not sudo queries.
+for prefix in 'sudo' 'sudo -n'; do
+    cp "$fixture/base-ci.yml" "$fixture/.github/workflows/ci.yml"
+    printf '      - run: %s bash tests/release/not-executed.test.sh\n' "$prefix" \
+        >> "$fixture/.github/workflows/ci.yml"
+    bash "$fixture/scripts/check_test_reachability.sh" >/dev/null
+done
+
+# A block scalar with one command is supported, but a multi-line script is not.
+cp "$fixture/base-ci.yml" "$fixture/.github/workflows/ci.yml"
+cat >> "$fixture/.github/workflows/ci.yml" <<'EOF'
+      - run: |
+          sudo -n bash tests/release/not-executed.test.sh
+EOF
+bash "$fixture/scripts/check_test_reachability.sh" >/dev/null
+cp "$fixture/base-ci.yml" "$fixture/.github/workflows/ci.yml"
+cat >> "$fixture/.github/workflows/ci.yml" <<'EOF'
+      - run: |
+          # This remains a multi-line script even with only one command.
+          sudo -n bash tests/release/not-executed.test.sh
+EOF
+if bash "$fixture/scripts/check_test_reachability.sh" >/dev/null 2>&1; then
+    printf 'test-reachability test: multi-line script unexpectedly passed\n' >&2
     exit 1
 fi
 

@@ -183,11 +183,15 @@ the discovery test rejects exclusions that no longer name a tracked file.
 `scripts/check_test_reachability.sh` discovers `tests/release/*.test.sh` and
 `tests/e2e/*.test.sh`, then requires a standalone `bash <path>` command in a `run`
 step for each exact path in `ci.yml`, `e2e.yml`, or `release.yml`. Trailing
-comments are allowed; comments alone, artifact paths, shell compound commands,
+comments and a `sudo` or `sudo -n` prefix are allowed. Other sudo options,
+comments alone, artifact paths, shell compound commands,
 heredoc text, and mentions in `ci-local.sh` do not count. Keep these test steps
 in that explicit form and add the invocation in the same change as a new test;
 a test without one makes both local and remote CI fail. This is a static
 invocation check; it does not evaluate job conditions or prove runtime execution.
+A YAML block scalar containing just that command is supported. Multi-line shell
+scripts, including a command with a separate comment line, are not; give each
+test its own standalone step instead.
 
 The workflow parser uses PyYAML, already installed with CI's `yamllint`
 prerequisite. Install it into the same Python environment used to run the gate:
