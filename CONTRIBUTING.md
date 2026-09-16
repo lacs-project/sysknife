@@ -192,6 +192,8 @@ invocation check; it does not evaluate job conditions or prove runtime execution
 A YAML block scalar containing just that command is supported. Multi-line shell
 scripts, including a command with a separate comment line, are not; give each
 test its own standalone step instead.
+The local hygiene runner discovers these test files automatically; do not also
+add explicit local invocations, which would run a test twice.
 
 The workflow parser uses PyYAML, already installed with CI's `yamllint`
 prerequisite. Install it into the same Python environment used to run the gate:
