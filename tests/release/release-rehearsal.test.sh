@@ -264,6 +264,12 @@ printf 'jobs: {x: {steps: [{uses: null}]}}\n' > "$pin_fixture/unpinned/action.ym
 assert_pin_failure "$pin_fixture/unpinned" 1 \
     'FAIL: action.yml action is not pinned to a 40-hex SHA: None'
 
+# A directory-shaped workflow must fail even when valid.yml clears the floor.
+rm "$pin_fixture/unpinned/action.yml"
+mkdir "$pin_fixture/unpinned/blocked.yaml"
+assert_pin_failure "$pin_fixture/unpinned" 1 \
+    "FAIL: cannot read $pin_fixture/unpinned/blocked.yaml: [Errno 21] Is a directory: '$pin_fixture/unpinned/blocked.yaml'"
+
 mkdir "$pin_fixture/no-actions"
 printf 'jobs: {x: {steps: [{run: echo hello}]}}\n' > "$pin_fixture/no-actions/run.yml"
 assert_pin_failure "$pin_fixture/no-actions" 1 \
