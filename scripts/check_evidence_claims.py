@@ -647,7 +647,21 @@ def check_bare_story_counts(
     return problems
 
 
-def check_action_figures(texts: dict[str, str], catalogue: int) -> list[str]:
+def count_action_specs(root: Path) -> int:
+    """Derive the executor ActionSpec count from the generated reference table."""
+    path = root / "docs/action-reference.md"
+    if not path.exists():
+        raise Failure("docs/action-reference.md is missing; cannot derive ActionSpec count")
+    row = re.compile(r"^\| `[A-Za-z0-9_]+` \|")
+    count = sum(1 for line in path.read_text(encoding="utf-8").splitlines() if row.match(line))
+    if count == 0:
+        raise Failure("docs/action-reference.md contains no generated ActionSpec rows")
+    return count
+
+
+def check_action_figures(
+    texts: dict[str, str], catalogue: int, action_specs: int
+) -> list[str]:
     """Catch a bare "N actions" that is not the catalogue size.
 
     `check_figure` only sees the exact noun it is given ("typed actions"), so
@@ -664,11 +678,22 @@ def check_action_figures(texts: dict[str, str], catalogue: int) -> list[str]:
     drifting.
     """
     bare = re.compile(r"\b([0-9]{2,})\s+(?:typed\s+)?actions\b", re.IGNORECASE)
+    subset = re.compile(
+        r"\b([0-9]+)\s+actions\s+(?:with|have)\s+an\s+`?ActionSpec`?\b",
+        re.IGNORECASE,
+    )
 
     problems = []
     for rel, text in texts.items():
         for line in text.splitlines():
-            if "ActionSpec" in line:
+            subset_match = subset.search(line)
+            if subset_match:
+                count = int(subset_match.group(1))
+                if count != action_specs:
+                    problems.append(
+                        f"{rel}: claims {count} actions with an ActionSpec, "
+                        f"derived {action_specs} from docs/action-reference.md"
+                    )
                 continue
             for match in bare.finditer(line):
                 count = int(match.group(1))
@@ -806,7 +831,7 @@ def main() -> int:
         problems += check_debian_only_prose_claims(texts, root)
         problems += check_bare_story_counts(texts, story_runs, root)
         problems += check_validated_tiers(texts, root)
-        problems += check_action_figures(texts, count_actions(root))
+        problems += check_action_figures(texts, count_actions(root), count_action_specs(root))
 
         expected_tests = f"{baseline['tests']:,} Rust tests"
         for rel in REQUIRE_TEST_COUNT:
