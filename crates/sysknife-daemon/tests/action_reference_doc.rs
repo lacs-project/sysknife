@@ -137,7 +137,7 @@ fn build_reference() -> String {
     }
 
     out.push_str(&format!(
-        "---\n\n_{total} actions have an `ActionSpec` and are tabled above. The \
+        "---\n\n_{total + 1} actions have an `ActionSpec` and are tabled above. The \
          full catalogue (`KNOWN_ACTION_NAMES`) also includes `ListJobHistory`, \
          which the dispatcher handles before the executor, for **{}** total._\n",
         total + 1
