@@ -289,6 +289,7 @@ run_hygiene_group() {
     run_step 'hygiene: firewall backend reporter fixtures' python3 "$repo_root/tests/test_firewall_state.py"
     run_step 'hygiene: check_repo_completeness.sh' bash "$repo_root/scripts/check_repo_completeness.sh"
     run_step 'hygiene: check_release_versions.sh' bash "$repo_root/scripts/check_release_versions.sh"
+    run_step 'hygiene: verify-action-pins.sh' bash "$repo_root/scripts/verify-action-pins.sh" "$repo_root"
     run_step 'hygiene: npm test --prefix packages/setup' npm test --prefix "$repo_root/packages/setup"
     run_shell_tests
 

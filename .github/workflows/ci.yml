@@ -20,10 +20,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: "24"
 
@@ -43,6 +43,14 @@ jobs:
           npm install --global markdownlint-cli2@0.23.2 markdown-link-check@3.15.0
           python -m pip install --upgrade pip
           pip install yamllint==1.38.0
+
+      - name: Test action pin comment verification
+        run: bash tests/release/action-pin-comments.test.sh
+
+      - name: Verify action pin version comments
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/verify-action-pins.sh
 
       - name: Check required repository files
         run: bash scripts/check_repo_completeness.sh
@@ -210,10 +218,10 @@ jobs:
         working-directory: apps/sysknife-shell
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: "24"
 
@@ -240,7 +248,7 @@ jobs:
       CARGO_INCREMENTAL: 0
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Tauri system dependencies
         run: |
@@ -253,7 +261,7 @@ jobs:
             patchelf
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable (branch)
         with:
           components: rustfmt, clippy
 
@@ -276,7 +284,7 @@ jobs:
         run: cargo doc --no-deps --workspace --locked
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
         with:
           tool: cargo-nextest
 
@@ -308,10 +316,10 @@ jobs:
       SYSKNIFE_REQUIRE_POSTGRES: "1"
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable (branch)
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
@@ -328,10 +336,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
         with:
           tool: cargo-audit
 
@@ -356,7 +364,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Review dependency changes
         # dependency-review requires GitHub Advanced Security + the dependency
@@ -366,6 +374,6 @@ jobs:
         # (job stays green) while private and runs for real once public. The
         # job itself always runs, so this required check always reports a status.
         if: github.event.repository.visibility == 'public'
-        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v4
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
         with:
           fail-on-severity: high
