@@ -60,8 +60,18 @@ pub enum AuditSinkSpec {
         host: SocketAddr,
         /// Syslog facility (default `1` = user-level messages).
         facility: u8,
+        /// IANA Private Enterprise Number for the `sysknife@<PEN>` SD-ID.
+        /// Defaults to [`DOCUMENTATION_PEN`] at the config layer — see
+        /// `sysknife_core::config::SyslogForwardSection::enterprise_number`.
+        enterprise_number: u32,
     },
 }
+
+/// RFC 5612's reserved documentation/test Private Enterprise Number. Kept
+/// here (mirroring `sysknife_core::config::DOCUMENTATION_PEN`) so this
+/// crate's tests and doc examples don't need a cross-crate import just to
+/// name the default PEN.
+pub const DOCUMENTATION_PEN: u32 = 32473;
 
 /// One audit event handed to the forwarder. Mirrors the chain content
 /// captured at INSERT time so SIEM rules can correlate by `transaction_id`
@@ -169,7 +179,11 @@ pub fn spawn(spec: AuditSinkSpec) -> AuditForwarder {
 
 async fn forwarder_task(spec: AuditSinkSpec, mut rx: mpsc::Receiver<AuditEvent>) {
     match spec {
-        AuditSinkSpec::SyslogUdp { host, facility } => {
+        AuditSinkSpec::SyslogUdp {
+            host,
+            facility,
+            enterprise_number,
+        } => {
             let mut socket = open_udp(host).await;
             // Exponential backoff on consecutive bind failures so a transient
             // outage does not produce a tight retry loop that pegs a CPU.
@@ -178,7 +192,7 @@ async fn forwarder_task(spec: AuditSinkSpec, mut rx: mpsc::Receiver<AuditEvent>)
             // to `INITIAL_BACKOFF_SECS` on the first successful bind.
             let mut backoff_secs: u64 = INITIAL_BACKOFF_SECS;
             while let Some(event) = rx.recv().await {
-                let frame = format_rfc5424(&event, facility);
+                let frame = format_rfc5424(&event, facility, enterprise_number);
                 // **Event-drop semantics:** if the socket is `None` (bind has
                 // never succeeded, or a previous send failed and we have not
                 // yet rebound) the formatted frame is computed and then
@@ -268,12 +282,12 @@ async fn open_udp(host: SocketAddr) -> Option<tokio::net::UdpSocket> {
 ///
 /// Layout (one line, no trailing newline — UDP datagrams don't need one):
 /// ```text
-/// <PRI>1 TIMESTAMP HOSTNAME APP-NAME PROCID MSGID [SD@32473 ...] MSG
+/// <PRI>1 TIMESTAMP HOSTNAME APP-NAME PROCID MSGID [SD@<enterprise_number> ...] MSG
 /// ```
 ///
 /// We hold to the spec's printable-USASCII rule for the structured-data
 /// (SD) section by escaping `]`, `"`, and `\` per §6.3.3.
-pub fn format_rfc5424(event: &AuditEvent, facility: u8) -> String {
+pub fn format_rfc5424(event: &AuditEvent, facility: u8, enterprise_number: u32) -> String {
     // Severity 5 = NOTICE for audit events. PRI = facility * 8 + severity.
     let severity = 5u8;
     let pri = (facility as u32) * 8 + severity as u32;
@@ -291,14 +305,16 @@ pub fn format_rfc5424(event: &AuditEvent, facility: u8) -> String {
 
     // RFC 5424 §6.3 structured data.
     //
-    // **PEN 32473 is RFC 5612's documentation/test PEN — it MUST be replaced
-    // before production deployment.** RFC 5424 §7.2.2 requires an
-    // IANA-assigned Private Enterprise Number on `SD-ID`s emitted in
-    // production frames. The SysKnife project does not yet hold a PEN; the
-    // 32473 reservation is used here only so the formatter is bytewise
-    // testable. Operators running a SIEM under a regulated framework should
-    // either patch `SD@32473` to their own PEN at build time or treat this
-    // as a known gap (see issue tracker).
+    // `enterprise_number` defaults to [`DOCUMENTATION_PEN`] — RFC 5612's
+    // documentation/test PEN — at the config layer
+    // (`sysknife_core::config::SyslogForwardSection::enterprise_number`).
+    // **That default MUST be replaced before production deployment.** RFC
+    // 5424 §7.2.2 requires an IANA-assigned Private Enterprise Number on
+    // `SD-ID`s emitted in production frames. The SysKnife project does not
+    // yet hold its own PEN, so the documentation PEN remains the built-in
+    // default; operators running a SIEM under a regulated framework should
+    // set `[audit.forward.syslog].enterprise_number` in config to their own
+    // assigned PEN rather than patching this format string.
     //
     // `terminal_status` is appended ONLY for the execute-time forward, so
     // preview frames remain byte-for-byte unchanged.
@@ -307,7 +323,7 @@ pub fn format_rfc5424(event: &AuditEvent, facility: u8) -> String {
         None => String::new(),
     };
     let sd = format!(
-        "[sysknife@32473 \
+        "[sysknife@{enterprise_number} \
          seq=\"{}\" \
          tx=\"{}\" \
          action=\"{}\" \
@@ -472,14 +488,14 @@ mod tests {
 
     #[test]
     fn rfc5424_starts_with_pri_and_version() {
-        let frame = format_rfc5424(&sample_event(), 1);
+        let frame = format_rfc5424(&sample_event(), 1, DOCUMENTATION_PEN);
         // facility=1, severity=5 → PRI = 13. Version = 1.
         assert!(frame.starts_with("<13>1 "));
     }
 
     #[test]
     fn rfc5424_contains_sd_with_chain_hash_and_seq() {
-        let frame = format_rfc5424(&sample_event(), 1);
+        let frame = format_rfc5424(&sample_event(), 1, DOCUMENTATION_PEN);
         assert!(frame.contains("[sysknife@32473"));
         assert!(frame.contains("seq=\"42\""));
         assert!(frame.contains("chain_hash=\"deadbeef\""));
@@ -489,8 +505,17 @@ mod tests {
     }
 
     #[test]
+    fn rfc5424_uses_configured_enterprise_number() {
+        // Pins the substitution actually happens for a non-default PEN,
+        // rather than just leaving the default path unexercised.
+        let frame = format_rfc5424(&sample_event(), 1, 99999);
+        assert!(frame.contains("[sysknife@99999"));
+        assert!(!frame.contains("[sysknife@32473"));
+    }
+
+    #[test]
     fn rfc5424_message_section_contains_summary_and_action_tag() {
-        let frame = format_rfc5424(&sample_event(), 1);
+        let frame = format_rfc5424(&sample_event(), 1, DOCUMENTATION_PEN);
         assert!(frame.ends_with("[InstallFlatpak] Install Firefox"));
     }
 
@@ -515,7 +540,7 @@ mod tests {
     fn rfc5424_missing_approval_renders_empty_string() {
         let mut e = sample_event();
         e.approval_id = None;
-        let frame = format_rfc5424(&e, 1);
+        let frame = format_rfc5424(&e, 1, DOCUMENTATION_PEN);
         assert!(frame.contains("approval=\"\""));
     }
 
@@ -523,14 +548,14 @@ mod tests {
     fn rfc5424_caller_role_with_quote_is_escaped() {
         let mut e = sample_event();
         e.caller_role = Some(r#"Dev"name"#.to_string());
-        let frame = format_rfc5424(&e, 1);
+        let frame = format_rfc5424(&e, 1, DOCUMENTATION_PEN);
         assert!(frame.contains("role=\"Dev\\\"name\""));
     }
 
     #[test]
     fn rfc5424_facility_changes_pri() {
         // facility=23 (local7), severity=5 → PRI = 189.
-        let frame = format_rfc5424(&sample_event(), 23);
+        let frame = format_rfc5424(&sample_event(), 23, DOCUMENTATION_PEN);
         assert!(frame.starts_with("<189>1 "));
     }
 
@@ -542,7 +567,7 @@ mod tests {
         // joining against a second log source.
         let mut e = sample_event();
         e.final_status = Some("succeeded".to_string());
-        let frame = format_rfc5424(&e, 1);
+        let frame = format_rfc5424(&e, 1, DOCUMENTATION_PEN);
         assert!(
             frame.contains("terminal_status=\"succeeded\""),
             "frame missing terminal_status: {frame}"
@@ -611,7 +636,11 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let host: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
-        let forwarder = spawn(AuditSinkSpec::SyslogUdp { host, facility: 1 });
+        let forwarder = spawn(AuditSinkSpec::SyslogUdp {
+            host,
+            facility: 1,
+            enterprise_number: DOCUMENTATION_PEN,
+        });
         forwarder.submit(sample_event());
 
         // Receive with a generous timeout.
@@ -689,7 +718,8 @@ mod tests {
     fn rfc5424_round_trip_through_syslog_loose() {
         let event = sample_event();
         let facility = 1u8; // user-level
-        let frame = format_rfc5424(&event, facility);
+        let enterprise_number = 55512u32; // non-default, to prove the config knob round-trips
+        let frame = format_rfc5424(&event, facility, enterprise_number);
 
         let parsed = syslog_loose::parse_message(&frame, syslog_loose::Variant::RFC5424);
 
@@ -713,13 +743,15 @@ mod tests {
         assert_eq!(parsed.msgid, Some("AUDIT"));
         assert_eq!(parsed.appname, Some("sysknife-daemon"));
 
-        // Structured-data block: one SD element with id "sysknife@32473"
-        // and the audit fields as params.
+        // Structured-data block: one SD element whose id carries the
+        // configured enterprise_number (not the documentation-PEN default),
+        // pinning that the config knob actually reaches the wire.
+        let expected_sd_id = format!("sysknife@{enterprise_number}");
         let sd = parsed
             .structured_data
             .iter()
-            .find(|s| s.id == "sysknife@32473")
-            .expect("frame has the sysknife@32473 SD element");
+            .find(|s| s.id == expected_sd_id)
+            .unwrap_or_else(|| panic!("frame has the {expected_sd_id} SD element: {frame}"));
 
         let get = |key: &str| -> String {
             sd.params
