@@ -264,9 +264,11 @@ hygiene_yamllint() (
 # since every script this task adds/touches must stay shellcheck-clean.
 hygiene_shellcheck() (
     cd "$repo_root" || exit 1
-    find tests/e2e tests/release scripts assets/demo \
-        -type f -name '*.sh' -print0 \
-        | xargs -0 shellcheck --severity=warning
+    file_list="$(mktemp)"
+    trap 'rm -f "$file_list"' EXIT
+    scripts/shellcheck-files.sh >"$file_list" || exit 1
+    mapfile -d '' files <"$file_list"
+    shellcheck --severity=warning "${files[@]}"
 )
 
 run_shell_tests() {
