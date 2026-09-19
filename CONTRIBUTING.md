@@ -179,6 +179,27 @@ deterministic source-relative check, while external URLs stay bounded to
 `scripts/markdown-link-exclusions.txt` only when a source file must be skipped;
 the discovery test rejects exclusions that no longer name a tracked file.
 
+**Every release and E2E test must be reachable from a gate.**
+`scripts/check_test_reachability.sh` discovers `tests/release/*.test.sh` and
+`tests/e2e/*.test.sh`, then requires a standalone `bash <path>` command in a `run`
+step for each exact path in `ci.yml`, `e2e.yml`, or `release.yml`. Trailing
+comments and a `sudo` or `sudo -n` prefix are allowed. Other sudo options,
+comments alone, artifact paths, shell compound commands,
+heredoc text, and mentions in `ci-local.sh` do not count. Keep these test steps
+in that explicit form and add the invocation in the same change as a new test;
+a test without one makes both local and remote CI fail. This is a static
+invocation check; it does not evaluate job conditions or prove runtime execution.
+A YAML block scalar containing just that command is supported. Multi-line shell
+scripts, including a command with a separate comment line, are not; give each
+test its own standalone step instead.
+The local hygiene runner discovers these test files automatically; do not also
+add explicit local invocations, which would run a test twice.
+
+The workflow parser uses PyYAML, already installed with CI's `yamllint`
+prerequisite. Install it into the same Python environment used to run the gate:
+`python3 -m pip install yamllint==1.38.0`. A missing parser or unreadable workflow
+fails the gate instead of falling back to text matching.
+
 **A change that touches no Rust skips the Rust gate.** The workspace suite exists
 to stop a Rust regression reaching `main`, and a diff with no `.rs` file in it
 cannot cause one:
