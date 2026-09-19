@@ -264,7 +264,7 @@ anything, until the next row is written.
 > startup and `sysknife audit verify` repeats it beside every verdict, because
 > `OK: N rows verified` would otherwise read as "nothing was removed". Setup
 > instructions are in
-> [SECURITY.md](../SECURITY.md#audit-anchoring-in-the-default-deployment).
+> [SECURITY.md](https://github.com/lacs-project/sysknife/blob/main/SECURITY.md#audit-anchoring-in-the-default-deployment).
 
 A hash chain alone cannot detect one specific attack: **tail truncation**.
 If an attacker with write access to the audit database deletes the most
