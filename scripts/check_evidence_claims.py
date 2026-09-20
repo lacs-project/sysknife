@@ -807,6 +807,28 @@ def load_test_baseline(root: Path) -> dict:
     return baseline
 
 
+def check_pre_commit_commands(root: Path, guide: str) -> list[str]:
+    """Compare the documented gate with the executable hook, in order."""
+    hook = root / ".githooks/pre-commit"
+    if not hook.exists():
+        raise Failure(".githooks/pre-commit is missing")
+    commands = [
+        line.strip()
+        for line in hook.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+        and not line.lstrip().startswith(("#", "set ", "cd ", "echo "))
+    ]
+    section = guide.split("## Pre-commit Hooks\n", 1)[-1].split("\n## ", 1)[0]
+    block = re.search(r"```sh\n(.*?)\n```", section, re.S)
+    documented = block.group(1).splitlines() if block else []
+    if documented == commands:
+        return []
+    return [
+        "docs/developer-guide.md: pre-commit steps differ from .githooks/pre-commit; "
+        f"expected {commands!r}; documented {documented!r}"
+    ]
+
+
 def main() -> int:
     root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     try:
@@ -815,6 +837,7 @@ def main() -> int:
         baseline = load_test_baseline(root)
 
         problems = []
+        problems += check_pre_commit_commands(root, texts["docs/developer-guide.md"])
         problems += check_figure(texts, "Rust tests", baseline["tests"])
         problems += check_figure(texts, "frontend tests", baseline["frontend_tests"])
         problems += check_figure(texts, "typed actions", count_actions(root))
