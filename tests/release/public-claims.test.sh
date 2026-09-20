@@ -259,57 +259,41 @@ assert_rejected_with_diagnostic \
     "$wrong_atomic" "atomic" "derived $derived_atomic"
 cp "$repo_root/docs/introduction.md" "$fixture/docs/introduction.md"
 
-# The zero-uncovered direction: close the whole Debian-only gap in the story
-# evidence (quoting every derived-uncovered Ubuntu action) while the prose
-# still states a nonzero gap. The stale gap sentence must be rejected against
-# derived zero. Nothing here names today's actions or count; all of it is
-# derived from the fixture.
+# The stale-gap direction with the gap closed: the tree leaves zero Ubuntu-only
+# actions uncovered, so a nonzero gap sentence written into the prose must be
+# rejected against derived zero. Nothing here retypes today's counts; the
+# premise (derived zero) and the published figure are both read out.
 read -r gap_published gap_derived < <(
-    python3 - "$fixture/docs/action-reference.md" "$fixture/tests/e2e/stories" \
-        "$fixture/CONTRIBUTING.md" "$repo_root/scripts/check_evidence_claims.py" <<'PY'
+    python3 - "$fixture" "$repo_root/scripts/check_evidence_claims.py" <<'PY'
 import importlib.util
 import re
 import sys
 from pathlib import Path
 
-catalogue = Path(sys.argv[1]).read_text(encoding="utf-8")
-story_dir = Path(sys.argv[2])
-rows = re.findall(
-    r"^\| `([A-Za-z0-9_]+)` \|.*?\| (All|Ubuntu|Fedora) \|",
-    catalogue,
-    re.MULTILINE,
-)
-if not rows:
-    raise SystemExit("could not derive catalogue rows for the gap mutation")
-story_files = sorted(story_dir.glob("story-*.sh"))
-if not story_files:
-    raise SystemExit("could not derive story files for the gap mutation")
-named = set()
-for story in story_files:
-    named.update(
-        re.findall(
-            r'"([A-Za-z0-9_]+)"',
-            story.read_text(encoding="utf-8", errors="replace"),
-        )
-    )
-gap = sorted(name for name, family in rows if family == "Ubuntu" and name not in named)
-if not gap:
-    raise SystemExit("fixture has no Debian-only gap to close")
-target = story_files[0]
-target.write_text(
-    target.read_text(encoding="utf-8")
-    + "".join(f'\n# coverage fixture: "{action}"\n' for action in gap),
-    encoding="utf-8",
-)
-spec = importlib.util.spec_from_file_location("checker", sys.argv[4])
+spec = importlib.util.spec_from_file_location("checker", sys.argv[2])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-derived = mod.uncovered_action_counts(story_dir.parents[2])["Ubuntu"]
-text = Path(sys.argv[3]).read_text(encoding="utf-8")
-match = re.search(mod.DEBIAN_GAP_PROSE, re.sub(r"\s+", " ", text), re.IGNORECASE)
-if not match:
-    raise SystemExit("could not find the Debian-only gap prose in the fixture")
-print(mod._claim_count(match.group("count")), derived)
+fixture = Path(sys.argv[1])
+derived = mod.uncovered_action_counts(fixture)["Ubuntu"]
+if derived != 0:
+    raise SystemExit(
+        f"fixture gap is not zero before the stale-prose mutation: {derived}"
+    )
+path = fixture / "CONTRIBUTING.md"
+text = path.read_text(encoding="utf-8")
+old = "and every Debian-only action has a story."
+new = "and one Debian-only action still has no story: `GrubSetKargs`."
+if text.count(old) != 1:
+    raise SystemExit("universal Debian-only sentence was not unique in the fixture")
+path.write_text(text.replace(old, new), encoding="utf-8")
+found = re.search(
+    mod.DEBIAN_GAP_PROSE,
+    re.sub(r"\s+", " ", path.read_text(encoding="utf-8")),
+    re.IGNORECASE,
+)
+if not found:
+    raise SystemExit("stale-prose mutation did not apply")
+print(mod._claim_count(found.group("count")), derived)
 PY
 )
 if [[ -z "${gap_published:-}" || -z "${gap_derived:-}" ]]; then
@@ -321,161 +305,214 @@ if [[ "$gap_derived" != "0" ]]; then
         "$gap_derived" >&2
     exit 1
 fi
+if ! grep -Fq 'one Debian-only action still has no story' \
+    "$fixture/CONTRIBUTING.md"; then
+    printf 'FAIL: stale-prose mutation did not apply\n' >&2
+    exit 1
+fi
 assert_rejected_with_diagnostic \
     'stale nonzero gap prose against a derived zero gap' \
     "published $gap_published" "derived $gap_derived"
-cp "$repo_root"/tests/e2e/stories/story-*.sh "$fixture/tests/e2e/stories/"
+cp "$repo_root/CONTRIBUTING.md" "$fixture/CONTRIBUTING.md"
 if ! "$checker" "$fixture" >/dev/null 2>&1; then
     printf 'FAIL: restored gap fixture rejected — mutation result is meaningless\n' >&2
     exit 1
 fi
 
 # The universal "every Debian-only action" claim is screened in every claim
-# file, not just CONTRIBUTING. Reintroduce it in docs/introduction.md — where
-# it actually stood until this change — and prove the global rule rejects it
-# against the derived count, which is read out of the fixture, not retyped.
-read -r debian_uncovered < <(
-    python3 - "$repo_root/scripts/check_evidence_claims.py" "$fixture" <<'PY'
+# file, not just CONTRIBUTING. The tree now covers the whole gap, so reopen
+# one in the fixture evidence — by neutralising the quoted action name in the
+# fixture story that carries the coverage — and prove the global rule rejects
+# the pristine universal prose against the derived count. The premise (derived
+# zero before, derived one after) is read out of the fixture, not retyped, and
+# the diagnostic must name introduction.md: the CONTRIBUTING mismatch the same
+# evidence also produces is not sufficient proof for this rule.
+read -r debian_before debian_uncovered < <(
+    python3 - "$fixture" \
+        "$repo_root/scripts/check_evidence_claims.py" <<'PY'
 import importlib.util
 import sys
 from pathlib import Path
 
-spec = importlib.util.spec_from_file_location("checker", sys.argv[1])
+spec = importlib.util.spec_from_file_location("checker", sys.argv[2])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-print(mod.uncovered_action_counts(Path(sys.argv[2]))["Ubuntu"])
+fixture = Path(sys.argv[1])
+before = mod.uncovered_action_counts(fixture)["Ubuntu"]
+if before != 0:
+    raise SystemExit(
+        f"fixture gap is not zero before the uncover mutation: {before}"
+    )
+story_dir = fixture / "tests/e2e/stories"
+holders = sorted(
+    path for path in story_dir.glob("story-*.sh")
+    if '"GrubSetKargs"' in path.read_text(encoding="utf-8", errors="replace")
+)
+if len(holders) != 1:
+    raise SystemExit(
+        "expected exactly one fixture story to quote GrubSetKargs, "
+        f"found {len(holders)}"
+    )
+target = holders[0]
+text = target.read_text(encoding="utf-8")
+if text.count('"GrubSetKargs"') != 1:
+    raise SystemExit("GrubSetKargs quote was not unique in the fixture story")
+target.write_text(
+    text.replace('"GrubSetKargs"', '"GrubSetKargsFixture"'), encoding="utf-8"
+)
+after = mod.uncovered_action_counts(fixture)["Ubuntu"]
+if after != 1:
+    raise SystemExit(
+        f"uncover mutation did not reopen a gap of one (derived {after})"
+    )
+print(before, after)
 PY
 )
-if [[ -z "${debian_uncovered:-}" ]]; then
+if [[ -z "${debian_before:-}" || -z "${debian_uncovered:-}" ]]; then
     printf 'FAIL: universal-claim mutation produced no derived count\n' >&2
     exit 1
 fi
-printf '\nEvery Debian-only action has a story.\n' >> "$fixture/docs/introduction.md"
-if ! grep -Fq 'Every Debian-only action has a story' "$fixture/docs/introduction.md"; then
-    printf 'FAIL: universal-claim mutation did not apply\n' >&2
+if ! grep -R -Fq '"GrubSetKargsFixture"' \
+    "$fixture/tests/e2e/stories"; then
+    printf 'FAIL: uncover mutation did not apply\n' >&2
     exit 1
 fi
 assert_rejected_with_diagnostic \
-    'universal Debian-only claim in another screened file' \
+    'universal Debian-only claim against a reopened gap' \
     'introduction.md' "leaves $debian_uncovered Ubuntu-only"
-cp "$repo_root/docs/introduction.md" "$fixture/docs/introduction.md"
+cp "$repo_root"/tests/e2e/stories/story-*.sh "$fixture/tests/e2e/stories/"
+if ! "$checker" "$fixture" >/dev/null 2>&1; then
+    printf 'FAIL: restored uncover fixture rejected — mutation result is meaningless\n' >&2
+    exit 1
+fi
 
-# The introduction's gap count is derived, not trusted: bump it with the tree
-# untouched and prove rejection names the file and both figures. The premise
-# itself is verified first — the published count must equal the derived one
-# before the bump, or the assertion below would blame the checker for a
-# fixture that was already stale.
-read -r intro_published intro_new < <(
-    python3 - "$fixture/docs/introduction.md" "$fixture" \
+# The introduction's Debian-only prose is derived, not trusted: with the tree
+# untouched (derived gap zero), restate its universal sentence as a stale
+# nonzero gap and prove rejection names the file and both figures.
+read -r intro_published intro_derived < <(
+    python3 - "$fixture" \
         "$repo_root/scripts/check_evidence_claims.py" <<'PY'
 import importlib.util
 import re
 import sys
 from pathlib import Path
 
-spec = importlib.util.spec_from_file_location("checker", sys.argv[3])
+spec = importlib.util.spec_from_file_location("checker", sys.argv[2])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-path = Path(sys.argv[1])
+fixture = Path(sys.argv[1])
+derived = mod.uncovered_action_counts(fixture)["Ubuntu"]
+if derived != 0:
+    raise SystemExit(
+        f"fixture gap is not zero before the introduction mutation: {derived}"
+    )
+path = fixture / "docs/introduction.md"
 text = path.read_text(encoding="utf-8")
-match = re.search(mod.DEBIAN_GAP_PROSE, re.sub(r"\s+", " ", text), re.IGNORECASE)
-if not match:
-    raise SystemExit("could not find the Debian-only gap prose in the fixture")
-old = mod._claim_count(match.group("count"))
-derived = mod.uncovered_action_counts(Path(sys.argv[2]))["Ubuntu"]
-if old != derived:
-    raise SystemExit(f"fixture gap prose already stale: published {old}, derived {derived}")
-new = old + 1
-raw = re.search(mod.DEBIAN_GAP_PROSE, text, re.IGNORECASE)
-path.write_text(
-    text[: raw.start("count")] + str(new) + text[raw.end("count") :],
-    encoding="utf-8",
+old = "Every Debian-only action has a story."
+new = "One Debian-only action still has no story."
+if text.count(old) != 1:
+    raise SystemExit("universal Debian-only sentence was not unique in the fixture")
+path.write_text(text.replace(old, new), encoding="utf-8")
+found = re.search(
+    mod.DEBIAN_GAP_PROSE,
+    re.sub(r"\s+", " ", path.read_text(encoding="utf-8")),
+    re.IGNORECASE,
 )
-print(old, new)
+if not found:
+    raise SystemExit("introduction-count mutation did not apply")
+print(mod._claim_count(found.group("count")), derived)
 PY
 )
-if [[ -z "${intro_published:-}" || -z "${intro_new:-}" ]]; then
+if [[ -z "${intro_published:-}" || -z "${intro_derived:-}" ]]; then
     printf 'FAIL: introduction-count mutation produced no values\n' >&2
     exit 1
 fi
-if ! grep -Eq "$intro_new Debian-only (actions still have|action still has) no story" \
+if ! grep -Fq 'One Debian-only action still has no story' \
     "$fixture/docs/introduction.md"; then
     printf 'FAIL: introduction-count mutation did not apply\n' >&2
     exit 1
 fi
 assert_rejected_with_diagnostic \
     'introduction gap count that disagrees with the tree' \
-    'introduction.md' "published $intro_new" "derived $intro_published"
+    'introduction.md' "published $intro_published" "derived $intro_derived"
 cp "$repo_root/docs/introduction.md" "$fixture/docs/introduction.md"
 
-# ...and the other direction for the same sentence: cover one
-# derived-uncovered Ubuntu action while the introduction prose stays stale. The
-# prose premise is re-verified, the candidate is derived from the fixture, and
+# ...and the other direction for the same sentence: reopen a gap of one in the
+# fixture evidence while the introduction prose states a different nonzero
+# count. The candidate gap and both figures are derived from the fixture, and
 # the diagnostic must name this file — the CONTRIBUTING mismatch the same
 # evidence also produces is not sufficient proof for this rule.
-read -r intro_before intro_after intro_action < <(
-    python3 - "$fixture/docs/action-reference.md" "$fixture/tests/e2e/stories" \
-        "$fixture/docs/introduction.md" "$fixture" \
+read -r intro_before intro_after < <(
+    python3 - "$fixture" \
         "$repo_root/scripts/check_evidence_claims.py" <<'PY'
 import importlib.util
 import re
 import sys
 from pathlib import Path
 
-catalogue = Path(sys.argv[1]).read_text(encoding="utf-8")
-story_dir = Path(sys.argv[2])
-rows = re.findall(
-    r"^\| `([A-Za-z0-9_]+)` \|.*?\| (All|Ubuntu|Fedora) \|",
-    catalogue,
-    re.MULTILINE,
-)
-if not rows:
-    raise SystemExit("could not derive catalogue rows for the intro mutation")
-story_files = sorted(story_dir.glob("story-*.sh"))
-if not story_files:
-    raise SystemExit("could not derive story files for the intro mutation")
-named = set()
-for story in story_files:
-    named.update(
-        re.findall(
-            r'"([A-Za-z0-9_]+)"',
-            story.read_text(encoding="utf-8", errors="replace"),
-        )
-    )
-gap = sorted(name for name, family in rows if family == "Ubuntu" and name not in named)
-if not gap:
-    raise SystemExit("fixture has no Debian-only gap to narrow")
-spec = importlib.util.spec_from_file_location("checker", sys.argv[5])
+spec = importlib.util.spec_from_file_location("checker", sys.argv[2])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-before = mod.uncovered_action_counts(Path(sys.argv[4]))["Ubuntu"]
-intro_text = Path(sys.argv[3]).read_text(encoding="utf-8")
-intro_match = re.search(
-    mod.DEBIAN_GAP_PROSE, re.sub(r"\s+", " ", intro_text), re.IGNORECASE
+fixture = Path(sys.argv[1])
+before = mod.uncovered_action_counts(fixture)["Ubuntu"]
+if before != 0:
+    raise SystemExit(
+        f"fixture gap is not zero before the intro-evidence mutation: {before}"
+    )
+story_dir = fixture / "tests/e2e/stories"
+holders = sorted(
+    path for path in story_dir.glob("story-*.sh")
+    if '"GrubSetKargs"' in path.read_text(encoding="utf-8", errors="replace")
 )
-if not intro_match or mod._claim_count(intro_match.group("count")) != before:
-    raise SystemExit("introduction prose does not state the pre-mutation gap")
-action = gap[0]
-target = story_files[0]
+if len(holders) != 1:
+    raise SystemExit(
+        "expected exactly one fixture story to quote GrubSetKargs, "
+        f"found {len(holders)}"
+    )
+target = holders[0]
+story_text = target.read_text(encoding="utf-8")
+if story_text.count('"GrubSetKargs"') != 1:
+    raise SystemExit("GrubSetKargs quote was not unique in the fixture story")
 target.write_text(
-    target.read_text(encoding="utf-8") + f'\n# coverage fixture: "{action}"\n',
+    story_text.replace('"GrubSetKargs"', '"GrubSetKargsFixture"'),
     encoding="utf-8",
 )
-print(before, before - 1, action)
+after = mod.uncovered_action_counts(fixture)["Ubuntu"]
+if after != 1:
+    raise SystemExit(
+        f"intro-evidence mutation did not reopen a gap of one (derived {after})"
+    )
+intro_path = fixture / "docs/introduction.md"
+intro_text = intro_path.read_text(encoding="utf-8")
+old = "Every Debian-only action has a story."
+new = "Two Debian-only actions still have no story."
+if intro_text.count(old) != 1:
+    raise SystemExit("universal Debian-only sentence was not unique in the fixture")
+intro_path.write_text(intro_text.replace(old, new), encoding="utf-8")
+found = re.search(
+    mod.DEBIAN_GAP_PROSE,
+    re.sub(r"\s+", " ", intro_path.read_text(encoding="utf-8")),
+    re.IGNORECASE,
+)
+if not found or mod._claim_count(found.group("count")) != 2:
+    raise SystemExit("introduction-evidence mutation did not apply")
+print(mod._claim_count(found.group("count")), after)
 PY
 )
-if [[ -z "${intro_before:-}" || -z "${intro_after:-}" || -z "${intro_action:-}" ]]; then
+if [[ -z "${intro_before:-}" || -z "${intro_after:-}" ]]; then
     printf 'FAIL: introduction-evidence mutation produced no values\n' >&2
     exit 1
 fi
-if ! grep -R -Fq "\"$intro_action\"" "$fixture/tests/e2e/stories"; then
-    printf 'FAIL: introduction-evidence mutation did not apply for %s\n' "$intro_action" >&2
+if ! grep -Fq 'Two Debian-only actions still have no story' \
+    "$fixture/docs/introduction.md"; then
+    printf 'FAIL: introduction-evidence mutation did not apply\n' >&2
     exit 1
 fi
 assert_rejected_with_diagnostic \
     'story evidence that makes the introduction gap stale' \
     'introduction.md' "published $intro_before" "derived $intro_after"
 cp "$repo_root"/tests/e2e/stories/story-*.sh "$fixture/tests/e2e/stories/"
+cp "$repo_root/docs/introduction.md" "$fixture/docs/introduction.md"
 if ! "$checker" "$fixture" >/dev/null 2>&1; then
     printf 'FAIL: restored intro-evidence fixture rejected — mutation result is meaningless\n' >&2
     exit 1
@@ -662,6 +699,58 @@ fi
 sed -i "s/${actions} typed actions/999 typed actions/" "$fixture/docs/introduction.md"
 assert_rejected 'action count that disagrees with the catalogue source'
 cp "$repo_root/docs/introduction.md" "$fixture/docs/introduction.md"
+
+# An ActionSpec qualifier must not exempt a stale subset count from evidence.
+python3 - "$fixture/docs/developer-guide.md" <<'PYEOF'
+import re
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+updated, count = re.subn(
+    r"[0-9]+ actions with an `ActionSpec`",
+    "4 actions with an `ActionSpec`",
+    text,
+    count=1,
+)
+if count != 1:
+    raise SystemExit("could not find the ActionSpec count in the fixture")
+path.write_text(updated, encoding="utf-8")
+PYEOF
+assert_rejected_with_diagnostic \
+    'ActionSpec count that disagrees with the generated table' \
+    'developer-guide.md' 'claims 4 actions with an ActionSpec' 'derived'
+cp "$repo_root/docs/developer-guide.md" "$fixture/docs/developer-guide.md"
+
+# The generated-table reader must fail closed on an empty table and count rows exactly.
+python3 - "$repo_root/scripts/check_evidence_claims.py" <<'PYEOF'
+import importlib.util
+import tempfile
+from pathlib import Path
+import sys
+spec = importlib.util.spec_from_file_location("checker", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    docs = root / "docs"
+    docs.mkdir()
+    ref = docs / "action-reference.md"
+    ref.write_text(
+        "| Action | Command |\n|---|---|\n"
+        "| `One` | `one` |\n| `Two2` | `two` |\n| `Three_3` | `three` |\n",
+        encoding="utf-8",
+    )
+    if mod.count_action_specs(root) != 3:
+        raise SystemExit("ActionSpec row fixture did not derive exactly 3")
+    ref.write_text("| Action | Command |\n|---|---|\n", encoding="utf-8")
+    try:
+        mod.count_action_specs(root)
+    except mod.Failure:
+        pass
+    else:
+        raise SystemExit("empty ActionSpec table did not fail closed")
+PYEOF
 
 # No evidence at all must fail loudly rather than pass for lack of anything to
 # compare against.
