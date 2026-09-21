@@ -125,6 +125,10 @@ assert_action_pins() {
 
     uses_count=0
     for workflow in "${workflows[@]}"; do
+        [ -r "$workflow" ] || {
+            printf 'FAIL: cannot read %s\n' "$workflow" >&2
+            return 1
+        }
         while IFS= read -r uses_line; do
             [ -n "$uses_line" ] || continue
             uses_count=$((uses_count + 1))
@@ -173,6 +177,31 @@ if pin_output="$(assert_action_pins "$pin_fixture/workflows" 1 2>&1)"; then
     exit 1
 fi
 grep -Fq 'extraction is broken, not the workflows' <<<"$pin_output"
+# Discovery must fail with its own diagnostic, even when the count floor is zero.
+mkdir "$pin_fixture/empty"
+if pin_output="$(assert_action_pins "$pin_fixture/empty" 0 2>&1)"; then
+    printf 'FAIL: pin check passed over an empty workflow directory\n' >&2
+    exit 1
+fi
+grep -Fxq "FAIL: no workflow files matched under $pin_fixture/empty" <<<"$pin_output"
+
+# The readable workflow clears the floor on its own: a skipped file must not
+# masquerade as a workflow with no uses. Root bypasses mode 000 permissions.
+if (( EUID == 0 )); then
+    printf 'SKIP: unreadable workflow fixture requires a non-root user\n' >&2
+else
+    mkdir "$pin_fixture/unreadable"
+    printf '  uses: ./.github/workflows/local.yml\n' > "$pin_fixture/unreadable/readable.yml"
+    cp "$pin_fixture/unreadable/readable.yml" "$pin_fixture/unreadable/blocked.yaml"
+    assert_action_pins "$pin_fixture/unreadable" 1
+    chmod 000 "$pin_fixture/unreadable/blocked.yaml"
+    if pin_output="$(assert_action_pins "$pin_fixture/unreadable" 1 2>&1)"; then
+        printf 'FAIL: pin check passed over an unreadable workflow\n' >&2
+        exit 1
+    fi
+    grep -Fxq "FAIL: cannot read $pin_fixture/unreadable/blocked.yaml" <<<"$pin_output"
+fi
+
 if grep -Fq -- '--no-verify' "$release_workflow"; then
     printf 'FAIL: release publication skips generated crate verification\n' >&2
     exit 1
