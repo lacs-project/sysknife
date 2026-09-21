@@ -50,6 +50,9 @@ jobs:
       - name: Check release version consistency
         run: bash scripts/check_release_versions.sh
 
+      - name: Check the release waits for crates.io to index each crate
+        run: bash tests/release/crates-index-poll.test.sh
+
       - name: Test internal dependency pin coverage
         run: bash tests/release/release-version-pins.test.sh
 

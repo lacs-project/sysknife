@@ -110,6 +110,16 @@ fi
 grep -Fq 'could not reach crates.io' <<<"$output"
 grep -Fq 'sysknife-daemon 0.15.0' <<<"$output"
 
+grep -Fq 'source scripts/crates-index-poll.sh' "$workflow" || {
+    printf 'FAIL: release workflow does not load the polling helper\n' >&2
+    exit 1
+}
+
+grep -Fq 'wait_for_crate_version "$crate" "$VERSION"' "$workflow" || {
+    printf 'FAIL: release workflow does not wait for the index after publishing\n' >&2
+    exit 1
+}
+
 if grep -Fq 'sleep 30' "$workflow"; then
     printf 'FAIL: release workflow still contains fixed sleep 30\n' >&2
     exit 1
