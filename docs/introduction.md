@@ -104,13 +104,13 @@ SysKnife, not an afterthought.
 
 > **ℹ️ Distro support**
 >
-> The current suite is 83 Ubuntu stories. All three Ubuntu LTS releases have a
+> The current suite is 84 Ubuntu stories. All three Ubuntu LTS releases have a
 > committed live-VM run covering 79 of those Ubuntu stories, in
 > `tests/evidence/story-runs/`:
-> 22.04, 24.04 and 26.04 all at 79/79. The four additional stories are not yet
+> 22.04, 24.04 and 26.04 all at 79/79. The five additional stories are not yet
 > included in a committed live-VM run. Each run has a replay twin that
 > reproduces it, serving every call with zero misses.
-> One Debian-only action still has no story.
+> Every Debian-only action has a story.
 > Fedora Atomic is supported by the rpm-ostree action family, but a current
 > Silverblue 44 VM run is a release gate. Plain Fedora remains experimental
 > until the `dnf` action family ships.
