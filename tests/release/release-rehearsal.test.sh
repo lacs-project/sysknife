@@ -35,11 +35,21 @@ grep -Fq -- '--check' <<<"$help"
 grep -Fq -- '--full' <<<"$help"
 grep -Fq 'never publishes' <<<"$help"
 
-if "$rehearsal" --publish >/tmp/sysknife-rehearsal-publish.out 2>&1; then
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+set +e
+"$rehearsal" --publish >"${tmp_dir}/publish.out" 2>&1
+publish_status=$?
+set -e
+if [[ "$publish_status" -eq 0 ]]; then
     printf 'FAIL: rehearsal accepted a publishing mode\n' >&2
     exit 1
 fi
-grep -Fq 'never publishes' /tmp/sysknife-rehearsal-publish.out
+if [[ ! -s "${tmp_dir}/publish.out" ]]; then
+    printf 'FAIL: rehearsal output was not captured (exit %s)\n' "$publish_status" >&2
+    exit 1
+fi
+grep -Fq 'never publishes' "${tmp_dir}/publish.out"
 
 check_output="$($rehearsal --check)"
 grep -Eq 'sysknife-v[0-9]+\.[0-9]+\.[0-9]+-linux-(x86_64|aarch64)' <<<"$check_output"

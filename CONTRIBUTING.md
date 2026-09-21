@@ -44,10 +44,10 @@ table below.
 
 | Area | Why it matters | Difficulty |
 |---|---|---|
-| **Ubuntu LTS support** | The current suite is 83 Ubuntu stories. Committed live-VM evidence covers 79 of those Ubuntu stories on each LTS release, with a committed replay twin that reproduces each run: 22.04, 24.04 and 26.04 all at 79/79. The four additional stories are not yet included in a committed live-VM run. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: story coverage for the cross-family actions, and one Debian-only action still has no story: `GrubSetKargs`. | medium |
+| **Ubuntu LTS support** | The current suite is 84 Ubuntu stories. Committed live-VM evidence covers 79 of those Ubuntu stories on each LTS release, with a committed replay twin that reproduces each run: 22.04, 24.04 and 26.04 all at 79/79. The five additional stories are not yet included in a committed live-VM run. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: story coverage for the cross-family actions, and every Debian-only action has a story. | medium |
 | **Distro detection coverage** | Robust `/etc/os-release` parsing for every release we claim to support. Pure-function tests against real fixture files, no integration mocks. The existing fixtures at the bottom of `crates/sysknife-core/src/distro.rs` show the shape. | easy |
 | **Action catalogue gaps** | Add a typed action (for example `EnableFirewallZone`). Small and isolated, and every PR carries the policy entry, the risk level and the tests. | easy |
-| **E2E story coverage** | Real prompts, real LLM, real daemon. The suite is 137 stories: 54 atomic + 83 Ubuntu. What is left is the cross-family middle: of the action names available on both families, 61 are still untouched by any story, plus 10 Fedora-only and 1 Ubuntu-only ones. See #233 for the clustered map. | medium |
+| **E2E story coverage** | Real prompts, real LLM, real daemon. The suite is 138 stories: 54 atomic + 84 Ubuntu. What is left is the cross-family middle: of the action names available on both families, 61 are still untouched by any story, plus 10 Fedora-only and 0 Ubuntu-only ones. See #233 for the clustered map. | medium |
 | **Fedora Atomic validation** | The action families exist and `DistroId::is_supported()` returns true for Atomic 41 and up. Nobody has run `tests/e2e/atomic-vm.sh` against a current release. Needs Fedora Atomic hardware or a VM host. | tedious |
 | **Demo recording on real hardware** | Replace the bundled demo GIF with a 30-second recording on real Ubuntu 26.04 with rollback visible. | easy |
 
@@ -178,6 +178,27 @@ deterministic source-relative check, while external URLs stay bounded to
 `scripts/markdown-link-external-files.txt`. Add a documented entry to
 `scripts/markdown-link-exclusions.txt` only when a source file must be skipped;
 the discovery test rejects exclusions that no longer name a tracked file.
+
+**Every release and E2E test must be reachable from a gate.**
+`scripts/check_test_reachability.sh` discovers `tests/release/*.test.sh` and
+`tests/e2e/*.test.sh`, then requires a standalone `bash <path>` command in a `run`
+step for each exact path in `ci.yml`, `e2e.yml`, or `release.yml`. Trailing
+comments and a `sudo` or `sudo -n` prefix are allowed. Other sudo options,
+comments alone, artifact paths, shell compound commands,
+heredoc text, and mentions in `ci-local.sh` do not count. Keep these test steps
+in that explicit form and add the invocation in the same change as a new test;
+a test without one makes both local and remote CI fail. This is a static
+invocation check; it does not evaluate job conditions or prove runtime execution.
+A YAML block scalar containing just that command is supported. Multi-line shell
+scripts, including a command with a separate comment line, are not; give each
+test its own standalone step instead.
+The local hygiene runner discovers these test files automatically; do not also
+add explicit local invocations, which would run a test twice.
+
+The workflow parser uses PyYAML, already installed with CI's `yamllint`
+prerequisite. Install it into the same Python environment used to run the gate:
+`python3 -m pip install yamllint==1.38.0`. A missing parser or unreadable workflow
+fails the gate instead of falling back to text matching.
 
 **A change that touches no Rust skips the Rust gate.** The workspace suite exists
 to stop a Rust regression reaching `main`, and a diff with no `.rs` file in it
