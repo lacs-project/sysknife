@@ -98,6 +98,19 @@ with work you have not committed or stashed.
 
 ### 2. Branch, code, test
 
+Workflow action pins keep an exact tag in the adjacent comment, for example
+`uses: actions/checkout@<40-hex SHA> # v7.0.1`. The tag must resolve to that
+commit, including when it is annotated. Deliberate branch references use
+`# stable (branch)` or `# main (branch)`; the verifier reports those without
+comparing the pin to the moving branch head. Keep existing SHAs when correcting
+comments; review action upgrades separately.
+
+Run `bash scripts/verify-action-pins.sh` to check these comments. It needs
+authenticated `gh`, Python 3, and PyYAML (`python3 -m pip install PyYAML`, also
+installed by yamllint). Both `docs-and-hygiene` and `scripts/ci-local.sh` require
+this check, including a working GitHub API connection. Offline regression tests
+run with `bash tests/release/action-pin-comments.test.sh`.
+
 ```sh
 git checkout -b feat/<short-name>
 # … implement …
