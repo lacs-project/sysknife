@@ -185,13 +185,17 @@ itself rather than as a sanitised report.
 Verify the audit trail: the transaction chain, the approval-event chain, and
 the binding between them. All three are reported and any one can fail the
 command. Exits `0` if everything is intact, `1` if any check finds tampering,
-`2` if a check cannot run at all (missing key, unreadable database). When the
-checks disagree the worst wins, and `1` outranks `2` — if something is provably
-broken, "could not verify" would understate it.
+`2` if a check cannot establish the history (missing key, unreadable database,
+or an empty unanchored transaction log). When the checks disagree the worst
+wins, and `1` outranks `2` — if something is provably broken, "could not verify"
+would understate it.
 
 With `--json` the report is an object with a top-level `status` plus a `chain`,
 `approval_events` and `binding` section, so a pipeline can act on which part
-failed.
+failed. A readable empty transaction log without an independent anchor reports
+`CANNOT VERIFY`, exit `2`, and top-level JSON `cannot_verify`, whether it is a
+fresh store or an erased one. Its `chain` subresult still reports zero intact
+rows: that row-integrity check does not establish which history occurred.
 
 ```sh
 sysknife audit verify

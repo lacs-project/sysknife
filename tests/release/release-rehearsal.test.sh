@@ -101,18 +101,12 @@ grep -Eq 'needs: \[release\]' "$release_workflow"
 # all workflows — not just the publishing one — for a uniform supply-chain
 # posture that cannot silently drift.
 #
-# The extraction has to say how many lines it saw. A broken grep, an unmatched
-# glob, or a spelling the regex does not read all used to print
-# "Release rehearsal contract passed." over nothing. See #407.
-#
-# The floor is 20. This tree currently has 55 `uses:` lines, 19 of them
-# actions/checkout. A regex that only matches checkout, or that only matches
-# the `- uses:` spelling (one hit, in docs.yml), falls below it. Adding a
-# workflow cannot trip it; extracting a subset can.
+# Parse YAML so block and flow mappings receive the same checks. Keep the
+# discovery floor: accepting a smaller extracted set is not proof of pinning.
 assert_action_pins() {
     local workflows_dir="$1"
     local min_uses="$2"
-    local old_nullglob uses_count workflow uses_line
+    local old_nullglob workflow
     old_nullglob="$(shopt -p nullglob || true)"
     shopt -s nullglob
     local -a workflows=("$workflows_dir"/*.yml "$workflows_dir"/*.yaml)
@@ -123,47 +117,114 @@ assert_action_pins() {
         return 1
     }
 
-    uses_count=0
     for workflow in "${workflows[@]}"; do
         [ -r "$workflow" ] || {
             printf 'FAIL: cannot read %s\n' "$workflow" >&2
             return 1
         }
-        while IFS= read -r uses_line; do
-            [ -n "$uses_line" ] || continue
-            uses_count=$((uses_count + 1))
-            # A reusable workflow in this same repository is referenced by path
-            # and cannot carry a SHA at all: GitHub resolves `./...` at the
-            # caller's own commit, so it is pinned by construction and always
-            # to this tree. The exemption is deliberately anchored to `./` so a
-            # third-party `owner/repo/.github/workflows/x.yml@ref` still has to
-            # be pinned.
-            if printf '%s\n' "$uses_line" | grep -Eq 'uses:[[:space:]]+\./'; then
-                continue
-            fi
-            if ! printf '%s\n' "$uses_line" | grep -Eq 'uses:[[:space:]]+[^@[:space:]]+@[0-9a-f]{40}([[:space:]]|$)'; then
-                printf 'FAIL: %s action is not pinned to a 40-hex SHA: %s\n' \
-                    "$(basename "$workflow")" "$uses_line" >&2
-                return 1
-            fi
-        done < <(grep -E '^[[:space:]]*(-[[:space:]]+)?uses:' "$workflow" || true)
     done
 
-    if [ "$uses_count" -lt "$min_uses" ]; then
-        printf 'FAIL: extracted %s uses: line(s) under %s; need at least %s (extraction is broken, not the workflows)\n' \
-            "$uses_count" "$workflows_dir" "$min_uses" >&2
-        return 1
-    fi
+    # Run the parser directly: a process substitution would hide its failures.
+    python3 - "$workflows_dir" "$min_uses" "${workflows[@]}" <<'PYTHON'
+from pathlib import Path
+import re
+import sys
+
+try:
+    import yaml
+except ImportError:
+    sys.exit("FAIL: action pin check requires PyYAML; install it for python3")
+
+
+def fail(message):
+    sys.exit(f"FAIL: {message}")
+
+
+def mapping(value, location):
+    if not isinstance(value, dict):
+        fail(f"{location} must be a mapping")
+    return value
+
+
+def check_reference(reference, workflow):
+    # Local actions and reusable workflows resolve at the caller's commit.
+    # Remote reusable workflows must still pin a full SHA.
+    if isinstance(reference, str):
+        if reference.startswith("./"):
+            return
+        if re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", reference):
+            return
+    fail(f"{workflow.name} action is not pinned to a 40-hex SHA: {reference}")
+
+
+workflows_dir, minimum, *paths = sys.argv[1:]
+uses_count = 0
+for path in paths:
+    workflow = Path(path)
+    try:
+        document = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError) as error:
+        fail(f"cannot read {workflow}: {error}")
+    except yaml.YAMLError as error:
+        print(error, file=sys.stderr)
+        fail(f"cannot parse {workflow}")
+
+    document = mapping(document, path)
+    jobs = mapping(document.get("jobs"), f"{path}: jobs")
+    for name, job in jobs.items():
+        location = f"{path}: job {name}"
+        job = mapping(job, location)
+        if "uses" in job:
+            check_reference(job["uses"], workflow)
+            uses_count += 1
+        steps = job.get("steps", [])
+        if not isinstance(steps, list):
+            fail(f"{location}: steps must be a sequence")
+        for index, step in enumerate(steps, start=1):
+            step = mapping(step, f"{location}: step {index}")
+            if "uses" in step:
+                check_reference(step["uses"], workflow)
+                uses_count += 1
+
+if uses_count < int(minimum):
+    fail(f"extracted {uses_count} uses: entries under {workflows_dir}; need at least {minimum}")
+print(f"Checked {uses_count} uses: entries.")
+PYTHON
 }
 
 assert_action_pins "${repo_root}/.github/workflows" 20
 
-# Negative twin: a workflow whose only `uses:` is a flow-style mapping, which
-# the extractor above does not read. Before the floor this check printed
-# success over zero lines.
+# Exercise the shipped checker against both YAML spellings and both locations
+# GitHub accepts: step actions and job-level reusable workflows.
 pin_fixture="$(mktemp -d)"
 trap 'rm -rf "$pin_fixture"' EXIT
-mkdir -p "$pin_fixture/workflows"
+
+assert_pin_failure() {
+    local directory="$1" minimum="$2" expected="$3" output
+    if output="$(assert_action_pins "$directory" "$minimum" 2>&1)"; then
+        printf 'FAIL: pin check accepted %s; expected %s\n' "$directory" "$expected" >&2
+        exit 1
+    fi
+    if ! grep -Fxq "$expected" <<<"$output"; then
+        printf 'FAIL: expected %s; got %s\n' "$expected" "$output" >&2
+        exit 1
+    fi
+}
+
+mkdir "$pin_fixture/unpinned"
+for spelling in flow block; do
+    if [[ "$spelling" == block ]]; then
+        printf 'jobs:\n  x:\n    steps:\n      - uses: attacker/exfil@main\n' > "$pin_fixture/unpinned/action.yml"
+    else
+        printf 'jobs: {x: {steps: [{uses: attacker/exfil@main}]}}\n' > "$pin_fixture/unpinned/action.yml"
+    fi
+    # A zero floor ensures only rejection of the unpinned reference can pass.
+    assert_pin_failure "$pin_fixture/unpinned" 0 \
+        "FAIL: action.yml action is not pinned to a 40-hex SHA: attacker/exfil@main"
+done
+
+# The old missed.yml fixture must now be found, counted, and accepted.
+mkdir "$pin_fixture/workflows"
 cat > "$pin_fixture/workflows/missed.yml" <<'EOF'
 on: push
 jobs:
@@ -172,18 +233,69 @@ jobs:
     steps:
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 }
 EOF
-if pin_output="$(assert_action_pins "$pin_fixture/workflows" 1 2>&1)"; then
-    printf 'FAIL: pin check passed over a uses: spelling the extraction does not read\n' >&2
-    exit 1
-fi
-grep -Fq 'extraction is broken, not the workflows' <<<"$pin_output"
+pin_output="$(assert_action_pins "$pin_fixture/workflows" 1)"
+grep -Fxq 'Checked 1 uses: entries.' <<<"$pin_output"
+
+cat > "$pin_fixture/workflows/mixed.yaml" <<'EOF'
+jobs:
+  local:
+    uses: ./.github/workflows/local.yml
+  remote: {uses: owner/repo/.github/workflows/build.yml@3d3c42e5aac5ba805825da76410c181273ba90b1}
+  build:
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: |
+          uses: attacker/this-is-command-text@main
+EOF
+pin_output="$(assert_action_pins "$pin_fixture/workflows" 4)"
+grep -Fxq 'Checked 4 uses: entries.' <<<"$pin_output"
+assert_pin_failure "$pin_fixture/workflows" 5 \
+    "FAIL: extracted 4 uses: entries under $pin_fixture/workflows; need at least 5"
+
+# A valid companion already clears the floor; no other file may be skipped.
+cp "$pin_fixture/workflows/missed.yml" "$pin_fixture/unpinned/valid.yml"
+printf 'jobs: {x: {steps: [{uses: attacker/exfil@main}]}}\n' > "$pin_fixture/unpinned/action.yml"
+assert_pin_failure "$pin_fixture/unpinned" 1 \
+    "FAIL: action.yml action is not pinned to a 40-hex SHA: attacker/exfil@main"
+for reference in owner/repo/.github/workflows/build.yml@main actions/checkout@1234567; do
+    printf 'jobs: {remote: {uses: %s}}\n' "$reference" > "$pin_fixture/unpinned/action.yml"
+    assert_pin_failure "$pin_fixture/unpinned" 1 \
+        "FAIL: action.yml action is not pinned to a 40-hex SHA: $reference"
+done
+
+# Parse and shape errors must fail even with a valid companion above the floor.
+printf 'jobs: [\n' > "$pin_fixture/unpinned/action.yml"
+assert_pin_failure "$pin_fixture/unpinned" 1 \
+    "FAIL: cannot parse $pin_fixture/unpinned/action.yml"
+printf 'jobs: {x: {steps: invalid}}\n' > "$pin_fixture/unpinned/action.yml"
+assert_pin_failure "$pin_fixture/unpinned" 1 \
+    "FAIL: $pin_fixture/unpinned/action.yml: job x: steps must be a sequence"
+printf 'jobs: {x: {steps: [{uses: null}]}}\n' > "$pin_fixture/unpinned/action.yml"
+assert_pin_failure "$pin_fixture/unpinned" 1 \
+    'FAIL: action.yml action is not pinned to a 40-hex SHA: None'
+
+# A directory-shaped workflow must fail even when valid.yml clears the floor.
+rm "$pin_fixture/unpinned/action.yml"
+mkdir "$pin_fixture/unpinned/blocked.yaml"
+assert_pin_failure "$pin_fixture/unpinned" 1 \
+    "FAIL: cannot read $pin_fixture/unpinned/blocked.yaml: [Errno 21] Is a directory: '$pin_fixture/unpinned/blocked.yaml'"
+
+mkdir "$pin_fixture/no-actions"
+printf 'jobs: {x: {steps: [{run: echo hello}]}}\n' > "$pin_fixture/no-actions/run.yml"
+assert_pin_failure "$pin_fixture/no-actions" 1 \
+    "FAIL: extracted 0 uses: entries under $pin_fixture/no-actions; need at least 1"
+
+# -S omits site-packages, including the external YAML parser, for this call only.
+(
+    python3() { command python3 -S "$@"; }
+    assert_pin_failure "$pin_fixture/workflows" 4 \
+        'FAIL: action pin check requires PyYAML; install it for python3'
+)
+
 # Discovery must fail with its own diagnostic, even when the count floor is zero.
 mkdir "$pin_fixture/empty"
-if pin_output="$(assert_action_pins "$pin_fixture/empty" 0 2>&1)"; then
-    printf 'FAIL: pin check passed over an empty workflow directory\n' >&2
-    exit 1
-fi
-grep -Fxq "FAIL: no workflow files matched under $pin_fixture/empty" <<<"$pin_output"
+assert_pin_failure "$pin_fixture/empty" 0 \
+    "FAIL: no workflow files matched under $pin_fixture/empty"
 
 # The readable workflow clears the floor on its own: a skipped file must not
 # masquerade as a workflow with no uses. Root bypasses mode 000 permissions.
@@ -191,15 +303,12 @@ if (( EUID == 0 )); then
     printf 'SKIP: unreadable workflow fixture requires a non-root user\n' >&2
 else
     mkdir "$pin_fixture/unreadable"
-    printf '  uses: ./.github/workflows/local.yml\n' > "$pin_fixture/unreadable/readable.yml"
+    printf 'jobs: {local: {uses: ./.github/workflows/local.yml}}\n' > "$pin_fixture/unreadable/readable.yml"
     cp "$pin_fixture/unreadable/readable.yml" "$pin_fixture/unreadable/blocked.yaml"
     assert_action_pins "$pin_fixture/unreadable" 1
     chmod 000 "$pin_fixture/unreadable/blocked.yaml"
-    if pin_output="$(assert_action_pins "$pin_fixture/unreadable" 1 2>&1)"; then
-        printf 'FAIL: pin check passed over an unreadable workflow\n' >&2
-        exit 1
-    fi
-    grep -Fxq "FAIL: cannot read $pin_fixture/unreadable/blocked.yaml" <<<"$pin_output"
+    assert_pin_failure "$pin_fixture/unreadable" 1 \
+        "FAIL: cannot read $pin_fixture/unreadable/blocked.yaml"
 fi
 
 if grep -Fq -- '--no-verify' "$release_workflow"; then

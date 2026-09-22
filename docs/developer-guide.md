@@ -29,6 +29,7 @@ checks `main` requires:
 |---|---|---|
 | ShellCheck | distro | `sudo apt-get install -y shellcheck` |
 | Python | 3.10+ | usually already present |
+| PyYAML | 6.x | `python3 -m pip install PyYAML` (installed explicitly in CI) |
 | `markdownlint-cli2` | 0.23.2 | `npm install --global markdownlint-cli2@0.23.2` |
 | `markdown-link-check` | 3.15.0 | `npm install --global markdown-link-check@3.15.0` |
 
