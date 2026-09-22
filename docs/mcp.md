@@ -182,7 +182,7 @@ the security boundary.
 npx sysknife-setup
 ```
 
-Needs Node 18 or newer (Ubuntu 22.04's apt Node is 12, which is too old). The
+Needs Node 22 or newer (Ubuntu 22.04's apt Node is 12, which is too old). The
 wizard detects your installed `sysknife` binary, asks for the daemon socket and
 LLM provider, and then asks which integration to configure. No manual file
 editing needed. For install options and prerequisites in full, see the

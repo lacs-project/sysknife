@@ -44,17 +44,28 @@ test('rejects the Node that Ubuntu 22.04 ships, and says how to fix it', () => {
   const msg = unsupportedMessage('12.22.9');
   assert.ok(msg, 'Node 12 must be rejected');
   assert.match(msg, /12\.22\.9/, 'names the version actually in use');
-  assert.match(msg, /\b18\b/, 'names the minimum');
+  assert.match(msg, /\b22\b/, 'names the minimum');
+  assert.match(msg, /end.of.life|security fixes/i, 'explains why the floor moved');
   // Actionable: at least one runnable command, not just a complaint.
   assert.match(msg, /nodesource|nvm|snap|fnm/i, 'suggests a way to get a newer Node');
   assert.match(msg, /releases/, 'offers the no-Node escape hatch (prebuilt binaries)');
 });
 
 test('rejects every major below the minimum and accepts every one at or above', () => {
-  for (const v of ['0.10.48', '4.9.1', '8.17.0', '12.22.9', '14.21.3', '16.20.2']) {
+  for (const v of [
+    '0.10.48',
+    '4.9.1',
+    '8.17.0',
+    '12.22.9',
+    '14.21.3',
+    '16.20.2',
+    '18.20.8',
+    '20.19.5',
+    '21.7.3',
+  ]) {
     assert.ok(unsupportedMessage(v), `${v} must be rejected`);
   }
-  for (const v of ['18.0.0', '18.19.1', '20.11.0', '22.5.1', '24.0.0']) {
+  for (const v of ['22.0.0', '22.5.1', '24.0.0']) {
     assert.equal(unsupportedMessage(v), null, `${v} must be accepted`);
   }
 });
@@ -66,8 +77,25 @@ test('an unparseable version is not silently treated as supported', () => {
 });
 
 test('the minimum matches what package.json advertises', () => {
-  assert.equal(MIN_MAJOR, 18);
-  assert.match(pkg.engines.node, />=\s*18/);
+  assert.equal(MIN_MAJOR, 22);
+  assert.match(pkg.engines.node, />=\s*22/);
+});
+
+test('published setup guidance names Node 22 and no longer claims Node 18 support', () => {
+  const repoRoot = path.resolve(pkgDir, '..', '..');
+  const publishedClaims = [
+    'README.md',
+    'docs/quickstart.md',
+    'docs/mcp.md',
+    'apps/sysknife-cli/README.md',
+    'docs/introduction.md',
+  ];
+
+  for (const file of publishedClaims) {
+    const src = fs.readFileSync(path.join(repoRoot, file), 'utf8');
+    assert.doesNotMatch(src, /Node 18/i, `${file} must not retain the old support floor`);
+    assert.match(src, /Node 22/i, `${file} must name the new support floor`);
+  }
 });
 
 // ---------------------------------------------------------------------------

@@ -8,10 +8,10 @@ use crate::actions::{
         validated_activatable_unit, validated_apparmor_profile, validated_apt_package,
         validated_apt_pin_expr, validated_apt_pin_name, validated_audit_path,
         validated_audit_perms, validated_cpu_quota, validated_domain, validated_email,
-        validated_fstype, validated_group, validated_group_not_critical, validated_hostname,
-        validated_install_package, validated_journal_grep, validated_journal_priority,
-        validated_journal_time, validated_locale, validated_log_path, validated_lvm_name,
-        validated_lvm_size, validated_memory_limit, validated_mount_device,
+        validated_fstype, validated_group, validated_group_not_critical, validated_home_dir,
+        validated_hostname, validated_install_package, validated_journal_grep,
+        validated_journal_priority, validated_journal_time, validated_locale, validated_log_path,
+        validated_lvm_name, validated_lvm_size, validated_memory_limit, validated_mount_device,
         validated_mount_options, validated_mount_point, validated_port_or_service,
         validated_ppa_name, validated_pro_service, validated_safe_arg, validated_sudo_commands,
         validated_sudoers_name, validated_swap_path, validated_sysctl_key, validated_sysctl_value,
@@ -1361,7 +1361,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             let home = params
                 .get("home")
                 .and_then(|v| v.as_str())
-                .map(|h| validated_safe_arg(h, "home"))
+                .map(|h| validated_home_dir(h, "home"))
                 .transpose()?;
             Ok(users::create_user(
                 &username,
@@ -3898,6 +3898,37 @@ mod tests {
                 if has_rollback { "Some" } else { "None" },
             );
         }
+    }
+
+    // `home` reaches `useradd --create-home --home-dir <home>` as root, so it is
+    // a path the caller chooses and root acts on. It was validated by
+    // `validated_safe_arg`, which enforces a charset and rejects a leading dash
+    // and accepts both `..` and a relative path. `validated_absolute_path`, in
+    // the same file, rejects both, and every other root-acting path parameter
+    // already uses it. The weaker of two adjacent validators was guarding the
+    // more dangerous parameter.
+    #[test]
+    fn create_user_home_must_be_an_absolute_path_without_dot_dot() {
+        for home in [
+            "../../etc/skel",
+            "/home/../etc",
+            "home/alice",
+            "/home/alice/../../../root",
+        ] {
+            let got =
+                build_action_spec("CreateUser", &json!({ "username": "alice", "home": home }));
+            assert!(
+                got.is_err(),
+                "CreateUser accepted home={home:?}, which useradd --home-dir runs as root"
+            );
+        }
+        // An ordinary home directory must still work, or the guard has eaten
+        // the feature rather than secured it.
+        build_action_spec(
+            "CreateUser",
+            &json!({ "username": "alice", "home": "/home/alice" }),
+        )
+        .expect("a plain absolute home must still be accepted");
     }
 
     // ── Risk level reclassification (NIST 800-53 / CIS Controls v8.1) ────────

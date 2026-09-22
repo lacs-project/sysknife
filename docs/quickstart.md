@@ -20,7 +20,7 @@ needs both.
 npx sysknife-setup
 ```
 
-**Prerequisites:** Node 18 or newer. On Ubuntu 22.04, `apt install nodejs`
+**Prerequisites:** Node 22 or newer. On Ubuntu 22.04, `apt install nodejs`
 installs Node 12, which is too old — the installer will tell you so and how to
 get a current Node. It downloads SHA-256-verified binaries from the release
 page, installs the daemon service, and writes your MCP client config.

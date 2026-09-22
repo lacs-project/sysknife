@@ -29,6 +29,7 @@ checks `main` requires:
 |---|---|---|
 | ShellCheck | distro | `sudo apt-get install -y shellcheck` |
 | Python | 3.10+ | usually already present |
+| PyYAML | 6.x | `python3 -m pip install PyYAML` (installed explicitly in CI) |
 | `markdownlint-cli2` | 0.23.2 | `npm install --global markdownlint-cli2@0.23.2` |
 | `markdown-link-check` | 3.15.0 | `npm install --global markdown-link-check@3.15.0` |
 
@@ -254,30 +255,26 @@ is useful for debugging the dispatcher or previewing action output.
 
 ## Pre-commit Hooks
 
-Pre-commit runs on every `git commit`. Run all hooks manually before
-pushing:
+After `scripts/ci-local.sh --install-hooks`, Git runs `.githooks/pre-commit`
+on every `git commit`. From the repository root, the hook runs these steps
+in order and stops at the first failure:
 
 ```sh
-pre-commit run --all-files
+scripts/check_no_secrets.sh --staged
+cargo fmt --all --check
+cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --locked
+scripts/test_baseline.sh
 ```
 
-Hooks included:
+These check staged secrets, Rust formatting, Clippy warnings, rustdoc warnings,
+and the workspace test baseline. `scripts/test_baseline.sh` runs
+`cargo nextest run --workspace --locked` and checks the measured test count.
+Run `bash .githooks/pre-commit` to invoke the same gate manually.
 
-| Hook | What it checks |
-|---|---|
-| trailing-whitespace | Removes trailing spaces |
-| end-of-file-fixer | Ensures files end with a newline |
-| check-yaml / check-toml / check-json | Syntax validity |
-| no-commit-to-branch | Blocks direct commits to `main` |
-| gitleaks | Detects hardcoded secrets |
-| cargo fmt | Rust formatting (`--check` mode) |
-| cargo check | Workspace compilation |
-| tsc --noEmit | TypeScript type checking |
-| markdownlint-cli2 | Markdown style |
-| yamllint | YAML style |
-
-Intentionally excluded from pre-commit (they run in CI instead):
-`cargo clippy` (20–30 s), `cargo nextest run` (minutes), `vitest` (minutes).
+Vitest is not part of this pre-commit hook; it runs in CI.
+`.pre-commit-config.yaml` is an unused remnant of the earlier framework setup,
+not the active Git hook configuration.
 
 ## Configuration
 
@@ -425,13 +422,12 @@ the script exits non-zero only if something in the summary actually failed.
 failure. Bypass a single push with `git push --no-verify`; undo the hook
 entirely with `git config --unset core.hooksPath`.
 
-`.githooks/` already ships a `pre-commit` hook (`cargo fmt --all --check` +
-`cargo nextest run --workspace --locked`) alongside the new `pre-push` one.
+`.githooks/` also ships the `pre-commit` hook with the ordered checks listed
+under [Pre-commit Hooks](#pre-commit-hooks).
 Both are opt-in via the same `core.hooksPath` setting. Note that
 `core.hooksPath` is a single switch: pointing it at `.githooks` means Git
 stops looking in `.git/hooks`, so it supersedes hooks installed by the
-`pre-commit` framework (see [Pre-commit Hooks](#pre-commit-hooks) above) —
-use one mechanism or the other, not both, per clone.
+`pre-commit` framework. Use the repository's `.githooks` setup, not the framework.
 
 ### Full workflow replay
 

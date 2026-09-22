@@ -1232,6 +1232,7 @@ fn cannot_verify_all(reason: String) -> AuditVerification {
         // `None`, not a census of zero rows: a database nobody could read and an
         // empty one that read fine must not serialize the same way.
         attribution: None,
+        status: None,
     }
 }
 
@@ -1278,10 +1279,17 @@ pub(crate) async fn verify_sqlite(
         Ok(rows) => rows,
         Err(e) => return cannot_verify_all(format!("approval-event query failed: {e}")),
     };
-    match verifier {
+    let mut verification = match verifier {
         Verifier::Private(key) => verify_all(key, &tx_rows, &event_rows),
         Verifier::Public(vk_hex) => verify_all_with_pubkey(vk_hex, &tx_rows, &event_rows),
-    }
+    };
+    // The status cross-check needs the live `status` column, which the pure
+    // verify_all functions never see, so it is set here where the store is
+    // open. A read failure leaves it `None`: the other three checks still have
+    // something to say, and claiming agreement nobody looked for would be the
+    // exact failure this check was added to catch.
+    verification.status = store.status_matches_chain().ok();
+    verification
 }
 
 pub(crate) async fn verify_postgres(
@@ -1515,6 +1523,12 @@ fn emit_verification(
     }
 
     match &verification.chain {
+        VerifyOutcome::Intact { .. } if empty_unanchored_chain(verification, anchor) => {
+            log.println(&format!(
+                "CANNOT VERIFY: empty transaction log in {backend_label}; \
+                 no independent anchor distinguishes a fresh log from an erased log"
+            ));
+        }
         VerifyOutcome::Intact { rows_checked } => {
             log.println(&format!(
                 "OK: {rows_checked} row(s) verified in {backend_label}"
@@ -1607,6 +1621,18 @@ fn emit_verification(
     }
 }
 
+/// An empty row-integrity check cannot establish whether an unanchored log
+/// is fresh or was erased. Keep that uncertainty separate from detected breaks.
+fn empty_unanchored_chain(
+    verification: &AuditVerification,
+    anchor: Option<&CheckpointOutcome>,
+) -> bool {
+    matches!(
+        verification.chain,
+        sysknife_daemon::audit_chain::VerifyOutcome::Intact { rows_checked: 0 }
+    ) && anchor.is_none()
+}
+
 /// Combine the local audit checks with the external anchor using the same
 /// precedence as [`AuditVerification::exit_code`]. A detected break is stronger
 /// evidence than a different check being inconclusive, so exit code `1` must
@@ -1623,7 +1649,7 @@ fn combined_verification_exit_code(
     ];
     if codes.contains(&1) {
         1
-    } else if codes.contains(&2) {
+    } else if codes.contains(&2) || empty_unanchored_chain(verification, anchor) {
         2
     } else {
         0
@@ -2255,6 +2281,7 @@ mod tests {
                 bindings_checked: 0,
             },
             attribution,
+            status: None,
         };
         emit_verification(
             &crate::cli::AuditVerifyArgs { json, pubkey: None },
@@ -2905,6 +2932,82 @@ mod tests {
     }
 
     #[test]
+    fn empty_unanchored_chain_is_inconclusive_in_text_and_json() {
+        use sysknife_daemon::audit_chain::{AttributionCensus, VerifyOutcome};
+        let text = rendered(VerifyOutcome::Intact { rows_checked: 0 }, None, false);
+        assert!(text.starts_with("CANNOT VERIFY:"), "{text}");
+        assert!(text.contains("empty"), "{text}");
+        let text = rendered(
+            VerifyOutcome::Intact { rows_checked: 0 },
+            Some(AttributionCensus::from_counts_for_tests(0, 0, 0, 0)),
+            true,
+        );
+        let report: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(report["status"], "cannot_verify");
+        // Row integrity is vacuous; it does not establish the log's history.
+        assert_eq!(report["chain"]["status"], "intact");
+        assert_eq!(report["chain"]["rows_checked"], 0);
+        assert_eq!(report["rows_censused"], 0);
+    }
+
+    #[test]
+    fn empty_unanchored_history_is_not_established_by_approval_events() {
+        use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
+        let verification = AuditVerification {
+            chain: VerifyOutcome::Intact { rows_checked: 0 },
+            events: VerifyOutcome::Intact { rows_checked: 3 },
+            binding: BindingOutcome::Consistent {
+                bindings_checked: 0,
+            },
+            attribution: None,
+            status: None,
+        };
+        assert_eq!(combined_verification_exit_code(&verification, None), 2);
+        let unavailable = CheckpointOutcome::CannotVerify {
+            reason: "checkpoint database unavailable".to_string(),
+        };
+        assert_eq!(
+            combined_verification_exit_code(&verification, Some(&unavailable)),
+            2
+        );
+        let truncated = CheckpointOutcome::Truncated {
+            checkpoint_seq: 1,
+            current_max_seq: 0,
+        };
+        assert_eq!(
+            combined_verification_exit_code(&verification, Some(&truncated)),
+            1
+        );
+    }
+
+    #[test]
+    fn empty_unanchored_chain_preserves_break_precedence() {
+        use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
+        let mut verification = AuditVerification {
+            chain: VerifyOutcome::Intact { rows_checked: 0 },
+            events: VerifyOutcome::Broken {
+                rows_checked: 0,
+                first_broken_seq: 1,
+                first_broken_transaction_id: "event-1".to_string(),
+                expected: "expected".to_string(),
+                actual: "actual".to_string(),
+            },
+            binding: BindingOutcome::Consistent {
+                bindings_checked: 0,
+            },
+            attribution: None,
+            status: None,
+        };
+        assert_eq!(combined_verification_exit_code(&verification, None), 1);
+        verification.events = VerifyOutcome::Intact { rows_checked: 0 };
+        verification.binding = BindingOutcome::MissingEvent {
+            transaction_seq: 1,
+            event_tip: "missing-event".to_string(),
+        };
+        assert_eq!(combined_verification_exit_code(&verification, None), 1);
+    }
+
+    #[test]
     fn a_detected_break_outranks_an_inconclusive_anchor_in_the_cli_exit_code() {
         use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
 
@@ -2921,6 +3024,7 @@ mod tests {
                 bindings_checked: 4,
             },
             attribution: None,
+            status: None,
         };
         let anchor = CheckpointOutcome::CannotVerify {
             reason: "checkpoint database unavailable".to_string(),

@@ -767,6 +767,19 @@ fn validated_absolute_path(
     Ok(s.to_string())
 }
 
+/// Validate a home directory: absolute, no `..`, safe charset.
+///
+/// `CreateUser` passes this to `useradd --create-home --home-dir <home>`, which
+/// runs as root, so the caller names a path and root acts on it. It used to go
+/// through [`validated_safe_arg`], which enforces a charset and rejects a
+/// leading dash and accepts both a relative path and `..`. The stricter
+/// validator was already in this file and already used by every other
+/// root-acting path parameter; the weaker of the two was guarding the more
+/// dangerous one.
+pub fn validated_home_dir(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    validated_absolute_path(s, param, MAX_FSTAB_FIELD_LEN)
+}
+
 /// Validate a mountpoint: absolute, no `..`, safe charset, and not a critical
 /// system mountpoint. Mirrors `valid_mountpoint` in the helper.
 pub fn validated_mount_point(s: &str, param: &'static str) -> Result<String, ExecutorError> {
@@ -788,6 +801,44 @@ pub fn validated_fstype(s: &str, param: &'static str) -> Result<String, Executor
 
 /// Validate a comma-separated mount options string (charset only; the helper
 /// forces `nofail` in). Empty is allowed (helper defaults to `defaults`).
+/// Mount options that hand out privilege, refused outright.
+///
+/// `suid` lets a setuid-root binary on the mounted filesystem escalate whoever
+/// runs it; `dev` lets a device node on it reach any block device. Both are the
+/// standard reason `nosuid,nodev` is the default for anything an administrator
+/// did not author. `exec` is deliberately absent: running an ordinary binary
+/// from a mounted volume is a legitimate need, and with `nosuid` and `nodev`
+/// enforced it grants nothing extra.
+const MOUNT_OPTIONS_DENY: &[&str] = &["suid", "dev"];
+
+/// The options this mount will actually be made with.
+///
+/// `mount(8)` takes the last of a conflicting pair, so appending is enough and
+/// the operator's own list is left intact ahead of it. Appending rather than
+/// only refusing matters because omitting the parameter reaches the helper as
+/// `defaults`, which Linux expands to `rw,suid,dev,exec,auto,nouser,async`: the
+/// charset check saw an empty string and had nothing to object to, and the
+/// mount still came up with `suid` and `dev` set.
+///
+/// `ensure_nofail` in `packaging/sysknife-mount-edit` is the same move for
+/// `nofail`, which is where the shape comes from.
+pub fn hardened_mount_options(requested: &str) -> String {
+    let mut out: Vec<&str> = requested.split(',').filter(|o| !o.is_empty()).collect();
+    for required in ["nosuid", "nodev"] {
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(required)) {
+            out.push(required);
+        }
+    }
+    out.join(",")
+}
+
+/// Validate a comma-separated mount option list: charset, length, and the two
+/// options that grant privilege.
+///
+/// Every other dangerous-value validator in this file layers a denylist on top
+/// of its charset check. This one did not, so `suid` and `dev` passed a
+/// High-risk, Admin-only action whose ordinary phrasing is "mount my USB
+/// drive".
 pub fn validated_mount_options(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     if s.len() > MAX_FSTAB_FIELD_LEN {
         return Err(ExecutorError::InvalidParam(param));
@@ -798,7 +849,16 @@ pub fn validated_mount_options(s: &str, param: &'static str) -> Result<String, E
     }) {
         return Err(ExecutorError::InvalidParam(param));
     }
-    Ok(s.to_string())
+    // Refuse rather than silently strip. An operator who asked for `suid` has
+    // to be told it was refused, or they will believe the mount carries it.
+    if s.split(',').any(|opt| {
+        MOUNT_OPTIONS_DENY
+            .iter()
+            .any(|deny| opt.eq_ignore_ascii_case(deny))
+    }) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(hardened_mount_options(s))
 }
 
 /// Validate an absolute file path for a swap file (no `..`, safe charset).
@@ -1938,6 +1998,43 @@ mod tests {
 
     #[test]
     fn mount_options_and_swap_path() {
+        // Every other dangerous-value validator in this file layers a denylist
+        // on the charset check. This one did not, so `suid` and `dev` passed.
+        // AddMount is High risk and Admin-only, but "mount my USB drive" is an
+        // ordinary-sounding request: a setuid-root binary on attacker-supplied
+        // media then grants root to whoever runs it, and a device node on it
+        // reaches any block device.
+        for bad in [
+            "suid",
+            "dev",
+            "ro,suid",
+            "suid,noatime",
+            "nodev,dev",
+            "DEV",
+            "SUID",
+        ] {
+            assert!(
+                validated_mount_options(bad, "o").is_err(),
+                "mount options {bad:?} were accepted; suid and dev are the two that escalate"
+            );
+        }
+        // The hardening must be added, not merely demanded, so an operator who
+        // omits the parameter does not get `defaults` expanding to suid,dev.
+        assert_eq!(
+            hardened_mount_options(""),
+            "nosuid,nodev",
+            "an empty option list must still be hardened"
+        );
+        assert_eq!(
+            hardened_mount_options("ro,noatime"),
+            "ro,noatime,nosuid,nodev"
+        );
+        // Already hardened stays as it is rather than repeating itself.
+        assert_eq!(hardened_mount_options("nosuid,nodev,ro"), "nosuid,nodev,ro");
+        // `exec` is left alone on purpose: running a non-setuid binary from a
+        // mounted volume is a legitimate admin need, and nosuid+nodev is what
+        // removes the escalation.
+        assert!(validated_mount_options("exec,ro", "o").is_ok());
         assert!(validated_mount_options("noatime,ro", "o").is_ok());
         assert!(validated_mount_options("", "o").is_ok()); // helper defaults it
         assert!(validated_mount_options("bad opt", "o").is_err()); // space

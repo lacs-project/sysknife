@@ -156,8 +156,8 @@ pub enum AuditCommand {
     ///
     /// Exits 0 if the chain is intact, 1 if any row is broken, and 2 if the
     /// chain cannot be verified (missing key file, retired key not on disk,
-    /// unreadable database, etc.). The 1/2 split matters: a CI pipeline
-    /// expecting 0 or 1 must not silently pass on a missing key file.
+    /// unreadable database, empty unanchored log, etc.). The 1/2 split matters:
+    /// a CI pipeline expecting 0 or 1 must not silently pass on a missing key file.
     Verify(AuditVerifyArgs),
 
     /// Anchor the current chain tip as a signed checkpoint into an external

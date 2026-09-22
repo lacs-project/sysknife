@@ -65,7 +65,7 @@ use sysknife_core::action_family::action_requires_distro;
 use sysknife_core::distro::DistroId;
 use sysknife_daemon::actions::OBSERVER_MUTATING_ACTIONS;
 
-use crate::client::{DaemonClient, DescribeInfo};
+use crate::client::{DaemonClient, DescribeInfo, SocketTarget};
 use crate::error::CliError;
 use crate::runner::{resolve_socket_target, verify_postgres, verify_sqlite, Verifier};
 
@@ -576,6 +576,14 @@ async fn direct_query_inner(
     params: serde_json::Value,
 ) -> Result<String, String> {
     let client = DaemonClient::new(resolve_socket_target());
+    direct_query_with_client(client, action_name, params).await
+}
+
+async fn direct_query_with_client(
+    client: DaemonClient,
+    action_name: String,
+    params: serde_json::Value,
+) -> Result<String, String> {
     tokio::task::spawn_blocking(move || client.query_action(&action_name, &params))
         .await
         .map_err(|e| format!("query join error: {e}"))?
@@ -869,7 +877,13 @@ async fn enrich_with_commands(
 
 async fn execute_steps_inner(steps: Vec<StepToExecute>) -> Result<ExecuteOutput, String> {
     let client = DaemonClient::new(resolve_socket_target());
+    execute_steps_with_client(client, steps).await
+}
 
+async fn execute_steps_with_client(
+    client: DaemonClient,
+    steps: Vec<StepToExecute>,
+) -> Result<ExecuteOutput, String> {
     let mut results: Vec<StepResult> = Vec::new();
     let mut plan_needs_reboot = false;
 
@@ -962,6 +976,13 @@ fn truncate_output(mut lines: Vec<String>) -> Vec<String> {
 const HISTORY_DEFAULT_LIMIT: u32 = 20;
 
 async fn history_inner(input: HistoryInput) -> Result<Vec<HistoryEntry>, String> {
+    history_with_client(DaemonClient::new(resolve_socket_target()), input).await
+}
+
+async fn history_with_client(
+    client: DaemonClient,
+    input: HistoryInput,
+) -> Result<Vec<HistoryEntry>, String> {
     let HistoryInput {
         status,
         action,
@@ -983,7 +1004,6 @@ async fn history_inner(input: HistoryInput) -> Result<Vec<HistoryEntry>, String>
     };
 
     let limit = limit.unwrap_or(HISTORY_DEFAULT_LIMIT);
-    let client = DaemonClient::new(resolve_socket_target());
     let rows = tokio::task::spawn_blocking(move || {
         client.query_history(
             Some(limit),
@@ -1023,9 +1043,12 @@ fn history_entry_from_row(row: sysknife_daemon::transactions::JobHistoryEntry) -
 // ---------------------------------------------------------------------------
 
 async fn doctor_inner() -> DoctorReport {
+    doctor_at_socket(resolve_socket_target()).await
+}
+
+async fn doctor_at_socket(socket: SocketTarget) -> DoctorReport {
     let mut warnings: Vec<String> = Vec::new();
 
-    let socket = resolve_socket_target();
     // `label()`, not `{:?}`: this string is published to MCP clients, and
     // `Unix("/run/…")` is Rust internals rather than something a caller can put
     // back into SYSKNIFE_SOCKET. Must match what `sysknife doctor` prints.
@@ -1484,6 +1507,7 @@ mod tests {
                 bindings_checked: 0,
             },
             attribution,
+            status: None,
         }
     }
 
@@ -1575,6 +1599,7 @@ mod tests {
                     bindings_checked: 0,
                 },
                 attribution: Some(AttributionCensus::from_counts_for_tests(3, 0, 0, 0)),
+                status: None,
             },
             "/tmp/store.sqlite".to_string(),
         );
@@ -2099,8 +2124,8 @@ mod tests {
     // proves the approval interlock: when the daemon rejects a receipt, MCP
     // execute must surface an error, never report success.
     //
-    // nextest runs each test in its own process, so setting SYSKNIFE_SOCKET
-    // here does not leak into other tests.
+    // Pass the socket explicitly so these tests also work with cargo test's
+    // shared-process runner, without changing another test's environment.
     // -----------------------------------------------------------------------
 
     #[tokio::test]
@@ -2169,15 +2194,18 @@ mod tests {
             }
         });
 
-        std::env::set_var("SYSKNIFE_SOCKET", sock.to_str().unwrap());
+        let client = || DaemonClient::new(SocketTarget::Unix(sock.clone()));
 
         // History flows through the structured IPC with typed fields populated.
-        let entries = history_inner(HistoryInput {
-            status: None,
-            action: None,
-            since: None,
-            limit: Some(5),
-        })
+        let entries = history_with_client(
+            client(),
+            HistoryInput {
+                status: None,
+                action: None,
+                since: None,
+                limit: Some(5),
+            },
+        )
         .await
         .expect("history over socket");
         assert_eq!(entries.len(), 1);
@@ -2190,7 +2218,8 @@ mod tests {
 
         // A generated route uses query_action directly and preserves the exact
         // catalogue action plus the caller's parameter object.
-        let query_output = direct_query_inner(
+        let query_output = direct_query_with_client(
+            client(),
             "GetSysctl".to_string(),
             serde_json::json!({"key": "net.ipv4.ip_forward"}),
         )
@@ -2200,12 +2229,15 @@ mod tests {
 
         // Interlock: the daemon rejects the receipt, so execute MUST error,
         // never fabricate a success result.
-        let result = execute_steps_inner(vec![StepToExecute {
-            transaction_id: "tx-abc123".to_string(),
-            action_name: "GetDiskUsage".to_string(),
-            params: serde_json::json!({}),
-            approval_receipt: "receipt-the-daemon-will-reject".to_string(),
-        }])
+        let result = execute_steps_with_client(
+            client(),
+            vec![StepToExecute {
+                transaction_id: "tx-abc123".to_string(),
+                action_name: "GetDiskUsage".to_string(),
+                params: serde_json::json!({}),
+                approval_receipt: "receipt-the-daemon-will-reject".to_string(),
+            }],
+        )
         .await;
         assert!(
             result.is_err(),
@@ -2216,7 +2248,6 @@ mod tests {
             "the rejection reason must reach the caller"
         );
 
-        std::env::remove_var("SYSKNIFE_SOCKET");
         server.abort();
     }
 
@@ -2235,11 +2266,7 @@ mod tests {
     async fn doctor_reports_the_socket_as_a_uri_not_rust_debug() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("daemon.sock");
-        std::env::set_var("SYSKNIFE_SOCKET", sock.to_str().unwrap());
-
-        let report = doctor_inner().await;
-
-        std::env::remove_var("SYSKNIFE_SOCKET");
+        let report = doctor_at_socket(SocketTarget::Unix(sock.clone())).await;
 
         assert_eq!(
             report.daemon_socket,

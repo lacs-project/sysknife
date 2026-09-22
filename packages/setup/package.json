@@ -1,6 +1,6 @@
 {
   "name": "sysknife-setup",
-  "version": "0.16.0",
+  "version": "0.20.0",
   "description": "Zero-friction setup for SysKnife MCP server \u2014 Claude Code, Cursor, and Codex CLI",
   "author": "Vladimir Rotariu",
   "repository": {
@@ -15,7 +15,7 @@
     "sysknife-mcp": "mcp-launcher.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "files": [
     "index.js",

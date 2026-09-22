@@ -102,6 +102,45 @@ def assert_mountpoint_safe(mp: str) -> None:
         die(f"mountpoint {mp!r} resolves to {real!r} through a symlink; refusing")
 
 
+def assert_swap_path_safe(path: str) -> None:
+    """Refuse a swap path reached through a symlink at ANY component.
+
+    `O_EXCL|O_NOFOLLOW` on the create below covers the FINAL component only;
+    every ancestor directory is resolved by the kernel as normal. So a local
+    user who owns any directory entry could have AddSwap create
+    `<dir>/swapfile` once, replace `<dir>` with a symlink to a directory they
+    do not own, and call AddSwap again: root then created a file of up to
+    1 TiB inside the symlink target, and RemoveSwap unlinked inside it. No
+    race was needed, because the attacker owns the entry outright.
+
+    op_mount has resolved the whole path with realpath since #155 and the swap
+    pair never got the same treatment, which is the same shape as that bug one
+    operation along.
+
+    This is a pre-check with a clear message. It does not by itself close the
+    window between the check and the create; the callers do that by pinning
+    the parent directory with O_DIRECTORY|O_NOFOLLOW and working relative to
+    that descriptor.
+    """
+    real = os.path.realpath(path)
+    if real != os.path.normpath(path):
+        die(f"swap path {path!r} resolves to {real!r} through a symlink; refusing")
+
+
+def open_swap_parent(path: str) -> int:
+    """Open the containing directory, refusing to follow a symlink into it.
+
+    Returns a descriptor the caller passes as `dir_fd`, so the create or the
+    unlink names only the final component and cannot be redirected by an
+    ancestor swapped in after assert_swap_path_safe ran.
+    """
+    parent = os.path.dirname(os.path.normpath(path))
+    try:
+        return os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        die(f"cannot open swap directory {parent!r}: {exc}")
+
+
 def read_fstab() -> list:
     if not os.path.exists(FSTAB):
         return []
@@ -123,6 +162,33 @@ def write_fstab(lines: list) -> None:
         except OSError:
             pass
         die(f"cannot write {FSTAB}: {exc}")
+
+
+# Mirrors MOUNT_OPTIONS_DENY in crates/sysknife-daemon/src/actions/validate.rs.
+# The helper is directly sudo-invocable, so the daemon refusing these is not
+# enough. `suid` lets a setuid-root binary on the mounted filesystem escalate
+# whoever runs it and `dev` lets a device node on it reach any block device;
+# `exec` is deliberately absent, because running an ordinary binary from a
+# mounted volume is legitimate and nosuid+nodev is what removes the escalation.
+# tests/release/mount-edit.test.sh derives this list from that Rust source and
+# fails on any gap.
+DENY_MOUNT_OPTIONS = ("suid", "dev")
+
+
+def ensure_hardened(options: str) -> str:
+    """Append nosuid,nodev unless they are already there.
+
+    mount(8) takes the last of a conflicting pair, so appending is enough and
+    the operator's own list stays intact ahead of it. Appending matters because
+    an omitted --options reaches here as `defaults`, which Linux expands to
+    `rw,suid,dev,exec,auto,nouser,async`: the charset check saw nothing to
+    object to and the mount still came up with suid and dev set.
+    """
+    opts = [o for o in options.split(",") if o]
+    for required in ("nosuid", "nodev"):
+        if not any(o.lower() == required for o in opts):
+            opts.append(required)
+    return ",".join(opts)
 
 
 def ensure_nofail(options: str) -> str:
@@ -173,7 +239,12 @@ def op_mount(args) -> None:
     options = args.options or "defaults"
     if not OPTIONS_RE.match(options):
         die(f"invalid options {options!r}")
-    options = ensure_nofail(options)
+    # Refuse rather than silently strip: an operator who asked for `suid` must
+    # be told it was refused, or they will believe the mount carries it.
+    for opt in options.split(","):
+        if opt.lower() in DENY_MOUNT_OPTIONS:
+            die(f"mount option {opt!r} grants privilege on the mounted filesystem; refusing")
+    options = ensure_hardened(ensure_nofail(options))
 
     # Fast pre-check: reject a critical target or an already-symlinked mountpoint
     # with a clear message before doing any work.
@@ -254,13 +325,22 @@ def op_addswap(args) -> None:
     # `/tmp/swapfile -> /etc/nologin`). O_EXCL|O_NOFOLLOW makes the create fail if
     # the path exists at all or is a symlink, which closes both the dangling-link
     # and the ordinary-clobber cases in one syscall, with no TOCTOU window.
+    assert_swap_path_safe(path)
+    pfd = open_swap_parent(path)
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        fd = os.open(
+            os.path.basename(os.path.normpath(path)),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=pfd,
+        )
     except FileExistsError:
         # O_EXCL raises this for a symlink too (dangling or not), which is the
         # attack we are refusing, as well as an ordinary pre-existing file.
+        os.close(pfd)
         die(f"{path} already exists")
     except OSError as exc:
+        os.close(pfd)
         die(f"cannot create swap file {path!r}: {exc}")
     # Keep the fd and write through it, never re-opening by path. Re-opening
     # (even with dd conv=nocreat) leaves a window in which a local user who owns
@@ -292,6 +372,7 @@ def op_addswap(args) -> None:
         )
     finally:
         os.close(fd)
+        os.close(pfd)
     if alloc.returncode != 0:
         try:
             os.unlink(path)
@@ -353,6 +434,7 @@ def op_rmswap(args) -> None:
     # no-op when nothing matches — so `--file /etc/shadow` used to reach
     # os.unlink and delete the shadow file. Removal is confined to paths the
     # host itself reports as swap files.
+    assert_swap_path_safe(path)
     if path not in known_swap_files():
         die(f"{path!r} is not a known swap file (absent from {PROC_SWAPS} and {FSTAB})")
     # Even a declared path must not be a symlink: that would let whoever can
@@ -366,10 +448,15 @@ def op_rmswap(args) -> None:
     if len(kept) != len(lines):
         write_fstab(kept)
     if os.path.exists(path):
+        pfd = open_swap_parent(path)
         try:
-            os.unlink(path)
+            os.unlink(os.path.basename(os.path.normpath(path)), dir_fd=pfd)
+        except FileNotFoundError:
+            pass
         except OSError as exc:
             die(f"cannot remove swap file: {exc}")
+        finally:
+            os.close(pfd)
 
 
 def main() -> None:

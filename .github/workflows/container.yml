@@ -1,0 +1,83 @@
+---
+name: container
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Always report this check so branch protection does not wait forever on a
+  # workflow skipped by a paths filter. Only Docker build inputs incur a build.
+  container-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Detect image inputs
+        id: inputs
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          build=true
+          base="$BEFORE"
+          if [[ "$EVENT" == pull_request ]]; then base="$PR_BASE"; fi
+          if [[ "$EVENT" != workflow_dispatch && -n "$base" &&
+                "$base" != 0000000000000000000000000000000000000000 ]]; then
+            git diff --name-only "$base" HEAD > "$RUNNER_TEMP/container-inputs"
+            if ! grep -Eq '^(Dockerfile|\.dockerignore|Cargo\.(toml|lock)|crates/.*|apps/sysknife-cli/.*|apps/sysknife-shell/src-tauri/.*|scripts/check-container-image\.sh|\.github/workflows/container\.yml)$' "$RUNNER_TEMP/container-inputs"; then
+              build=false
+            fi
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "Container input change: $build" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Buildx
+        if: steps.inputs.outputs.build == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: Build Dockerfile
+        if: steps.inputs.outputs.build == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          tags: sysknife-ci:check
+          cache-from: type=gha,scope=sysknife-container
+          cache-to: type=gha,mode=max,scope=sysknife-container
+
+      - name: Check image and prove smoke assertions reject bad results
+        if: steps.inputs.outputs.build == 'true'
+        run: |
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("apps/sysknife-cli/Cargo.toml", "rb"))["package"]["version"])')"
+          bash scripts/check-container-image.sh sysknife-ci:check "$version"
+          mkdir "$RUNNER_TEMP/wrong-version"
+          printf '#!/bin/sh\necho sysknife 0.0.0-invalid\n' > "$RUNNER_TEMP/wrong-version/sysknife"
+          printf 'FROM sysknife-ci:check\nCOPY --chmod=755 sysknife /usr/local/bin/sysknife\n' > "$RUNNER_TEMP/wrong-version/Dockerfile"
+          docker build -t sysknife-ci:wrong-version "$RUNNER_TEMP/wrong-version"
+          if bash scripts/check-container-image.sh sysknife-ci:wrong-version "$version" > "$RUNNER_TEMP/wrong-version.log" 2>&1; then
+            echo 'FAIL: wrong version was accepted' >&2
+            exit 1
+          fi
+          grep -F 'FAIL: image version:' "$RUNNER_TEMP/wrong-version.log"
+          printf 'FROM sysknife-ci:check\nUSER 0\n' | docker build -t sysknife-ci:root -
+          if bash scripts/check-container-image.sh sysknife-ci:root "$version" > "$RUNNER_TEMP/wrong-user.log" 2>&1; then
+            echo 'FAIL: root image was accepted' >&2
+            exit 1
+          fi
+          grep -F 'FAIL: image uid: expected 10001, got 0' "$RUNNER_TEMP/wrong-user.log"

@@ -12,8 +12,108 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-09-22
+
+### Security
+
+- `AddMount` refuses the `suid` and `dev` mount options and adds `nosuid,nodev`
+  to every mount it makes. `validated_mount_options` was a charset check with no
+  denylist, alone among the dangerous-value validators in that file, and
+  omitting the parameter reached the helper as `defaults`, which Linux expands
+  to `rw,suid,dev,exec,auto,nouser,async`. A setuid-root binary on
+  attacker-supplied media then granted root to whoever ran it. `exec` stays
+  allowed: running an ordinary binary from a mounted volume is a legitimate
+  need, and `nosuid` with `nodev` is what removes the escalation. The helper
+  carries the same list, and a test derives it from the Rust source so the two
+  cannot drift (GHSA-gqhr-84x9-x898).
+- Eight more sudo grant families carry argument constraints: `certbot`,
+  `fail2ban-client`, `snap`, `rpm-ostree`, `ostree`, `pro` and `netplan` at both
+  of its packaged paths. Each can run an arbitrary command as root through a
+  subcommand no action builds, by hook, jail action, snap, or rpm scriptlet.
+  Unconstrained grants fall from thirty-one to fifteen, and what remains is the
+  set whose first argument is the parameter itself, none of which can spawn a
+  shell (GHSA-j9c3-j2qr-65c4).
+
+## [0.19.0] — 2026-09-22
+
+### Security
+
+- `PinDeployment` and `UnpinDeployment` bind to the deployment that was
+  approved. Both take an ordinal index into the live `rpm-ostree` list, and the
+  request hash covers only `{"index": N}`, which is byte-identical however much
+  has moved into slot N since the operator approved it. Any concurrent
+  `UpdateSystem`, `CleanupDeployments` or `RollbackDeployment` inside the
+  approval window reorders that list, so the effect that executed could differ
+  from the effect that was previewed while the hash binding and the signed audit
+  row both showed a clean match. The preview now captures the deployment's ostree
+  checksum and execute re-checks it, the way `AptAutoremove` has captured its
+  deletion set since #151, and a preview that captured no identity cannot
+  execute (GHSA-93hm-phfx-6mg8).
+- `CreateUser` validates `home` as an absolute path. It used `validated_safe_arg`,
+  which enforces a charset and rejects a leading dash and accepts both `..` and a
+  relative path, while `validated_absolute_path` in the same file rejects both and
+  already guarded every other root-acting path parameter. `home` reaches
+  `useradd --create-home --home-dir` as root (GHSA-93hm-phfx-6mg8).
+- A job's terminal outcome is in the audit chain. `update_status` called
+  `append_event` zero times, so `audit_events` held the approval lifecycle and
+  nothing recorded `Running -> Succeeded`, `Failed`, `RolledBack` or
+  `NeedsReboot`. An action that ran to completion could be rewritten in the
+  `status` column as `Canceled`, `sysknife history` reported it canceled, and
+  `sysknife audit verify` still reported the chain `Intact`, while the module
+  documentation told the reader the outcome was protected. The status write and
+  the event that records it now share one sqlite transaction, `audit verify`
+  compares each row against the newest status event chained for it, and the
+  documentation says what the code does (GHSA-8g7w-7g2g-g55w).
+- Eight sudo grant families carry argument constraints. `systemctl`, `useradd`,
+  `usermod`, `kill`, `hostnamectl`, `timedatectl`, `localectl` and `resolvectl`
+  were granted with no argument tokens, which authorises every invocation of
+  each: `systemctl link` on an attacker-written unit file, `systemctl start
+  debug-shell.service` past the denylist the daemon applies on its own path,
+  `useradd -o -u 0` for a second uid-0 account, `usermod -p` over root's password
+  hash. Each is now restricted to the argv the catalogue builds. The existing
+  check asked only whether every action had a grant, which cannot see a grant
+  wider than any action needs; a second check now fails on a new unconstrained
+  grant and on a stale entry in the inventory of the ones that remain
+  (GHSA-j9c3-j2qr-65c4).
+
+## [0.18.0] — 2026-09-22
+
+### Security
+
+- `AddSwap` and `RemoveSwap` resolve the whole swap path before acting on it.
+  `O_EXCL|O_NOFOLLOW` constrains the final component only, so a symlinked
+  ancestor directory could place a root file create, and a root unlink, outside
+  the intended path. Both operations now refuse a path that resolves through a
+  symlink anywhere along it, and work relative to a pinned parent descriptor
+  rather than by name (GHSA-gqhr-84x9-x898).
+- `sysknife-grub-kargs-edit` refuses `debug-shell` and `runlevel1` as
+  `systemd.unit=` boot targets. The helper is callable directly through its
+  sudoers grant, where the daemon's own refusal does not apply, and its list
+  carried three of the five entries the daemon refuses. A test now derives the
+  daemon's list from its source and fails on any gap, so the two cannot drift
+  apart again (GHSA-f8vp-j3jh-7wjx).
+
+## [0.17.0] — 2026-09-22
+
+### Changed
+
+- `sysknife-setup` requires Node 22 or newer. Node 18 and 20 no longer receive
+  security fixes, so this drops support for them rather than retiring an
+  untested claim: `engines.node`, the preflight guard and all six published
+  support statements move together, and the refusal message says why the floor
+  moved. Nothing in CI is affected; every job that touches JavaScript already
+  runs Node 24 (#327).
+
 ### Fixed
 
+- `sysknife audit verify` now reports `cannot_verify` and exits 2 over an empty
+  transaction log with no external checkpoint anchor, instead of reporting
+  `intact` and exiting 0. An erased store and a store that was never written
+  read the same to the chain check on its own, so the verdict says it cannot
+  tell them apart rather than calling the trail sound. Configuring
+  `SYSKNIFE_CHECKPOINT_DB` restores a definite answer. The MCP
+  `sysknife_audit_verify` tool still reports `intact` in this case and is
+  tracked separately (#338, #466).
 - The release-rehearsal pin check now fails when it extracted too few `uses:`
   lines, instead of reporting the invariant holding over an empty set (#407).
 

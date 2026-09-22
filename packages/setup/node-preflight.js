@@ -15,7 +15,7 @@
  */
 
 /** Oldest Node the wizard's own syntax and APIs require. Keep in sync with `engines.node`. */
-var MIN_MAJOR = 18;
+var MIN_MAJOR = 22;
 
 /**
  * Explain, actionably, why this Node cannot run the wizard.
@@ -33,7 +33,12 @@ function unsupportedMessage(version) {
   if (!isNaN(major) && major >= MIN_MAJOR) return null;
 
   return (
-    'sysknife-setup needs Node ' + MIN_MAJOR + ' or newer. You are running ' + shown + '.\n' +
+    'sysknife-setup needs Node ' +
+    MIN_MAJOR +
+    ' or newer because older releases no longer receive security fixes. ' +
+    'You are running ' +
+    shown +
+    '.\n' +
     '\n' +
     "Ubuntu 22.04's `apt install nodejs` gives Node 12, which cannot run this\n" +
     'installer. Pick whichever of these suits the machine:\n' +

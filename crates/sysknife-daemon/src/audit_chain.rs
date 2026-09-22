@@ -46,13 +46,30 @@
 //! - **Status mutations are not in the chain.** The mutable `status` field
 //!   is intentionally excluded — the chain protects the *authorisation
 //!   decision* (immutable fields captured at insert time), not the live
-//!   execution state. Status transitions ARE chained, separately: the
-//!   append-only `audit_events` table exists (created by migration v2 in
-//!   `transactions.rs`) and `verify_event_chain` / `verify_event_binding`
-//!   below verify it. This paragraph described that as future work long
-//!   after it shipped, which is worse than saying nothing — a reader would
-//!   conclude the capability is missing and either duplicate it or assume
-//!   status history is unprotected.
+//!   execution state. Status transitions are chained separately, in the
+//!   append-only `audit_events` table (created by migration v2 in
+//!   `transactions.rs`), and `verify_event_chain` / `verify_event_binding`
+//!   below verify that table.
+//!
+//!   Until 0.19.0 this paragraph said the same thing while
+//!   `TransactionStore::update_status` called `append_event` zero times, so
+//!   `audit_events` held the approval lifecycle and nothing else. No event
+//!   recorded `Running -> Succeeded`, `Failed`, `RolledBack` or `NeedsReboot`.
+//!   An action that ran to completion could be rewritten in the `status`
+//!   column as `Canceled`, `sysknife history` reported it canceled, and
+//!   `sysknife audit verify` still reported the chain `Intact`, because
+//!   nothing in the chain had an opinion about the outcome. An investigator
+//!   reading this paragraph would have believed the outcome was protected.
+//!
+//!   `update_status` now appends a `status_*` event in the same sqlite
+//!   transaction as the column write, so the two cannot diverge through a
+//!   crash, and `TransactionStore::status_matches_chain` compares each row's
+//!   `status` against the newest status event chained for it. Rewriting the
+//!   column no longer agrees with a signed record. Exploiting the original
+//!   gap needed write access to a database that is `0600` inside a `0700`
+//!   directory owned by the daemon account, so the attacker was already root
+//!   or the `sysknife` user; the cost was to the investigator afterwards,
+//!   not to the boundary.
 //!
 //! ## Key management
 //!
@@ -955,9 +972,62 @@ pub enum AuditEventKind {
     ApprovalConsumed,
     /// An undelivered receipt was retracted before it could be spent.
     ApprovalRevoked,
+    /// A transaction reached the state named by this variant.
+    ///
+    /// The outcome lives in the `kind`, so it is covered by the event
+    /// signature. `transactions.status` is an ordinary mutable column: anyone
+    /// who can `UPDATE` that table could rewrite a job that ran to completion
+    /// as canceled, and the chain had nothing to disagree with. One variant per
+    /// state rather than a free-text field keeps `as_str` returning a stable
+    /// `&'static str`, which is what every already-written signature commits to.
+    StatusQueued,
+    StatusRunning,
+    StatusSucceeded,
+    StatusFailed,
+    StatusCanceled,
+    StatusRolledBack,
+    StatusNeedsReboot,
+}
+
+impl From<sysknife_types::JobState> for AuditEventKind {
+    fn from(state: sysknife_types::JobState) -> Self {
+        use sysknife_types::JobState as S;
+        match state {
+            S::Queued => Self::StatusQueued,
+            S::Running => Self::StatusRunning,
+            S::Succeeded => Self::StatusSucceeded,
+            S::Failed => Self::StatusFailed,
+            S::Canceled => Self::StatusCanceled,
+            S::RolledBack => Self::StatusRolledBack,
+            S::NeedsReboot => Self::StatusNeedsReboot,
+        }
+    }
 }
 
 impl AuditEventKind {
+    /// Every variant, in the order they were introduced.
+    ///
+    /// `parse_event_kind` reads this list, so a variant missing from it is not
+    /// a compile error: it verifies as a broken chain at runtime, on a row the
+    /// daemon itself wrote. The previous version of that function carried the
+    /// comment "exhaustive by construction: the match below fails to compile if
+    /// a variant is added without a spelling here" over an array literal, where
+    /// adding a variant compiles perfectly well. Adding the status kinds is
+    /// what showed the claim was false, and `every_variant_is_in_all` below is
+    /// the exhaustive match that makes it true.
+    pub const ALL: &'static [AuditEventKind] = &[
+        Self::ApprovalGranted,
+        Self::ApprovalConsumed,
+        Self::ApprovalRevoked,
+        Self::StatusQueued,
+        Self::StatusRunning,
+        Self::StatusSucceeded,
+        Self::StatusFailed,
+        Self::StatusCanceled,
+        Self::StatusRolledBack,
+        Self::StatusNeedsReboot,
+    ];
+
     /// Stored and signed spelling. Stable on the wire — changing one of these
     /// strings invalidates every event signature already written.
     pub fn as_str(&self) -> &'static str {
@@ -965,6 +1035,13 @@ impl AuditEventKind {
             Self::ApprovalGranted => "approval_granted",
             Self::ApprovalConsumed => "approval_consumed",
             Self::ApprovalRevoked => "approval_revoked",
+            Self::StatusQueued => "status_queued",
+            Self::StatusRunning => "status_running",
+            Self::StatusSucceeded => "status_succeeded",
+            Self::StatusFailed => "status_failed",
+            Self::StatusCanceled => "status_canceled",
+            Self::StatusRolledBack => "status_rolled_back",
+            Self::StatusNeedsReboot => "status_needs_reboot",
         }
     }
 }
@@ -1120,15 +1197,37 @@ fn verify_event_rows(
 }
 
 fn parse_event_kind(raw: &str) -> Option<AuditEventKind> {
-    // Exhaustive by construction: the match below fails to compile if a
-    // variant is added without a spelling here.
-    [
-        AuditEventKind::ApprovalGranted,
-        AuditEventKind::ApprovalConsumed,
-        AuditEventKind::ApprovalRevoked,
-    ]
-    .into_iter()
-    .find(|kind| kind.as_str() == raw)
+    AuditEventKind::ALL
+        .iter()
+        .copied()
+        .find(|kind| kind.as_str() == raw)
+}
+
+/// Whether each transaction's mutable `status` column still agrees with the
+/// newest `status_*` event chained for it.
+///
+/// `ChainContent` does not sign `status`, deliberately: the chain protects the
+/// authorisation decision captured at insert, not the live execution state. The
+/// consequence was that anyone who could `UPDATE` the transactions table could
+/// rewrite a completed job as canceled and every check still reported `Intact`.
+/// The outcome is an event now, and this is the comparison that uses it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum StatusOutcome {
+    /// Every row's status column matches its newest chained status event.
+    Agrees { rows_checked: u64 },
+    /// At least one row disagrees. `detail` names the transactions.
+    Disagrees { detail: String },
+}
+
+/// Exit code for the status cross-check, on the same scale as
+/// [`outcome_to_exit_code`]. A disagreement is a detected tamper, not an
+/// inconclusive read: both sides were present and they contradict each other.
+pub fn status_outcome_to_exit_code(outcome: &StatusOutcome) -> i32 {
+    match outcome {
+        StatusOutcome::Agrees { .. } => 0,
+        StatusOutcome::Disagrees { .. } => 1,
+    }
 }
 
 /// Result of checking that the transaction chain's committed `event_tip`
@@ -1209,6 +1308,14 @@ pub struct AuditVerification {
     /// claims, and a zero that means the first reads as the second, which is the
     /// exact confusion this census exists to end.
     pub attribution: Option<AttributionCensus>,
+    /// Whether `transactions.status` still agrees with the chained outcome.
+    ///
+    /// `None` where the check could not run rather than a verdict it did not
+    /// reach: the comparison needs the live status column, so the pure
+    /// `verify_all` functions and the postgres path leave it unset. Reporting
+    /// `Agrees` there would be a claim nobody checked, which is the shape this
+    /// whole module exists to refuse.
+    pub status: Option<StatusOutcome>,
 }
 
 /// What one row's principal column can attest, given the encoding that signed it.
@@ -1431,11 +1538,16 @@ impl AuditVerification {
     /// chain is provably broken, reporting "could not verify" because some
     /// *other* check was inconclusive would understate what is known.
     pub fn exit_code(&self) -> i32 {
-        let codes = [
+        let mut codes = vec![
             outcome_to_exit_code(&self.chain),
             outcome_to_exit_code(&self.events),
             binding_outcome_to_exit_code(&self.binding),
         ];
+        // Only when the check actually ran. An unset status must not push the
+        // verdict either way.
+        if let Some(status) = &self.status {
+            codes.push(status_outcome_to_exit_code(status));
+        }
         if codes.contains(&1) {
             1
         } else if codes.contains(&2) {
@@ -1457,6 +1569,7 @@ pub fn verify_all(
         events: verify_event_chain(key, event_rows),
         binding: verify_event_binding(tx_rows, event_rows),
         attribution: Some(AttributionCensus::of(tx_rows)),
+        status: None,
     }
 }
 
@@ -1471,6 +1584,7 @@ pub fn verify_all_with_pubkey(
         events: verify_event_chain_with_pubkey(verifying_key_hex, event_rows),
         binding: verify_event_binding(tx_rows, event_rows),
         attribution: Some(AttributionCensus::of(tx_rows)),
+        status: None,
     }
 }
 
@@ -1631,6 +1745,57 @@ pub fn checkpoint_outcome_to_exit_code(outcome: &CheckpointOutcome) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    /// The exhaustiveness the old comment claimed and did not have.
+    ///
+    /// This match is over the enum, so adding a variant without an arm fails
+    /// to compile here. The assertion then fails if the arm exists but the
+    /// variant was never added to `ALL`, which is the case that used to reach
+    /// production: `parse_event_kind` returns `None`, and a row the daemon
+    /// wrote itself verifies as a broken chain.
+    #[test]
+    fn every_variant_is_in_all() {
+        fn spelling(kind: AuditEventKind) -> &'static str {
+            match kind {
+                AuditEventKind::ApprovalGranted => "approval_granted",
+                AuditEventKind::ApprovalConsumed => "approval_consumed",
+                AuditEventKind::ApprovalRevoked => "approval_revoked",
+                AuditEventKind::StatusQueued => "status_queued",
+                AuditEventKind::StatusRunning => "status_running",
+                AuditEventKind::StatusSucceeded => "status_succeeded",
+                AuditEventKind::StatusFailed => "status_failed",
+                AuditEventKind::StatusCanceled => "status_canceled",
+                AuditEventKind::StatusRolledBack => "status_rolled_back",
+                AuditEventKind::StatusNeedsReboot => "status_needs_reboot",
+            }
+        }
+        for kind in AuditEventKind::ALL {
+            assert_eq!(
+                spelling(*kind),
+                kind.as_str(),
+                "as_str and the exhaustive table disagree about {kind:?}"
+            );
+            assert_eq!(
+                parse_event_kind(kind.as_str()),
+                Some(*kind),
+                "{kind:?} does not round-trip, so a row carrying it verifies as broken"
+            );
+        }
+        // Every spelling the match knows must be reachable through ALL. A
+        // variant added to the match and forgotten in ALL fails right here.
+        for kind in AuditEventKind::ALL {
+            assert!(
+                AuditEventKind::ALL
+                    .iter()
+                    .any(|k| k.as_str() == spelling(*kind)),
+                "{kind:?} has a spelling and is not reachable through ALL"
+            );
+        }
+        assert!(
+            parse_event_kind("not_a_kind").is_none(),
+            "an unknown kind must not parse, or the check inspects nothing"
+        );
+    }
+
     use super::*;
 
     fn fixed_key() -> AuditKey {
@@ -3032,6 +3197,7 @@ mod tests {
                 bindings_checked: 0,
             },
             attribution: None,
+            status: None,
         };
         assert_eq!(verification.exit_code(), 1);
     }
@@ -3046,6 +3212,7 @@ mod tests {
                 event_tip: "abc".to_string(),
             },
             attribution: None,
+            status: None,
         };
         assert_eq!(verification.exit_code(), 1);
     }
@@ -3059,6 +3226,7 @@ mod tests {
                 bindings_checked: 1,
             },
             attribution: None,
+            status: None,
         };
         assert_eq!(verification.exit_code(), 0);
     }
