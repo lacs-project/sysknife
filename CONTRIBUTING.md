@@ -98,6 +98,19 @@ with work you have not committed or stashed.
 
 ### 2. Branch, code, test
 
+Workflow action pins keep an exact tag in the adjacent comment, for example
+`uses: actions/checkout@<40-hex SHA> # v7.0.1`. The tag must resolve to that
+commit, including when it is annotated. Deliberate branch references use
+`# stable (branch)` or `# main (branch)`; the verifier reports those without
+comparing the pin to the moving branch head. Keep existing SHAs when correcting
+comments; review action upgrades separately.
+
+Run `bash scripts/verify-action-pins.sh` to check these comments. It needs
+authenticated `gh`, Python 3, and PyYAML (`python3 -m pip install PyYAML`, also
+installed by yamllint). Both `docs-and-hygiene` and `scripts/ci-local.sh` require
+this check, including a working GitHub API connection. Offline regression tests
+run with `bash tests/release/action-pin-comments.test.sh`.
+
 ```sh
 git checkout -b feat/<short-name>
 # … implement …
@@ -178,6 +191,27 @@ deterministic source-relative check, while external URLs stay bounded to
 `scripts/markdown-link-external-files.txt`. Add a documented entry to
 `scripts/markdown-link-exclusions.txt` only when a source file must be skipped;
 the discovery test rejects exclusions that no longer name a tracked file.
+
+**Every release and E2E test must be reachable from a gate.**
+`scripts/check_test_reachability.sh` discovers `tests/release/*.test.sh` and
+`tests/e2e/*.test.sh`, then requires a standalone `bash <path>` command in a `run`
+step for each exact path in `ci.yml`, `e2e.yml`, or `release.yml`. Trailing
+comments and a `sudo` or `sudo -n` prefix are allowed. Other sudo options,
+comments alone, artifact paths, shell compound commands,
+heredoc text, and mentions in `ci-local.sh` do not count. Keep these test steps
+in that explicit form and add the invocation in the same change as a new test;
+a test without one makes both local and remote CI fail. This is a static
+invocation check; it does not evaluate job conditions or prove runtime execution.
+A YAML block scalar containing just that command is supported. Multi-line shell
+scripts, including a command with a separate comment line, are not; give each
+test its own standalone step instead.
+The local hygiene runner discovers these test files automatically; do not also
+add explicit local invocations, which would run a test twice.
+
+The workflow parser uses PyYAML, already installed with CI's `yamllint`
+prerequisite. Install it into the same Python environment used to run the gate:
+`python3 -m pip install yamllint==1.38.0`. A missing parser or unreadable workflow
+fails the gate instead of falling back to text matching.
 
 **A change that touches no Rust skips the Rust gate.** The workspace suite exists
 to stop a Rust regression reaching `main`, and a diff with no `.rs` file in it

@@ -30,6 +30,7 @@ on:
       - "tests/release/**"
       - "scripts/**"
       - "assets/demo/**"
+      - ".githooks/**"
       - "apps/sysknife-cli/**"
       # scripts-lint builds sysknife-cli, which depends on every crate under
       # crates/. Without this the job could not be triggered by a change to the
@@ -46,6 +47,7 @@ on:
       - "tests/release/**"
       - "scripts/**"
       - "assets/demo/**"
+      - ".githooks/**"
       - "apps/sysknife-cli/**"
       # scripts-lint builds sysknife-cli, which depends on every crate under
       # crates/. Without this the job could not be triggered by a change to the
@@ -67,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install ShellCheck
         run: |
@@ -76,12 +78,14 @@ jobs:
 
       - name: ShellCheck maintained scripts
         run: |
-          find tests/e2e tests/release scripts assets/demo \
-            -type f -name '*.sh' -print0 \
-            | xargs -0 shellcheck --severity=warning
+          file_list="$(mktemp)"
+          trap 'rm -f "$file_list"' EXIT
+          scripts/shellcheck-files.sh >"$file_list"
+          mapfile -d '' files <"$file_list"
+          shellcheck --severity=warning "${files[@]}"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable (branch)
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
@@ -99,7 +103,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -110,7 +114,7 @@ jobs:
             libayatana-appindicator3-dev librsvg2-dev
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable (branch)
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
@@ -198,7 +202,7 @@ jobs:
 
       - name: Upload story logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: e2e-story-logs
           path: tests/e2e/logs/

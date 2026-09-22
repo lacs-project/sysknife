@@ -718,14 +718,16 @@ mod anchor_tests {
 
         // Delete the tail. `verify_chain` still says Intact (asserted by the
         // test below); the anchor must not.
-        let truncated = &full[..3];
-        let outcome = verify_against_anchor(&key.verifying_key_hex(), truncated, &sink)
-            .await
-            .unwrap();
-        assert!(
-            matches!(outcome, CheckpointOutcome::Truncated { .. }),
-            "a deleted tail must be reported, got {outcome:?}"
-        );
+        for remaining in [3, 0] {
+            let truncated = &full[..remaining];
+            let outcome = verify_against_anchor(&key.verifying_key_hex(), truncated, &sink)
+                .await
+                .unwrap();
+            assert!(
+                matches!(outcome, CheckpointOutcome::Truncated { .. }),
+                "a deleted tail, including complete erasure, must be reported; remaining={remaining}, got {outcome:?}"
+            );
+        }
     }
 
     /// A configured-but-empty anchor is the trap: zero checkpoints trivially

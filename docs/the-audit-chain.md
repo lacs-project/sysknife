@@ -454,11 +454,20 @@ leaves a self-consistent remainder. The binding is what catches it.
 
 Exit codes matter for automation: `0` intact, `1` broken (a real tamper was
 detected), `2` cannot verify (missing key file, unreadable database, wrong
-key generation loaded). The 1-vs-2 split is deliberate — a CI job that only
-checks for a nonzero exit code must not silently treat "I couldn't check"
+key generation loaded, or an empty unanchored transaction log). The 1-vs-2
+split is deliberate — a CI job that only checks for a nonzero exit code must
+not silently treat "I couldn't check"
 the same as "I checked and it's fine." When the three checks disagree, the
 worst wins, and `1` outranks `2`: if anything is provably broken, saying
 "could not verify" would understate what is known.
+
+An empty transaction log without an independent anchor is inconclusive even
+when its remaining approval-event chain is intact. The command cannot tell a
+fresh store from an erased one: both report `CANNOT VERIFY`, exit `2`, and JSON
+`status: "cannot_verify"`. The row-integrity subresult may still be `intact` with
+zero rows, and the census is zero rather than null because the store was read.
+A retained signed external checkpoint can instead establish truncation and
+produce exit `1`; merely configuring an empty or unreadable anchor cannot.
 
 When the store cannot be read, the cross-chain binding status is
 `not_checked`, not `consistent`; no transaction or approval-event rows were

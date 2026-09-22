@@ -264,9 +264,11 @@ hygiene_yamllint() (
 # since every script this task adds/touches must stay shellcheck-clean.
 hygiene_shellcheck() (
     cd "$repo_root" || exit 1
-    find tests/e2e tests/release scripts assets/demo \
-        -type f -name '*.sh' -print0 \
-        | xargs -0 shellcheck --severity=warning
+    file_list="$(mktemp)"
+    trap 'rm -f "$file_list"' EXIT
+    scripts/shellcheck-files.sh >"$file_list" || exit 1
+    mapfile -d '' files <"$file_list"
+    shellcheck --severity=warning "${files[@]}"
 )
 
 run_shell_tests() {
@@ -288,7 +290,9 @@ run_hygiene_group() {
     printf '\n### hygiene\n'
     run_step 'hygiene: firewall backend reporter fixtures' python3 "$repo_root/tests/test_firewall_state.py"
     run_step 'hygiene: check_repo_completeness.sh' bash "$repo_root/scripts/check_repo_completeness.sh"
+    run_step 'hygiene: check_test_reachability.sh' bash "$repo_root/scripts/check_test_reachability.sh"
     run_step 'hygiene: check_release_versions.sh' bash "$repo_root/scripts/check_release_versions.sh"
+    run_step 'hygiene: verify-action-pins.sh' bash "$repo_root/scripts/verify-action-pins.sh" "$repo_root"
     run_step 'hygiene: npm test --prefix packages/setup' npm test --prefix "$repo_root/packages/setup"
     run_shell_tests
 

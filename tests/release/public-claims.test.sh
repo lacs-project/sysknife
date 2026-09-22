@@ -36,6 +36,7 @@ PYEOF
 
 fixture_files=(
     "${claim_files_from_checker[@]}"
+    ".githooks/pre-commit"
     "assets/demo/mcp-flow-mock.sh"
     # Evidence the numeric claims derive from, and the source the action count is
     # counted out of. Without these the checker aborts on its own input check and
@@ -93,6 +94,14 @@ assert_rejected_with_diagnostic() {
         fi
     done
 }
+
+# Hook/prose drift must name the changed command, not merely fail on a fixture.
+printf '\nnode --version\n' >> "$fixture/.githooks/pre-commit"
+assert_rejected_with_diagnostic 'undocumented sixth hook step' 'pre-commit steps differ' 'node --version'
+cp "$repo_root/.githooks/pre-commit" "$fixture/.githooks/pre-commit"
+sed '/^scripts\/test_baseline.sh$/d' "$repo_root/.githooks/pre-commit" > "$fixture/.githooks/pre-commit"
+assert_rejected_with_diagnostic 'documented step removed from hook' 'pre-commit steps differ' 'scripts/test_baseline.sh'
+cp "$repo_root/.githooks/pre-commit" "$fixture/.githooks/pre-commit"
 
 # The story coverage sentence is a derived claim, not a second catalogue. Mutate
 # its published All-family figure without repeating today's value in this test.
