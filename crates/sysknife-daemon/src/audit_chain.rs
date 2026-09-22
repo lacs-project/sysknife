@@ -139,6 +139,24 @@ pub const CHAIN_VERSION_V3: u32 = 3;
 /// stored generation must keep being reproduced byte for byte forever.
 pub const CHAIN_VERSION_CURRENT: u32 = CHAIN_VERSION_V3;
 
+/// Event-row encoding written before the approver-identity migration: the
+/// six-field message with no account among them. Still verifiable — see
+/// [`EventIdentity`].
+pub const EVENT_VERSION_LEGACY: u32 = 1;
+/// Event-row encoding that appends `caller_principal`, so a verified approval
+/// event names the account that granted, consumed or revoked the receipt
+/// instead of leaving the investigator to infer it from the daemon's
+/// authorization rules (#249).
+///
+/// A stable literal for the same reason [`CHAIN_VERSION_V2`] is one: the
+/// encoder signs this value and `EventRow::identity` dispatches stored rows
+/// against it, so it must not move when a future encoding arrives.
+pub const EVENT_VERSION_V2: u32 = 2;
+/// The event encoding this binary *writes* for approval events. Always an
+/// alias for the newest versioned constant, never used to dispatch a specific
+/// generation.
+pub const EVENT_VERSION_CURRENT: u32 = EVENT_VERSION_V2;
+
 /// Loaded Ed25519 signing key + its identifier. Construct via
 /// [`AuditKey::load_or_generate`].
 ///
@@ -1046,6 +1064,47 @@ impl AuditEventKind {
     }
 }
 
+/// Encoding generation of an approval-event row, mirroring what
+/// [`ChainIdentity`] does for transaction rows: the `audit_events.chain_version`
+/// column selects, per row, which message its signature was made over, so rows
+/// written by an older binary keep verifying (#249).
+///
+/// A downgrade is not a hiding place, for the same reason as on the transaction
+/// chain: rewriting a `V2` row as `LegacyV1` (to erase `caller_principal`)
+/// makes verification re-encode it without the identity fields, the stored
+/// signature no longer matches, and the row reports `Broken`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventIdentity<'a> {
+    /// `chain_version = 1`. The six-field encoding every event row written
+    /// before the approver-identity migration was signed under. It stays
+    /// byte-identical forever: historical rows have to keep verifying.
+    LegacyV1,
+    /// `chain_version = 2`. Appends the account that performed this event's
+    /// operation — the approver on `approval_granted`, the executor on
+    /// `approval_consumed`, the revoker on `approval_revoked`. Status events
+    /// stay `LegacyV1`: they are written from spawned execution tasks with no
+    /// caller attribution in scope, and signing an account the code cannot
+    /// see would be a signed guess.
+    V2 {
+        /// Scheme-prefixed identity rendered by [`crate::auth::CallerPrincipal`]
+        /// (`uid:1000`, `token:vsock`, `none:unattributed`). The scheme is
+        /// signed along with the value for the same reason as on the
+        /// transaction chain: the evidence classes differ in strength and an
+        /// auditor must be able to tell them apart.
+        caller_principal: &'a str,
+    },
+}
+
+impl EventIdentity<'_> {
+    /// `chain_version` column value for this encoding.
+    pub fn version(&self) -> u32 {
+        match self {
+            Self::LegacyV1 => EVENT_VERSION_LEGACY,
+            Self::V2 { .. } => EVENT_VERSION_V2,
+        }
+    }
+}
+
 /// Immutable content of one approval event, signed into the event chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventContent<'a> {
@@ -1058,6 +1117,8 @@ pub struct EventContent<'a> {
     /// signature.
     pub receipt_digest: &'a str,
     pub created_at: &'a str,
+    /// Encoding generation. See [`EventIdentity`] for why this is per-row.
+    pub identity: EventIdentity<'a>,
 }
 
 impl EventContent<'_> {
@@ -1071,6 +1132,18 @@ impl EventContent<'_> {
         push_field(&mut buf, "transaction_id", self.transaction_id);
         push_field(&mut buf, "receipt_digest", self.receipt_digest);
         push_field(&mut buf, "created_at", self.created_at);
+        // Per-generation suffixes are *appended*, so a legacy row's bytes are
+        // unchanged and its signature still verifies — the same contract
+        // `ChainContent::canonical_bytes` documents, for the same reason. The
+        // match is exhaustive so a new generation that forgets its arm is a
+        // compile error rather than a silent alias of `LegacyV1`.
+        match self.identity {
+            EventIdentity::LegacyV1 => {}
+            EventIdentity::V2 { caller_principal } => {
+                push_field(&mut buf, "event_version", &EVENT_VERSION_V2.to_string());
+                push_field(&mut buf, "caller_principal", caller_principal);
+            }
+        }
         buf
     }
 }
@@ -1109,6 +1182,34 @@ pub struct EventRow {
     pub created_at: String,
     pub prev_chain_hash: String,
     pub chain_hash: String,
+    /// Encoding generation this row was signed under. `1` for every row
+    /// written before the approver-identity migration — see [`EventIdentity`].
+    pub chain_version: u32,
+    /// Account that performed this event's operation, when the row was signed
+    /// under an encoding that carries one. `None` (or blank) on legacy rows;
+    /// a blank on a `chain_version = 2` row is a detected break, mirroring the
+    /// transaction chain's rule that a row naming nobody must not pass for
+    /// one naming an account.
+    pub caller_principal: Option<String>,
+}
+
+impl EventRow {
+    /// Recover the encoding this row was signed under, so verification can
+    /// rebuild the exact message that produced `chain_hash`. Mirrors
+    /// `ChainRow::identity`, including the blank-principal guard.
+    pub(crate) fn identity(&self) -> Result<EventIdentity<'_>, RowIdentityError> {
+        match self.chain_version {
+            EVENT_VERSION_LEGACY => Ok(EventIdentity::LegacyV1),
+            EVENT_VERSION_V2 => Ok(EventIdentity::V2 {
+                caller_principal: self
+                    .caller_principal
+                    .as_deref()
+                    .filter(|p| !p.is_empty())
+                    .ok_or(RowIdentityError::MissingField("caller_principal"))?,
+            }),
+            other => Err(RowIdentityError::UnknownVersion(other)),
+        }
+    }
 }
 
 /// Verify the approval-event chain with the daemon's key.
@@ -1169,6 +1270,36 @@ fn verify_event_rows(
                 actual: format!("kind={:?}", row.kind),
             };
         };
+        // Recover the per-row encoding, mirroring the transaction chain's
+        // split: a version this binary cannot reproduce is genuinely
+        // unverifiable (an older binary reading a newer chain), while a
+        // self-contradictory row — a v2 encoding with no principal to sign —
+        // is a detected break, not an inability to check.
+        let identity = match row.identity() {
+            Ok(identity) => identity,
+            Err(RowIdentityError::UnknownVersion(v)) => {
+                return VerifyOutcome::CannotVerify {
+                    reason: format!(
+                        "event seq={} declares chain_version={v}, which this binary cannot \
+                         reproduce (it understands {EVENT_VERSION_LEGACY}..={EVENT_VERSION_CURRENT}); \
+                         verify with a build at least as new as the one that wrote the chain",
+                        row.seq
+                    ),
+                };
+            }
+            Err(RowIdentityError::MissingField(field)) => {
+                return VerifyOutcome::Broken {
+                    rows_checked,
+                    first_broken_seq: row.seq,
+                    first_broken_transaction_id: row.transaction_id.clone(),
+                    expected: format!(
+                        "a non-empty {field} on a chain_version={} row",
+                        row.chain_version
+                    ),
+                    actual: format!("{field}={:?}", row.caller_principal),
+                };
+            }
+        };
         let content = EventContent {
             seq: row.seq,
             key_id: &row.key_id,
@@ -1176,6 +1307,7 @@ fn verify_event_rows(
             transaction_id: &row.transaction_id,
             receipt_digest: &row.receipt_digest,
             created_at: &row.created_at,
+            identity,
         };
         if !signature_ok(
             vk,
@@ -2997,6 +3129,10 @@ mod tests {
             transaction_id: txid,
             receipt_digest: "digest-abc",
             created_at: "2026-04-24T12:00:00Z",
+            // The pre-existing event-chain tests verify the legacy six-field
+            // encoding every historical row was signed under. The V2 encoding
+            // (with a principal) has its own tests below.
+            identity: EventIdentity::LegacyV1,
         }
     }
 
@@ -3017,10 +3153,322 @@ mod tests {
                 created_at: content.created_at.to_string(),
                 prev_chain_hash: prev.clone(),
                 chain_hash: hash.clone(),
+                chain_version: content.identity.version(),
+                caller_principal: match content.identity {
+                    EventIdentity::V2 { caller_principal } => Some(caller_principal.to_string()),
+                    EventIdentity::LegacyV1 => None,
+                },
             });
             prev = hash;
         }
         rows
+    }
+
+    /// Build one signed event row under an explicit identity, linked to `prev`.
+    /// The storage layer derives `chain_version`/`caller_principal` from the
+    /// same `identity` that was signed, so a row built here is byte-for-byte
+    /// what `append_event` would persist for that encoding.
+    #[allow(clippy::too_many_arguments)]
+    fn event_row(
+        key: &AuditKey,
+        seq: u64,
+        kind: AuditEventKind,
+        txid: &str,
+        receipt_digest: &str,
+        created_at: &str,
+        identity: EventIdentity<'_>,
+        prev: &str,
+    ) -> EventRow {
+        let content = EventContent {
+            seq,
+            key_id: CURRENT_KEY_ID,
+            kind,
+            transaction_id: txid,
+            receipt_digest,
+            created_at,
+            identity,
+        };
+        let hash = key.event_hash(&content, prev);
+        EventRow {
+            seq,
+            key_id: CURRENT_KEY_ID.to_string(),
+            kind: kind.as_str().to_string(),
+            transaction_id: txid.to_string(),
+            receipt_digest: receipt_digest.to_string(),
+            created_at: created_at.to_string(),
+            prev_chain_hash: prev.to_string(),
+            chain_hash: hash,
+            chain_version: identity.version(),
+            caller_principal: match identity {
+                EventIdentity::V2 { caller_principal } => Some(caller_principal.to_string()),
+                EventIdentity::LegacyV1 => None,
+            },
+        }
+    }
+
+    #[test]
+    fn a_legacy_event_row_signed_by_the_previous_release_still_verifies() {
+        // Committed golden vector for the six-field LegacyV1 encoding (#249).
+        //
+        // The hash below is a literal, NOT recomputed from `event_hash`. That
+        // is the whole point: if anyone edits the legacy encoding — reorders
+        // the six fields, changes a tag, folds in a new field — re-encoding
+        // the same row produces a different signature and this assertion
+        // fails, even though the in-process sign/verify round-trip would stay
+        // green because both sides moved together. The fixed key (`vec![0x42;
+        // 32]`) and every field value are spelled out so the message is fully
+        // reproducible by an auditor.
+        let key = fixed_key();
+        let row = EventRow {
+            seq: 1,
+            key_id: CURRENT_KEY_ID.to_string(),
+            kind: AuditEventKind::ApprovalGranted.as_str().to_string(),
+            transaction_id: "tx-fixture-legacy".to_string(),
+            receipt_digest: "digest-fixture-legacy".to_string(),
+            created_at: "2026-08-18T09:00:00.000Z".to_string(),
+            prev_chain_hash: String::new(),
+            chain_hash: "1b7c2b864c13c8c2da5436b4a3d0d10ec37c129e97a4525228110c574fccf32b\
+                          d1a22001acb555faa016f6c50f26d5c783b447fbf866f8ff689ebec2fc7c340a"
+                .to_string(),
+            chain_version: EVENT_VERSION_LEGACY,
+            caller_principal: None,
+        };
+        assert_eq!(
+            verify_event_chain(&key, &[row]),
+            VerifyOutcome::Intact { rows_checked: 1 },
+            "the committed legacy event signature must still verify"
+        );
+    }
+
+    #[test]
+    fn a_v2_event_signs_and_verifies_with_the_acting_account() {
+        let key = fixed_key();
+        let row = event_row(
+            &key,
+            1,
+            AuditEventKind::ApprovalGranted,
+            "tx1",
+            "digest1",
+            "2026-08-18T09:00:00.000Z",
+            EventIdentity::V2 {
+                caller_principal: "uid:1000",
+            },
+            "",
+        );
+        assert_eq!(row.chain_version, EVENT_VERSION_V2);
+        assert_eq!(row.caller_principal.as_deref(), Some("uid:1000"));
+        assert_eq!(
+            verify_event_chain(&key, &[row]),
+            VerifyOutcome::Intact { rows_checked: 1 }
+        );
+    }
+
+    #[test]
+    fn a_grant_and_a_consume_by_different_accounts_are_distinguishable() {
+        // The acceptance criterion: the chain must name who granted and who
+        // consumed, so two accounts leave two different signed records. Both
+        // rows verify; the principals differ and are read back from the rows,
+        // not inferred from any authorization rule.
+        let key = fixed_key();
+        let grant = event_row(
+            &key,
+            1,
+            AuditEventKind::ApprovalGranted,
+            "tx1",
+            "digest1",
+            "2026-08-18T09:00:00.000Z",
+            EventIdentity::V2 {
+                caller_principal: "uid:1000",
+            },
+            "",
+        );
+        let consume = event_row(
+            &key,
+            2,
+            AuditEventKind::ApprovalConsumed,
+            "tx1",
+            "digest1",
+            "2026-08-18T09:05:00.000Z",
+            EventIdentity::V2 {
+                caller_principal: "uid:1001",
+            },
+            &grant.chain_hash,
+        );
+        assert_eq!(
+            verify_event_chain(&key, &[grant.clone(), consume.clone()]),
+            VerifyOutcome::Intact { rows_checked: 2 }
+        );
+        assert_eq!(grant.caller_principal.as_deref(), Some("uid:1000"));
+        assert_eq!(consume.caller_principal.as_deref(), Some("uid:1001"));
+        assert_ne!(
+            grant.caller_principal, consume.caller_principal,
+            "grant and consume by different uids must not collapse to one record"
+        );
+    }
+
+    #[test]
+    fn editing_a_stored_event_principal_reports_broken() {
+        // Acceptance: tampering the stored `caller_principal` on an event row
+        // must be detected. The signature covers the principal, so changing
+        // the column without re-signing breaks verification.
+        let key = fixed_key();
+        let mut row = event_row(
+            &key,
+            1,
+            AuditEventKind::ApprovalGranted,
+            "tx1",
+            "digest1",
+            "2026-08-18T09:00:00.000Z",
+            EventIdentity::V2 {
+                caller_principal: "uid:1000",
+            },
+            "",
+        );
+        assert_eq!(
+            verify_event_chain(&key, &[row.clone()]),
+            VerifyOutcome::Intact { rows_checked: 1 }
+        );
+        row.caller_principal = Some("uid:9999".to_string());
+        assert!(
+            matches!(
+                verify_event_chain(&key, &[row]),
+                VerifyOutcome::Broken { .. }
+            ),
+            "an edited principal must not still verify"
+        );
+    }
+
+    #[test]
+    fn downgrading_a_v2_event_to_legacy_reports_broken() {
+        // A downgrade is not a hiding place: rewriting a V2 row as LegacyV1 to
+        // erase the principal makes verification re-encode it without the
+        // identity fields, so the stored V2 signature no longer matches.
+        let key = fixed_key();
+        let mut row = event_row(
+            &key,
+            1,
+            AuditEventKind::ApprovalGranted,
+            "tx1",
+            "digest1",
+            "2026-08-18T09:00:00.000Z",
+            EventIdentity::V2 {
+                caller_principal: "uid:1000",
+            },
+            "",
+        );
+        row.chain_version = EVENT_VERSION_LEGACY;
+        row.caller_principal = None;
+        assert!(matches!(
+            verify_event_chain(&key, &[row]),
+            VerifyOutcome::Broken { .. }
+        ));
+    }
+
+    #[test]
+    fn a_v2_event_naming_nobody_is_broken_not_accepted() {
+        // A blank or absent principal on a V2 row is a detected break, mirroring
+        // the transaction chain: a row that claims an identity encoding but
+        // names no account must not pass for one that does.
+        let key = fixed_key();
+        let mut blank = event_row(
+            &key,
+            1,
+            AuditEventKind::ApprovalGranted,
+            "tx1",
+            "digest1",
+            "2026-08-18T09:00:00.000Z",
+            EventIdentity::V2 {
+                caller_principal: "uid:1000",
+            },
+            "",
+        );
+        blank.caller_principal = Some(String::new());
+        assert!(
+            matches!(
+                verify_event_chain(&key, &[blank]),
+                VerifyOutcome::Broken { .. }
+            ),
+            "a blank principal on a v2 row must be broken"
+        );
+
+        let mut absent = event_row(
+            &key,
+            1,
+            AuditEventKind::ApprovalGranted,
+            "tx1",
+            "digest1",
+            "2026-08-18T09:00:00.000Z",
+            EventIdentity::V2 {
+                caller_principal: "uid:1000",
+            },
+            "",
+        );
+        absent.caller_principal = None;
+        assert!(matches!(
+            verify_event_chain(&key, &[absent]),
+            VerifyOutcome::Broken { .. }
+        ));
+    }
+
+    #[test]
+    fn an_unknown_event_version_cannot_verify_rather_than_breaking() {
+        // An event row written by a NEWER binary declares a chain_version this
+        // build cannot reproduce. That is genuinely unverifiable (exit 2), not
+        // a detected tamper — the same split the transaction chain draws.
+        let key = fixed_key();
+        let mut row = event_row(
+            &key,
+            1,
+            AuditEventKind::ApprovalGranted,
+            "tx1",
+            "digest1",
+            "2026-08-18T09:00:00.000Z",
+            EventIdentity::V2 {
+                caller_principal: "uid:1000",
+            },
+            "",
+        );
+        row.chain_version = EVENT_VERSION_CURRENT + 1;
+        let outcome = verify_event_chain(&key, &[row]);
+        assert!(matches!(outcome, VerifyOutcome::CannotVerify { .. }));
+        assert_eq!(outcome_to_exit_code(&outcome), 2);
+    }
+
+    #[test]
+    fn a_mixed_legacy_and_v2_event_chain_verifies() {
+        // `sysknife audit verify` must stay correct over a chain that spans the
+        // migration: historical rows on the six-field encoding, new rows with a
+        // principal, linked head to tail. This is the on-disk shape every host
+        // that upgrades will have.
+        let key = fixed_key();
+        let legacy = event_row(
+            &key,
+            1,
+            AuditEventKind::ApprovalGranted,
+            "tx-old",
+            "digest-old",
+            "2026-08-18T09:00:00.000Z",
+            EventIdentity::LegacyV1,
+            "",
+        );
+        let v2 = event_row(
+            &key,
+            2,
+            AuditEventKind::ApprovalGranted,
+            "tx-new",
+            "digest-new",
+            "2026-09-01T09:00:00.000Z",
+            EventIdentity::V2 {
+                caller_principal: "uid:1000",
+            },
+            &legacy.chain_hash,
+        );
+        assert_eq!(legacy.chain_version, EVENT_VERSION_LEGACY);
+        assert_eq!(v2.chain_version, EVENT_VERSION_V2);
+        assert_eq!(
+            verify_event_chain(&key, &[legacy, v2]),
+            VerifyOutcome::Intact { rows_checked: 2 }
+        );
     }
 
     #[test]

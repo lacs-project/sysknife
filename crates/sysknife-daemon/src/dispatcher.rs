@@ -1626,7 +1626,11 @@ async fn handle_approve(
     {
         return Ok(());
     }
-    let receipt = match state.audit.approve_transaction(transaction_id).await {
+    let receipt = match state
+        .audit
+        .approve_transaction(transaction_id, caller.principal())
+        .await
+    {
         Ok(receipt) => receipt,
         // A `DatabaseInvariant` here means the stored approval commitment does
         // not match the signed preview (tamper / key mismatch) — a fail-closed
@@ -1671,7 +1675,11 @@ async fn handle_approve(
     )
     .await;
     if response.is_err() {
-        if let Err(e) = state.audit.revoke_unconsumed_approval(transaction_id).await {
+        if let Err(e) = state
+            .audit
+            .revoke_unconsumed_approval(transaction_id, caller.principal())
+            .await
+        {
             eprintln!(
                 "[sysknife-daemon] failed to revoke undelivered approval for \
                  {transaction_id}: {e}"
@@ -1816,7 +1824,11 @@ async fn handle_cancel(
     {
         return Ok(());
     }
-    match state.audit.cancel_queued(transaction_id).await {
+    match state
+        .audit
+        .cancel_queued(transaction_id, caller.principal())
+        .await
+    {
         Ok(true) => {
             send_response(
                 framed,
@@ -2865,7 +2877,11 @@ async fn handle_execute(
 
     let claimed = match state
         .audit
-        .claim_approved_for_execution(transaction_id, &receipt_digest(approval_receipt))
+        .claim_approved_for_execution(
+            transaction_id,
+            &receipt_digest(approval_receipt),
+            caller.principal(),
+        )
         .await
     {
         Ok(c) => c,
@@ -4764,7 +4780,11 @@ mod tests {
         // Claim it (Queued -> Running) so it is in-flight from the store's view.
         assert!(state
             .audit
-            .claim_approved_for_execution(&transaction_id, &receipt_digest(&receipt))
+            .claim_approved_for_execution(
+                &transaction_id,
+                &receipt_digest(&receipt),
+                CallerPrincipal::Uid(1000),
+            )
             .await
             .unwrap());
 
@@ -4894,7 +4914,11 @@ mod tests {
             preview_and_approve(&mut framed, "GetMemoryInfo", json!({})).await;
         assert!(state
             .audit
-            .claim_approved_for_execution(&transaction_id, &receipt_digest(&receipt))
+            .claim_approved_for_execution(
+                &transaction_id,
+                &receipt_digest(&receipt),
+                CallerPrincipal::Uid(1000),
+            )
             .await
             .unwrap());
 
@@ -5579,7 +5603,11 @@ mod tests {
         );
         assert!(state
             .audit
-            .claim_approved_for_execution(&transaction_id, &receipt_digest(&receipt))
+            .claim_approved_for_execution(
+                &transaction_id,
+                &receipt_digest(&receipt),
+                CallerPrincipal::Uid(1000),
+            )
             .await
             .unwrap());
     }
@@ -5633,7 +5661,11 @@ mod tests {
         );
         assert!(state
             .audit
-            .claim_approved_for_execution(&transaction_id, &receipt_digest(&receipt))
+            .claim_approved_for_execution(
+                &transaction_id,
+                &receipt_digest(&receipt),
+                CallerPrincipal::Uid(1000),
+            )
             .await
             .unwrap());
     }
@@ -5843,27 +5875,36 @@ mod tests {
             async fn approve_transaction(
                 &self,
                 id: &str,
+                approver: CallerPrincipal,
             ) -> Result<Option<String>, TransactionStoreError> {
-                self.0.approve_transaction(id).await
+                self.0.approve_transaction(id, approver).await
             }
             async fn revoke_unconsumed_approval(
                 &self,
                 id: &str,
+                revoker: CallerPrincipal,
             ) -> Result<bool, TransactionStoreError> {
-                self.0.revoke_unconsumed_approval(id).await
+                self.0.revoke_unconsumed_approval(id, revoker).await
             }
             async fn claim_approved_for_execution(
                 &self,
                 id: &str,
                 digest: &str,
+                executor: CallerPrincipal,
             ) -> Result<bool, TransactionStoreError> {
-                self.0.claim_approved_for_execution(id, digest).await
+                self.0
+                    .claim_approved_for_execution(id, digest, executor)
+                    .await
             }
             async fn cleanup_stale_queued(&self) -> Result<u64, TransactionStoreError> {
                 self.0.cleanup_stale_queued().await
             }
-            async fn cancel_queued(&self, id: &str) -> Result<bool, TransactionStoreError> {
-                self.0.cancel_queued(id).await
+            async fn cancel_queued(
+                &self,
+                id: &str,
+                canceller: CallerPrincipal,
+            ) -> Result<bool, TransactionStoreError> {
+                self.0.cancel_queued(id, canceller).await
             }
             async fn list_transactions(
                 &self,

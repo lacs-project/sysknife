@@ -43,6 +43,7 @@ use std::sync::Arc;
 use sysknife_types::{JobState, PreviewEnvelope, TransactionRecord};
 
 use crate::audit_chain::{AuditKey, ChainRow, EventRow, VerifyOutcome};
+use crate::auth::CallerPrincipal;
 use crate::transactions::{
     NewTransaction, RecordedPreviewedTransaction, TransactionStore, TransactionStoreError,
 };
@@ -110,17 +111,20 @@ pub trait AuditStore: Send + Sync + std::fmt::Debug {
     async fn approve_transaction(
         &self,
         transaction_id: &str,
+        approver: CallerPrincipal,
     ) -> Result<Option<String>, TransactionStoreError>;
 
     async fn revoke_unconsumed_approval(
         &self,
         transaction_id: &str,
+        revoker: CallerPrincipal,
     ) -> Result<bool, TransactionStoreError>;
 
     async fn claim_approved_for_execution(
         &self,
         transaction_id: &str,
         receipt_digest: &str,
+        executor: CallerPrincipal,
     ) -> Result<bool, TransactionStoreError>;
 
     async fn cleanup_stale_queued(&self) -> Result<u64, TransactionStoreError>;
@@ -167,7 +171,11 @@ pub trait AuditStore: Send + Sync + std::fmt::Debug {
     /// `true` iff a queued row was transitioned; a `Running` (in-flight) or
     /// terminal transaction is never cancelled. See
     /// [`crate::transactions::TransactionStore::cancel_queued`].
-    async fn cancel_queued(&self, transaction_id: &str) -> Result<bool, TransactionStoreError>;
+    async fn cancel_queued(
+        &self,
+        transaction_id: &str,
+        canceller: CallerPrincipal,
+    ) -> Result<bool, TransactionStoreError>;
 
     async fn list_transactions(
         &self,
@@ -321,30 +329,33 @@ impl AuditStore for SqliteStore {
     async fn approve_transaction(
         &self,
         transaction_id: &str,
+        approver: CallerPrincipal,
     ) -> Result<Option<String>, TransactionStoreError> {
         let inner = Arc::clone(&self.inner);
         let id = transaction_id.to_string();
-        blocking(move || inner.approve_transaction(&id)).await
+        blocking(move || inner.approve_transaction(&id, approver)).await
     }
 
     async fn revoke_unconsumed_approval(
         &self,
         transaction_id: &str,
+        revoker: CallerPrincipal,
     ) -> Result<bool, TransactionStoreError> {
         let inner = Arc::clone(&self.inner);
         let id = transaction_id.to_string();
-        blocking(move || inner.revoke_unconsumed_approval(&id)).await
+        blocking(move || inner.revoke_unconsumed_approval(&id, revoker)).await
     }
 
     async fn claim_approved_for_execution(
         &self,
         transaction_id: &str,
         receipt_digest: &str,
+        executor: CallerPrincipal,
     ) -> Result<bool, TransactionStoreError> {
         let inner = Arc::clone(&self.inner);
         let id = transaction_id.to_string();
         let digest = receipt_digest.to_string();
-        blocking(move || inner.claim_approved_for_execution(&id, &digest)).await
+        blocking(move || inner.claim_approved_for_execution(&id, &digest, executor)).await
     }
 
     async fn cleanup_stale_queued(&self) -> Result<u64, TransactionStoreError> {
@@ -352,10 +363,14 @@ impl AuditStore for SqliteStore {
         blocking(move || inner.cleanup_stale_queued()).await
     }
 
-    async fn cancel_queued(&self, transaction_id: &str) -> Result<bool, TransactionStoreError> {
+    async fn cancel_queued(
+        &self,
+        transaction_id: &str,
+        canceller: CallerPrincipal,
+    ) -> Result<bool, TransactionStoreError> {
         let inner = Arc::clone(&self.inner);
         let id = transaction_id.to_string();
-        blocking(move || inner.cancel_queued(&id)).await
+        blocking(move || inner.cancel_queued(&id, canceller)).await
     }
 
     async fn list_transactions(
