@@ -68,7 +68,7 @@ npm test --prefix apps/sysknife-shell && npm exec --prefix apps/sysknife-shell -
 ```
 
 See [docs/developer-guide.md](../developer-guide.md) for the full
-list of prerequisites (Rust, a C toolchain, Node.js 20, cargo-nextest,
+list of prerequisites (Rust, a C toolchain, Node.js 22, cargo-nextest,
 and the hygiene tools).
 
 ## Filing Issues
@@ -117,17 +117,16 @@ split it.
 ### 3. Check Locally
 
 ```sh
-# Required before every push
-cargo fmt --all --check
-cargo clippy --workspace --all-features --locked -- -D warnings
-cargo nextest run --workspace --locked
+# The commit gate, run by hand
+bash .githooks/pre-commit
 
-# Frontend
-npm test --prefix apps/sysknife-shell && npm exec --prefix apps/sysknife-shell -- tsc --noEmit
-
-# All pre-commit hooks
-pre-commit run --all-files
+# Every CI job that can run locally, frontend and hygiene included
+scripts/ci-local.sh
 ```
+
+The hooks run through `core.hooksPath`, not the pre-commit framework. The
+[developer guide](../developer-guide.md#pre-commit-hooks) lists what the commit
+gate runs.
 
 For changes touching the brain, planning tools, or the prompt:
 
