@@ -52,9 +52,10 @@ The layers are sequential gates, not independent walls. They all run inside
 one process, and that process runs as the `sysknife` service account
 (`User=sysknife` in `packaging/sysknife-daemon.service`), which is
 root-equivalent by design. That account holds `NOPASSWD` grants for
-`useradd --create-home *`, one `systemctl` grant per subcommand, and
 `env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get *`,
-each of which reaches root on its own. A compromise of the daemon process is
+`/usr/bin/snap install *` and `/usr/bin/rpm-ostree install *`, each of which
+reaches root on its own: apt through `-o APT::Update::Pre-Invoke::`, snap and
+rpm-ostree through the install hooks and scriptlets they run as root. A compromise of the daemon process is
 therefore a compromise of root on that host. An operator sizing the blast
 radius of a daemon compromise should read the grants in
 `packaging/sysknife-sudoers` alongside this model.
@@ -64,10 +65,20 @@ radius of a daemon compromise should read the grants in
 `ROOT_SHELL_UNITS` in `crates/sysknife-daemon/src/actions/validate.rs`
 refuses typed actions naming `debug-shell`, `emergency`, `rescue`,
 `runlevel1`, or `single`. The denylist stops a unit name arriving from the
-LLM or from an MCP client. It is not containment: the same `sysknife`
-account runs `sudo -n /usr/bin/systemctl enable --now debug-shell.service`
-with no validator in the path, because the `systemctl enable` grant matches
-any arguments. Do not treat the denylist as a boundary around the daemon.
+LLM or from an MCP client.
+
+Until 0.21.0 it was also trivially bypassable: the account held one `systemctl`
+grant per subcommand, each ending in a wildcard, so
+`sudo -n /usr/bin/systemctl start debug-shell.service` reached a root shell with
+no validator in the path. The unit verbs now run through
+`/usr/lib/sysknife/action-steps`, which applies the same list to the verbs that
+bring a unit up whether the daemon or a direct sudo call invoked it
+(GHSA-c7rw-23qw-5w33).
+
+That closes the path around the denylist; it does not make the denylist
+containment. It is a list of five unit names, and the package-manager grants
+above reach root without naming a unit at all. Do not treat it as a boundary
+around the daemon.
 
 ### Layer 1 — Intent validation (sysknife-brain, before LLM call)
 
