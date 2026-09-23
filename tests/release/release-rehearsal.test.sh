@@ -361,6 +361,27 @@ mutations = [
     'cargo_args=(publish)\ncargo "${cargo_args[@]}"',
     "npm publish --access public",
     "gh release create v9.9.9",
+    "if gh release create v9.9.9; then :; fi",
+    "if true; then gh release create v9.9.9; fi",
+    "if false; then :; else gh release create v9.9.9; fi",
+    "if false; then :; elif gh release create v9.9.9; then :; fi",
+    "for release in v9.9.9; do gh release create v9.9.9; done",
+    "while gh release create v9.9.9; do break; done",
+    "until gh release create v9.9.9; do break; done",
+    "! gh release create v9.9.9",
+    "command gh release create v9.9.9",
+    "exec gh release create v9.9.9",
+    "time gh release create v9.9.9",
+    "env gh release create v9.9.9",
+    "env X=1 cargo owner --add foo sysknife-cli",
+    "FOO=1 gh release create v9.9.9",
+    "FOO= gh release create v9.9.9",
+    "env FOO='two words' gh release create v9.9.9",
+    'FOO="two words" gh release create v9.9.9',
+    "if command git push origin v9.9.9; then :; fi",
+    "if ! env FOO=1 BAR=2 command gh release create v9.9.9; then :; fi",
+    "git tag v9.9.9",
+    "git push origin v9.9.9",
     "gh api -X POST repos/o/r/releases",
     "curl -X PUT https://crates.io/api/v1/crates/new",
     "wget --post-file=x.crate https://crates.io/api/v1/crates/new",
@@ -385,6 +406,10 @@ with tempfile.TemporaryDirectory() as directory:
     candidate = directory / "rehearsal.sh"
     candidate.write_text(source, encoding="utf-8")
     run(checker, candidate)
+    # Tool names in comments and ordinary output are not invocations.
+    for harmless in ("# if gh release create v9.9.9", "printf '%s\\n' 'if gh release create'"):
+        candidate.write_text(source + "\n" + harmless + "\n", encoding="utf-8")
+        run(checker, candidate)
     for mutation in mutations:
         candidate.write_text(source + "\n" + mutation + "\n", encoding="utf-8")
         run(checker, candidate, "not on the reviewed list")
@@ -402,7 +427,7 @@ with tempfile.TemporaryDirectory() as directory:
     run(checker, directory / "missing.sh", "cannot read")
     candidate.write_text("", encoding="utf-8")
     run(checker, candidate, "screen read 0 line(s)")
-print("Publication guard: clean source accepted; 16 mutations/invalid inputs rejected.")
+print(f"Publication guard: clean source accepted; {len(mutations) + 4} mutations/invalid inputs rejected.")
 PYTHON
 
 python3 "$repo_root/tests/test_github_yaml.py"
