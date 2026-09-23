@@ -330,7 +330,7 @@ the model that produced it are recorded in `tests/evidence/story-runs/`, written
 by the run itself. The `ubuntu-vm.sh` script mirrors the `atomic-vm.sh` workflow but
 uses a Ubuntu 24.04 cloud image instead of a Fedora Atomic ISO.
 
-See [docs/contributing/ubuntu-vm-testing.md](https://github.com/lacs-project/sysknife/blob/main/docs/contributing/ubuntu-vm-testing.md) for the
+See [docs/contributing/ubuntu-vm-testing.md](ubuntu-vm-testing.md) for the
 full setup and daily-use instructions. Quick reference:
 
 ```sh

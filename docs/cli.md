@@ -569,4 +569,4 @@ sysknife completions fish | source
 - [Architecture overview](architecture.md) — trust boundary between CLI, shell,
   and daemon
 - [Developer guide](developer-guide.md) — building and testing locally
-- [User stories](https://github.com/lacs-project/sysknife/blob/main/docs/user-stories.md) — end-to-end scenario descriptions
+- [User stories](user-stories.md) — end-to-end scenario descriptions
