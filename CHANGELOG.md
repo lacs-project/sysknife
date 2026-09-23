@@ -12,6 +12,39 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Security
+
+- **`useradd`, `usermod` and the eight unit verbs run through the validating
+  helper, because the 0.20.0 narrowing did not hold.** GHSA-j9c3-j2qr-65c4 was
+  published as fixed in 0.20.0, where each bare grant became a literal
+  subcommand followed by a trailing `*`. sudoers matches a command's arguments
+  as one concatenated string, so a trailing `*` accepts further *options* as
+  readily as a value, and three of the escapes that advisory named still
+  matched: `useradd --create-home -o -u 0 -g 0 backdoor` (a second uid-0
+  account) against `/usr/sbin/useradd --create-home *`, `usermod --lock -o -u 0
+  <user>` against `/usr/sbin/usermod --lock *`, and `systemctl start
+  debug-shell.service` against `/usr/bin/systemctl start *`, which the daemon's
+  own `ROOT_SHELL_UNITS` denylist refuses on its own path and a grant cannot
+  refuse at all.
+
+  sudoers has no way to express "this subcommand and no further options", so
+  the grammar moved to `/usr/lib/sysknife/action-steps`, which already backs the
+  group, ssh and container actions: it re-validates the account name, the home
+  directory, the shell, the unit verb and the unit name on whatever path reaches
+  it, then builds the same `useradd`/`usermod`/`systemctl` argv the daemon used
+  to build. `packaging/sysknife-sudoers` no longer grants `useradd`, `usermod`
+  or any of the eight unit verbs; `systemctl daemon-reload` and `reboot` keep
+  literal grants with no wildcard to swallow anything.
+
+  The test that was supposed to hold the line asserted only that those grants
+  carried at least one argument token, which stayed true while all three escapes
+  matched. It now runs each escape through the repository's own sudoers matcher
+  and fails if any grant admits one, and the helper's denylist is derived from
+  the daemon's `ROOT_SHELL_UNITS` rather than restated, the way the grub-kargs
+  helper's copy drifted in GHSA-f8vp-j3jh-7wjx. Both directions are
+  mutation-proved: restoring `/usr/sbin/useradd --create-home *` turns the new
+  test red, naming the grant and the escape.
+
 ## [0.20.1] — 2026-09-23
 
 ### Fixed
