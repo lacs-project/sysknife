@@ -80,6 +80,11 @@ InstallFlatpak = "High"     # require Admin in this org (default: Medium/Dev)
 [audit.forward.syslog]
 host     = "siem.internal:514"
 facility = 1                 # 1 = user-level (default)
+enterprise_number = 32473    # IANA Private Enterprise Number for the SD-ID.
+                              # Defaults to RFC 5612's documentation/test PEN
+                              # (32473) — replace with your own IANA-assigned
+                              # PEN before forwarding into a production SIEM.
+                              # Rejected at startup if set to 0.
 ```
 
 The transaction database is the durable audit record. Safety-fence JSONL,

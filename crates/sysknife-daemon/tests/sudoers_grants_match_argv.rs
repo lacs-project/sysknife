@@ -291,15 +291,120 @@ fn no_new_grant_may_permit_arbitrary_arguments() {
     }
 }
 
-/// The narrowed families must stay narrowed, named individually so a revert
-/// says which one.
+/// Every escape GHSA-j9c3-j2qr-65c4 named, run through the matcher as an argv.
+///
+/// The previous version of this test asserted that the `useradd`, `usermod` and
+/// `systemctl` grants carried at least one argument token. They did, from
+/// 0.20.0 onward, and all three escapes below still matched, because sudoers
+/// matches the arguments as a single concatenated string: a trailing `*`
+/// accepts further OPTIONS exactly as readily as a value, so
+/// `useradd --create-home -o -u 0 -g 0 backdoor` matched a grant written as
+/// `useradd --create-home *`. "The grant is narrowed" and "the escape is
+/// refused" are different claims, and only the second one is the property.
+///
+/// sudoers has no way to say "and nothing further", so the argv these actions
+/// build now goes through `/usr/lib/sysknife/action-steps`, which re-validates
+/// every token. That means this file no longer grants `useradd`, `usermod` or
+/// the eight unit verbs at all, and the escapes are refused for the strongest
+/// possible reason: nothing authorises the binary.
+///
+/// The helper's own screen is what refuses `action-steps unit start
+/// debug-shell.service`, which this layer does authorise by design; that half
+/// is proved in tests/release/action-steps.test.sh.
+const ROOT_ESCAPES: &[(&str, &str)] = &[
+    (
+        "/usr/sbin/useradd --create-home -o -u 0 -g 0 backdoor",
+        "a second uid-0 account, which is root without a shell grant",
+    ),
+    (
+        "/usr/sbin/useradd -o -u 0 -g 0 backdoor",
+        "the same account with no leading literal to hide behind",
+    ),
+    (
+        "/usr/sbin/usermod --lock -o -u 0 someuser",
+        "makes an existing account uid 0",
+    ),
+    (
+        "/usr/sbin/usermod -p HASH root",
+        "rewrites root's password hash",
+    ),
+    (
+        "/usr/bin/systemctl start debug-shell.service",
+        "an unauthenticated root shell on tty9",
+    ),
+    (
+        "/usr/bin/systemctl start rescue.target",
+        "a root maintenance shell",
+    ),
+    (
+        "/usr/bin/systemctl link /tmp/evil.service",
+        "installs a unit file from a path the caller owns",
+    ),
+];
+
 #[test]
-fn the_root_shell_primitives_carry_argument_constraints() {
+fn no_grant_authorises_a_documented_root_escape() {
     let grants = load_grants();
+    assert!(
+        !grants.is_empty(),
+        "parsed zero grants, so every escape below would be refused by an empty file"
+    );
+    // A positive control in the same test: with no grant matching anything, the
+    // assertions below hold for the wrong reason.
+    let allowed: Vec<String> = "/usr/lib/sysknife/action-steps unit start nginx.service"
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    assert!(
+        grants.iter().any(|g| grant_allows(g, &allowed)),
+        "the matcher refused an argv the catalogue builds, so it is refusing everything"
+    );
+
+    let mut admitted = Vec::new();
+    for (escape, why) in ROOT_ESCAPES {
+        let argv: Vec<String> = escape.split_whitespace().map(str::to_string).collect();
+        if let Some(g) = grants.iter().find(|g| grant_allows(g, &argv)) {
+            admitted.push(format!(
+                "{escape}\n    is {why}, admitted by `{}`",
+                g.tokens.join(" ")
+            ));
+        }
+    }
+    assert!(
+        admitted.is_empty(),
+        "these grants authorise an escape the advisories say is closed:\n  {}",
+        admitted.join("\n  ")
+    );
+}
+
+/// The binaries that must not reappear as a direct grant, with what they buy.
+///
+/// Losing the grant is what closes the class; a later "narrowed" grant would
+/// reopen it, and `ROOT_ESCAPES` alone would not say which change did it.
+#[test]
+fn the_root_shell_primitives_have_no_direct_grant() {
+    let grants = load_grants();
+    for (cmd, why) in [
+        (
+            "/usr/sbin/useradd",
+            "`-o -u 0` creates a second root account",
+        ),
+        (
+            "/usr/sbin/usermod",
+            "`-o -u 0` moves an existing account to uid 0",
+        ),
+    ] {
+        let matching: Vec<&Grant> = grants.iter().filter(|g| g.tokens[0] == cmd).collect();
+        assert!(
+            matching.is_empty(),
+            "{cmd} is granted directly again ({why}). sudoers cannot forbid the \
+             options that follow a wildcard; route it through \
+             /usr/lib/sysknife/action-steps, which validates its whole argv."
+        );
+    }
+    // These keep direct grants, and each one must stay argument-constrained.
     for cmd in [
         "/usr/bin/systemctl",
-        "/usr/sbin/useradd",
-        "/usr/sbin/usermod",
         "/usr/bin/kill",
         "/usr/bin/hostnamectl",
         "/usr/bin/timedatectl",

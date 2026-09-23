@@ -109,6 +109,9 @@ jobs:
       - name: Check no workflow pins an end-of-life Node release
         run: bash tests/release/node-eol.test.sh
 
+      - name: Check npm audit stays off the pull-request path
+        run: bash tests/release/npm-audit-off-pr-path.test.sh
+
       - name: Check tracked files use portable line endings
         run: bash tests/release/tracked-eol.test.sh
 
@@ -243,8 +246,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
+      # No npm audit here. It gated every pull request on registry.npmjs.org,
+      # so an outage failed this required job like a real advisory would (#367).
+      # It runs against main in npm-audit.yml; dependency-review below covers
+      # what a pull request introduces.
 
       - name: Type check
         run: ./node_modules/.bin/tsc --noEmit
@@ -276,8 +281,9 @@ jobs:
             patchelf
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable (branch)
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable (branch)
         with:
+          toolchain: stable
           components: rustfmt, clippy
 
       - name: Cache Rust dependencies
@@ -334,7 +340,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable (branch)
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable (branch)
+        with:
+          toolchain: stable
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2

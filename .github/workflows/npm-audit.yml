@@ -1,0 +1,53 @@
+---
+name: npm-audit
+
+# Production dependency advisories for the paused desktop shell. This used to be
+# a step of the required `frontend` job in ci.yml, where it gated every pull
+# request on registry.npmjs.org: an outage of the bulk advisory endpoint failed
+# `frontend` exactly the way a real high-severity advisory does (#367).
+#
+# Advisories are published on the registry's clock, not on a pull request's, so
+# the audit runs against main instead: daily, on any push to main that changes
+# the lockfile, and on demand. A failure here is visible on main and reaches
+# whoever watches scheduled runs; it no longer blocks unrelated merges. What a
+# pull request itself introduces is still caught before merge by the
+# `dependency-review` job in ci.yml.
+#
+# tests/release/npm-audit-off-pr-path.test.sh keeps it this way.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'  # daily
+  push:
+    branches: [main]
+    paths:
+      - apps/sysknife-shell/package-lock.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-audit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  npm-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/sysknife-shell
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: "24"
+
+      # npm audit reads package-lock.json; it does not need node_modules, so
+      # there is no install step and no install script runs here.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high

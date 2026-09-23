@@ -297,8 +297,11 @@ forget" model — the LLM never sees what the commands produced.
    checks `validated_username("ci-runner")` and
    `validated_group("docker")` — rejects shell metacharacters.
 
-4. Daemon runs `sudo useradd ci-runner` then
-   `sudo usermod -aG docker ci-runner`.
+4. Daemon runs `sudo /usr/lib/sysknife/action-steps user-create ci-runner`
+   then `sudo /usr/lib/sysknife/action-steps group-add ci-runner docker`. The
+   helper re-validates every token and builds the `useradd` and `usermod`
+   argv itself, because a sudoers grant cannot forbid the options that follow
+   a wildcard.
 
 5. Transaction logged to SQLite with both action names, params,
    caller role and principal, and timestamps.
