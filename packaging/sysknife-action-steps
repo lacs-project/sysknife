@@ -14,6 +14,54 @@ import sys
 
 SYSTEM_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
 
+# Mirrors ROOT_SHELL_UNITS in crates/sysknife-daemon/src/actions/validate.rs.
+#
+# This helper is reachable directly through its wildcard NOPASSWD grant, which
+# skips the preview, the approval receipt and the signed chain, so it enforces
+# the policy again rather than trusting the daemon that normally calls it.
+# tests/release/action-steps.test.sh reads the daemon's list out of the Rust
+# source and fails if this one is a subset: a copy that restates the list drifts
+# exactly the way the grub-kargs helper's copy drifted (GHSA-f8vp-j3jh-7wjx).
+ROOT_SHELL_UNITS = ("debug-shell", "emergency", "rescue", "runlevel1", "single")
+# Every unit type, so `rescue.socket` cannot wear a different suffix past the
+# denylist. systemd unit names are case-insensitive, so the comparison is too.
+UNIT_SUFFIXES = (".service", ".target", ".socket", ".mount", ".path", ".slice",
+                 ".scope")
+# The split mirrors the executor: bringing a unit up has to clear the denylist,
+# taking one down does not, and masking one is a mitigation.
+ACTIVATING_VERBS = ("start", "restart", "enable", "unmask")
+QUIESCING_VERBS = ("stop", "disable", "mask", "reload")
+
+
+def unit_name(value):
+    """Mirrors validated_unit_name: no slashes, no spaces, no leading dash."""
+    if value.startswith("-") or not re.fullmatch(r"[A-Za-z0-9@._:-]+", value):
+        raise ValueError("invalid unit name")
+    return value
+
+
+def activatable_unit(value):
+    """Mirrors validated_activatable_unit: unit_name plus the root-shell list."""
+    unit = unit_name(value)
+    lower = unit.lower()
+    bare = next((lower[: -len(s)] for s in UNIT_SUFFIXES if lower.endswith(s)), lower)
+    if bare in ROOT_SHELL_UNITS:
+        raise ValueError("that unit hands out a root shell")
+    return unit
+
+
+def absolute_path(value):
+    """Mirrors validated_absolute_path: absolute, no `..`, narrow charset.
+
+    `useradd --home-dir` is root creating a directory at a path the caller
+    names, so a relative path or a `..` segment is the whole risk.
+    """
+    if not value.startswith("/") or ".." in value or len(value) > 256:
+        raise ValueError("invalid path")
+    if not re.fullmatch(r"[A-Za-z0-9/_.-]+", value):
+        raise ValueError("invalid path")
+    return value
+
 
 def safe(value):
     if not re.fullmatch(r"[A-Za-z0-9._:/+@][A-Za-z0-9._:/+@-]{0,253}", value):
@@ -168,6 +216,41 @@ def main(args):
         name, channel = map(safe, values)
         run(["/usr/bin/snap", "install", f"--channel={channel}", name])
         run(["/usr/bin/snap", "refresh", "--hold", name])
+    elif op == "user-create" and 1 <= len(values) <= 5:
+        # `useradd --create-home ... <name>` used to be its own sudoers grant,
+        # `/usr/sbin/useradd --create-home *`. A trailing `*` in sudoers matches
+        # across word boundaries, so it also authorised
+        # `useradd --create-home -o -u 0 -g 0 backdoor`, a second uid-0 account,
+        # which is the escape the narrowing was written to close. sudoers cannot
+        # express "and no further options", so the grammar is enforced here.
+        name = username(values[0])
+        argv = ["/usr/sbin/useradd", "--create-home"]
+        rest, seen = list(values[1:]), set()
+        while rest:
+            flag = rest.pop(0)
+            if flag in seen or flag not in ("--home-dir", "--shell") or not rest:
+                raise ValueError("invalid user option")
+            seen.add(flag)
+            value = rest.pop(0)
+            argv.extend([flag, absolute_path(value) if flag == "--home-dir" else safe(value)])
+        run([*argv, name])
+    elif op in ("user-lock", "user-unlock") and len(values) == 1:
+        # Same shape: `usermod --lock *` also admitted
+        # `usermod --lock -o -u 0 <user>`, which makes an existing account uid 0.
+        flag = "--lock" if op == "user-lock" else "--unlock"
+        run(["/usr/sbin/usermod", flag, username(values[0])])
+    elif op == "unit" and len(values) == 2:
+        # `systemctl start *` put the unit name in the wildcard, so
+        # `systemctl start debug-shell.service` matched: an unauthenticated root
+        # shell on tty9, past the daemon's own denylist.
+        verb, unit = values
+        if verb in ACTIVATING_VERBS:
+            unit = activatable_unit(unit)
+        elif verb in QUIESCING_VERBS:
+            unit = unit_name(unit)
+        else:
+            raise ValueError("invalid unit operation")
+        run(["/usr/bin/systemctl", verb, unit])
     elif op in ("group-add", "group-remove") and len(values) == 2:
         name, group = map(username, values)
         ensure_local_group(group)

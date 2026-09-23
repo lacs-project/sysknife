@@ -74,15 +74,15 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `ListServices` | `systemctl list-units --type=service --all --no-legend --no-pager` | Low | All | – | – | list all systemd units and their active/enabled state — no params |
-| `StartService` | `sudo systemctl start NetworkManager.service` | Medium | All | – | – | start a systemd service — param: unit\* (e.g. sshd.service) |
-| `StopService` | `sudo systemctl stop NetworkManager.service` | Medium | All | – | – | stop a systemd service — param: unit\* |
-| `RestartService` | `sudo systemctl restart NetworkManager.service` | Medium | All | – | – | restart a systemd service — param: unit\* |
-| `SetServiceEnabled` | `sudo systemctl enable sshd.service` | Medium | All | – | – | enable or disable a service at boot — params: unit\*, enabled\* (bool) |
-| `MaskService` | `sudo systemctl mask cups.service` | High | All | – | – | mask a unit so it cannot start by any means — param: unit\* |
-| `UnmaskService` | `sudo systemctl unmask cups.service` | Medium | All | – | – | unmask a previously masked unit — param: unit\* |
+| `StartService` | `sudo /usr/lib/sysknife/action-steps unit start NetworkManager.service` | Medium | All | – | – | start a systemd service — param: unit\* (e.g. sshd.service) |
+| `StopService` | `sudo /usr/lib/sysknife/action-steps unit stop NetworkManager.service` | Medium | All | – | – | stop a systemd service — param: unit\* |
+| `RestartService` | `sudo /usr/lib/sysknife/action-steps unit restart NetworkManager.service` | Medium | All | – | – | restart a systemd service — param: unit\* |
+| `SetServiceEnabled` | `sudo /usr/lib/sysknife/action-steps unit enable sshd.service` | Medium | All | – | – | enable or disable a service at boot — params: unit\*, enabled\* (bool) |
+| `MaskService` | `sudo /usr/lib/sysknife/action-steps unit mask cups.service` | High | All | – | – | mask a unit so it cannot start by any means — param: unit\* |
+| `UnmaskService` | `sudo /usr/lib/sysknife/action-steps unit unmask cups.service` | Medium | All | – | – | unmask a previously masked unit — param: unit\* |
 | `GetServiceLogs` | `journalctl -u NetworkManager.service -n 200 --no-pager` | Low | All | – | – | fetch recent journald log lines for a service — param: unit\* |
 | `GetServiceStatus` | `systemctl status nginx.service --no-pager` | Low | All | – | – | show detailed status of a service — param: unit\* |
-| `ReloadService` | `sudo systemctl reload nginx.service` | Medium | All | – | – | reload a service config without restart (SIGHUP) — param: unit\* |
+| `ReloadService` | `sudo /usr/lib/sysknife/action-steps unit reload nginx.service` | Medium | All | – | – | reload a service config without restart (SIGHUP) — param: unit\* |
 | `ListTimers` | `systemctl list-timers --all --no-legend --no-pager` | Low | All | – | – | list all systemd timer units with next trigger time — no params |
 | `ReloadDaemon` | `sudo systemctl daemon-reload` | Medium | All | – | – | run systemctl daemon-reload to pick up changed unit files — no params |
 | `CreateScheduledJob` | `sudo /usr/lib/sysknife/scheduled-job-edit --name sysknife-example --command /usr/bin/true --schedule "*-*-* 02:00:00"` | High | All | – | – | schedule a recurring command as a systemd timer — params: name\* (unit-safe id), command\* (executable line), schedule\* (systemd OnCalendar, e.g. "\*-\*-\* 02:00:00" or "daily") |
@@ -208,14 +208,14 @@ Every row is derived from the live code: the command from each action's `ActionS
 |---|---|---|---|---|---|---|
 | `ListUsers` | `getent passwd` | Low | All | – | – | list all local user accounts — no params |
 | `ListGroups` | `getent group` | Low | All | – | – | list all local groups — no params |
-| `CreateUser` | `sudo useradd --create-home --home-dir /home/alice --shell /bin/bash alice` | High | All | – | – | create a local user account — param: username\*; optional: shell, home |
+| `CreateUser` | `sudo /usr/lib/sysknife/action-steps user-create alice --home-dir /home/alice --shell /bin/bash` | High | All | – | – | create a local user account — param: username\*; optional: shell, home |
 | `DeleteUser` | `sudo userdel alice` | High | All | – | – | delete a local user account — param: username\* |
 | `AddUserToGroup` | `sudo /usr/lib/sysknife/action-steps group-add alice wheel` | High | All | – | – | add a user to a group — params: username\*, group\* |
 | `RemoveUserFromGroup` | `sudo /usr/lib/sysknife/action-steps group-remove alice wheel` | High | All | – | – | remove a user from a group — params: username\*, group\* |
 | `CreateGroup` | `sudo groupadd developers` | Medium | All | – | – | create a local group — param: group\*; optional: system (bool → system GID range) |
 | `DeleteGroup` | `sudo groupdel developers` | High | All | – | – | delete a local group — param: group\*; irreversible |
-| `LockUserAccount` | `sudo usermod --lock alice` | High | All | – | – | disable password login for a user without deleting it — param: username\* |
-| `UnlockUserAccount` | `sudo usermod --unlock alice` | High | All | – | – | re-enable password login for a locked user — param: username\* |
+| `LockUserAccount` | `sudo /usr/lib/sysknife/action-steps user-lock alice` | High | All | – | – | disable password login for a user without deleting it — param: username\* |
+| `UnlockUserAccount` | `sudo /usr/lib/sysknife/action-steps user-unlock alice` | High | All | – | – | re-enable password login for a locked user — param: username\* |
 
 ## SSH keys
 

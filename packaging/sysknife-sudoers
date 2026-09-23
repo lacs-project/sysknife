@@ -26,23 +26,32 @@
 # which is the only wildcard form this file uses, so no grant needs reworking.
 
 # User management — create and delete system/human accounts.
-# useradd: called by CreateUser  (sudo useradd --create-home ...)
-# userdel: called by DeleteUser  (sudo userdel <username>)
-# `useradd --create-home` is the only form CreateUser builds, and every
-# optional flag follows it (actions/users.rs::create_user). A bare grant also
-# permitted `useradd -o -u 0 -g 0 backdoor`, a second uid-0 account, which is
-# root without a shell grant. The leading literal is what forbids it.
-sysknife ALL=(root) NOPASSWD: /usr/sbin/useradd --create-home *
+# CreateUser: sudo action-steps user-create <name> [--home-dir p] [--shell s]
+# userdel:     called by DeleteUser  (sudo userdel <username>)
+# CreateUser goes through the helper, not through a `useradd` grant.
+#
+# The grant here used to be `/usr/sbin/useradd --create-home *`, on the reading
+# that a leading literal forbids the rest. It does not: sudoers matches the
+# arguments as one concatenated string, so a trailing `*` accepts further
+# OPTIONS as readily as a username, and the uid-0 escape this was written to
+# close still matched with `--create-home` typed in front of it. sudoers has no
+# way to say "and nothing else", so the grammar is enforced in
+# /usr/lib/sysknife/action-steps, which re-validates every token whether the
+# daemon or a direct sudo call invoked it.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps user-create *
 sysknife ALL=(root) NOPASSWD: /usr/sbin/userdel
 
 # Group membership — add/remove users to/from groups.
-# usermod: called by AddUserToGroup  (sudo usermod --append --groups <grp> <user>)
+# AddUserToGroup:      sudo action-steps group-add <user> <grp>, which runs
+#                      `usermod --append --groups` as root inside the helper
 # gpasswd: called by RemoveUserFromGroup  (sudo gpasswd --delete <user> <grp>)
-# LockUserAccount and UnlockUserAccount are the only callers, and each builds
-# exactly one flag. A bare grant also permitted `usermod -p <hash> root`,
-# which rewrites root's password hash.
-sysknife ALL=(root) NOPASSWD: /usr/sbin/usermod --lock *
-sysknife ALL=(root) NOPASSWD: /usr/sbin/usermod --unlock *
+# LockUserAccount and UnlockUserAccount go through the helper for the same
+# reason: `/usr/sbin/usermod --lock *` also admitted
+# `usermod --lock -o -u 0 <user>`, which makes an existing account uid 0.
+# AddUserToGroup already ran `usermod --append --groups` inside the helper, so
+# after this there is no `usermod` grant at all.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps user-lock *
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps user-unlock *
 sysknife ALL=(root) NOPASSWD: /usr/bin/gpasswd
 
 # Group lifecycle — create/delete groups.
@@ -55,8 +64,7 @@ sysknife ALL=(root) NOPASSWD: /usr/sbin/groupdel
 
 # Process control — SignalProcess sends an allowlisted signal to a pid.
 # kill is not a shell-spawner (no GTFOBins escalation); the daemon validates
-# pid >= 2 and the signal name before invoking it. (LockUserAccount /
-# UnlockUserAccount reuse the /usr/sbin/usermod grant above — no new grant.)
+# pid >= 2 and the signal name before invoking it.
 # Also backs the action-timeout reaper (#142): when a sudo action's root child
 # outlives the deadline, the daemon runs `sudo -n /usr/bin/kill -s <SIG> -- -<pgid>`
 # to signal that action's own process group as root — no new grant needed.
@@ -67,22 +75,23 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/kill -s *
 
 # Service management — start, stop, restart, reload, enable, disable, mask, unmask,
 # daemon-reload. All systemctl write operations require root on Fedora.
-# One grant per subcommand the catalogue actually builds. A bare grant also
-# permitted `systemctl link /path/evil.service` followed by `enable --now`,
-# and `systemctl start debug-shell.service`, which the daemon's
-# ROOT_SHELL_UNITS denylist refuses on its own path and cannot refuse here.
-# Derived from actions/services.rs; tests/sudoers_grants_match_argv.rs fails
-# if an action ever builds a subcommand that is not in this list.
+# The eight unit verbs go through the helper as `action-steps unit <verb>
+# <unit>`. One grant per subcommand (`systemctl start *`, `stop *`, …) left the
+# unit name in the wildcard, so `systemctl start debug-shell.service` matched:
+# the daemon's ROOT_SHELL_UNITS denylist refuses that on its own path and a
+# sudoers grant cannot refuse it at all. The helper applies the same denylist to
+# the verbs that bring a unit up, and the plain name rules to the ones that take
+# one down.
+#
+# `daemon-reload` and `reboot` keep direct grants: both are literal, with no
+# argument for a wildcard to swallow. `set-property` stays a direct grant
+# because its assignments are cgroup resource limits, which cannot name a
+# command; it is the remaining wildcard in this family and issue #144 tracks it.
+# Derived from actions/services.rs; tests/sudoers_grants_match_argv.rs fails if
+# an action ever builds a subcommand this file does not authorise.
 sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl daemon-reload
 sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
-sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl start *
-sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl stop *
-sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl restart *
-sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl reload *
-sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl enable *
-sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl disable *
-sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl mask *
-sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl unmask *
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps unit *
 sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl set-property *
 
 # Identity configuration — hostname, timezone, locale, NTP all require root via
