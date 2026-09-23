@@ -315,6 +315,34 @@ fn anchor_json(outcome: &CheckpointOutcome) -> serde_json::Value {
     })
 }
 
+/// The machine-readable anchor field shared by the CLI and MCP reports.
+///
+/// Keeping this shape next to the combined verdict prevents the two public
+/// audit surfaces from drifting when anchor handling changes.
+pub(crate) fn audit_anchor_json(anchor: Option<&CheckpointOutcome>) -> serde_json::Value {
+    match anchor {
+        Some(outcome) => anchor_json(outcome),
+        None => json!({"configured": false, "caveat": anchor_caveat()}),
+    }
+}
+
+/// Describe an anchor check that could not start because chain verification
+/// stopped before a verifier was available.
+pub(crate) fn unchecked_audit_anchor_json(reason: &str) -> serde_json::Value {
+    let configured = std::env::var("SYSKNIFE_CHECKPOINT_DB")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty());
+    if configured {
+        json!({
+            "configured": true,
+            "status": "cannot_verify",
+            "detail": format!("ANCHOR NOT CHECKED: {reason}"),
+        })
+    } else {
+        audit_anchor_json(None)
+    }
+}
+
 fn anchor_caveat() -> &'static str {
     "NOTE: no independent checkpoint anchor is configured, so removal of the \
          newest rows would not be detectable — a truncated chain still verifies. \
@@ -1144,7 +1172,7 @@ pub async fn run_audit_checkpoint(
 /// Anchoring is SQLite-only today (`sysknife audit checkpoint` opens a
 /// `TransactionStore`), so a Postgres deployment gets an explicit "not
 /// supported" rather than a silent skip that would read as coverage.
-async fn verify_configured_anchor(
+pub(crate) async fn verify_configured_anchor(
     lacs_config: &sysknife_core::config::LacsConfig,
     db_path: &std::path::Path,
     verifier: &Verifier,
@@ -1498,10 +1526,7 @@ fn emit_verification(
             "backend": backend_label,
             "chain": outcome_json(&verification.chain),
             "approval_events": outcome_json(&verification.events),
-            "audit_anchor": match anchor {
-                Some(outcome) => anchor_json(outcome),
-                None => json!({"configured": false, "caveat": anchor_caveat()}),
-            },
+            "audit_anchor": audit_anchor_json(anchor),
             "daemon_socket_caveat": resolve_daemon_socket_caveat(),
             // Null rather than zero when no census was taken. A machine reader
             // that alerts on low attribution must be able to tell "no rows were
@@ -1637,7 +1662,7 @@ fn empty_unanchored_chain(
 /// precedence as [`AuditVerification::exit_code`]. A detected break is stronger
 /// evidence than a different check being inconclusive, so exit code `1` must
 /// outrank `2` rather than relying on numeric ordering.
-fn combined_verification_exit_code(
+pub(crate) fn combined_verification_exit_code(
     verification: &AuditVerification,
     anchor: Option<&CheckpointOutcome>,
 ) -> i32 {
@@ -1656,7 +1681,7 @@ fn combined_verification_exit_code(
     }
 }
 
-fn status_word(exit_code: i32) -> &'static str {
+pub(crate) fn status_word(exit_code: i32) -> &'static str {
     match exit_code {
         0 => "intact",
         1 => "broken",

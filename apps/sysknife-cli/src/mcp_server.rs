@@ -67,7 +67,11 @@ use sysknife_daemon::actions::OBSERVER_MUTATING_ACTIONS;
 
 use crate::client::{DaemonClient, DescribeInfo, SocketTarget};
 use crate::error::CliError;
-use crate::runner::{resolve_socket_target, verify_postgres, verify_sqlite, Verifier};
+use crate::runner::{
+    audit_anchor_json, combined_verification_exit_code, resolve_socket_target, status_word,
+    unchecked_audit_anchor_json, verify_configured_anchor, verify_postgres, verify_sqlite,
+    Verifier,
+};
 
 // ---------------------------------------------------------------------------
 // sysknife_plan — input / output types
@@ -294,8 +298,9 @@ pub struct DoctorReport {
 // sysknife_audit_verify — output types
 // ---------------------------------------------------------------------------
 
-/// Output of `sysknife_audit_verify`. Mirrors the JSON shape produced by
-/// the CLI's `sysknife audit verify --json` command.
+/// Output of `sysknife_audit_verify`. Carries the same headline verdict and
+/// `audit_anchor` cross-check as `sysknife audit verify --json`, plus the MCP
+/// surface's flattened chain, approval, binding, attribution, and host fields.
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct AuditVerifyReport {
     /// One of `"intact"`, `"broken"`, `"cannot_verify"`.
@@ -330,6 +335,9 @@ pub struct AuditVerifyReport {
     /// Backend label: a filesystem path for SQLite, the literal `"postgres"`
     /// for Postgres deployments.
     pub backend: String,
+    /// The configured checkpoint-anchor verdict, or the same unconfigured
+    /// truncation caveat emitted by the CLI.
+    pub audit_anchor: serde_json::Value,
     /// The transaction chain's own verdict: `"intact"`, `"broken"` or
     /// `"cannot_verify"`.
     ///
@@ -1253,7 +1261,8 @@ async fn audit_verify_local_store() -> AuditVerifyReport {
         _ => verify_sqlite(&db_path, &verifier).await,
     };
 
-    outcome_to_report(outcome, backend_label)
+    let anchor = verify_configured_anchor(&lacs_config, &db_path, &verifier).await;
+    outcome_to_report(outcome, backend_label, anchor.as_ref())
 }
 
 /// Short label for one chain walk.
@@ -1278,6 +1287,7 @@ fn binding_outcome_label(outcome: &sysknife_daemon::audit_chain::BindingOutcome)
 fn outcome_to_report(
     verification: sysknife_daemon::audit_chain::AuditVerification,
     backend: String,
+    anchor: Option<&sysknife_daemon::audit_chain::CheckpointOutcome>,
 ) -> AuditVerifyReport {
     use sysknife_daemon::audit_chain::VerifyOutcome;
 
@@ -1300,7 +1310,8 @@ fn outcome_to_report(
     // The detail fields describe the first *break*, wherever it was found. A
     // broken transaction chain is reported ahead of a broken event chain
     // because it is the one checkpoints anchor.
-    let overall = verification.exit_code();
+    let overall = combined_verification_exit_code(&verification, anchor);
+    let audit_anchor = audit_anchor_json(anchor);
     let mut report = match verification.chain {
         VerifyOutcome::Intact { rows_checked } => AuditVerifyReport {
             status: "intact".to_string(),
@@ -1311,6 +1322,7 @@ fn outcome_to_report(
             actual: None,
             reason: None,
             backend,
+            audit_anchor: audit_anchor.clone(),
             events_checked,
             approval_events_status,
             binding_status,
@@ -1338,6 +1350,7 @@ fn outcome_to_report(
             actual: Some(actual),
             reason: None,
             backend,
+            audit_anchor: audit_anchor.clone(),
             events_checked,
             approval_events_status,
             binding_status,
@@ -1352,6 +1365,7 @@ fn outcome_to_report(
         },
         VerifyOutcome::CannotVerify { reason } => {
             let mut r = cannot_verify_report(backend, reason);
+            r.audit_anchor = audit_anchor;
             r.events_checked = events_checked;
             r.approval_events_status = approval_events_status;
             r.binding_status = binding_status;
@@ -1373,12 +1387,7 @@ fn outcome_to_report(
     // `status` is the headline an MCP client is most likely to read alone, so
     // it must reflect the worst of the three checks, not just the first.
     if report.status == "intact" {
-        report.status = match overall {
-            0 => "intact",
-            1 => "broken",
-            _ => "cannot_verify",
-        }
-        .to_string();
+        report.status = status_word(overall).to_string();
     }
     report
 }
@@ -1396,6 +1405,7 @@ fn with_socket_caveat(mut report: AuditVerifyReport, caveat: Option<String>) -> 
 fn cannot_verify_report(backend: String, reason: String) -> AuditVerifyReport {
     use sysknife_daemon::audit_chain::BindingOutcome;
 
+    let audit_anchor = unchecked_audit_anchor_json(&reason);
     AuditVerifyReport {
         status: "cannot_verify".to_string(),
         rows_checked: 0,
@@ -1405,6 +1415,7 @@ fn cannot_verify_report(backend: String, reason: String) -> AuditVerifyReport {
         actual: None,
         reason: Some(reason),
         backend,
+        audit_anchor,
         events_checked: 0,
         approval_events_status: "cannot_verify".to_string(),
         binding_status: binding_outcome_label(&BindingOutcome::NotChecked).to_string(),
@@ -1511,6 +1522,62 @@ mod tests {
         }
     }
 
+    fn signed_chain(
+        key: &sysknife_daemon::audit_chain::AuditKey,
+        count: usize,
+    ) -> Vec<sysknife_daemon::audit_chain::ChainRow> {
+        use sysknife_daemon::audit_chain::{
+            ChainContent, ChainIdentity, ChainRow, CHAIN_VERSION_CURRENT,
+        };
+
+        let mut rows = Vec::with_capacity(count);
+        let mut previous = String::new();
+        for index in 0..count {
+            let seq = (index + 1) as u64;
+            let transaction_id = format!("tx-{seq}");
+            let content = ChainContent {
+                seq,
+                key_id: "v1",
+                transaction_id: &transaction_id,
+                request_id: "request",
+                request_hash: "hash",
+                action_name: "UpdateSystem",
+                risk_level: sysknife_types::RiskLevel::High,
+                summary: "summary",
+                approval_id: None,
+                warnings_json: "[]",
+                created_at: "2026-09-22T00:00:00Z",
+                identity: ChainIdentity::V3 {
+                    caller_role: "dev",
+                    event_tip: "",
+                    caller_principal: "uid:1000",
+                },
+            };
+            let hash = key.chain_hash(&content, &previous);
+            rows.push(ChainRow {
+                seq,
+                key_id: "v1".to_string(),
+                transaction_id,
+                request_id: "request".to_string(),
+                request_hash: "hash".to_string(),
+                action_name: "UpdateSystem".to_string(),
+                risk_level: sysknife_types::RiskLevel::High,
+                summary: "summary".to_string(),
+                approval_id: None,
+                warnings_json: "[]".to_string(),
+                created_at: "2026-09-22T00:00:00Z".to_string(),
+                prev_chain_hash: previous,
+                chain_hash: hash.clone(),
+                chain_version: CHAIN_VERSION_CURRENT,
+                caller_role: Some("dev".to_string()),
+                event_tip: Some(String::new()),
+                caller_principal: Some("uid:1000".to_string()),
+            });
+            previous = hash;
+        }
+        rows
+    }
+
     /// Every count has to reach the agent-facing report, with distinct values so
     /// no permutation of the six fields can satisfy this. Both the `Intact` and
     /// `Broken` arms are separate struct literals repeating the field list, so a
@@ -1533,6 +1600,7 @@ mod tests {
             let report = outcome_to_report(
                 verification_with(chain.clone(), Some(census)),
                 "/tmp/store.sqlite".to_string(),
+                None,
             );
             assert_eq!(report.attributed_rows, Some(6), "chain: {chain:?}");
             assert_eq!(report.unattributed_rows, Some(1), "chain: {chain:?}");
@@ -1559,6 +1627,7 @@ mod tests {
                 Some(AttributionCensus::from_counts_for_tests(5, 2, 9, 0)),
             ),
             "/tmp/store.sqlite".to_string(),
+            None,
         );
 
         assert_eq!(report.status, "cannot_verify");
@@ -1602,6 +1671,7 @@ mod tests {
                 status: None,
             },
             "/tmp/store.sqlite".to_string(),
+            None,
         );
 
         assert_eq!(
@@ -1617,6 +1687,54 @@ mod tests {
             report.rows_censused, report.attributed_rows,
             "nothing was counted that was not also checked here"
         );
+    }
+
+    #[test]
+    fn an_empty_unanchored_store_has_the_same_mcp_and_cli_verdict() {
+        use sysknife_daemon::audit_chain::VerifyOutcome;
+
+        let verification = verification_with(VerifyOutcome::Intact { rows_checked: 0 }, None);
+        let cli_status = crate::runner::status_word(
+            crate::runner::combined_verification_exit_code(&verification, None),
+        );
+        let report = outcome_to_report(verification, "/tmp/store.sqlite".to_string(), None);
+
+        assert_eq!(report.status, cli_status);
+        assert_eq!(report.audit_anchor["configured"], false);
+    }
+
+    #[test]
+    fn a_truncated_anchor_has_the_same_mcp_and_cli_verdict() {
+        use sysknife_daemon::audit_chain::{
+            verify_chain, verify_checkpoints, AuditKey, CheckpointOutcome, VerifyOutcome,
+        };
+
+        let temp = tempfile::tempdir().expect("temporary key directory");
+        let key =
+            AuditKey::load_or_generate(&temp.path().join("audit-key")).expect("test audit key");
+        let full = signed_chain(&key, 5);
+        let checkpoint = key.sign_checkpoint(5, &full[4].chain_hash, "2026-09-22T00:01:00Z");
+        let truncated = &full[..3];
+        let chain = verify_chain(&key, truncated);
+        assert_eq!(chain, VerifyOutcome::Intact { rows_checked: 3 });
+        let anchor = verify_checkpoints(&key.verifying_key_hex(), truncated, &[checkpoint]);
+        assert_eq!(
+            anchor,
+            CheckpointOutcome::Truncated {
+                checkpoint_seq: 5,
+                current_max_seq: 3,
+            }
+        );
+        let verification = verification_with(chain, None);
+        let cli_status = crate::runner::status_word(
+            crate::runner::combined_verification_exit_code(&verification, Some(&anchor)),
+        );
+        let report =
+            outcome_to_report(verification, "/tmp/store.sqlite".to_string(), Some(&anchor));
+
+        assert_eq!(report.status, cli_status);
+        assert_eq!(report.audit_anchor["configured"], true);
+        assert_eq!(report.audit_anchor["status"], "truncated");
     }
 
     /// The other `cannot_verify` shape: nothing was read at all, so every count is
