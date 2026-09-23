@@ -4,6 +4,7 @@
 import argparse
 import os
 from pathlib import Path
+import re
 import sys
 
 
@@ -33,6 +34,16 @@ def discover(workflows, actions=None, templates=None):
             raise ValueError(f"no issue templates matched under {templates}")
         files.extend(found)
     return files
+
+
+def check_local(reference):
+    """Refuse a local `uses:` that points outside what discover() scans."""
+    path = os.path.normpath(reference)
+    if path == ".github/actions" or path.startswith(".github/actions/"):
+        return
+    if re.fullmatch(r"\.github/workflows/[^/]+\.ya?ml", path):
+        return
+    raise ValueError(f"local action outside .github/actions is never scanned: {reference}")
 
 
 if __name__ == "__main__":

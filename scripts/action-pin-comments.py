@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 from yaml.nodes import MappingNode, ScalarNode, SequenceNode
-from github_yaml import discover
+from github_yaml import check_local, discover
 
 
 def entries(node, key):
@@ -60,7 +60,10 @@ def extract(root):
                 if not isinstance(node, ScalarNode):
                     raise ValueError("uses must be a scalar")
                 # Local and Docker references have no GitHub tag comment to check.
-                if node.value.startswith(("./", "docker://")):
+                if node.value.startswith("./"):
+                    check_local(node.value)
+                    continue
+                if node.value.startswith("docker://"):
                     continue
                 match = re.fullmatch(r"([\w.-]+/[\w./-]+)@([0-9a-fA-F]{40})", node.value)
                 if not match:

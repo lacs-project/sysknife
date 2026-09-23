@@ -30,7 +30,7 @@ jobs:
           actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # v1.2.3
       - {uses: 'actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'quoted # text'} # v1.2.3
       - uses: dtolnay/rust-toolchain@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # stable (branch)
-      - uses: ./local-action
+      - uses: ./.github/actions/local
       - run: |
           echo 'uses: fake/action@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 YAML
@@ -57,6 +57,8 @@ sed 's/# stable (branch)/# stable/' "$tmp/good" > "$workflow"
 expect_failure 'ERROR.*rust-toolchain'
 sed 's/# v1.2.3//g' "$tmp/good" > "$workflow"
 expect_failure 'missing version comment'
+sed 's#uses: ./.github/actions/local#uses: ./local-action#' "$tmp/good" > "$workflow"
+expect_failure 'local action outside .github/actions'
 printf 'jobs: {test: {uses: "actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}} # v1.2.3' > "$workflow"
 check || { cat "$tmp/out"; exit 1; }
 grep -q 'checked 1 pins' "$tmp/out"
