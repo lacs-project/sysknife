@@ -1,6 +1,6 @@
 use crate::audit_chain::{
-    self, AuditEventKind, AuditKey, ChainContent, ChainIdentity, ChainRow, EventContent, EventRow,
-    VerifyOutcome, CURRENT_KEY_ID,
+    self, AuditEventKind, AuditKey, ChainContent, ChainIdentity, ChainRow, EventContent,
+    EventIdentity, EventRow, VerifyOutcome, CURRENT_KEY_ID,
 };
 use crate::audit_watermark::emit_chain_tip_watermark;
 use crate::auth::CallerPrincipal;
@@ -202,6 +202,22 @@ const SQLITE_MIGRATIONS: &[SqliteMigration] = &[
             ALTER TABLE transactions ADD COLUMN caller_principal TEXT;
         "#,
     },
+    // Approver identity in the signed event encoding (#249).
+    //
+    // Nullable/defaulted for the same reason the v2 transaction columns are:
+    // every event row already on disk was signed over the six-field encoding,
+    // and backfilling either column would rewrite its message and report the
+    // whole event chain as Broken. `chain_version DEFAULT 1` makes every
+    // historical row LegacyV1 without touching it; new approval events are
+    // written at version 2 with the acting account signed in.
+    SqliteMigration {
+        version: 4,
+        name: "event_approver_identity",
+        sql: r#"
+            ALTER TABLE audit_events ADD COLUMN chain_version INTEGER NOT NULL DEFAULT 1;
+            ALTER TABLE audit_events ADD COLUMN caller_principal TEXT;
+        "#,
+    },
 ];
 
 /// Column list for every `ChainRow` read, shared with the Postgres backend
@@ -243,6 +259,8 @@ fn event_row_from_sqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRow> 
         created_at: row.get(5)?,
         prev_chain_hash: row.get(6)?,
         chain_hash: row.get(7)?,
+        chain_version: row.get::<_, i64>(8)? as u32,
+        caller_principal: row.get(9)?,
     })
 }
 
@@ -558,6 +576,10 @@ impl TransactionStore {
             AuditEventKind::from(new_status),
             transaction_id,
             "",
+            // Status events name no account, deliberately: they are written
+            // from spawned execution tasks with no caller attribution in
+            // scope (#249). They stay on the legacy six-field encoding.
+            EventIdentity::LegacyV1,
         )?;
         tx.commit()?;
         Ok(())
@@ -627,9 +649,13 @@ impl TransactionStore {
     }
 
     /// Attach one immutable approval receipt digest to a fresh queued preview.
+    ///
+    /// `approver` is the account performing this approval — signed into the
+    /// event so a verified chain names who approved, not only who asked (#249).
     pub fn approve_transaction(
         &self,
         transaction_id: &str,
+        approver: CallerPrincipal,
     ) -> Result<Option<String>, TransactionStoreError> {
         let key = self
             .audit_key
@@ -637,6 +663,9 @@ impl TransactionStore {
             .ok_or(TransactionStoreError::AuditChainMissing(
                 "this TransactionStore was opened read-only; cannot approve",
             ))?;
+        // Rendered once, before any early return that follows, so the signed
+        // string and the stored column provably come from the same value.
+        let approver_signed = approver.as_signed_str();
         let Some(record) = self.get(transaction_id)? else {
             return Ok(None);
         };
@@ -678,6 +707,9 @@ impl TransactionStore {
                 AuditEventKind::ApprovalGranted,
                 transaction_id,
                 &receipt_digest,
+                EventIdentity::V2 {
+                    caller_principal: &approver_signed,
+                },
             )?;
         }
         tx.commit()?;
@@ -686,9 +718,13 @@ impl TransactionStore {
 
     /// Remove an approval that was persisted but could not be delivered to the
     /// caller. Consumed receipts are never revocable.
+    ///
+    /// `revoker` is signed into the revocation event: the chain should name
+    /// the account that retracted a receipt (#249).
     pub fn revoke_unconsumed_approval(
         &self,
         transaction_id: &str,
+        revoker: CallerPrincipal,
     ) -> Result<bool, TransactionStoreError> {
         let key = self
             .audit_key
@@ -698,7 +734,12 @@ impl TransactionStore {
             ))?;
         let mut conn = self.connection()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let revoked = Self::revoke_unconsumed_approval_in_tx(&tx, key, transaction_id)?;
+        let revoked = Self::revoke_unconsumed_approval_in_tx(
+            &tx,
+            key,
+            transaction_id,
+            &revoker.as_signed_str(),
+        )?;
         tx.commit()?;
         Ok(revoked)
     }
@@ -707,6 +748,7 @@ impl TransactionStore {
         conn: &Connection,
         key: &AuditKey,
         transaction_id: &str,
+        revoker_signed: &str,
     ) -> Result<bool, TransactionStoreError> {
         // Capture the digest before the DELETE: the event has to name which
         // receipt was retracted, and after the delete there is nothing to name.
@@ -734,16 +776,24 @@ impl TransactionStore {
                 AuditEventKind::ApprovalRevoked,
                 transaction_id,
                 &digest,
+                EventIdentity::V2 {
+                    caller_principal: revoker_signed,
+                },
             )?;
         }
         Ok(rows_affected > 0)
     }
 
     /// Atomically consume an approved receipt and transition Queued to Running.
+    ///
+    /// `executor` is signed into the consume event: on a host where the account
+    /// that spends a receipt could ever differ from the one that granted it,
+    /// the chain records both (#249).
     pub fn claim_approved_for_execution(
         &self,
         transaction_id: &str,
         receipt_digest: &str,
+        executor: CallerPrincipal,
     ) -> Result<bool, TransactionStoreError> {
         let key = self
             .audit_key
@@ -783,6 +833,9 @@ impl TransactionStore {
                 AuditEventKind::ApprovalConsumed,
                 transaction_id,
                 receipt_digest,
+                EventIdentity::V2 {
+                    caller_principal: &executor.as_signed_str(),
+                },
             )?;
         }
         tx.commit()?;
@@ -833,7 +886,15 @@ impl TransactionStore {
                 params![canceled_json, transaction_id, queued_json],
             )?;
             if rows_affected > 0 {
-                Self::revoke_unconsumed_approval_in_tx(&tx, key, &transaction_id)?;
+                // Daemon-initiated revocation: the stale sweep has no caller
+                // connection to attribute, and `Unattributed` records exactly
+                // that rather than inventing an account (#249).
+                Self::revoke_unconsumed_approval_in_tx(
+                    &tx,
+                    key,
+                    &transaction_id,
+                    &CallerPrincipal::Unattributed.as_signed_str(),
+                )?;
                 canceled += rows_affected;
             }
         }
@@ -849,7 +910,11 @@ impl TransactionStore {
     /// never cancelled, so we never leave a half-applied root mutation behind
     /// a `Canceled` record. Missing or already-terminal transactions return
     /// `false`.
-    pub fn cancel_queued(&self, transaction_id: &str) -> Result<bool, TransactionStoreError> {
+    pub fn cancel_queued(
+        &self,
+        transaction_id: &str,
+        canceller: CallerPrincipal,
+    ) -> Result<bool, TransactionStoreError> {
         let key = self
             .audit_key
             .as_ref()
@@ -866,7 +931,16 @@ impl TransactionStore {
             params![canceled_json, transaction_id, queued_json],
         )?;
         if rows_affected > 0 {
-            Self::revoke_unconsumed_approval_in_tx(&tx, key, transaction_id)?;
+            // The cancel came from a caller connection (`handle_cancel`), so
+            // the revocation event names the account that cancelled. This is
+            // NOT the daemon-sweep path: recording `Unattributed` here would
+            // sign away an identity the code actually holds (#249).
+            Self::revoke_unconsumed_approval_in_tx(
+                &tx,
+                key,
+                transaction_id,
+                &canceller.as_signed_str(),
+            )?;
         }
         tx.commit()?;
         Ok(rows_affected > 0)
@@ -1059,7 +1133,7 @@ impl TransactionStore {
         let conn = self.connection()?;
         let mut stmt = conn.prepare(
             "SELECT seq, key_id, kind, transaction_id, receipt_digest, \
-                    created_at, prev_chain_hash, chain_hash \
+                    created_at, prev_chain_hash, chain_hash, chain_version, caller_principal \
              FROM audit_events ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map([], event_row_from_sqlite)?;
@@ -1166,6 +1240,7 @@ impl TransactionStore {
         kind: AuditEventKind,
         transaction_id: &str,
         receipt_digest: &str,
+        identity: EventIdentity<'_>,
     ) -> Result<(), TransactionStoreError> {
         let prev_chain_hash = Self::event_chain_tip(conn)?.unwrap_or_default();
         let seq: i64 = conn.query_row(
@@ -1178,22 +1253,29 @@ impl TransactionStore {
                 row.get(0)
             })?;
         let key_id = CURRENT_KEY_ID.to_string();
-        let chain_hash = key.event_hash(
-            &EventContent {
-                seq: seq as u64,
-                key_id: &key_id,
-                kind,
-                transaction_id,
-                receipt_digest,
-                created_at: &created_at,
-            },
-            &prev_chain_hash,
-        );
+        // Build the content once and derive the stored version from its
+        // identity, so the chain_version column is provably the version whose
+        // message was signed — the same discipline the transaction insert
+        // follows.
+        let content = EventContent {
+            seq: seq as u64,
+            key_id: &key_id,
+            kind,
+            transaction_id,
+            receipt_digest,
+            created_at: &created_at,
+            identity,
+        };
+        let chain_hash = key.event_hash(&content, &prev_chain_hash);
+        let stored_principal = match identity {
+            EventIdentity::V2 { caller_principal } => Some(caller_principal),
+            EventIdentity::LegacyV1 => None,
+        };
         conn.execute(
-            "INSERT INTO audit_events (
-                seq, key_id, kind, transaction_id, receipt_digest,
-                created_at, chain_hash, prev_chain_hash
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO audit_events (\
+                seq, key_id, kind, transaction_id, receipt_digest, \
+                created_at, chain_hash, prev_chain_hash, chain_version, caller_principal \
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 seq,
                 key_id,
@@ -1203,6 +1285,8 @@ impl TransactionStore {
                 created_at,
                 chain_hash,
                 prev_chain_hash,
+                identity.version() as i64,
+                stored_principal,
             ],
         )?;
         Ok(())
@@ -1447,6 +1531,8 @@ mod tests {
     use super::*;
     use crate::audit_chain::CHAIN_VERSION_CURRENT;
     use crate::audit_chain::CHAIN_VERSION_LEGACY;
+    use crate::audit_chain::EVENT_VERSION_CURRENT;
+    use crate::audit_chain::EVENT_VERSION_LEGACY;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::tempdir;
 
@@ -1619,7 +1705,10 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 3, "opening a v2 database must apply migration 3");
+        assert_eq!(
+            version, 4,
+            "opening a v2 database must apply every migration up to 4"
+        );
 
         let rows = store.fetch_chain_rows().unwrap();
         assert_eq!(rows.len(), 1);
@@ -1760,18 +1849,22 @@ mod tests {
         // Approve then consume.
         let a = store.record(queued_transaction()).unwrap();
         let receipt = store
-            .approve_transaction(&a.transaction_id)
+            .approve_transaction(&a.transaction_id, CallerPrincipal::Uid(1000))
             .unwrap()
             .expect("queued transaction approves");
         let digest = audit_chain::approval_receipt_digest(&receipt);
         assert!(store
-            .claim_approved_for_execution(&a.transaction_id, &digest)
+            .claim_approved_for_execution(&a.transaction_id, &digest, CallerPrincipal::Uid(1000))
             .unwrap());
 
         // Approve then revoke.
         let b = store.record(queued_transaction()).unwrap();
-        store.approve_transaction(&b.transaction_id).unwrap();
-        assert!(store.revoke_unconsumed_approval(&b.transaction_id).unwrap());
+        store
+            .approve_transaction(&b.transaction_id, CallerPrincipal::Uid(1000))
+            .unwrap();
+        assert!(store
+            .revoke_unconsumed_approval(&b.transaction_id, CallerPrincipal::Uid(1000))
+            .unwrap());
 
         let events = store.fetch_event_rows().unwrap();
         let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
@@ -1791,6 +1884,108 @@ mod tests {
     }
 
     #[test]
+    fn a_stored_approval_event_names_the_account_that_acted() {
+        // End-to-end over the real store, not an in-memory fixture: the
+        // principal threaded through `approve_transaction` /
+        // `claim_approved_for_execution` must survive the round-trip into the
+        // persisted event rows, so a verified chain names who approved and who
+        // executed rather than leaving it to inference (#249). Two different
+        // uids leave two distinguishable signed records.
+        let dir = tempdir().unwrap();
+        let key = AuditKey::from_bytes(vec![0x42; 32]);
+        let store = test_store(dir.path().join("tx.db"));
+
+        let tx = store.record(queued_transaction()).unwrap();
+        // alice (uid:1000) approves ...
+        let receipt = store
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
+            .unwrap()
+            .expect("queued transaction approves");
+        let digest = audit_chain::approval_receipt_digest(&receipt);
+        // ... bob (uid:1001) executes.
+        assert!(store
+            .claim_approved_for_execution(&tx.transaction_id, &digest, CallerPrincipal::Uid(1001))
+            .unwrap());
+
+        let events = store.fetch_event_rows().unwrap();
+        assert_eq!(events.len(), 2);
+        let granted = events
+            .iter()
+            .find(|e| e.kind == "approval_granted")
+            .expect("a grant event");
+        let consumed = events
+            .iter()
+            .find(|e| e.kind == "approval_consumed")
+            .expect("a consume event");
+
+        // Both rows carry the new encoding and the acting account.
+        assert_eq!(granted.chain_version, EVENT_VERSION_CURRENT);
+        assert_eq!(consumed.chain_version, EVENT_VERSION_CURRENT);
+        assert_eq!(
+            granted.caller_principal.as_deref(),
+            Some("uid:1000"),
+            "the grant must name the approver"
+        );
+        assert_eq!(
+            consumed.caller_principal.as_deref(),
+            Some("uid:1001"),
+            "the consume must name the executor"
+        );
+        assert_ne!(
+            granted.caller_principal, consumed.caller_principal,
+            "a grant and a consume by different accounts must be distinguishable"
+        );
+
+        // The persisted rows still verify as a chain, and a status event (if
+        // any were appended) stays on the legacy encoding — covered by the
+        // unit tests; here we assert the approval rows themselves are intact.
+        assert_eq!(
+            store.verify_event_chain(&key).unwrap(),
+            VerifyOutcome::Intact { rows_checked: 2 }
+        );
+    }
+
+    #[test]
+    fn a_stored_status_event_carries_no_principal_and_stays_legacy() {
+        // The complement of the test above: status events are written from
+        // spawned execution tasks with no caller attribution, so they stay on
+        // the six-field legacy encoding rather than signing an account the
+        // code cannot see (#249). The mixed chain still verifies.
+        let dir = tempdir().unwrap();
+        let key = AuditKey::from_bytes(vec![0x42; 32]);
+        let store = test_store(dir.path().join("tx.db"));
+
+        let tx = store.record(queued_transaction()).unwrap();
+        let receipt = store
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
+            .unwrap()
+            .expect("queued transaction approves");
+        let digest = audit_chain::approval_receipt_digest(&receipt);
+        assert!(store
+            .claim_approved_for_execution(&tx.transaction_id, &digest, CallerPrincipal::Uid(1000))
+            .unwrap());
+        store
+            .update_status(&tx.transaction_id, JobState::Succeeded)
+            .unwrap();
+
+        let events = store.fetch_event_rows().unwrap();
+        let status = events
+            .iter()
+            .find(|e| e.kind == "status_succeeded")
+            .expect("a status event");
+        assert_eq!(status.chain_version, EVENT_VERSION_LEGACY);
+        assert_eq!(
+            status.caller_principal, None,
+            "a status event names no account"
+        );
+        // grant + consume (V2) + status (legacy) all verify as one chain.
+        assert_eq!(
+            store.verify_event_chain(&key).unwrap(),
+            VerifyOutcome::Intact { rows_checked: 3 }
+        );
+    }
+
+    #[test]
     fn a_terminal_outcome_is_chained_so_rewriting_status_is_detectable() {
         // The module documentation says status transitions ARE chained
         // separately, in audit_events. They were not: update_status appended
@@ -1805,12 +2000,12 @@ mod tests {
 
         let tx = store.record(queued_transaction()).unwrap();
         let receipt = store
-            .approve_transaction(&tx.transaction_id)
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
             .unwrap()
             .expect("queued transaction approves");
         let digest = audit_chain::approval_receipt_digest(&receipt);
         assert!(store
-            .claim_approved_for_execution(&tx.transaction_id, &digest)
+            .claim_approved_for_execution(&tx.transaction_id, &digest, CallerPrincipal::Uid(1000))
             .unwrap());
         store
             .update_status(&tx.transaction_id, JobState::Succeeded)
@@ -1883,12 +2078,18 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = test_store(dir.path().join("tx.db"));
         let tx = store.record(queued_transaction()).unwrap();
-        store.approve_transaction(&tx.transaction_id).unwrap();
-        store.approve_transaction(&tx.transaction_id).unwrap();
+        store
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
+            .unwrap();
+        store
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
+            .unwrap();
         assert_eq!(store.fetch_event_rows().unwrap().len(), 1);
 
         // Same for a revoke with nothing to revoke.
-        assert!(!store.revoke_unconsumed_approval("no-such-tx").unwrap());
+        assert!(!store
+            .revoke_unconsumed_approval("no-such-tx", CallerPrincipal::Uid(1000))
+            .unwrap());
         assert_eq!(store.fetch_event_rows().unwrap().len(), 1);
     }
 
@@ -1905,7 +2106,9 @@ mod tests {
         let store = test_store(&db_path);
 
         let a = store.record(queued_transaction()).unwrap();
-        store.approve_transaction(&a.transaction_id).unwrap();
+        store
+            .approve_transaction(&a.transaction_id, CallerPrincipal::Uid(1000))
+            .unwrap();
         // A later transaction commits to the event tip, which is what carries
         // the binding into the checkpoint-anchored transaction chain.
         store.record(queued_transaction()).unwrap();
@@ -1954,11 +2157,11 @@ mod tests {
 
         let read_only = TransactionStore::open_read_only(&db_path).unwrap();
         assert!(matches!(
-            read_only.revoke_unconsumed_approval("tx"),
+            read_only.revoke_unconsumed_approval("tx", CallerPrincipal::Uid(1000)),
             Err(TransactionStoreError::AuditChainMissing(_))
         ));
         assert!(matches!(
-            read_only.claim_approved_for_execution("tx", "digest"),
+            read_only.claim_approved_for_execution("tx", "digest", CallerPrincipal::Uid(1000)),
             Err(TransactionStoreError::AuditChainMissing(_))
         ));
     }
@@ -2496,20 +2699,24 @@ mod tests {
         let store = test_store(dir.path().join("tx.db"));
         let tx = store.record(queued_transaction()).unwrap();
         let receipt = store
-            .approve_transaction(&tx.transaction_id)
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
             .unwrap()
             .expect("approved");
         let digest = audit_chain::approval_receipt_digest(&receipt);
 
         assert!(
             store
-                .revoke_unconsumed_approval(&tx.transaction_id)
+                .revoke_unconsumed_approval(&tx.transaction_id, CallerPrincipal::Uid(1000))
                 .unwrap(),
             "an unconsumed approval must be revocable"
         );
         assert!(
             !store
-                .claim_approved_for_execution(&tx.transaction_id, &digest)
+                .claim_approved_for_execution(
+                    &tx.transaction_id,
+                    &digest,
+                    CallerPrincipal::Uid(1000)
+                )
                 .unwrap(),
             "a revoked receipt must no longer be claimable"
         );
@@ -2524,17 +2731,17 @@ mod tests {
         let store = test_store(dir.path().join("tx.db"));
         let tx = store.record(queued_transaction()).unwrap();
         let receipt = store
-            .approve_transaction(&tx.transaction_id)
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
             .unwrap()
             .expect("approved");
         let digest = audit_chain::approval_receipt_digest(&receipt);
         assert!(store
-            .claim_approved_for_execution(&tx.transaction_id, &digest)
+            .claim_approved_for_execution(&tx.transaction_id, &digest, CallerPrincipal::Uid(1000))
             .unwrap());
 
         assert!(
             !store
-                .revoke_unconsumed_approval(&tx.transaction_id)
+                .revoke_unconsumed_approval(&tx.transaction_id, CallerPrincipal::Uid(1000))
                 .unwrap(),
             "a consumed approval must not be revocable"
         );
@@ -2554,18 +2761,18 @@ mod tests {
         let store = test_store(dir.path().join("tx.db"));
         let tx = store.record(queued_transaction()).unwrap();
         let receipt = store
-            .approve_transaction(&tx.transaction_id)
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
             .unwrap()
             .expect("approved");
         let digest = audit_chain::approval_receipt_digest(&receipt);
         assert!(store
-            .claim_approved_for_execution(&tx.transaction_id, &digest)
+            .claim_approved_for_execution(&tx.transaction_id, &digest, CallerPrincipal::Uid(1000))
             .unwrap());
 
         // Running.
         assert!(
             store
-                .approve_transaction(&tx.transaction_id)
+                .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
                 .unwrap()
                 .is_none(),
             "a Running transaction must not be approvable"
@@ -2577,7 +2784,7 @@ mod tests {
             .unwrap();
         assert!(
             store
-                .approve_transaction(&tx.transaction_id)
+                .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
                 .unwrap()
                 .is_none(),
             "a completed transaction must not be approvable"
@@ -2594,7 +2801,7 @@ mod tests {
         let store = std::sync::Arc::new(test_store(dir.path().join("tx.db")));
         let tx = store.record(queued_transaction()).unwrap();
         let receipt = store
-            .approve_transaction(&tx.transaction_id)
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
             .unwrap()
             .expect("approved");
         let digest = audit_chain::approval_receipt_digest(&receipt);
@@ -2605,7 +2812,7 @@ mod tests {
             let id = tx.transaction_id.clone();
             let digest = digest.clone();
             handles.push(std::thread::spawn(move || {
-                store.claim_approved_for_execution(&id, &digest)
+                store.claim_approved_for_execution(&id, &digest, CallerPrincipal::Uid(1000))
             }));
         }
         let claims: Vec<bool> = handles
@@ -2631,7 +2838,9 @@ mod tests {
         let tx = store.record(queued_transaction()).unwrap();
 
         assert!(
-            store.cancel_queued(&tx.transaction_id).unwrap(),
+            store
+                .cancel_queued(&tx.transaction_id, CallerPrincipal::Uid(1000))
+                .unwrap(),
             "a queued transaction is cancelable"
         );
         assert_eq!(
@@ -2639,11 +2848,15 @@ mod tests {
             JobState::Canceled
         );
         assert!(
-            !store.cancel_queued(&tx.transaction_id).unwrap(),
+            !store
+                .cancel_queued(&tx.transaction_id, CallerPrincipal::Uid(1000))
+                .unwrap(),
             "an already-canceled transaction is not cancelable again"
         );
         assert!(
-            !store.cancel_queued("no-such-transaction").unwrap(),
+            !store
+                .cancel_queued("no-such-transaction", CallerPrincipal::Uid(1000))
+                .unwrap(),
             "a missing transaction is not cancelable"
         );
         assert!(
@@ -2658,19 +2871,25 @@ mod tests {
         let store = test_store(dir.path().join("tx.db"));
         let tx = store.record(queued_transaction()).unwrap();
         let receipt = store
-            .approve_transaction(&tx.transaction_id)
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
             .unwrap()
             .expect("queued transaction is approvable");
         let digest = audit_chain::approval_receipt_digest(&receipt);
 
-        assert!(store.cancel_queued(&tx.transaction_id).unwrap());
+        assert!(store
+            .cancel_queued(&tx.transaction_id, CallerPrincipal::Uid(1000))
+            .unwrap());
         assert_eq!(
             store.get(&tx.transaction_id).unwrap().unwrap().status,
             JobState::Canceled
         );
         assert!(
             !store
-                .claim_approved_for_execution(&tx.transaction_id, &digest)
+                .claim_approved_for_execution(
+                    &tx.transaction_id,
+                    &digest,
+                    CallerPrincipal::Uid(1000)
+                )
                 .unwrap(),
             "canceling must revoke the unconsumed receipt"
         );
@@ -2693,16 +2912,18 @@ mod tests {
         let store = test_store(dir.path().join("tx.db"));
         let tx = store.record(queued_transaction()).unwrap();
         let receipt = store
-            .approve_transaction(&tx.transaction_id)
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
             .unwrap()
             .expect("approved");
         let digest = audit_chain::approval_receipt_digest(&receipt);
         assert!(store
-            .claim_approved_for_execution(&tx.transaction_id, &digest)
+            .claim_approved_for_execution(&tx.transaction_id, &digest, CallerPrincipal::Uid(1000))
             .unwrap());
 
         assert!(
-            !store.cancel_queued(&tx.transaction_id).unwrap(),
+            !store
+                .cancel_queued(&tx.transaction_id, CallerPrincipal::Uid(1000))
+                .unwrap(),
             "a running transaction must not be cancelable"
         );
         assert_eq!(
@@ -2720,38 +2941,54 @@ mod tests {
 
         assert!(
             !store
-                .claim_approved_for_execution(&tx.transaction_id, "digest-a")
+                .claim_approved_for_execution(
+                    &tx.transaction_id,
+                    "digest-a",
+                    CallerPrincipal::Uid(1000)
+                )
                 .unwrap(),
             "an unapproved preview must not execute"
         );
         let receipt = store
-            .approve_transaction(&tx.transaction_id)
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
             .unwrap()
             .expect("first approval must succeed");
         let digest = audit_chain::approval_receipt_digest(&receipt);
         assert_eq!(tx.approval_id.as_deref(), Some(digest.as_str()));
         assert!(
             store
-                .approve_transaction(&tx.transaction_id)
+                .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
                 .unwrap()
                 .is_none(),
             "approval is immutable once issued"
         );
         assert!(
             !store
-                .claim_approved_for_execution(&tx.transaction_id, "wrong-digest")
+                .claim_approved_for_execution(
+                    &tx.transaction_id,
+                    "wrong-digest",
+                    CallerPrincipal::Uid(1000)
+                )
                 .unwrap(),
             "a forged receipt must not execute"
         );
         assert!(
             store
-                .claim_approved_for_execution(&tx.transaction_id, &digest)
+                .claim_approved_for_execution(
+                    &tx.transaction_id,
+                    &digest,
+                    CallerPrincipal::Uid(1000)
+                )
                 .unwrap(),
             "the exact approved receipt must execute"
         );
         assert!(
             !store
-                .claim_approved_for_execution(&tx.transaction_id, &digest)
+                .claim_approved_for_execution(
+                    &tx.transaction_id,
+                    &digest,
+                    CallerPrincipal::Uid(1000)
+                )
                 .unwrap(),
             "the receipt must be one-time"
         );
@@ -2799,7 +3036,7 @@ mod tests {
             .unwrap();
 
         let err = store
-            .approve_transaction(&tx.transaction_id)
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
             .expect_err("a forged commitment must be rejected, not approved");
         assert!(
             matches!(err, TransactionStoreError::DatabaseInvariant(_)),
@@ -2823,7 +3060,7 @@ mod tests {
 
         assert!(
             store
-                .approve_transaction(&tx.transaction_id)
+                .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
                 .unwrap()
                 .is_none(),
             "a production-format timestamp outside the TTL must not be approved"
@@ -2840,7 +3077,7 @@ mod tests {
         let store = test_store(dir.path().join("tx.db"));
         let tx = store.record(queued_transaction()).unwrap();
         let receipt = store
-            .approve_transaction(&tx.transaction_id)
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
             .unwrap()
             .expect("a fresh approval succeeds");
         let digest = audit_chain::approval_receipt_digest(&receipt);
@@ -2857,7 +3094,11 @@ mod tests {
 
         assert!(
             !store
-                .claim_approved_for_execution(&tx.transaction_id, &digest)
+                .claim_approved_for_execution(
+                    &tx.transaction_id,
+                    &digest,
+                    CallerPrincipal::Uid(1000)
+                )
                 .unwrap(),
             "an approval aged past the TTL must not be claimable at execute time"
         );
@@ -2907,7 +3148,7 @@ mod tests {
             .map(|_| {
                 let transaction = store.record(queued_transaction()).unwrap();
                 store
-                    .approve_transaction(&transaction.transaction_id)
+                    .approve_transaction(&transaction.transaction_id, CallerPrincipal::Uid(1000))
                     .unwrap()
                     .expect("stale transaction is approvable");
                 transaction
@@ -2936,7 +3177,7 @@ mod tests {
                 JobState::Canceled
             );
             assert!(!store
-                .revoke_unconsumed_approval(&transaction.transaction_id)
+                .revoke_unconsumed_approval(&transaction.transaction_id, CallerPrincipal::Uid(1000))
                 .unwrap());
         }
         assert_eq!(

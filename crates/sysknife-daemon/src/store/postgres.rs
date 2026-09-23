@@ -37,9 +37,10 @@ use uuid::Uuid;
 
 use crate::audit_chain::{
     AttributionCensus, AuditEventKind, AuditKey, AuditVerification, BindingOutcome, ChainContent,
-    ChainIdentity, ChainRow, EventContent, EventRow, VerifyOutcome, CURRENT_KEY_ID,
+    ChainIdentity, ChainRow, EventContent, EventIdentity, EventRow, VerifyOutcome, CURRENT_KEY_ID,
 };
 use crate::audit_watermark::emit_chain_tip_watermark;
+use crate::auth::CallerPrincipal;
 use crate::store::AuditStore;
 use crate::transactions::{
     NewTransaction, RecordedPreviewedTransaction, TransactionStoreError,
@@ -135,6 +136,19 @@ const MIGRATIONS: &[Migration] = &[Migration {
         version: 3,
         name: "caller_principal",
         statements: &["ALTER TABLE transactions ADD COLUMN IF NOT EXISTS caller_principal TEXT"],
+    },
+    // Mirrors SQLite migration 4 (#249). Approver identity in the signed
+    // event encoding: `chain_version DEFAULT 1` keeps every historical event
+    // row on the six-field LegacyV1 encoding without touching it; new
+    // approval events are written at version 2 with the acting account
+    // signed in. Nullable, never backfilled, for the migration-2 reason.
+    Migration {
+        version: 4,
+        name: "event_approver_identity",
+        statements: &[
+            "ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS chain_version BIGINT NOT NULL DEFAULT 1",
+            "ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS caller_principal TEXT",
+        ],
     },
 ];
 
@@ -381,6 +395,7 @@ impl PostgresStore {
         tx: &mut sqlx_core::transaction::Transaction<'_, sqlx_postgres::Postgres>,
         key: &AuditKey,
         transaction_id: &str,
+        revoker_signed: &str,
     ) -> Result<bool, TransactionStoreError> {
         // Read the digest before the DELETE: the event names which receipt was
         // retracted, and after the delete there is nothing left to name.
@@ -412,6 +427,9 @@ impl PostgresStore {
                 AuditEventKind::ApprovalRevoked,
                 transaction_id,
                 &digest,
+                EventIdentity::V2 {
+                    caller_principal: revoker_signed,
+                },
             )
             .await?;
         }
@@ -589,7 +607,11 @@ impl AuditStore for PostgresStore {
     async fn approve_transaction(
         &self,
         transaction_id: &str,
+        approver: CallerPrincipal,
     ) -> Result<Option<String>, TransactionStoreError> {
+        // Rendered once so the signed string and the stored column provably
+        // come from the same value.
+        let approver_signed = approver.as_signed_str();
         let row = sqlx_core::query::query(
             "SELECT request_hash, approval_id FROM transactions WHERE transaction_id = $1",
         )
@@ -643,6 +665,9 @@ impl AuditStore for PostgresStore {
                 AuditEventKind::ApprovalGranted,
                 transaction_id,
                 &receipt_digest,
+                EventIdentity::V2 {
+                    caller_principal: &approver_signed,
+                },
             )
             .await?;
         }
@@ -653,11 +678,16 @@ impl AuditStore for PostgresStore {
     async fn revoke_unconsumed_approval(
         &self,
         transaction_id: &str,
+        revoker: CallerPrincipal,
     ) -> Result<bool, TransactionStoreError> {
         let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
-        let revoked =
-            Self::revoke_unconsumed_approval_in_tx(&mut tx, &self.audit_key, transaction_id)
-                .await?;
+        let revoked = Self::revoke_unconsumed_approval_in_tx(
+            &mut tx,
+            &self.audit_key,
+            transaction_id,
+            &revoker.as_signed_str(),
+        )
+        .await?;
         tx.commit().await.map_err(map_sqlx_err)?;
         Ok(revoked)
     }
@@ -666,6 +696,7 @@ impl AuditStore for PostgresStore {
         &self,
         transaction_id: &str,
         receipt_digest: &str,
+        executor: CallerPrincipal,
     ) -> Result<bool, TransactionStoreError> {
         let queued = serialize(&JobState::Queued)?;
         let running = serialize(&JobState::Running)?;
@@ -707,6 +738,9 @@ impl AuditStore for PostgresStore {
                 AuditEventKind::ApprovalConsumed,
                 transaction_id,
                 receipt_digest,
+                EventIdentity::V2 {
+                    caller_principal: &executor.as_signed_str(),
+                },
             )
             .await?;
         }
@@ -742,8 +776,16 @@ impl AuditStore for PostgresStore {
             .await
             .map_err(map_sqlx_err)?;
             if result.rows_affected() > 0 {
-                Self::revoke_unconsumed_approval_in_tx(&mut tx, &self.audit_key, &transaction_id)
-                    .await?;
+                // Daemon-initiated revocation: the stale sweep has no caller
+                // connection to attribute, and `Unattributed` records exactly
+                // that rather than inventing an account (#249).
+                Self::revoke_unconsumed_approval_in_tx(
+                    &mut tx,
+                    &self.audit_key,
+                    &transaction_id,
+                    &CallerPrincipal::Unattributed.as_signed_str(),
+                )
+                .await?;
                 canceled_count += result.rows_affected();
             }
         }
@@ -751,7 +793,11 @@ impl AuditStore for PostgresStore {
         Ok(canceled_count)
     }
 
-    async fn cancel_queued(&self, transaction_id: &str) -> Result<bool, TransactionStoreError> {
+    async fn cancel_queued(
+        &self,
+        transaction_id: &str,
+        canceller: CallerPrincipal,
+    ) -> Result<bool, TransactionStoreError> {
         // Option A: the `status = $3` (Queued) guard means a Running (in-flight)
         // transaction is never cancelled.
         let queued = serialize(&JobState::Queued)?;
@@ -768,8 +814,15 @@ impl AuditStore for PostgresStore {
         .await
         .map_err(map_sqlx_err)?;
         if result.rows_affected() > 0 {
-            Self::revoke_unconsumed_approval_in_tx(&mut tx, &self.audit_key, transaction_id)
-                .await?;
+            // Caller-attributed cancel (see the SQLite impl): the revocation
+            // event names the account that cancelled, not `Unattributed`.
+            Self::revoke_unconsumed_approval_in_tx(
+                &mut tx,
+                &self.audit_key,
+                transaction_id,
+                &canceller.as_signed_str(),
+            )
+            .await?;
         }
         tx.commit().await.map_err(map_sqlx_err)?;
         Ok(result.rows_affected() > 0)
@@ -945,7 +998,7 @@ async fn audit_events_table_absent(pool: &PgPool) -> Result<bool, TransactionSto
 async fn fetch_event_rows_from_pool(pool: &PgPool) -> Result<Vec<EventRow>, TransactionStoreError> {
     let rows = sqlx_core::query::query(
         "SELECT seq, key_id, kind, transaction_id, receipt_digest, \
-                created_at, prev_chain_hash, chain_hash \
+                created_at, prev_chain_hash, chain_hash, chain_version, caller_principal \
          FROM audit_events ORDER BY seq ASC",
     )
     .fetch_all(pool)
@@ -965,6 +1018,7 @@ async fn append_event(
     kind: AuditEventKind,
     transaction_id: &str,
     receipt_digest: &str,
+    identity: EventIdentity<'_>,
 ) -> Result<(), TransactionStoreError> {
     let prev: Option<(i64, String)> = sqlx_core::query_as::query_as(
         "SELECT seq, chain_hash FROM audit_events ORDER BY seq DESC LIMIT 1 FOR UPDATE",
@@ -978,22 +1032,28 @@ async fn append_event(
     };
     let created_at = now_iso();
     let key_id = CURRENT_KEY_ID.to_string();
-    let chain_hash = key.event_hash(
-        &EventContent {
-            seq,
-            key_id: &key_id,
-            kind,
-            transaction_id,
-            receipt_digest,
-            created_at: &created_at,
-        },
-        &prev_chain_hash,
-    );
+    // Build the content once and derive the stored version from its identity,
+    // so the chain_version column is provably the version whose message was
+    // signed — the same discipline the SQLite backend follows.
+    let content = EventContent {
+        seq,
+        key_id: &key_id,
+        kind,
+        transaction_id,
+        receipt_digest,
+        created_at: &created_at,
+        identity,
+    };
+    let chain_hash = key.event_hash(&content, &prev_chain_hash);
+    let stored_principal = match identity {
+        EventIdentity::V2 { caller_principal } => Some(caller_principal),
+        EventIdentity::LegacyV1 => None,
+    };
     sqlx_core::query::query(
         "INSERT INTO audit_events ( \
             seq, key_id, kind, transaction_id, receipt_digest, \
-            created_at, chain_hash, prev_chain_hash \
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            created_at, chain_hash, prev_chain_hash, chain_version, caller_principal \
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(seq as i64)
     .bind(&key_id)
@@ -1003,6 +1063,8 @@ async fn append_event(
     .bind(&created_at)
     .bind(&chain_hash)
     .bind(&prev_chain_hash)
+    .bind(identity.version() as i64)
+    .bind(stored_principal)
     .execute(&mut **tx)
     .await
     .map_err(map_sqlx_err)?;
@@ -1203,6 +1265,10 @@ fn row_to_event_row(row: sqlx_postgres::PgRow) -> Result<EventRow, TransactionSt
         created_at: row.try_get("created_at").map_err(map_sqlx_err)?,
         prev_chain_hash: row.try_get("prev_chain_hash").map_err(map_sqlx_err)?,
         chain_hash: row.try_get("chain_hash").map_err(map_sqlx_err)?,
+        chain_version: row
+            .try_get::<i64, _>("chain_version")
+            .map_err(map_sqlx_err)? as u32,
+        caller_principal: row.try_get("caller_principal").map_err(map_sqlx_err)?,
     })
 }
 
