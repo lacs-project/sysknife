@@ -11,6 +11,99 @@ fi
 
 "$checker" "$repo_root"
 
+# Exercise the writer's preflight directly; malformed input must not hide a
+# missing environment variable or overwrite an existing evidence artifact.
+python3 - "$repo_root/scripts/record_story_run.py" <<'PY'
+import ast
+import json
+import os
+from pathlib import Path
+import runpy
+import subprocess
+import sys
+import tempfile
+import unittest
+
+writer = Path(sys.argv.pop())
+
+
+class StoryRunPreflight(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.output = Path(temporary.name) / "run.json"
+        self.output.write_text("existing evidence\n")
+        self.env = {key: value for key, value in os.environ.items()
+                    if not key.startswith("EV_")}
+        self.values = {
+            "EV_PATH": str(self.output), "EV_DISTRO_ID": "ubuntu",
+            "EV_RELEASE": "24.04", "EV_SURFACE": "cli",
+            "EV_CASSETTE_MODE": "replay", "EV_CASSETTE_SHA": "deadbeef",
+            "EV_CASSETTE_HITS": "1", "EV_CASSETTE_MISSES": "0",
+            "EV_CASSETTE_VERDICT": "ok", "EV_STORY_SET": "ubuntu",
+            "EV_RAN_AT": "2026-01-01T00:00:00Z", "EV_TOTAL": "1",
+            "EV_PASSED": "1", "EV_FAILED": "0", "EV_SKIPPED": "0",
+            "EV_RATELIMITED": "0",
+        }
+
+    def invoke(self, values, rows="1\tPASS\tfixture story\n"):
+        return subprocess.run([sys.executable, str(writer)],
+                              env={**self.env, **values}, input=rows,
+                              text=True, capture_output=True, check=False)
+
+    def assert_missing(self, names, rows="1\tPASS\tfixture story\n"):
+        values = {key: value for key, value in self.values.items() if key not in names}
+        result = self.invoke(values, rows=rows)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr,
+                         f"missing required environment: {', '.join(names)}\n")
+        self.assertEqual(self.output.read_text(), "existing evidence\n")
+
+    def test_each_missing_variable_is_named(self):
+        for name in self.values:
+            with self.subTest(name=name):
+                self.assert_missing([name])
+
+    def test_multiple_missing_variables_are_reported_together(self):
+        self.assert_missing(["EV_PATH", "EV_CASSETTE_SHA"])
+
+    def test_preflight_precedes_input_parsing(self):
+        self.assert_missing(["EV_CASSETTE_SHA"], rows="malformed input")
+
+    def test_present_sha_is_recorded(self):
+        result = self.invoke(self.values)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        doc = json.loads(self.output.read_text())
+        self.assertEqual(doc["cassette_sha256"], "deadbeef")
+        self.assertEqual(doc["stories"]["1"]["verdict"], "PASS")
+
+    def test_empty_sha_is_still_allowed(self):
+        result = self.invoke({**self.values, "EV_CASSETTE_SHA": ""})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(json.loads(self.output.read_text())["cassette_sha256"])
+
+    def test_every_required_environment_read_is_declared(self):
+        reads = {
+            node.slice.value
+            for node in ast.walk(ast.parse(writer.read_text()))
+            if isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "os" and node.value.attr == "environ"
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+            and node.slice.value.startswith("EV_")
+        }
+        self.assertTrue(reads, "no EV_ environment reads discovered")
+        declared = set(runpy.run_path(str(writer))["REQUIRED_ENV"])
+        self.assertEqual(reads - declared, set(),
+                         f"environment reads missing from REQUIRED_ENV: {sorted(reads - declared)}")
+
+
+unittest.main()
+PY
+
 fixture="$(mktemp -d)"
 trap 'rm -rf "$fixture"' EXIT
 
@@ -778,6 +871,14 @@ cp "$repo_root/README.md" "$fixture/README.md"
 printf '\nFedora Workstation 44 is fully supported.\n' >> "$fixture/docs/architecture.md"
 assert_rejected 'forbidden claim in a file only the Python list knew about'
 cp "$repo_root/docs/architecture.md" "$fixture/docs/architecture.md"
+
+# The layer-independence framing the Security Model rewrite retired.
+# SECURITY.md was not in CLAIM_FILES, so the pin written for this file
+# could not fire on it: restoring the sentence left the check green even
+# with the reject_pattern in place. Both lists now include SECURITY.md.
+printf '\nSysKnife uses a layered enforcement model. Every layer is independent; a\nbypass of one does not bypass the others.\n' >> "$fixture/SECURITY.md"
+assert_rejected 'layer-independence framing restored in SECURITY.md'
+cp "$repo_root/SECURITY.md" "$fixture/SECURITY.md"
 
 printf '\nlocal-clone path until npm publish lands\n' >> "$fixture/README.md"
 assert_rejected 'publish-pending setup language'

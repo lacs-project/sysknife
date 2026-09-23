@@ -12,6 +12,35 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Fixed
+
+- **The story-evidence writer refuses a missing `EV_CASSETTE_SHA` at preflight
+  instead of raising `KeyError` mid-assembly.**
+  ([#505](https://github.com/lacs-project/sysknife/pull/505)) The variable was
+  read with a strict `os.environ[...]` but was absent from `REQUIRED_ENV`, so
+  the caller got a two-variable diagnostic and then a traceback rather than the
+  complete missing-variable list. No live caller reached it:
+  `run-stories.sh:618` always sets it. A test derives the required reads from
+  the Python AST, so the declaration cannot drift from the code again (closes
+  [#448](https://github.com/lacs-project/sysknife/issues/448)). Thanks to
+  [@mikevillari](https://github.com/mikevillari).
+- **`scripts/check_evidence_claims.py` and `tests/release/public-claims.test.sh`
+  are executable again.** Both lost the bit in #487's merge. CI calls them
+  through an interpreter so nothing went red, and `CONTRIBUTING.md` tells
+  contributors to run the first one directly, which failed with
+  `Permission denied`.
+
+### Documented
+
+- **The Security Model says what the layers are.**
+  ([#487](https://github.com/lacs-project/sysknife/pull/487)) They are
+  sequential gates on one request path inside one process running as one
+  root-equivalent account, not independent walls, and `SECURITY.md` now says so
+  with the grants that make it true. `check_public_claims.sh` pins the retired
+  "every layer is independent" wording, and `SECURITY.md` joined `CLAIM_FILES`,
+  without which the pin could not fire on the file it was written for. Thanks
+  to [@yuee3](https://github.com/yuee3).
+
 ## [0.21.0] — 2026-09-23
 
 ### Security

@@ -202,6 +202,7 @@ pub struct AuditForwardSection {
 /// [audit.forward.syslog]
 /// host = "siem.internal:514"
 /// facility = 1            # 1 = user-level (default)
+/// enterprise_number = 99999  # your own IANA PEN; defaults to the doc/test PEN
 /// ```
 #[derive(Debug, Deserialize)]
 pub struct SyslogForwardSection {
@@ -210,10 +211,51 @@ pub struct SyslogForwardSection {
     /// Syslog facility number (default 1 = user-level messages).
     #[serde(default = "default_syslog_facility")]
     pub facility: u8,
+    /// IANA Private Enterprise Number used to build the syslog SD-ID
+    /// (`sysknife@<enterprise_number>`, see RFC 5424 §7.2.2).
+    ///
+    /// Defaults to [`DOCUMENTATION_PEN`], RFC 5612's reserved
+    /// documentation/test PEN — see the warning comment on
+    /// `format_rfc5424` in `sysknife-daemon::audit_forward`. Operators
+    /// forwarding into a regulated SIEM should set this to their own
+    /// assigned PEN; see [`SyslogForwardSection::validate`].
+    #[serde(default = "default_enterprise_number")]
+    pub enterprise_number: u32,
 }
 
 fn default_syslog_facility() -> u8 {
     1
+}
+
+/// RFC 5612's reserved documentation/test Private Enterprise Number. Used
+/// as [`SyslogForwardSection::enterprise_number`]'s default so the syslog
+/// forwarder keeps working out of the box while still carrying the
+/// "not a real PEN" signal until an operator configures one.
+pub const DOCUMENTATION_PEN: u32 = 32473;
+
+fn default_enterprise_number() -> u32 {
+    DOCUMENTATION_PEN
+}
+
+impl SyslogForwardSection {
+    /// Reject an `enterprise_number` of `0`, which is not a valid IANA PEN
+    /// (the registry's `enterprise-numbers` file starts numbering at 1).
+    /// Called at config-parse time, alongside any `facility` validation.
+    ///
+    /// Every other `u32` value is accepted: IANA PENs are allocated
+    /// sequentially with no reserved upper gap, so any nonzero `u32` is a
+    /// syntactically valid PEN even if it has not actually been assigned to
+    /// this operator.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.enterprise_number == 0 {
+            return Err(
+                "[audit.forward.syslog] enterprise_number must be a nonzero IANA \
+                 Private Enterprise Number"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
 }
 
 /// `[policy]` section. Currently holds per-action risk-level overrides.
@@ -840,6 +882,38 @@ model = "qwen3:8b"
             msg.contains("HOME") && msg.contains("XDG_CONFIG_HOME"),
             "panic message must mention both env vars; got: {msg}"
         );
+    }
+
+    #[test]
+    fn syslog_forward_section_default_enterprise_number_is_documentation_pen() {
+        let s = SyslogForwardSection {
+            host: "siem.internal:514".to_string(),
+            facility: default_syslog_facility(),
+            enterprise_number: default_enterprise_number(),
+        };
+        assert_eq!(s.enterprise_number, DOCUMENTATION_PEN);
+        assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn syslog_forward_section_accepts_custom_enterprise_number() {
+        let s = SyslogForwardSection {
+            host: "siem.internal:514".to_string(),
+            facility: default_syslog_facility(),
+            enterprise_number: 99999,
+        };
+        assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn syslog_forward_section_rejects_zero_enterprise_number() {
+        let s = SyslogForwardSection {
+            host: "siem.internal:514".to_string(),
+            facility: default_syslog_facility(),
+            enterprise_number: 0,
+        };
+        let err = s.validate().unwrap_err();
+        assert!(err.contains("enterprise_number"), "got: {err}");
     }
 
     use std::sync::Mutex;

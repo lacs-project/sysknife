@@ -215,6 +215,7 @@ mod tests {
             crate::audit_forward::spawn(crate::audit_forward::AuditSinkSpec::SyslogUdp {
                 host: "127.0.0.1:65000".parse().unwrap(),
                 facility: 1,
+                enterprise_number: crate::audit_forward::DOCUMENTATION_PEN,
             })
         });
         let state = DaemonState::open_full(cfg2, PolicyTable::empty(), Some(forwarder))

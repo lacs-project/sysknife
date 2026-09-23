@@ -104,10 +104,10 @@ SysKnife, not an afterthought.
 
 > **ℹ️ Distro support**
 >
-> The current suite is 84 Ubuntu stories. All three Ubuntu LTS releases have a
+> The current suite is 86 Ubuntu stories. All three Ubuntu LTS releases have a
 > committed live-VM run covering 79 of those Ubuntu stories, in
 > `tests/evidence/story-runs/`:
-> 22.04, 24.04 and 26.04 all at 79/79. The five additional stories are not yet
+> 22.04, 24.04 and 26.04 all at 79/79. The seven additional stories are not yet
 > included in a committed live-VM run. Each run has a replay twin that
 > reproduces it, serving every call with zero misses.
 > Every Debian-only action has a story.
@@ -144,7 +144,7 @@ flow.
 
 ## Status
 
-192 typed actions · 1,874 Rust tests + 72 frontend tests · MIT
+192 typed actions · 1,879 Rust tests + 72 frontend tests · MIT
 
 SysKnife is the reference implementation of the
 [LACS specification](https://github.com/lacs-project/specification) — a
