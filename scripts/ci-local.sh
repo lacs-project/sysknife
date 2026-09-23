@@ -257,7 +257,7 @@ hygiene_markdown_link_check() (
 
 hygiene_yamllint() (
     cd "$repo_root" || exit 1
-    yamllint .github/ISSUE_TEMPLATE/*.yml .github/workflows/*.yml
+    bash scripts/lint-github-yaml.sh
 )
 
 # Same scan as e2e.yml's "ShellCheck maintained scripts" step -- kept here too

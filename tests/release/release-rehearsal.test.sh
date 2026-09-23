@@ -112,6 +112,19 @@ assert_action_pins() {
     local -a workflows=("$workflows_dir"/*.yml "$workflows_dir"/*.yaml)
     eval "$old_nullglob"
 
+    # An absent actions root is normal; an existing but empty/unreadable root
+    # must fail discovery. Keep the workflow-only fixture interface unchanged.
+    if [[ $# -ge 3 ]]; then
+        local manifest
+        manifest="$(mktemp)"
+        if ! python3 "$repo_root/scripts/github_yaml.py" "$workflows_dir" "$3" > "$manifest"; then
+            rm -f "$manifest"
+            return 1
+        fi
+        mapfile -d '' -t workflows < "$manifest"
+        rm -f "$manifest"
+    fi
+
     ((${#workflows[@]})) || {
         printf 'FAIL: no workflow files matched under %s\n' "$workflows_dir" >&2
         return 1
@@ -170,7 +183,15 @@ for path in paths:
         fail(f"cannot parse {workflow}")
 
     document = mapping(document, path)
-    jobs = mapping(document.get("jobs"), f"{path}: jobs")
+    if workflow.name in ("action.yml", "action.yaml") and "runs" in document:
+        runs = mapping(document["runs"], f"{path}: runs")
+        if runs.get("using") != "composite":
+            continue  # JavaScript/Docker action metadata has no nested uses.
+        if "steps" not in runs:
+            fail(f"{path}: composite action is missing steps")
+        jobs = {"composite": runs}
+    else:
+        jobs = mapping(document.get("jobs"), f"{path}: jobs")
     for name, job in jobs.items():
         location = f"{path}: job {name}"
         job = mapping(job, location)
@@ -192,7 +213,7 @@ print(f"Checked {uses_count} uses: entries.")
 PYTHON
 }
 
-assert_action_pins "${repo_root}/.github/workflows" 20
+assert_action_pins "${repo_root}/.github/workflows" 20 "${repo_root}/.github/actions"
 
 # Exercise the shipped checker against both YAML spellings and both locations
 # GitHub accepts: step actions and job-level reusable workflows.
@@ -377,5 +398,7 @@ with tempfile.TemporaryDirectory() as directory:
     run(checker, candidate, "screen read 0 line(s)")
 print("Publication guard: clean source accepted; 16 mutations/invalid inputs rejected.")
 PYTHON
+
+python3 "$repo_root/tests/test_github_yaml.py"
 
 printf 'Release rehearsal contract passed.\n'

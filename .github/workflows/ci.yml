@@ -224,7 +224,7 @@ jobs:
           [[ "$count" -gt 0 ]] || { printf 'markdown-link-files: no files checked\n' >&2; exit 1; }
 
       - name: Lint GitHub issue templates
-        run: yamllint .github/ISSUE_TEMPLATE/*.yml .github/workflows/*.yml
+        run: bash scripts/lint-github-yaml.sh
 
   frontend:
     runs-on: ubuntu-latest
