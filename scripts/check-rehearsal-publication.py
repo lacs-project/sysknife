@@ -10,7 +10,10 @@ import re
 import sys
 
 PUBLICATION_PATTERN = r"publish"
-TOOL_PATTERN = r"(?:^\s*|[|&;(]\s*)(?:cargo|npm|gh|curl|wget)\s+"
+# Literal assignment values may contain quoted whitespace; this is not shell parsing.
+ASSIGNMENT = r"""[A-Za-z_][A-Za-z0-9_]*=(?:[^\s'"]|'[^']*'|"[^"]*")*"""
+SHELL_PREFIX = rf"(?:if|then|else|elif|do|while|until|!|command|exec|time|env|{ASSIGNMENT})"
+TOOL_PATTERN = rf"(?:^\s*|[|&;(]\s*)(?:{SHELL_PREFIX}\s+)*(?:cargo|npm|gh|curl|wget|git)\s+"
 
 PUBLICATION_LINES = {
     "This command never publishes packages, creates tags, or creates GitHub releases.",
