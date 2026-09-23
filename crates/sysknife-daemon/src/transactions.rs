@@ -522,7 +522,14 @@ impl TransactionStore {
         // never deleted, so it cannot mean the row vanished); the caller
         // (`dispatcher::update_terminal_status`) already retries on any error
         // and re-checks the final status, so failing closed here is safe.
-        let rows_affected = conn.execute(
+        // The UPDATE and the event that records it go in one sqlite
+        // transaction. Written separately, a crash between them leaves the
+        // column saying one thing and the chain another, which is the state
+        // this whole check exists to detect: a status nobody can corroborate
+        // would then look like tampering.
+        let mut conn = conn;
+        let tx = conn.transaction()?;
+        let rows_affected = tx.execute(
             "UPDATE transactions SET status = ?1 WHERE transaction_id = ?2 AND status = ?3",
             params![
                 serialize_field(&new_status)?,
@@ -535,7 +542,88 @@ impl TransactionStore {
                 transaction_id.to_string(),
             ));
         }
+        // `transactions.status` is a mutable column. Chaining the outcome means
+        // rewriting it no longer agrees with a signed record, which is what
+        // `status_matches_chain` compares. A read-only store has no key and
+        // never reaches a write, so the absence of one here is a bug rather
+        // than a case to pass over.
+        let Some(key) = self.audit_key.as_ref() else {
+            return Err(TransactionStoreError::AuditChainMissing(
+                "update_status has no signing key, so the outcome could not be chained",
+            ));
+        };
+        Self::append_event(
+            &tx,
+            key,
+            AuditEventKind::from(new_status),
+            transaction_id,
+            "",
+        )?;
+        tx.commit()?;
         Ok(())
+    }
+
+    /// Report any transaction whose `status` column disagrees with the newest
+    /// status event chained for it, or `None` when every row agrees.
+    ///
+    /// `ChainContent` deliberately does not sign `status`: the chain protects
+    /// the authorisation decision captured at insert, not the live execution
+    /// state, and that exclusion is correct. The consequence was that an action
+    /// which ran to completion could be rewritten in the column as canceled,
+    /// `sysknife history` reported it canceled, and the chain still verified
+    /// Intact, because nothing in the chain had an opinion about the outcome.
+    /// Now the outcome is an event, and this is the comparison that uses it.
+    pub fn status_matches_chain(
+        &self,
+    ) -> Result<audit_chain::StatusOutcome, TransactionStoreError> {
+        let conn = self.connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT t.transaction_id, t.status, ( \
+                 SELECT e.kind FROM audit_events e \
+                 WHERE e.transaction_id = t.transaction_id AND e.kind LIKE 'status_%' \
+                 ORDER BY e.seq DESC LIMIT 1 \
+             ) FROM transactions t",
+        )?;
+        let mut disagreements = Vec::new();
+        let mut checked: u64 = 0;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, status_json, newest) = row?;
+            checked += 1;
+            let state: JobState = deserialize_field(&status_json)?;
+            // A row that never moved off Queued has no status event, and that
+            // is not a disagreement: `record` chains the row itself.
+            let Some(newest) = newest else {
+                if state != JobState::Queued {
+                    disagreements.push(format!(
+                        "{id}: status is {state:?} and no status event was ever chained"
+                    ));
+                }
+                continue;
+            };
+            let expected = AuditEventKind::from(state).as_str();
+            if newest != expected {
+                disagreements.push(format!(
+                    "{id}: status column says {state:?} ({expected}) and the newest \
+                     chained status event is {newest}"
+                ));
+            }
+        }
+        Ok(if disagreements.is_empty() {
+            audit_chain::StatusOutcome::Agrees {
+                rows_checked: checked,
+            }
+        } else {
+            audit_chain::StatusOutcome::Disagrees {
+                detail: disagreements.join("; "),
+            }
+        })
     }
 
     /// Attach one immutable approval receipt digest to a fresh queued preview.
@@ -1699,6 +1787,91 @@ mod tests {
         assert_eq!(
             store.verify_event_chain(&key).unwrap(),
             VerifyOutcome::Intact { rows_checked: 4 }
+        );
+    }
+
+    #[test]
+    fn a_terminal_outcome_is_chained_so_rewriting_status_is_detectable() {
+        // The module documentation says status transitions ARE chained
+        // separately, in audit_events. They were not: update_status appended
+        // nothing, and audit_events recorded only the approval lifecycle. So a
+        // job that ran to completion could be rewritten in the `status` column
+        // as canceled, `sysknife history` reported it canceled, and
+        // `audit verify` still reported the chain Intact. An investigator
+        // reading that documentation would believe the outcome was protected.
+        let dir = tempdir().unwrap();
+        let key = AuditKey::from_bytes(vec![0x42; 32]);
+        let store = test_store(dir.path().join("tx.db"));
+
+        let tx = store.record(queued_transaction()).unwrap();
+        let receipt = store
+            .approve_transaction(&tx.transaction_id)
+            .unwrap()
+            .expect("queued transaction approves");
+        let digest = audit_chain::approval_receipt_digest(&receipt);
+        assert!(store
+            .claim_approved_for_execution(&tx.transaction_id, &digest)
+            .unwrap());
+        store
+            .update_status(&tx.transaction_id, JobState::Succeeded)
+            .unwrap();
+
+        // The outcome must be in the event chain, not only in a mutable column.
+        let kinds: Vec<String> = store
+            .fetch_event_rows()
+            .unwrap()
+            .iter()
+            .map(|e| e.kind.clone())
+            .collect();
+        assert!(
+            kinds.iter().any(|k| k.contains("succeeded")),
+            "no event records the terminal outcome; the chain covers only {kinds:?}"
+        );
+        assert!(
+            matches!(
+                store.status_matches_chain().unwrap(),
+                audit_chain::StatusOutcome::Agrees { .. }
+            ),
+            "an untampered store must report agreement, got {:?}",
+            store.status_matches_chain().unwrap()
+        );
+
+        // Now rewrite the column the way anyone with write access to the
+        // database can, and the cross-check must notice.
+        {
+            let conn = rusqlite::Connection::open(dir.path().join("tx.db")).unwrap();
+            let n = conn
+                .execute(
+                    "UPDATE transactions SET status = ?1 WHERE transaction_id = ?2",
+                    rusqlite::params!["\"canceled\"", tx.transaction_id],
+                )
+                .unwrap();
+            assert_eq!(n, 1, "the fixture did not rewrite the status column");
+        }
+        let audit_chain::StatusOutcome::Disagrees { detail } =
+            store.status_matches_chain().unwrap()
+        else {
+            panic!("a rewritten status must be reported, not passed over");
+        };
+        assert!(
+            detail.contains(&tx.transaction_id),
+            "the report must name the transaction: {detail}"
+        );
+        // The event chain itself is untouched by that UPDATE, which is exactly
+        // why verifying it alone was not enough.
+        assert!(
+            matches!(
+                store.verify_event_chain(&key).unwrap(),
+                VerifyOutcome::Intact { .. }
+            ),
+            "event chain: {:?}, rows: {:?}",
+            store.verify_event_chain(&key).unwrap(),
+            store
+                .fetch_event_rows()
+                .unwrap()
+                .iter()
+                .map(|e| (e.seq, e.kind.clone()))
+                .collect::<Vec<_>>()
         );
     }
 

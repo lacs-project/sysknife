@@ -292,6 +292,7 @@ impl PostgresStore {
             events: VerifyOutcome::CannotVerify { reason },
             binding: BindingOutcome::NotChecked,
             attribution: Some(AttributionCensus::of(tx_rows)),
+            status: None,
         }
     }
 

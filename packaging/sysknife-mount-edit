@@ -164,6 +164,33 @@ def write_fstab(lines: list) -> None:
         die(f"cannot write {FSTAB}: {exc}")
 
 
+# Mirrors MOUNT_OPTIONS_DENY in crates/sysknife-daemon/src/actions/validate.rs.
+# The helper is directly sudo-invocable, so the daemon refusing these is not
+# enough. `suid` lets a setuid-root binary on the mounted filesystem escalate
+# whoever runs it and `dev` lets a device node on it reach any block device;
+# `exec` is deliberately absent, because running an ordinary binary from a
+# mounted volume is legitimate and nosuid+nodev is what removes the escalation.
+# tests/release/mount-edit.test.sh derives this list from that Rust source and
+# fails on any gap.
+DENY_MOUNT_OPTIONS = ("suid", "dev")
+
+
+def ensure_hardened(options: str) -> str:
+    """Append nosuid,nodev unless they are already there.
+
+    mount(8) takes the last of a conflicting pair, so appending is enough and
+    the operator's own list stays intact ahead of it. Appending matters because
+    an omitted --options reaches here as `defaults`, which Linux expands to
+    `rw,suid,dev,exec,auto,nouser,async`: the charset check saw nothing to
+    object to and the mount still came up with suid and dev set.
+    """
+    opts = [o for o in options.split(",") if o]
+    for required in ("nosuid", "nodev"):
+        if not any(o.lower() == required for o in opts):
+            opts.append(required)
+    return ",".join(opts)
+
+
 def ensure_nofail(options: str) -> str:
     opts = [o for o in options.split(",") if o]
     if not opts:
@@ -212,7 +239,12 @@ def op_mount(args) -> None:
     options = args.options or "defaults"
     if not OPTIONS_RE.match(options):
         die(f"invalid options {options!r}")
-    options = ensure_nofail(options)
+    # Refuse rather than silently strip: an operator who asked for `suid` must
+    # be told it was refused, or they will believe the mount carries it.
+    for opt in options.split(","):
+        if opt.lower() in DENY_MOUNT_OPTIONS:
+            die(f"mount option {opt!r} grants privilege on the mounted filesystem; refusing")
+    options = ensure_hardened(ensure_nofail(options))
 
     # Fast pre-check: reject a critical target or an already-symlinked mountpoint
     # with a clear message before doing any work.

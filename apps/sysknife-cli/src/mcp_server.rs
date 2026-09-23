@@ -48,7 +48,7 @@ use rmcp::{
         CallToolResult, ContentBlock, Implementation, ListResourceTemplatesResult,
         ListResourcesResult, PaginatedRequestParams, ReadResourceRequestParams,
         ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ServerCapabilities,
-        ServerInfo, Tool, ToolAnnotations,
+        ServerConfig, Tool, ToolAnnotations,
     },
     schemars, tool, tool_handler, tool_router,
     transport::stdio,
@@ -710,8 +710,8 @@ fn sysknife_implementation() -> Implementation {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for SysknifeMcpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
@@ -1507,6 +1507,7 @@ mod tests {
                 bindings_checked: 0,
             },
             attribution,
+            status: None,
         }
     }
 
@@ -1598,6 +1599,7 @@ mod tests {
                     bindings_checked: 0,
                 },
                 attribution: Some(AttributionCensus::from_counts_for_tests(3, 0, 0, 0)),
+                status: None,
             },
             "/tmp/store.sqlite".to_string(),
         );

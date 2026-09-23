@@ -75,6 +75,16 @@ pub fn set_service_resource_limits(unit: &str, assignments: &[String]) -> Action
 /// in `packaging/sysknife-sudoers`.
 const SCHEDULED_JOB_HELPER: &str = "/usr/lib/sysknife/scheduled-job-edit";
 
+/// Installed path of the bounded multi-step helper.
+///
+/// The eight unit verbs run through `action-steps unit <verb> <unit>` rather
+/// than through a `sudo systemctl <verb> *` grant. sudoers matches arguments as
+/// one concatenated string, so the unit name sat in a wildcard that also
+/// accepted `debug-shell.service`, which the daemon's own `ROOT_SHELL_UNITS`
+/// denylist refuses and a grant cannot. The helper applies that denylist again,
+/// for the verbs that bring a unit up, on whatever path reaches it.
+const ACTION_STEPS: &str = "/usr/lib/sysknife/action-steps";
+
 /// Create a recurring scheduled job as a systemd `.service` + `.timer` pair.
 ///
 /// Risk: High. Persistent root-scheduled execution. Delegates to the root-owned
@@ -126,7 +136,7 @@ pub fn list_services() -> ActionSpec {
 pub fn start_service(unit: &str) -> ActionSpec {
     ActionSpec {
         action_name: "StartService",
-        mechanism: command_mechanism("sudo", ["systemctl", "start", unit]),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "unit", "start", unit]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
@@ -136,7 +146,7 @@ pub fn start_service(unit: &str) -> ActionSpec {
 pub fn stop_service(unit: &str) -> ActionSpec {
     ActionSpec {
         action_name: "StopService",
-        mechanism: command_mechanism("sudo", ["systemctl", "stop", unit]),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "unit", "stop", unit]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
@@ -146,7 +156,7 @@ pub fn stop_service(unit: &str) -> ActionSpec {
 pub fn restart_service(unit: &str) -> ActionSpec {
     ActionSpec {
         action_name: "RestartService",
-        mechanism: command_mechanism("sudo", ["systemctl", "restart", unit]),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "unit", "restart", unit]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
@@ -158,7 +168,7 @@ pub fn set_service_enabled(unit: &str, enabled: bool) -> ActionSpec {
 
     ActionSpec {
         action_name: "SetServiceEnabled",
-        mechanism: command_mechanism("sudo", ["systemctl", verb, unit]),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "unit", verb, unit]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
@@ -168,7 +178,7 @@ pub fn set_service_enabled(unit: &str, enabled: bool) -> ActionSpec {
 pub fn mask_service(unit: &str) -> ActionSpec {
     ActionSpec {
         action_name: "MaskService",
-        mechanism: command_mechanism("sudo", ["systemctl", "mask", unit]),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "unit", "mask", unit]),
         risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
@@ -178,7 +188,7 @@ pub fn mask_service(unit: &str) -> ActionSpec {
 pub fn unmask_service(unit: &str) -> ActionSpec {
     ActionSpec {
         action_name: "UnmaskService",
-        mechanism: command_mechanism("sudo", ["systemctl", "unmask", unit]),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "unit", "unmask", unit]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
@@ -206,7 +216,7 @@ pub fn reload_service(unit: &str) -> ActionSpec {
     // is sufficient and the unit supports it.
     ActionSpec {
         action_name: "ReloadService",
-        mechanism: command_mechanism("sudo", ["systemctl", "reload", unit]),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "unit", "reload", unit]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,

@@ -163,3 +163,266 @@ fn matcher_rejects_a_bare_binary_name_against_an_absolute_argument_token() {
          does not PATH-resolve arguments, only the primary command"
     );
 }
+
+/// Every grant that still permits any arguments, with the reason it does.
+///
+/// A grant with no argument tokens matches whatever sudo is handed after the
+/// command, so `NOPASSWD: /usr/bin/systemctl` authorised `systemctl link
+/// /path/evil.service` as surely as `systemctl restart nginx`. Sixteen
+/// families were narrowed to the argv the catalogue actually builds, in two
+/// passes: first the documented root-shell primitives, then every remaining
+/// binary that can run an arbitrary command as root (certbot through its
+/// hooks, fail2ban-client through a jail action, snap because snaps install
+/// and run as root, rpm-ostree through rpm scriptlets).
+///
+/// What is left is the set whose FIRST argument is the parameter itself, so
+/// there is no fixed leading token to anchor a grant on, and none of them can
+/// spawn a shell or execute a caller-supplied command.
+///
+/// The catalogue records one SAMPLE argv per action, so a fixed subcommand and
+/// a parameter value are indistinguishable from it: `groupadd developers`
+/// would narrow to the literal string `developers`. That is why this list is
+/// written out instead of computed. What is enforced is that it cannot grow by
+/// accident and cannot go stale.
+const BARE_BY_DESIGN: &[(&str, &str)] = &[
+    (
+        "/usr/bin/add-apt-repository",
+        "the repository spec is the first argument",
+    ),
+    (
+        "/usr/bin/apt-mark",
+        "hold/unhold plus package names, no fixed leading token",
+    ),
+    (
+        "/usr/bin/canonical-livepatch",
+        "subcommand varies; Ubuntu Pro surface",
+    ),
+    (
+        "/usr/bin/chage",
+        "the aging flag is the first argument and varies",
+    ),
+    ("/usr/bin/do-release-upgrade", "flags only, no subcommand"),
+    (
+        "/usr/bin/gpasswd",
+        "the flag and the user are both parameters",
+    ),
+    (
+        "/usr/sbin/aa-complain",
+        "the profile name is the only argument",
+    ),
+    (
+        "/usr/sbin/aa-enforce",
+        "the profile name is the only argument",
+    ),
+    ("/usr/sbin/aa-status", "flags only"),
+    ("/usr/sbin/groupadd", "the group name is the only argument"),
+    ("/usr/sbin/groupdel", "the group name is the only argument"),
+    ("/usr/sbin/lvcreate", "sizing flags vary by request"),
+    ("/usr/sbin/lvextend", "sizing flags vary by request"),
+    (
+        "/usr/sbin/ufw",
+        "eight actions with no shared leading token",
+    ),
+    ("/usr/sbin/userdel", "the username is the only argument"),
+];
+
+/// The direction the original check never looked in.
+///
+/// `every_sudo_action_is_authorised_by_a_packaged_grant` asks whether each
+/// action has a grant. It cannot notice a grant far wider than any action
+/// needs, which is how thirty-one commands came to be authorised with no
+/// argument constraint at all, several of them documented root-shell
+/// primitives. Narrowing them was manual; keeping them narrow is this.
+#[test]
+fn no_new_grant_may_permit_arbitrary_arguments() {
+    let grants = load_grants();
+    assert!(
+        !grants.is_empty(),
+        "parsed zero grants — the sudoers parser or file layout changed"
+    );
+
+    let bare: Vec<String> = grants
+        .iter()
+        .filter(|g| g.tokens.len() == 1)
+        .map(|g| g.tokens[0].clone())
+        .collect();
+    assert!(
+        !bare.is_empty(),
+        "no bare grants found at all — the parser stopped seeing argument tokens, \
+         which would make this check pass over nothing"
+    );
+
+    let declared: std::collections::BTreeSet<&str> =
+        BARE_BY_DESIGN.iter().map(|(cmd, _)| *cmd).collect();
+    let found: std::collections::BTreeSet<&str> = bare.iter().map(String::as_str).collect();
+
+    let undeclared: Vec<&&str> = found.difference(&declared).collect();
+    assert!(
+        undeclared.is_empty(),
+        "these grants permit ANY arguments and are not in BARE_BY_DESIGN:\n  {}\n\
+         Narrow the grant to the argv the action builds, or add it there with the \
+         reason it cannot be narrowed.",
+        undeclared
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    );
+
+    // A stale entry is as bad as a missing one: it makes the list look
+    // considered while describing a grant that no longer exists.
+    let stale: Vec<&&str> = declared.difference(&found).collect();
+    assert!(
+        stale.is_empty(),
+        "BARE_BY_DESIGN names grants that are no longer bare (or no longer exist):\n  {}\n\
+         Remove them, so the list keeps meaning what it says.",
+        stale
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    );
+
+    for (cmd, reason) in BARE_BY_DESIGN {
+        assert!(
+            !reason.trim().is_empty(),
+            "{cmd} is declared bare with no reason, which is a list entry rather than a decision"
+        );
+    }
+}
+
+/// Every escape GHSA-j9c3-j2qr-65c4 named, run through the matcher as an argv.
+///
+/// The previous version of this test asserted that the `useradd`, `usermod` and
+/// `systemctl` grants carried at least one argument token. They did, from
+/// 0.20.0 onward, and all three escapes below still matched, because sudoers
+/// matches the arguments as a single concatenated string: a trailing `*`
+/// accepts further OPTIONS exactly as readily as a value, so
+/// `useradd --create-home -o -u 0 -g 0 backdoor` matched a grant written as
+/// `useradd --create-home *`. "The grant is narrowed" and "the escape is
+/// refused" are different claims, and only the second one is the property.
+///
+/// sudoers has no way to say "and nothing further", so the argv these actions
+/// build now goes through `/usr/lib/sysknife/action-steps`, which re-validates
+/// every token. That means this file no longer grants `useradd`, `usermod` or
+/// the eight unit verbs at all, and the escapes are refused for the strongest
+/// possible reason: nothing authorises the binary.
+///
+/// The helper's own screen is what refuses `action-steps unit start
+/// debug-shell.service`, which this layer does authorise by design; that half
+/// is proved in tests/release/action-steps.test.sh.
+const ROOT_ESCAPES: &[(&str, &str)] = &[
+    (
+        "/usr/sbin/useradd --create-home -o -u 0 -g 0 backdoor",
+        "a second uid-0 account, which is root without a shell grant",
+    ),
+    (
+        "/usr/sbin/useradd -o -u 0 -g 0 backdoor",
+        "the same account with no leading literal to hide behind",
+    ),
+    (
+        "/usr/sbin/usermod --lock -o -u 0 someuser",
+        "makes an existing account uid 0",
+    ),
+    (
+        "/usr/sbin/usermod -p HASH root",
+        "rewrites root's password hash",
+    ),
+    (
+        "/usr/bin/systemctl start debug-shell.service",
+        "an unauthenticated root shell on tty9",
+    ),
+    (
+        "/usr/bin/systemctl start rescue.target",
+        "a root maintenance shell",
+    ),
+    (
+        "/usr/bin/systemctl link /tmp/evil.service",
+        "installs a unit file from a path the caller owns",
+    ),
+];
+
+#[test]
+fn no_grant_authorises_a_documented_root_escape() {
+    let grants = load_grants();
+    assert!(
+        !grants.is_empty(),
+        "parsed zero grants, so every escape below would be refused by an empty file"
+    );
+    // A positive control in the same test: with no grant matching anything, the
+    // assertions below hold for the wrong reason.
+    let allowed: Vec<String> = "/usr/lib/sysknife/action-steps unit start nginx.service"
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    assert!(
+        grants.iter().any(|g| grant_allows(g, &allowed)),
+        "the matcher refused an argv the catalogue builds, so it is refusing everything"
+    );
+
+    let mut admitted = Vec::new();
+    for (escape, why) in ROOT_ESCAPES {
+        let argv: Vec<String> = escape.split_whitespace().map(str::to_string).collect();
+        if let Some(g) = grants.iter().find(|g| grant_allows(g, &argv)) {
+            admitted.push(format!(
+                "{escape}\n    is {why}, admitted by `{}`",
+                g.tokens.join(" ")
+            ));
+        }
+    }
+    assert!(
+        admitted.is_empty(),
+        "these grants authorise an escape the advisories say is closed:\n  {}",
+        admitted.join("\n  ")
+    );
+}
+
+/// The binaries that must not reappear as a direct grant, with what they buy.
+///
+/// Losing the grant is what closes the class; a later "narrowed" grant would
+/// reopen it, and `ROOT_ESCAPES` alone would not say which change did it.
+#[test]
+fn the_root_shell_primitives_have_no_direct_grant() {
+    let grants = load_grants();
+    for (cmd, why) in [
+        (
+            "/usr/sbin/useradd",
+            "`-o -u 0` creates a second root account",
+        ),
+        (
+            "/usr/sbin/usermod",
+            "`-o -u 0` moves an existing account to uid 0",
+        ),
+    ] {
+        let matching: Vec<&Grant> = grants.iter().filter(|g| g.tokens[0] == cmd).collect();
+        assert!(
+            matching.is_empty(),
+            "{cmd} is granted directly again ({why}). sudoers cannot forbid the \
+             options that follow a wildcard; route it through \
+             /usr/lib/sysknife/action-steps, which validates its whole argv."
+        );
+    }
+    // These keep direct grants, and each one must stay argument-constrained.
+    for cmd in [
+        "/usr/bin/systemctl",
+        "/usr/bin/kill",
+        "/usr/bin/hostnamectl",
+        "/usr/bin/timedatectl",
+        "/usr/bin/localectl",
+        "/usr/bin/resolvectl",
+    ] {
+        let matching: Vec<&Grant> = grants.iter().filter(|g| g.tokens[0] == cmd).collect();
+        assert!(
+            !matching.is_empty(),
+            "{cmd} has no grant at all; this check would otherwise pass over nothing"
+        );
+        for g in matching {
+            assert!(
+                g.tokens.len() > 1,
+                "{cmd} is granted with no argument constraint again. A bare grant here \
+                 authorises every invocation of it, including the ones the daemon's own \
+                 validators exist to refuse."
+            );
+        }
+    }
+}

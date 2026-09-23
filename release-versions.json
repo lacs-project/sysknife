@@ -1,0 +1,98 @@
+{
+  "_comment": [
+    "Every place the release version is written. scripts/bump_version.sh writes",
+    "them and scripts/check_release_versions.sh reads them, so the two cannot",
+    "disagree about what a release touches. Adding a manifest without adding it",
+    "here fails tests/release/version-sites.test.sh, which derives the expected",
+    "set from the tree rather than trusting this list to be complete.",
+    "",
+    "json_sites name JSON PATHS, not a count of matches. package-lock.json has",
+    "178 'version' fields and two of them are ours; counting matches would have",
+    "compared the release against every npm dependency.",
+    "",
+    "Cargo.lock is under generated_lockfiles, never edited as text. A textual",
+    "substitution there rewrites any third-party crate sharing the version",
+    "string: on 2026-09-22 a global sed of 0.17.0 -> 0.18.0 turned hashbrown",
+    "0.17.0 into a version that does not exist at its recorded checksum, and the",
+    "rehearsal failed with 'cannot update the lock file'. cargo owns that file.",
+    "bump_version.sh runs cargo and then refuses if anything outside the",
+    "workspace moved."
+  ],
+  "cargo_manifests": [
+    "apps/sysknife-cli/Cargo.toml",
+    "apps/sysknife-shell/src-tauri/Cargo.toml",
+    "crates/sysknife-brain/Cargo.toml",
+    "crates/sysknife-core/Cargo.toml",
+    "crates/sysknife-daemon-test/Cargo.toml",
+    "crates/sysknife-daemon/Cargo.toml",
+    "crates/sysknife-proto/Cargo.toml",
+    "crates/sysknife-types/Cargo.toml"
+  ],
+  "json_sites": [
+    {
+      "file": "apps/sysknife-shell/package.json",
+      "paths": [
+        [
+          "version"
+        ]
+      ]
+    },
+    {
+      "file": "apps/sysknife-shell/package-lock.json",
+      "paths": [
+        [
+          "version"
+        ],
+        [
+          "packages",
+          "",
+          "version"
+        ]
+      ]
+    },
+    {
+      "file": "apps/sysknife-shell/src-tauri/tauri.conf.json",
+      "paths": [
+        [
+          "version"
+        ]
+      ]
+    },
+    {
+      "file": "packages/setup/package.json",
+      "paths": [
+        [
+          "version"
+        ]
+      ]
+    },
+    {
+      "file": ".codex-plugin/plugin.json",
+      "paths": [
+        [
+          "version"
+        ]
+      ]
+    },
+    {
+      "file": "server.json",
+      "paths": [
+        [
+          "version"
+        ],
+        [
+          "packages",
+          0,
+          "version"
+        ]
+      ]
+    }
+  ],
+  "internal_dep_prefix": "sysknife-",
+  "generated_lockfiles": [
+    "Cargo.lock"
+  ],
+  "changelog": "CHANGELOG.md",
+  "unreleased_heading": "## [Unreleased]",
+  "not_a_version_site": []
+}

@@ -64,8 +64,14 @@ jobs:
       - name: Check release version consistency
         run: bash scripts/check_release_versions.sh
 
+      - name: Check the release waits for crates.io to index each crate
+        run: bash tests/release/crates-index-poll.test.sh
+
       - name: Test internal dependency pin coverage
         run: bash tests/release/release-version-pins.test.sh
+
+      - name: Test the version-site registry is complete
+        run: bash tests/release/version-sites.test.sh
 
       - name: Check public support and approval claims
         run: bash tests/release/public-claims.test.sh
@@ -102,6 +108,9 @@ jobs:
 
       - name: Check no workflow pins an end-of-life Node release
         run: bash tests/release/node-eol.test.sh
+
+      - name: Check npm audit stays off the pull-request path
+        run: bash tests/release/npm-audit-off-pr-path.test.sh
 
       - name: Check tracked files use portable line endings
         run: bash tests/release/tracked-eol.test.sh
@@ -218,7 +227,7 @@ jobs:
           [[ "$count" -gt 0 ]] || { printf 'markdown-link-files: no files checked\n' >&2; exit 1; }
 
       - name: Lint GitHub issue templates
-        run: yamllint .github/ISSUE_TEMPLATE/*.yml .github/workflows/*.yml
+        run: bash scripts/lint-github-yaml.sh
 
   frontend:
     runs-on: ubuntu-latest
@@ -237,8 +246,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
+      # No npm audit here. It gated every pull request on registry.npmjs.org,
+      # so an outage failed this required job like a real advisory would (#367).
+      # It runs against main in npm-audit.yml; dependency-review below covers
+      # what a pull request introduces.
 
       - name: Type check
         run: ./node_modules/.bin/tsc --noEmit
@@ -293,7 +304,7 @@ jobs:
         run: cargo doc --no-deps --workspace --locked
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c  # v2.87.10
+        uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e  # v2.87.14
         with:
           tool: cargo-nextest
 
@@ -348,7 +359,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c  # v2.87.10
+        uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e  # v2.87.14
         with:
           tool: cargo-audit
 

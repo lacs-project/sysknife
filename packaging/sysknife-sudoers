@@ -26,15 +26,32 @@
 # which is the only wildcard form this file uses, so no grant needs reworking.
 
 # User management — create and delete system/human accounts.
-# useradd: called by CreateUser  (sudo useradd --create-home ...)
-# userdel: called by DeleteUser  (sudo userdel <username>)
-sysknife ALL=(root) NOPASSWD: /usr/sbin/useradd
+# CreateUser: sudo action-steps user-create <name> [--home-dir p] [--shell s]
+# userdel:     called by DeleteUser  (sudo userdel <username>)
+# CreateUser goes through the helper, not through a `useradd` grant.
+#
+# The grant here used to be `/usr/sbin/useradd --create-home *`, on the reading
+# that a leading literal forbids the rest. It does not: sudoers matches the
+# arguments as one concatenated string, so a trailing `*` accepts further
+# OPTIONS as readily as a username, and the uid-0 escape this was written to
+# close still matched with `--create-home` typed in front of it. sudoers has no
+# way to say "and nothing else", so the grammar is enforced in
+# /usr/lib/sysknife/action-steps, which re-validates every token whether the
+# daemon or a direct sudo call invoked it.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps user-create *
 sysknife ALL=(root) NOPASSWD: /usr/sbin/userdel
 
 # Group membership — add/remove users to/from groups.
-# usermod: called by AddUserToGroup  (sudo usermod --append --groups <grp> <user>)
+# AddUserToGroup:      sudo action-steps group-add <user> <grp>, which runs
+#                      `usermod --append --groups` as root inside the helper
 # gpasswd: called by RemoveUserFromGroup  (sudo gpasswd --delete <user> <grp>)
-sysknife ALL=(root) NOPASSWD: /usr/sbin/usermod
+# LockUserAccount and UnlockUserAccount go through the helper for the same
+# reason: `/usr/sbin/usermod --lock *` also admitted
+# `usermod --lock -o -u 0 <user>`, which makes an existing account uid 0.
+# AddUserToGroup already ran `usermod --append --groups` inside the helper, so
+# after this there is no `usermod` grant at all.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps user-lock *
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps user-unlock *
 sysknife ALL=(root) NOPASSWD: /usr/bin/gpasswd
 
 # Group lifecycle — create/delete groups.
@@ -47,26 +64,46 @@ sysknife ALL=(root) NOPASSWD: /usr/sbin/groupdel
 
 # Process control — SignalProcess sends an allowlisted signal to a pid.
 # kill is not a shell-spawner (no GTFOBins escalation); the daemon validates
-# pid >= 2 and the signal name before invoking it. (LockUserAccount /
-# UnlockUserAccount reuse the /usr/sbin/usermod grant above — no new grant.)
+# pid >= 2 and the signal name before invoking it.
 # Also backs the action-timeout reaper (#142): when a sudo action's root child
 # outlives the deadline, the daemon runs `sudo -n /usr/bin/kill -s <SIG> -- -<pgid>`
 # to signal that action's own process group as root — no new grant needed.
-sysknife ALL=(root) NOPASSWD: /usr/bin/kill
+# SignalProcess always builds the `-s <SIG>` form, and so does the
+# action-timeout reaper (#142). Requiring the literal `-s` keeps a bare
+# `kill -9 -1` off the grant.
+sysknife ALL=(root) NOPASSWD: /usr/bin/kill -s *
 
 # Service management — start, stop, restart, reload, enable, disable, mask, unmask,
 # daemon-reload. All systemctl write operations require root on Fedora.
-sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl
+# The eight unit verbs go through the helper as `action-steps unit <verb>
+# <unit>`. One grant per subcommand (`systemctl start *`, `stop *`, …) left the
+# unit name in the wildcard, so `systemctl start debug-shell.service` matched:
+# the daemon's ROOT_SHELL_UNITS denylist refuses that on its own path and a
+# sudoers grant cannot refuse it at all. The helper applies the same denylist to
+# the verbs that bring a unit up, and the plain name rules to the ones that take
+# one down.
+#
+# `daemon-reload` and `reboot` keep direct grants: both are literal, with no
+# argument for a wildcard to swallow. `set-property` stays a direct grant
+# because its assignments are cgroup resource limits, which cannot name a
+# command; it is the remaining wildcard in this family and issue #144 tracks it.
+# Derived from actions/services.rs; tests/sudoers_grants_match_argv.rs fails if
+# an action ever builds a subcommand this file does not authorise.
+sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl daemon-reload
+sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps unit *
+sysknife ALL=(root) NOPASSWD: /usr/bin/systemctl set-property *
 
 # Identity configuration — hostname, timezone, locale, NTP all require root via
 # hostnamectl/timedatectl/localectl (polkit "interactive auth" fails for system users).
-sysknife ALL=(root) NOPASSWD: /usr/bin/hostnamectl
-sysknife ALL=(root) NOPASSWD: /usr/bin/timedatectl
-sysknife ALL=(root) NOPASSWD: /usr/bin/localectl
+sysknife ALL=(root) NOPASSWD: /usr/bin/hostnamectl set-hostname *
+sysknife ALL=(root) NOPASSWD: /usr/bin/timedatectl set-ntp *
+sysknife ALL=(root) NOPASSWD: /usr/bin/timedatectl set-timezone *
+sysknife ALL=(root) NOPASSWD: /usr/bin/localectl set-locale *
 
 # Network configuration — resolvectl dns requires root; firewall-cmd --permanent
 # writes to /etc/firewalld/ which requires root.
-sysknife ALL=(root) NOPASSWD: /usr/bin/resolvectl
+sysknife ALL=(root) NOPASSWD: /usr/bin/resolvectl dns *
 
 # Fixed read-only nftables probes; the reporter itself has NO sudo grant.
 sysknife ALL=(root) NOPASSWD: /usr/sbin/nft list ruleset
@@ -83,10 +120,23 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/nmcli device wifi connect *
 # OS deployment management — rpm-ostree upgrade/install/rollback/cleanup/rebase/kargs
 # communicate with rpm-ostreed via D-Bus and require root authorization.
 # rpm-ostree status/kargs (read-only) still work without root but sudo does not hurt.
-sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree
+# rpm scriptlets run as root, so a bare grant reached every rpm-ostree
+# subcommand including ones that take a local package path.
+sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree cleanup *
+sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree install *
+sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree kargs
+sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree kargs *
+sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree override *
+sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree rebase *
+sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree rollback
+sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree uninstall *
+sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree upgrade
+sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree upgrade *
+sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree status *
 
 # OSTree admin operations — pin/unpin deployments require root filesystem access.
-sysknife ALL=(root) NOPASSWD: /usr/bin/ostree
+# only Pin/UnpinDeployment call ostree, and both go through `admin pin`.
+sysknife ALL=(root) NOPASSWD: /usr/bin/ostree admin pin *
 
 # Storage / LVM — ExtendLogicalVolume / CreateLogicalVolume / CreateLvSnapshot.
 # lvextend/lvcreate rewrite VG metadata and require root. `lvextend -r` also
@@ -160,7 +210,12 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/chage
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/pam-edit *
 
 # Snap write operations (install / remove / refresh / hold / revert).
-sysknife ALL=(root) NOPASSWD: /usr/bin/snap
+# snaps install and run as root, so `snap ack` and `snap download` on
+# attacker-supplied files were reachable through a bare grant.
+sysknife ALL=(root) NOPASSWD: /usr/bin/snap install *
+sysknife ALL=(root) NOPASSWD: /usr/bin/snap refresh *
+sysknife ALL=(root) NOPASSWD: /usr/bin/snap remove *
+sysknife ALL=(root) NOPASSWD: /usr/bin/snap revert *
 
 # UFW firewall — every mutating subcommand requires root.
 sysknife ALL=(root) NOPASSWD: /usr/sbin/ufw
@@ -168,8 +223,14 @@ sysknife ALL=(root) NOPASSWD: /usr/sbin/ufw
 # Netplan — apply/generate/set rewrite /etc/netplan/ + reload interfaces.
 # Path varies between releases: /usr/sbin/netplan on jammy/noble, but the
 # binary may also live at /usr/bin/netplan on some installs. Allow both.
-sysknife ALL=(root) NOPASSWD: /usr/sbin/netplan
-sysknife ALL=(root) NOPASSWD: /usr/bin/netplan
+# the same tool at the other packaged location.
+sysknife ALL=(root) NOPASSWD: /usr/sbin/netplan apply
+sysknife ALL=(root) NOPASSWD: /usr/sbin/netplan generate
+sysknife ALL=(root) NOPASSWD: /usr/sbin/netplan set *
+# apply and generate take no arguments at all; only `set` is parameterised.
+sysknife ALL=(root) NOPASSWD: /usr/bin/netplan apply
+sysknife ALL=(root) NOPASSWD: /usr/bin/netplan generate
+sysknife ALL=(root) NOPASSWD: /usr/bin/netplan set *
 
 # AppArmor — aa-status (apparmor base), aa-enforce/aa-complain (apparmor-utils).
 sysknife ALL=(root) NOPASSWD: /usr/sbin/aa-status
@@ -177,7 +238,11 @@ sysknife ALL=(root) NOPASSWD: /usr/sbin/aa-enforce
 sysknife ALL=(root) NOPASSWD: /usr/sbin/aa-complain
 
 # fail2ban-client — Fail2banStatus (read-only) / BanIp / UnbanIp.
-sysknife ALL=(root) NOPASSWD: /usr/bin/fail2ban-client
+# `fail2ban-client set <jail> action ... actionban <cmd>` executes a command as
+# root, and `restart`/`reload` reread config a bare grant also permitted.
+sysknife ALL=(root) NOPASSWD: /usr/bin/fail2ban-client status
+sysknife ALL=(root) NOPASSWD: /usr/bin/fail2ban-client status *
+sysknife ALL=(root) NOPASSWD: /usr/bin/fail2ban-client set *
 
 # fail2ban jail config — ConfigureFail2banJail delegates to this root-owned
 # helper, which writes /etc/fail2ban/jail.d/sysknife-<name>.local, tests it with
@@ -193,11 +258,19 @@ sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/audit-edit *
 # certbot / ACME — ObtainCertificate / RenewCertificates (mutating; write TLS
 # material). GetCertificates runs bare `certbot certificates` (read-only). Path
 # is the apt install location; a snap install lives at /snap/bin/certbot.
-sysknife ALL=(root) NOPASSWD: /usr/bin/certbot
+# certbot --pre-hook/--post-hook run an arbitrary command as root, so a bare
+# grant was a root shell. Only the two subcommands the catalogue builds.
+sysknife ALL=(root) NOPASSWD: /usr/bin/certbot certonly *
+sysknife ALL=(root) NOPASSWD: /usr/bin/certbot renew
 
 # Ubuntu Pro CLI — ProAttach / ProDetach (mutating). ProStatus is read-only and
 # does not require root, but `pro` itself is allowed for symmetry.
-sysknife ALL=(root) NOPASSWD: /usr/bin/pro
+# Ubuntu Pro subcommands the catalogue builds, and no others.
+sysknife ALL=(root) NOPASSWD: /usr/bin/pro attach *
+sysknife ALL=(root) NOPASSWD: /usr/bin/pro detach *
+sysknife ALL=(root) NOPASSWD: /usr/bin/pro enable *
+sysknife ALL=(root) NOPASSWD: /usr/bin/pro disable *
+sysknife ALL=(root) NOPASSWD: /usr/bin/pro status *
 
 # Canonical Livepatch — LivepatchStatus shells through sudo.
 sysknife ALL=(root) NOPASSWD: /usr/bin/canonical-livepatch

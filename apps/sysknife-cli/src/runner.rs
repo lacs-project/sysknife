@@ -1232,6 +1232,7 @@ fn cannot_verify_all(reason: String) -> AuditVerification {
         // `None`, not a census of zero rows: a database nobody could read and an
         // empty one that read fine must not serialize the same way.
         attribution: None,
+        status: None,
     }
 }
 
@@ -1278,10 +1279,17 @@ pub(crate) async fn verify_sqlite(
         Ok(rows) => rows,
         Err(e) => return cannot_verify_all(format!("approval-event query failed: {e}")),
     };
-    match verifier {
+    let mut verification = match verifier {
         Verifier::Private(key) => verify_all(key, &tx_rows, &event_rows),
         Verifier::Public(vk_hex) => verify_all_with_pubkey(vk_hex, &tx_rows, &event_rows),
-    }
+    };
+    // The status cross-check needs the live `status` column, which the pure
+    // verify_all functions never see, so it is set here where the store is
+    // open. A read failure leaves it `None`: the other three checks still have
+    // something to say, and claiming agreement nobody looked for would be the
+    // exact failure this check was added to catch.
+    verification.status = store.status_matches_chain().ok();
+    verification
 }
 
 pub(crate) async fn verify_postgres(
@@ -2273,6 +2281,7 @@ mod tests {
                 bindings_checked: 0,
             },
             attribution,
+            status: None,
         };
         emit_verification(
             &crate::cli::AuditVerifyArgs { json, pubkey: None },
@@ -2951,6 +2960,7 @@ mod tests {
                 bindings_checked: 0,
             },
             attribution: None,
+            status: None,
         };
         assert_eq!(combined_verification_exit_code(&verification, None), 2);
         let unavailable = CheckpointOutcome::CannotVerify {
@@ -2986,6 +2996,7 @@ mod tests {
                 bindings_checked: 0,
             },
             attribution: None,
+            status: None,
         };
         assert_eq!(combined_verification_exit_code(&verification, None), 1);
         verification.events = VerifyOutcome::Intact { rows_checked: 0 };
@@ -3013,6 +3024,7 @@ mod tests {
                 bindings_checked: 4,
             },
             attribution: None,
+            status: None,
         };
         let anchor = CheckpointOutcome::CannotVerify {
             reason: "checkpoint database unavailable".to_string(),

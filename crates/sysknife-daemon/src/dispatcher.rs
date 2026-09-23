@@ -1028,6 +1028,82 @@ pub fn compute_request_hash(action_name: &str, params: &Value) -> String {
 /// `apt-get -s autoremove` would remove, so execute can bind to it (#151).
 const AUTOREMOVE_REMOVALS_KEY: &str = "autoremove_removals";
 
+/// The deployment a Pin/Unpin preview was approved against.
+const DEPLOYMENT_IDENTITY_KEY: &str = "deployment_identity";
+
+/// Pull the ostree checksum of the deployment sitting at `index` out of
+/// `rpm-ostree status --json`.
+///
+/// The checksum is the stable identity; the index is a position in a list that
+/// UpdateSystem, CleanupDeployments and RollbackDeployment all reorder. An
+/// index past the end, unparseable output, or a deployment carrying no checksum
+/// are all errors rather than a default: binding execute to an empty string
+/// would make every later comparison succeed.
+fn parse_deployment_identity(status_json: &str, index: u32) -> Result<String, String> {
+    let doc: Value = serde_json::from_str(status_json)
+        .map_err(|e| format!("rpm-ostree status --json did not parse: {e}"))?;
+    let deployments = doc
+        .get("deployments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "rpm-ostree status --json has no deployments array".to_string())?;
+    let entry = deployments.get(index as usize).ok_or_else(|| {
+        format!(
+            "there is no deployment at index {index}; rpm-ostree lists {}",
+            deployments.len()
+        )
+    })?;
+    let checksum = entry
+        .get("checksum")
+        .and_then(Value::as_str)
+        .filter(|c| !c.is_empty())
+        .ok_or_else(|| format!("the deployment at index {index} carries no checksum"))?;
+    Ok(checksum.to_string())
+}
+
+/// Read the live identity of the deployment at `index`.
+async fn resolve_deployment_identity(
+    runner: &Arc<dyn CommandRunner + Send + Sync>,
+    index: u32,
+) -> Result<String, String> {
+    let r = Arc::clone(runner);
+    match tokio::task::spawn_blocking(move || r.run("rpm-ostree", &["status", "--json"])).await {
+        Ok(Ok(out)) => parse_deployment_identity(&out, index),
+        Ok(Err(e)) => Err(format!("rpm-ostree status --json failed: {e}")),
+        Err(e) => Err(format!("deployment status task panicked: {e}")),
+    }
+}
+
+/// Confirm the deployment now at the approved index is still the one the
+/// operator approved.
+///
+/// `PinDeployment` and `UnpinDeployment` take an ordinal, so the effect that
+/// executes need not be the effect that was previewed. `compute_request_hash`
+/// covers `{"index": N}` and nothing else, which is byte-identical however much
+/// has moved into slot N since, so the hash binding and the signed audit row
+/// both report a clean match to a validly approved preview while the wrong
+/// deployment gets pinned. Fails closed the way `verify_autoremove_binding`
+/// does: a preview that captured no identity cannot be executed.
+fn verify_deployment_binding(
+    approved_proposed_change: &Value,
+    live_identity: &str,
+) -> Result<(), String> {
+    let Some(captured) = approved_proposed_change
+        .get(DEPLOYMENT_IDENTITY_KEY)
+        .and_then(Value::as_str)
+    else {
+        return Err(
+            "the approved preview did not capture which deployment sat at that index;              preview again"
+                .to_string(),
+        );
+    };
+    if captured == live_identity {
+        return Ok(());
+    }
+    Err(format!(
+        "the deployment at that index changed since you approved it (approved {captured},          now {live_identity}); preview again"
+    ))
+}
+
 /// Run `apt-get -s autoremove` and parse the set of packages it would remove.
 /// The simulate is read-only (no `sudo`), so it runs through the same
 /// `CommandRunner` the preview uses to collect state.
@@ -2289,6 +2365,35 @@ async fn handle_preview(
         }
     }
 
+    // Pin/UnpinDeployment name an ordinal slot, so capture which deployment is
+    // in it and bind execute to that rather than to the number. Same shape as
+    // the autoremove capture above, and it fails closed the same way: a preview
+    // that recorded no identity cannot execute.
+    let mut deployment_warning: Option<String> = None;
+    if matches!(action_name, "PinDeployment" | "UnpinDeployment") {
+        match params.get("index").and_then(Value::as_u64) {
+            Some(index) => match resolve_deployment_identity(&runner, index as u32).await {
+                Ok(identity) => {
+                    proposed_change[DEPLOYMENT_IDENTITY_KEY] = json!(identity);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[sysknife-daemon] handle_preview: deployment identity lookup failed: {e}"
+                    );
+                    deployment_warning = Some(
+                        "Could not read which deployment sits at that index; approving this \
+                         preview will not let it run until a preview captures one."
+                            .to_string(),
+                    );
+                }
+            },
+            None => {
+                deployment_warning =
+                    Some("No deployment index was supplied, so nothing could be bound.".to_string())
+            }
+        }
+    }
+
     let envelope = RequestEnvelope {
         action_name: action_name.to_string(),
         request_id: request_id.to_string(),
@@ -2304,6 +2409,11 @@ async fn handle_preview(
     let state_unavailable = current_state.is_null();
     let mut preview = preview_action(&envelope, current_state, proposed_change);
     if let Some(w) = autoremove_warning {
+        preview.warnings.push(w);
+    }
+    // The operator has to see that the deployment binding was not captured,
+    // because approving this preview then buys them nothing: execute refuses.
+    if let Some(w) = deployment_warning {
         preview.warnings.push(w);
     }
     if state_unavailable {
@@ -2830,6 +2940,62 @@ async fn handle_execute(
             }
         };
         if let Err(reason) = verify_autoremove_binding(&approved_preview.proposed_change, &live) {
+            release_exclusive_slots(state, &to_claim, &stored_hash).await;
+            return send_error(framed, request_id, "stale_approval", reason).await;
+        }
+    }
+
+    // The same re-check for the deployment actions, fetching its own preview
+    // the way the autoremove block above does. Without it the approval binds a
+    // slot number and the slot's occupant can change underneath it.
+    if matches!(action_name, "PinDeployment" | "UnpinDeployment") {
+        let approved_preview = match state.audit.get_preview(transaction_id).await {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                release_exclusive_slots(state, &to_claim, &stored_hash).await;
+                return send_error(
+                    framed,
+                    request_id,
+                    "stale_approval",
+                    "no persisted preview for this transaction; preview before executing",
+                )
+                .await;
+            }
+            Err(e) => {
+                release_exclusive_slots(state, &to_claim, &stored_hash).await;
+                return send_error(
+                    framed,
+                    request_id,
+                    "transient_infrastructure_failure",
+                    format!("preview lookup failed: {e}"),
+                )
+                .await;
+            }
+        };
+        let Some(index) = params.get("index").and_then(Value::as_u64) else {
+            release_exclusive_slots(state, &to_claim, &stored_hash).await;
+            return send_error(
+                framed,
+                request_id,
+                "validation_failure",
+                "no deployment index was supplied, so the approval cannot be bound to one",
+            )
+            .await;
+        };
+        let live = match resolve_deployment_identity(&runner, index as u32).await {
+            Ok(identity) => identity,
+            Err(e) => {
+                release_exclusive_slots(state, &to_claim, &stored_hash).await;
+                return send_error(
+                    framed,
+                    request_id,
+                    "execution_failure",
+                    format!("could not confirm which deployment is at that index: {e}"),
+                )
+                .await;
+            }
+        };
+        if let Err(reason) = verify_deployment_binding(&approved_preview.proposed_change, &live) {
             release_exclusive_slots(state, &to_claim, &stored_hash).await;
             return send_error(framed, request_id, "stale_approval", reason).await;
         }
@@ -3731,6 +3897,62 @@ mod tests {
         // A preview whose simulate failed records no set; execute must fail closed.
         let pc = json!({ "action": "AptAutoremove" });
         assert!(verify_autoremove_binding(&pc, &str_set([])).is_err());
+    }
+
+    // `ostree admin pin <index>` names an ordinal position in the live
+    // deployment list, not a stable id. The operator approves on the basis of
+    // what sat at that position during preview, and `compute_request_hash`
+    // covers only `{"index": N}`, which is byte-identical however much has
+    // moved into slot N since. Any concurrent UpdateSystem, CleanupDeployments
+    // or RollbackDeployment inside the approval TTL reorders the list, and the
+    // request-hash binding and the signed audit row both still show a clean
+    // match to a validly approved preview.
+    //
+    // Same fix as #151 took for AptAutoremove: capture the identity at preview,
+    // re-check it at execute, fail closed when the preview captured nothing.
+    #[test]
+    fn a_deployment_preview_binds_execute_to_the_deployment_not_the_slot() {
+        // Nothing captured: execute must refuse rather than run against
+        // whatever now occupies the slot.
+        let empty = json!({ "action": "PinDeployment", "params": { "index": 1 } });
+        let err = verify_deployment_binding(&empty, "abc123")
+            .expect_err("a preview with no captured identity must not execute");
+        assert!(
+            err.contains("preview again"),
+            "the refusal must tell the operator what to do: {err}"
+        );
+
+        // Captured and unchanged: execute proceeds.
+        let mut pinned = empty.clone();
+        pinned[DEPLOYMENT_IDENTITY_KEY] = json!("abc123");
+        assert!(verify_deployment_binding(&pinned, "abc123").is_ok());
+
+        // Captured and something else moved into that slot: refuse, and name
+        // both so the operator can see what changed under them.
+        let err = verify_deployment_binding(&pinned, "def456")
+            .expect_err("a reordered list must not execute against the old approval");
+        assert!(
+            err.contains("abc123") && err.contains("def456"),
+            "the refusal must name the approved and the live deployment: {err}"
+        );
+    }
+
+    #[test]
+    fn deployment_identity_is_read_from_rpm_ostree_status() {
+        let json_out = r#"{"deployments":[
+            {"checksum":"aaa","origin":"fedora/41/x86_64/silverblue"},
+            {"checksum":"bbb","origin":"fedora/41/x86_64/silverblue"}
+        ]}"#;
+        assert_eq!(parse_deployment_identity(json_out, 0).unwrap(), "aaa");
+        assert_eq!(parse_deployment_identity(json_out, 1).unwrap(), "bbb");
+        // An index past the end is not "no deployment"; it is a question this
+        // cannot answer, and answering it with a default would bind execute to
+        // nothing.
+        assert!(parse_deployment_identity(json_out, 2).is_err());
+        assert!(parse_deployment_identity("not json", 0).is_err());
+        // A deployment with no checksum cannot be bound to. Returning an empty
+        // string here would make every later comparison succeed.
+        assert!(parse_deployment_identity(r#"{"deployments":[{}]}"#, 0).is_err());
     }
 
     #[test]

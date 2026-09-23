@@ -77,6 +77,35 @@ def op_refuses_before_mount(op, mp):
     return died and not called["ran"]
 
 
+def op_refuses_before_mount_with_options(options):
+    """Drive op_mount with a clean mountpoint and the given options, asserting
+    it dies before invoking mount(8). The mountpoint is valid, so only the
+    option screen can refuse."""
+    called = {"ran": False}
+
+    class FakeCompleted:
+        returncode = 1
+        stderr = b"blocked by test double"
+
+    def fake_run(cmd, **kw):
+        called["ran"] = True
+        return FakeCompleted()
+
+    real_run = mod.subprocess.run
+    mod.subprocess.run = fake_run
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            mp = os.path.join(d, "mnt")
+            os.makedirs(mp)
+            mod.op_mount(Args(mp, options=options))
+        died = False
+    except SystemExit as exc:
+        died = exc.code != 0
+    finally:
+        mod.subprocess.run = real_run
+    return died and not called["ran"]
+
+
 failures = []
 
 with tempfile.TemporaryDirectory() as d:
@@ -257,6 +286,81 @@ with tempfile.TemporaryDirectory() as d6:
     finally:
         mod.FSTAB, mod.PROC_SWAPS = real_fstab, real_swaps
 
+# 11. PARITY with the daemon's mount-option denylist, derived rather than
+#     restated. The helper is directly sudo-invocable through its wildcard
+#     grant, so the daemon refusing `suid` and `dev` does not bind it. Reading
+#     the Rust list here is the point: a copy would drift the way
+#     grub-kargs-edit's DENY_UNIT_TARGETS drifted.
+import re as _re
+
+repo_root = os.path.dirname(os.path.dirname(os.path.abspath(script_path)))
+validate_rs = os.path.join(repo_root, "crates/sysknife-daemon/src/actions/validate.rs")
+try:
+    rust_src = open(validate_rs, encoding="utf-8").read()
+except OSError as exc:
+    failures.append(f"cannot read {validate_rs}: {exc}; the parity check inspected nothing")
+    rust_src = ""
+decl = _re.search(r"MOUNT_OPTIONS_DENY:\s*&\[&str\]\s*=\s*&\[(.*?)\];", rust_src, _re.S)
+if decl is None:
+    failures.append(
+        "MOUNT_OPTIONS_DENY not found in validate.rs; this check would pass over an "
+        "empty set, so it fails instead")
+else:
+    daemon_deny = set(_re.findall(r'"([^"]+)"', decl.group(1)))
+    if not daemon_deny:
+        failures.append("MOUNT_OPTIONS_DENY parsed as empty; refusing to compare against nothing")
+    helper_deny = {o.lower() for o in getattr(mod, "DENY_MOUNT_OPTIONS", ())}
+    missing = sorted(daemon_deny - helper_deny)
+    if missing:
+        failures.append(
+            f"DENY_MOUNT_OPTIONS is missing {missing}, which the daemon refuses; a direct "
+            "sudo call to this helper mounts with them")
+    # And behaviourally, through the helper's own screen.
+    for opt in sorted(daemon_deny):
+        for spelling in (opt, opt.upper(), f"ro,{opt}"):
+            if not op_refuses_before_mount_with_options(spelling):
+                failures.append(f"--options {spelling!r} was accepted; it grants privilege")
+    # The hardening must be added, not only demanded.
+    hardened = mod.ensure_hardened("defaults")
+    if "nosuid" not in hardened or "nodev" not in hardened:
+        failures.append(f"ensure_hardened('defaults') returned {hardened!r}, which still permits suid/dev")
+    if mod.ensure_hardened("nosuid,nodev,ro") != "nosuid,nodev,ro":
+        failures.append("ensure_hardened repeats options that are already present")
+    # WIRING. Testing ensure_hardened alone passes with the call to it deleted
+    # from op_mount, which is the defect this repository catches most. Capture
+    # the argv mount(8) would actually receive.
+    captured = {"argv": None}
+
+    def capture_run(cmd, **kw):
+        if captured["argv"] is None and any("mount" in str(c) for c in cmd[:1]):
+            captured["argv"] = list(cmd)
+
+        class R:
+            returncode = 1
+            stderr = b"blocked by test double"
+        return R()
+
+    real_run = mod.subprocess.run
+    mod.subprocess.run = capture_run
+    try:
+        with tempfile.TemporaryDirectory() as d7:
+            mp7 = os.path.join(d7, "mnt")
+            os.makedirs(mp7)
+            try:
+                mod.op_mount(Args(mp7, options="ro"))
+            except SystemExit:
+                pass
+    finally:
+        mod.subprocess.run = real_run
+    if captured["argv"] is None:
+        failures.append("op_mount never invoked mount(8), so the option wiring was not observed")
+    else:
+        argv = captured["argv"]
+        opts = argv[argv.index("-o") + 1] if "-o" in argv else ""
+        if "nosuid" not in opts or "nodev" not in opts:
+            failures.append(
+                f"op_mount passed -o {opts!r} to mount(8); the hardening is computed and not used")
+
 if failures:
     for f in failures:
         print("FAIL:", f)
@@ -264,4 +368,5 @@ if failures:
 print("ok: sysknife-mount-edit refuses symlinked and critical-resolving mountpoints")
 print("ok: op_mount and op_unmount invoke the guard before any (u)mount")
 print("ok: the swap operations refuse a symlinked ancestor before running anything")
+print("ok: the helper refuses every mount option the daemon denies, and hardens the rest")
 PY

@@ -12,6 +12,167 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-09-23
+
+### Security
+
+- **`useradd`, `usermod` and the eight unit verbs run through the validating
+  helper, because the 0.20.0 narrowing did not hold.** GHSA-j9c3-j2qr-65c4 was
+  published as fixed in 0.20.0, where each bare grant became a literal
+  subcommand followed by a trailing `*`. sudoers matches a command's arguments
+  as one concatenated string, so a trailing `*` accepts further *options* as
+  readily as a value, and three of the escapes that advisory named still
+  matched: `useradd --create-home -o -u 0 -g 0 backdoor` (a second uid-0
+  account) against `/usr/sbin/useradd --create-home *`, `usermod --lock -o -u 0
+  <user>` against `/usr/sbin/usermod --lock *`, and `systemctl start
+  debug-shell.service` against `/usr/bin/systemctl start *`, which the daemon's
+  own `ROOT_SHELL_UNITS` denylist refuses on its own path and a grant cannot
+  refuse at all.
+
+  sudoers has no way to express "this subcommand and no further options", so
+  the grammar moved to `/usr/lib/sysknife/action-steps`, which already backs the
+  group, ssh and container actions: it re-validates the account name, the home
+  directory, the shell, the unit verb and the unit name on whatever path reaches
+  it, then builds the same `useradd`/`usermod`/`systemctl` argv the daemon used
+  to build. `packaging/sysknife-sudoers` no longer grants `useradd`, `usermod`
+  or any of the eight unit verbs; `systemctl daemon-reload` and `reboot` keep
+  literal grants with no wildcard to swallow anything.
+
+  The test that was supposed to hold the line asserted only that those grants
+  carried at least one argument token, which stayed true while all three escapes
+  matched. It now runs each escape through the repository's own sudoers matcher
+  and fails if any grant admits one, and the helper's denylist is derived from
+  the daemon's `ROOT_SHELL_UNITS` rather than restated, the way the grub-kargs
+  helper's copy drifted in GHSA-f8vp-j3jh-7wjx. Both directions are
+  mutation-proved: restoring `/usr/sbin/useradd --create-home *` turns the new
+  test red, naming the grant and the escape.
+
+  **Upgrading is not crate-only.** The daemon now builds
+  `sudo /usr/lib/sysknife/action-steps …` for these actions, and the grant that
+  authorises it lives in the packaged sudoers fragment, so a host that takes the
+  new binary while keeping the old `/etc/sudoers.d` fragment and the old helper
+  gets "a password is required" on every user and service action. Install the
+  package, or re-run `make install`, rather than replacing the binary alone.
+  That coupling is why this is a middle-digit release: a call that used to
+  succeed now refuses until both sides move.
+
+## [0.20.1] — 2026-09-23
+
+### Fixed
+
+- **The GitHub YAML gates open every file a `uses:` can hide in.**
+  ([#471](https://github.com/lacs-project/sysknife/pull/471)) A mutable action
+  reference inside a local composite action under `.github/actions/` was checked
+  by nothing: SHA pinning, version-comment verification, the Node EOL check and
+  yamllint all globbed `.github/workflows/*.yml` and stopped there.
+  `scripts/github_yaml.py` now discovers nested `action.yml` and `action.yaml`
+  beside the workflows and every gate reads the same set, locally through
+  `scripts/lint-github-yaml.sh` and in CI. An absent actions directory stays
+  valid; one that exists and holds no metadata fails discovery instead of
+  reporting a clean scan, as does an empty issue-template set, because a scan
+  that read nothing must not print an all-clear. Nine fixtures cover pinned and
+  unpinned block and flow composites, both metadata extensions, empty roots,
+  malformed and directory-shaped inputs, and the lint entry point itself
+  (closes [#459](https://github.com/lacs-project/sysknife/issues/459)). Thanks
+  to [@QinXi-ai](https://github.com/QinXi-ai).
+- **The release workflow waits for crates.io to serve what it just published.**
+  ([#463](https://github.com/lacs-project/sysknife/pull/463)) Publication walked
+  the dependency order with a fixed `sleep 30` between crates, which is a guess
+  about index latency rather than an observation of it, and a slow index left a
+  dependent crate publishing against a version the registry did not yet serve.
+  `scripts/crates-index-poll.sh` polls for the exact version and separates "not
+  published yet" from a transport error, so the loop cannot read a failed
+  request as an absent crate. This release is the first to use it.
+
+### Changed
+
+- **The version registry catches a bypass and an unlisted crate.**
+  ([#498](https://github.com/lacs-project/sysknife/pull/498))
+  `tests/release/version-sites.test.sh` now fails when `bump_version.sh` or
+  `check_release_versions.sh` stops going through `scripts/release_versions.py`,
+  and when a workspace manifest carrying the release version is missing from
+  `release-versions.json`. Thanks to
+  [@mikevillari](https://github.com/mikevillari).
+- Dependency bumps: async-openai 0.42.0
+  ([#494](https://github.com/lacs-project/sysknife/pull/494)), rmcp 3.4.0 with
+  clap 4.6.7 and clap_complete 4.6.11
+  ([#493](https://github.com/lacs-project/sysknife/pull/493)),
+  `taiki-e/install-action` 2.87.14
+  ([#495](https://github.com/lacs-project/sysknife/pull/495)), and react and
+  react-dom 19.3.0 with vite 8.3.0 in the paused desktop shell
+  ([#492](https://github.com/lacs-project/sysknife/pull/492)). Two of those
+  needed the code to follow: rmcp 3.4 deprecates the `ServerInfo` alias in
+  favour of `ServerConfig` (both alias `InitializeResult`, so the served MCP
+  handshake is unchanged), and async-openai 0.42 adds `metadata` and
+  `moderation` to `CreateChatCompletionResponse` and `misalignment` to
+  `ApiError`, which the adapter's test fixtures name field by field.
+
+## [0.20.0] — 2026-09-22
+
+### Security
+
+- `AddMount` refuses the `suid` and `dev` mount options and adds `nosuid,nodev`
+  to every mount it makes. `validated_mount_options` was a charset check with no
+  denylist, alone among the dangerous-value validators in that file, and
+  omitting the parameter reached the helper as `defaults`, which Linux expands
+  to `rw,suid,dev,exec,auto,nouser,async`. A setuid-root binary on
+  attacker-supplied media then granted root to whoever ran it. `exec` stays
+  allowed: running an ordinary binary from a mounted volume is a legitimate
+  need, and `nosuid` with `nodev` is what removes the escalation. The helper
+  carries the same list, and a test derives it from the Rust source so the two
+  cannot drift (GHSA-gqhr-84x9-x898).
+- Eight more sudo grant families carry argument constraints: `certbot`,
+  `fail2ban-client`, `snap`, `rpm-ostree`, `ostree`, `pro` and `netplan` at both
+  of its packaged paths. Each can run an arbitrary command as root through a
+  subcommand no action builds, by hook, jail action, snap, or rpm scriptlet.
+  Unconstrained grants fall from thirty-one to fifteen, and what remains is the
+  set whose first argument is the parameter itself, none of which can spawn a
+  shell (GHSA-j9c3-j2qr-65c4).
+
+## [0.19.0] — 2026-09-22
+
+### Security
+
+- `PinDeployment` and `UnpinDeployment` bind to the deployment that was
+  approved. Both take an ordinal index into the live `rpm-ostree` list, and the
+  request hash covers only `{"index": N}`, which is byte-identical however much
+  has moved into slot N since the operator approved it. Any concurrent
+  `UpdateSystem`, `CleanupDeployments` or `RollbackDeployment` inside the
+  approval window reorders that list, so the effect that executed could differ
+  from the effect that was previewed while the hash binding and the signed audit
+  row both showed a clean match. The preview now captures the deployment's ostree
+  checksum and execute re-checks it, the way `AptAutoremove` has captured its
+  deletion set since #151, and a preview that captured no identity cannot
+  execute (GHSA-93hm-phfx-6mg8).
+- `CreateUser` validates `home` as an absolute path. It used `validated_safe_arg`,
+  which enforces a charset and rejects a leading dash and accepts both `..` and a
+  relative path, while `validated_absolute_path` in the same file rejects both and
+  already guarded every other root-acting path parameter. `home` reaches
+  `useradd --create-home --home-dir` as root (GHSA-93hm-phfx-6mg8).
+- A job's terminal outcome is in the audit chain. `update_status` called
+  `append_event` zero times, so `audit_events` held the approval lifecycle and
+  nothing recorded `Running -> Succeeded`, `Failed`, `RolledBack` or
+  `NeedsReboot`. An action that ran to completion could be rewritten in the
+  `status` column as `Canceled`, `sysknife history` reported it canceled, and
+  `sysknife audit verify` still reported the chain `Intact`, while the module
+  documentation told the reader the outcome was protected. The status write and
+  the event that records it now share one sqlite transaction, `audit verify`
+  compares each row against the newest status event chained for it, and the
+  documentation says what the code does (GHSA-8g7w-7g2g-g55w).
+- Eight sudo grant families carry argument constraints. `systemctl`, `useradd`,
+  `usermod`, `kill`, `hostnamectl`, `timedatectl`, `localectl` and `resolvectl`
+  were granted with no argument tokens, which authorises every invocation of
+  each: `systemctl link` on an attacker-written unit file, `systemctl start
+  debug-shell.service` past the denylist the daemon applies on its own path,
+  `useradd -o -u 0` for a second uid-0 account, `usermod -p` over root's password
+  hash. Each is now restricted to the argv the catalogue builds. The existing
+  check asked only whether every action had a grant, which cannot see a grant
+  wider than any action needs; a second check now fails on a new unconstrained
+  grant and on a stale entry in the inventory of the ones that remain
+  (GHSA-j9c3-j2qr-65c4).
+
+## [0.18.0] — 2026-09-22
+
 ### Security
 
 - `AddSwap` and `RemoveSwap` resolve the whole swap path before acting on it.

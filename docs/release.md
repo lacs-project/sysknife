@@ -128,17 +128,32 @@ Use a clean, reviewed `main` checkout. Replace `v0.2.5` with the intended
 version.
 
 ```bash
+scripts/bump_version.sh 0.2.5
 cargo nextest run --workspace --locked
-bash scripts/check_release_versions.sh v0.2.5
 scripts/release_rehearsal.sh --full --output dist/rehearsal
 
 git tag -s v0.2.5 -m "SysKnife v0.2.5"
 git push origin v0.2.5
 ```
 
+`bump_version.sh` writes the version to every site in `release-versions.json`,
+rolls the `## [Unreleased]` section into a dated heading, and then runs
+`check_release_versions.sh` itself, so it reports success only when the checker
+agrees. Doing it by hand is what the registry exists to stop: on 2026-09-22 a
+global `sed` of `0.17.0` to `0.18.0` also rewrote the third-party crate
+`hashbrown 0.17.0`, a version that does not exist at its recorded checksum, and
+the rehearsal failed with `cannot update the lock file`. The script never edits
+a lockfile as text; `cargo` regenerates it and the script refuses if any
+package outside the workspace moved.
+
 The version check requires every internal path dependency to carry an inline
 `version` matching the workspace release. Removing that field is an error even
 when all remaining visible pins match.
+
+Adding a crate or a manifest means adding it to `release-versions.json` and
+nothing else. `tests/release/version-sites.test.sh` derives the expected set
+from the tree, so a manifest carrying the release version and missing from the
+registry fails that test rather than being silently skipped at the next bump.
 
 The tag pattern does not accept prerelease suffixes. Do not move or reuse a
 published tag. If publication partly fails, diagnose and rerun the workflow on
