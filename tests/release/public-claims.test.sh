@@ -779,6 +779,14 @@ printf '\nFedora Workstation 44 is fully supported.\n' >> "$fixture/docs/archite
 assert_rejected 'forbidden claim in a file only the Python list knew about'
 cp "$repo_root/docs/architecture.md" "$fixture/docs/architecture.md"
 
+# The layer-independence framing the Security Model rewrite retired.
+# SECURITY.md was not in CLAIM_FILES, so the pin written for this file
+# could not fire on it: restoring the sentence left the check green even
+# with the reject_pattern in place. Both lists now include SECURITY.md.
+printf '\nSysKnife uses a layered enforcement model. Every layer is independent; a\nbypass of one does not bypass the others.\n' >> "$fixture/SECURITY.md"
+assert_rejected 'layer-independence framing restored in SECURITY.md'
+cp "$repo_root/SECURITY.md" "$fixture/SECURITY.md"
+
 printf '\nlocal-clone path until npm publish lands\n' >> "$fixture/README.md"
 assert_rejected 'publish-pending setup language'
 cp "$repo_root/README.md" "$fixture/README.md"

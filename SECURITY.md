@@ -52,11 +52,12 @@ The layers are sequential gates, not independent walls. They all run inside
 one process, and that process runs as the `sysknife` service account
 (`User=sysknife` in `packaging/sysknife-daemon.service`), which is
 root-equivalent by design. That account holds `NOPASSWD` grants for
-`useradd`, `systemctl`, and a trailing-wildcard `apt-get`, each of which
-reaches root on its own. A compromise of the daemon process is therefore a
-compromise of root on that host. An operator sizing the blast radius of a
-daemon compromise should read the grants in `packaging/sysknife-sudoers`
-alongside this model.
+`useradd --create-home *`, one `systemctl` grant per subcommand, and
+`env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get *`,
+each of which reaches root on its own. A compromise of the daemon process is
+therefore a compromise of root on that host. An operator sizing the blast
+radius of a daemon compromise should read the grants in
+`packaging/sysknife-sudoers` alongside this model.
 
 ### What the denylist is — and is not
 
@@ -64,9 +65,9 @@ alongside this model.
 refuses typed actions naming `debug-shell`, `emergency`, `rescue`,
 `runlevel1`, or `single`. The denylist stops a unit name arriving from the
 LLM or from an MCP client. It is not containment: the same `sysknife`
-account runs `sudo -n /usr/bin/systemctl start rescue.target` with no
-validator in the path, because the `systemctl` grant carries no argument
-restriction. Do not treat the denylist as a boundary around the daemon.
+account runs `sudo -n /usr/bin/systemctl enable --now debug-shell.service`
+with no validator in the path, because the `systemctl enable` grant matches
+any arguments. Do not treat the denylist as a boundary around the daemon.
 
 ### Layer 1 — Intent validation (sysknife-brain, before LLM call)
 
