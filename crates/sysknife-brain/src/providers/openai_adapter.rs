@@ -732,6 +732,8 @@ mod tests {
             object: "chat.completion".into(),
             usage: None,
             service_tier: None,
+            metadata: None,
+            moderation: None,
         }
     }
 
@@ -758,6 +760,8 @@ mod tests {
             object: "chat.completion".into(),
             usage: None,
             service_tier: None,
+            metadata: None,
+            moderation: None,
         }
     }
 
@@ -838,6 +842,8 @@ mod tests {
             object: "chat.completion".into(),
             usage: None,
             service_tier: None,
+            metadata: None,
+            moderation: None,
         };
         assert!(from_openai_response(response).is_err());
     }
@@ -868,6 +874,8 @@ mod tests {
             object: "chat.completion".into(),
             usage: None,
             service_tier: None,
+            metadata: None,
+            moderation: None,
         };
         assert!(from_openai_response(response).is_err());
     }
@@ -906,6 +914,8 @@ mod tests {
             object: "chat.completion".into(),
             usage: None,
             service_tier: None,
+            metadata: None,
+            moderation: None,
         };
         let result = from_openai_response(response);
         assert!(result.is_err(), "malformed args must return an error");
@@ -951,6 +961,7 @@ mod tests {
                     r#type: Some("invalid_request_error".into()),
                     param: None,
                     code: Some("invalid_api_key".into()),
+                    misalignment: None,
                 },
             });
         let mapped = map_openai_error(err);
@@ -976,6 +987,7 @@ mod tests {
                     r#type: None,
                     param: None,
                     code: None,
+                    misalignment: None,
                 },
             });
         let mapped = map_openai_error(err);
@@ -995,6 +1007,7 @@ mod tests {
                     r#type: Some("rate_limit_error".into()),
                     param: None,
                     code: None,
+                    misalignment: None,
                 },
             });
         let mapped = map_openai_error(err);
@@ -1014,6 +1027,7 @@ mod tests {
                     r#type: None,
                     param: None,
                     code: None,
+                    misalignment: None,
                 },
             });
         let mapped = map_openai_error(err);
