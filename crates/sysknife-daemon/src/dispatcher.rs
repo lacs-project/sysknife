@@ -5044,6 +5044,120 @@ mod tests {
         assert_eq!(row.chain_version, crate::audit_chain::CHAIN_VERSION_CURRENT);
     }
 
+    /// The handlers must pass the connection's own account into the event
+    /// chain, not merely accept one at the store boundary.
+    ///
+    /// The store-level tests choose the principal they hand down, so a
+    /// dispatcher that signed `Unattributed` for every grant and every consume
+    /// would pass all of them. This test drives a real connection as uid 4242
+    /// through preview -> approve -> execute and reads the signed rows back,
+    /// the same shape as `the_recorded_principal_is_the_one_the_connection_
+    /// was_attributed_to` on the transaction side.
+    #[tokio::test]
+    async fn handlers_sign_the_connection_account_into_approval_events() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let audit = std::sync::Arc::clone(&state.audit);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            unix_connection_handler(
+                server,
+                state,
+                runner(),
+                uid_caller_with(4242, CallerRole::Admin),
+            )
+            .await;
+        });
+        let mut framed = FramedStream::new(client);
+        let (txid, receipt) = preview_and_approve(&mut framed, "GetMemoryInfo", json!({})).await;
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "execute",
+                    "request_id": "r-exec",
+                    "transaction_id": txid,
+                    "action_name": "GetMemoryInfo",
+                    "params": {},
+                    "approval_receipt": receipt
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let _exec: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        let events = audit.fetch_event_rows().await.unwrap();
+        let event = |kind: &str| {
+            events
+                .iter()
+                .find(|e| e.kind == kind)
+                .unwrap_or_else(|| panic!("no {kind} event in {events:?}"))
+        };
+        assert_eq!(
+            event("approval_granted").caller_principal.as_deref(),
+            Some("uid:4242"),
+            "handle_approve must sign the account the connection was attributed to"
+        );
+        assert_eq!(
+            event("approval_consumed").caller_principal.as_deref(),
+            Some("uid:4242"),
+            "handle_execute must sign the account the connection was attributed to"
+        );
+        assert_eq!(
+            event("approval_granted").chain_version,
+            crate::audit_chain::EVENT_VERSION_V2
+        );
+        assert_eq!(
+            event("approval_consumed").chain_version,
+            crate::audit_chain::EVENT_VERSION_V2
+        );
+    }
+
+    /// Same guarantee on the cancel path: `handle_cancel` holds the caller, so
+    /// the `approval_revoked` row must name the cancelling account rather than
+    /// discard the identity the daemon already resolved.
+    #[tokio::test]
+    async fn cancelling_an_approved_transaction_signs_the_cancelling_account() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let audit = std::sync::Arc::clone(&state.audit);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            unix_connection_handler(
+                server,
+                state,
+                runner(),
+                uid_caller_with(4242, CallerRole::Observer),
+            )
+            .await;
+        });
+        let mut framed = FramedStream::new(client);
+        let (txid, _receipt) = preview_and_approve(&mut framed, "GetMemoryInfo", json!({})).await;
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "cancel",
+                    "request_id": "r-cancel",
+                    "transaction_id": txid,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let response: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        assert_eq!(response["type"], "cancel_response", "{response}");
+        let events = audit.fetch_event_rows().await.unwrap();
+        let revoked = events
+            .iter()
+            .find(|e| e.kind == "approval_revoked")
+            .unwrap_or_else(|| panic!("no approval_revoked event in {events:?}"));
+        assert_eq!(
+            revoked.caller_principal.as_deref(),
+            Some("uid:4242"),
+            "handle_cancel must sign the account that cancelled"
+        );
+        assert_eq!(revoked.chain_version, crate::audit_chain::EVENT_VERSION_V2);
+    }
+
     #[tokio::test]
     async fn preview_returns_hash_and_transaction_id() {
         let dir = tempdir().unwrap();

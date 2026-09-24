@@ -243,6 +243,36 @@ transaction, so a state change without its event (or the reverse) is not a
 reachable state. Deleting an event from the middle of the chain breaks the
 next event's `prev_chain_hash`, exactly as it does for transaction rows.
 
+```admonish info title="Two event encodings coexist"
+Event rows record their encoding generation in their own `chain_version`
+column, added by migration 4 alongside a nullable `caller_principal`:
+
+| Version | Signs | Since |
+|---|---|---|
+| 1 | `seq`, `key_id`, `kind`, `transaction_id`, `receipt_digest`, `created_at` | the original event chain |
+| 2 | the six legacy fields plus `caller_principal` | #249 |
+
+Version 1 answered "an approval was granted, consumed or revoked" but not
+*by whom*: with two admins on one host their signed events were
+indistinguishable, so the trail could not name the human who authorised what
+an agent proposed. Version 2 appends the account — the approver on
+`approval_granted`, the executor on `approval_consumed`, the revoker on
+`approval_revoked` — as an extension of the same six-field message, so rows
+written by an older binary keep verifying and the chain stays mixed-version
+readable, exactly as the transaction chain's `chain_version` does. The
+downgrade guard matches too: relabelling a v2 row as v1 to erase the account
+makes verification re-encode it without the principal, so the stored
+signature no longer verifies.
+
+Status events (`status_queued` … `status_rolled_back`) stay on the legacy
+encoding by design: they are written from spawned execution tasks with no
+caller in scope, and signing an account the code cannot see would be a
+signed guess. Historical approval-event rows are never backfilled for the
+same reason as the transaction chain — writing a principal into a row that
+was signed without one changes the message the signature covers and reports
+the chain as Broken.
+```
+
 **Cross-chain binding.** Deleting events from the *end* of the event chain
 would leave a self-consistent remainder, the same tail-truncation blind spot
 the transaction chain has. That is what `event_tip` is for: every transaction
