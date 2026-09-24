@@ -17,7 +17,7 @@ HTML
 "$checker" "$fixture/book"
 
 rm "$fixture/book/guide.html"
-if output="$($checker "$fixture/book" 2>&1)"; then
+if output="$("$checker" "$fixture/book" 2>&1)"; then
     printf 'mdbook-links: missing generated page unexpectedly passed\n' >&2
     exit 1
 fi
@@ -29,7 +29,7 @@ grep -Fq 'index.html' <<< "$output" || {
 cat > "$fixture/book/index.html" <<'HTML'
 <a href="https://example.com">external only</a>
 HTML
-if output="$($checker "$fixture/book" 2>&1)"; then
+if output="$("$checker" "$fixture/book" 2>&1)"; then
     printf 'mdbook-links: zero-link fixture unexpectedly passed\n' >&2
     exit 1
 fi
@@ -39,6 +39,10 @@ grep -Fq 'no internal .html links were checked' <<< "$output" || {
 }
 
 if ! command -v mdbook >/dev/null 2>&1 || ! command -v mdbook-admonish >/dev/null 2>&1; then
+    if [ -n "${CI:-}" ]; then
+        printf 'mdbook-links: mdbook and mdbook-admonish must be installed under CI\n' >&2
+        exit 1
+    fi
     printf 'mdbook-links: SKIP real mdBook build (mdbook and mdbook-admonish are required)\n'
     exit 0
 fi
