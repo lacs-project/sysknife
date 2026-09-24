@@ -424,28 +424,32 @@ Two distinct downloads can be slow:
    on the host and copy it in via SSH if you're going to re-provision
    often.
 
-2. **The model pull** (~2 GB for the default `llama3.2:3b`, or ~5 GB
-   for `qwen3:8b` if you override). Happens after Ollama is installed,
+2. **The model pull** (~5 GB for the default `qwen3:8b`, or ~2 GB
+   if you override). Happens after Ollama is installed,
    via `ollama pull`. Goes through Ollama's registry (usually faster
    than the ollama.com CDN).
 
 Override the model size with `SYSKNIFE_TEST_MODEL`:
 
 ```sh
-SYSKNIFE_TEST_MODEL=llama3.2:3b ./tests/e2e/atomic-vm.sh provision  # default, CPU-only friendly
-SYSKNIFE_TEST_MODEL=qwen2.5:3b  ./tests/e2e/atomic-vm.sh provision  # alt tool-capable 3B
-SYSKNIFE_TEST_MODEL=qwen3:8b    ./tests/e2e/atomic-vm.sh provision  # GPU passthrough only
+SYSKNIFE_TEST_MODEL=qwen3:8b       ./tests/e2e/atomic-vm.sh provision  # default, GPU passthrough only
+SYSKNIFE_TEST_MODEL=llama3.2:3b    ./tests/e2e/atomic-vm.sh provision  # CPU-only friendly
+SYSKNIFE_TEST_MODEL=qwen2.5:3b     ./tests/e2e/atomic-vm.sh provision  # alt tool-capable 3B
 ```
 
-We default to **`llama3.2:3b`** after empirical live testing on a
-CPU-only 4-vCPU / 10 GB VM: ~2 GB download, no thinking mode, tool
-calling works reliably, ~2-4 min/story.
+The harness default is **`qwen3:8b`** (`SYSKNIFE_TEST_MODEL:-qwen3:8b`
+in `tests/e2e/provision.sh`), the most reliable tool-caller — but it
+needs a GPU (see the table in [HACKING.md](../../HACKING.md) §8).
 
-Qwen3 models (including `qwen3:8b`) default to "thinking mode" which
-emits thousands of hidden reasoning tokens before the real answer. On
-CPU this blows past Ollama's internal 120-second request timeout and
-every `/api/chat` call fails with HTTP 500 before a plan is emitted.
-`qwen3:8b` is only a viable default if you have GPU passthrough
+On a CPU-only VM, override to **`llama3.2:3b`** after empirical live
+testing on a CPU-only 4-vCPU / 10 GB VM: ~2 GB download, no thinking
+mode, tool calling works reliably, ~2-4 min/story.
+
+Qwen3 models (including the default `qwen3:8b`) default to "thinking
+mode" which emits thousands of hidden reasoning tokens before the real
+answer. On CPU this blows past Ollama's internal 120-second request
+timeout and every `/api/chat` call fails with HTTP 500 before a plan is
+emitted. `qwen3:8b` is only viable if you have GPU passthrough
 configured. Gemma 3 (1b / 4b) is fast but Ollama currently rejects
 tool calls with `400: does not support tools`.
 
