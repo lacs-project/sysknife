@@ -95,6 +95,11 @@ provider:
   the words `password`, `token`, `api_key`, and similar are rejected
   with `PlanningError::IntentContainsSensitiveData` before any network
   call is made.
+- **Credential-taking actions**: the planner does not offer `ProAttach` or
+  `ConfigureWifi` because there is no out-of-band credential entry or reference
+  resolver. Its tool schema excludes both, and plan parsing rejects them even
+  if a provider ignores the schema. The daemon's typed actions remain separate
+  from this natural-language planning boundary.
 - **Rate limit** (`RateLimiter` in `crates/sysknife-brain/src/rate_limit.rs`,
   `DEFAULT_MAX_RPM = 20` in `planner.rs`): a sliding 60-second window
   caps planning requests per session. When the window is full,

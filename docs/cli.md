@@ -70,6 +70,16 @@ sysknife "layer vim via rpm-ostree"
 4. Execution streams output line by line with a `›` prefix; a `✓` / `✗`
    result icon is printed after each step.
 
+The natural-language planner has no secure way to collect or resolve a
+credential after planning. It therefore does not offer Ubuntu Pro attachment
+or Wi-Fi connection setup, including open Wi-Fi networks. Do not put a Pro
+token or Wi-Fi password in an intent: the admission check rejects credential
+phrases before contacting the model. Use the Ubuntu Pro or NetworkManager
+tools outside SysKnife for these operations until a separate credential entry
+path exists. `ProStatus`, `ProDetach`, `EnableProService`, and
+`DisableProService` remain available through SysKnife because they do not
+take a credential parameter.
+
 ---
 
 ### `sysknife doctor`

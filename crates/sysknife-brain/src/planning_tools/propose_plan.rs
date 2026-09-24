@@ -18,9 +18,9 @@ use sysknife_types::{DISTRO_FAMILY_DEBIAN, DISTRO_FAMILY_FEDORA, DISTRO_FAMILY_O
 // Tool definition
 // ---------------------------------------------------------------------------
 
-/// The approved list of SysKnife action names. This is the safety fence: the LLM
-/// is shown this enum and can only produce names from it. Any name outside
-/// this set is rejected by [`ActionName::parse`].
+/// The typed SysKnife action catalogue. The planner offers a filtered subset
+/// through the schema; the parser also rejects credential actions that lack a
+/// secure entry channel, even if the provider ignores that schema.
 ///
 /// Must be kept in sync with the action catalogue in `sysknife-daemon`. The
 /// cross-module consistency test in `sysknife-daemon/tests/action_consistency.rs`
@@ -463,6 +463,16 @@ reports live interface state"),
      "list Multipass VMs and their state — no params; read-only"),
 ];
 
+/// These daemon actions need a credential value, but the planner has no
+/// out-of-band credential channel or reference resolver. Keep them in
+/// `KNOWN_ACTIONS` for the typed daemon catalogue, but never offer or accept
+/// them in a model-authored plan.
+const CREDENTIAL_ACTIONS_WITHOUT_ENTRY: &[&str] = &["ConfigureWifi", "ProAttach"];
+
+fn requires_unavailable_credential_entry(action: &str) -> bool {
+    CREDENTIAL_ACTIONS_WITHOUT_ENTRY.contains(&action)
+}
+
 /// Should `action` be offered on the detected distribution?
 ///
 /// Two different reasons to withhold one, and they must stay distinct — merging
@@ -478,9 +488,12 @@ reports live interface state"),
 /// guard: it refuses every distro-policy action on such a host, so offering them
 /// invites a plan that is certain to be rejected after a paid call.
 ///
-/// No hint at all still offers everything — without a detected family there is no
-/// basis to exclude anything, and a generic deployment has to be able to plan.
+/// No hint at all still offers every action that does not require credential
+/// entry — without a detected family there is no basis for a distro exclusion.
 fn available_on(action: &str, hint: Option<&sysknife_types::DistroHint>) -> bool {
+    if requires_unavailable_credential_entry(action) {
+        return false;
+    }
     let family = hint.map(|hint| hint.family);
     if let Some(hint) = hint {
         // Ubuntu Core is immutable and is not an eligible Debian host. Do not
@@ -594,7 +607,7 @@ pub fn propose_plan_tool_def(hint: Option<&sysknife_types::DistroHint>) -> ToolD
                             },
                             "params": {
                                 "type": "string",
-                                "description": "Action parameters as a JSON string. Use \"{}\" only for no-param actions (see action description). For all others include EXACT key names — the daemon rejects unknown keys.\n• Flatpak (username is REQUIRED, use key 'username' not 'user'):\n  InstallFlatpak: {\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\",\"remote\":\"flathub\"}\n  RemoveFlatpak / GetFlatpakAppInfo: {\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\"}\n  UpdateFlatpak: {\"username\":\"alice\"} or {\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\"}\n  ListInstalledFlatpaks / ListFlatpakRemotes: {\"username\":\"alice\"}\n  SearchFlatpakApps: {\"term\":\"firefox\"}\n  AddFlatpakRemote: {\"username\":\"alice\",\"remote\":\"flathub\",\"url\":\"https://...\"}\n  RemoveFlatpakRemote: {\"username\":\"alice\",\"remote\":\"flathub\"}\n• Containers/Toolbox (all require username):\n  ListContainers / ListToolboxes: {\"username\":\"alice\"}\n  CreateContainer: {\"username\":\"alice\",\"name\":\"mybox\",\"image\":\"ubuntu:22.04\"}\n  Start/Stop/Remove/GetContainerInfo: {\"username\":\"alice\",\"name\":\"mybox\"}\n  CreateToolbox: {\"username\":\"alice\",\"name\":\"mybox\"} (image/release optional)\n  RemoveToolbox: {\"username\":\"alice\",\"name\":\"mybox\"}\n• Services: {\"unit\":\"sshd.service\"} for Start/Stop/Restart/Reload/Mask/Unmask/GetLogs/GetStatus\n  SetServiceEnabled: {\"unit\":\"sshd.service\",\"enabled\":true}\n• SSH: GetAuthorizedKeys: {\"username\":\"alice\"}\n  Add/RemoveAuthorizedKey: {\"username\":\"alice\",\"public_key\":\"ssh-ed25519 AAAA... comment\"}\n• Users: CreateUser: {\"username\":\"alice\"} (shell/home optional); DeleteUser: {\"username\":\"alice\"}\n  AddUserToGroup/RemoveUserFromGroup: {\"username\":\"alice\",\"group\":\"wheel\"}\n• Identity: SetHostname: {\"hostname\":\"myhost\"}; SetTimezone: {\"timezone\":\"America/Chicago\"}\n  SetLocale: {\"locale\":\"en_US.UTF-8\"}; SetNtp: {\"enabled\":true}\n• Layering: AddLayeredPackage/RemoveLayeredPackage/RemoveBasePackage: {\"package\":\"vim\"}\n  InstallPackages/RemovePackages: {\"packages\":[\"vim\",\"git\"]}\n  ReplaceLayeredPackage: {\"old\":\"vim\",\"new\":\"vim-enhanced\"}\n  PinDeployment/UnpinDeployment: {\"index\":0}\n  RebaseSystem: {\"target_ref\":\"fedora/40/x86_64/silverblue\"}\n  SetKernelArguments: {\"add\":[\"quiet\"],\"remove\":[\"rhgb\"]}\n• Repos: AddPackageRepository: {\"repo_id\":\"epel\",\"repo_url\":\"https://...\"}\n  Remove/Enable/DisablePackageRepository: {\"repo_id\":\"epel\"}\n• Network: ConfigureFirewall: {\"zone\":\"public\",\"service\":\"ssh\",\"enabled\":true}\n  ConfigureWifi: {\"ssid\":\"MyNet\",\"password\":\"secret\"}; SetDnsServers: {\"interface\":\"wlp1s0\",\"servers\":[\"1.1.1.1\"]}\nIMPORTANT: Extract parameter values verbatim from intent. Never omit required fields. Never guess key names — use exact names from the action description."
+                                "description": "Action parameters as a JSON string. Use \"{}\" only for no-param actions (see action description). For all others include EXACT key names — the daemon rejects unknown keys.\n• Flatpak (username is REQUIRED, use key 'username' not 'user'):\n  InstallFlatpak: {\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\",\"remote\":\"flathub\"}\n  RemoveFlatpak / GetFlatpakAppInfo: {\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\"}\n  UpdateFlatpak: {\"username\":\"alice\"} or {\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\"}\n  ListInstalledFlatpaks / ListFlatpakRemotes: {\"username\":\"alice\"}\n  SearchFlatpakApps: {\"term\":\"firefox\"}\n  AddFlatpakRemote: {\"username\":\"alice\",\"remote\":\"flathub\",\"url\":\"https://...\"}\n  RemoveFlatpakRemote: {\"username\":\"alice\",\"remote\":\"flathub\"}\n• Containers/Toolbox (all require username):\n  ListContainers / ListToolboxes: {\"username\":\"alice\"}\n  CreateContainer: {\"username\":\"alice\",\"name\":\"mybox\",\"image\":\"ubuntu:22.04\"}\n  Start/Stop/Remove/GetContainerInfo: {\"username\":\"alice\",\"name\":\"mybox\"}\n  CreateToolbox: {\"username\":\"alice\",\"name\":\"mybox\"} (image/release optional)\n  RemoveToolbox: {\"username\":\"alice\",\"name\":\"mybox\"}\n• Services: {\"unit\":\"sshd.service\"} for Start/Stop/Restart/Reload/Mask/Unmask/GetLogs/GetStatus\n  SetServiceEnabled: {\"unit\":\"sshd.service\",\"enabled\":true}\n• SSH: GetAuthorizedKeys: {\"username\":\"alice\"}\n  Add/RemoveAuthorizedKey: {\"username\":\"alice\",\"public_key\":\"ssh-ed25519 AAAA... comment\"}\n• Users: CreateUser: {\"username\":\"alice\"} (shell/home optional); DeleteUser: {\"username\":\"alice\"}\n  AddUserToGroup/RemoveUserFromGroup: {\"username\":\"alice\",\"group\":\"wheel\"}\n• Identity: SetHostname: {\"hostname\":\"myhost\"}; SetTimezone: {\"timezone\":\"America/Chicago\"}\n  SetLocale: {\"locale\":\"en_US.UTF-8\"}; SetNtp: {\"enabled\":true}\n• Layering: AddLayeredPackage/RemoveLayeredPackage/RemoveBasePackage: {\"package\":\"vim\"}\n  InstallPackages/RemovePackages: {\"packages\":[\"vim\",\"git\"]}\n  ReplaceLayeredPackage: {\"old\":\"vim\",\"new\":\"vim-enhanced\"}\n  PinDeployment/UnpinDeployment: {\"index\":0}\n  RebaseSystem: {\"target_ref\":\"fedora/40/x86_64/silverblue\"}\n  SetKernelArguments: {\"add\":[\"quiet\"],\"remove\":[\"rhgb\"]}\n• Repos: AddPackageRepository: {\"repo_id\":\"epel\",\"repo_url\":\"https://...\"}\n  Remove/Enable/DisablePackageRepository: {\"repo_id\":\"epel\"}\n• Network: ConfigureFirewall: {\"zone\":\"public\",\"service\":\"ssh\",\"enabled\":true}\n  SetDnsServers: {\"interface\":\"wlp1s0\",\"servers\":[\"1.1.1.1\"]}\nIMPORTANT: Extract parameter values verbatim from intent. Never omit required fields. Never guess key names — use exact names from the action description."
                             }
                         },
                         "required": ["action_name", "summary", "risk_level", "params"]
@@ -652,6 +665,14 @@ pub fn parse_proposed_plan(intent: &str, input: &serde_json::Value) -> Result<Pl
             .ok_or_else(|| {
                 PlanningError::InvalidPlanOutput(format!("step {i}: missing 'action_name'"))
             })?;
+
+        // A model can still send an action outside the schema enum. Do not let
+        // that bypass the credential-channel fence at parse time.
+        if requires_unavailable_credential_entry(action_name_str) {
+            return Err(PlanningError::InvalidPlanOutput(format!(
+                "step {i}: action '{action_name_str}' requires credential entry unavailable to the planner"
+            )));
+        }
 
         let action_name = ActionName::parse(action_name_str).map_err(|_| {
             PlanningError::InvalidPlanOutput(format!(
@@ -773,7 +794,8 @@ mod tests {
         for (action, _) in KNOWN_ACTIONS {
             assert_eq!(
                 core_actions.contains(&action.to_string()),
-                !action_requires_supported_host(action),
+                !action_requires_supported_host(action)
+                    && !requires_unavailable_credential_entry(action),
                 "Ubuntu Core: {action}"
             );
         }
@@ -810,6 +832,9 @@ mod tests {
             .iter()
             .chain(NON_CANONICAL_ON_DEBIAN_HOST)
         {
+            if requires_unavailable_credential_entry(action) {
+                continue;
+            }
             assert!(
                 offered.contains(&action.to_string()),
                 "Ubuntu capability lost: {action}"
@@ -840,16 +865,16 @@ mod tests {
     #[test]
     fn medium_risk_requires_approval() {
         let input = serde_json::json!({
-            "summary": "configure wifi",
-            "explanation": "connects to wifi",
+            "summary": "start a service",
+            "explanation": "starts the requested service",
             "steps": [{
-                "action_name": "ConfigureWifi",
-                "summary": "connect",
+                "action_name": "StartService",
+                "summary": "start",
                 "risk_level": "medium",
-                "params": {}
+                "params": {"unit":"example.service"}
             }]
         });
-        let plan = parse_proposed_plan("wifi", &input).unwrap();
+        let plan = parse_proposed_plan("service", &input).unwrap();
         assert!(plan.steps()[0].approval_required());
     }
 
@@ -962,8 +987,11 @@ mod tests {
     }
 
     #[test]
-    fn all_known_actions_are_accepted() {
+    fn all_planner_available_actions_are_accepted() {
         for &(action, _) in KNOWN_ACTIONS {
+            if requires_unavailable_credential_entry(action) {
+                continue;
+            }
             let input = serde_json::json!({
                 "summary": "test",
                 "explanation": "test",
@@ -971,6 +999,114 @@ mod tests {
             });
             parse_proposed_plan("test", &input)
                 .unwrap_or_else(|e| panic!("action '{action}' rejected: {e}"));
+        }
+    }
+
+    #[test]
+    fn credential_actions_are_neither_offered_nor_accepted() {
+        let ubuntu = sysknife_types::DistroHint {
+            id: "ubuntu".into(),
+            family: DISTRO_FAMILY_DEBIAN,
+            version: None,
+        };
+        for def in [
+            propose_plan_tool_def(None),
+            propose_plan_tool_def(Some(&ubuntu)),
+            tool_def_for_family(Some(DISTRO_FAMILY_DEBIAN)),
+            tool_def_for_family(Some(DISTRO_FAMILY_FEDORA)),
+        ] {
+            let offered = offered_actions(&def);
+            let catalogue = def.input_schema["properties"]["steps"]["items"]["properties"]
+                ["action_name"]["description"]
+                .as_str()
+                .unwrap();
+            for action in CREDENTIAL_ACTIONS_WITHOUT_ENTRY {
+                assert!(
+                    !offered.iter().any(|name| name.as_str() == *action),
+                    "{action} offered"
+                );
+                assert!(
+                    !catalogue
+                        .lines()
+                        .any(|line| line.starts_with(&format!("{action} — "))),
+                    "{action} described in the catalogue"
+                );
+            }
+        }
+
+        for (action, params) in [
+            ("ProAttach", serde_json::json!({"token":"test-only-value"})),
+            (
+                "ConfigureWifi",
+                serde_json::json!({"ssid":"test-network","password":"test-only-value"}),
+            ),
+        ] {
+            let input = serde_json::json!({
+                "summary": "test",
+                "explanation": "test",
+                "steps": [{"action_name":action,"summary":"s","risk_level":"high","params":params}]
+            });
+            assert!(
+                matches!(
+                    parse_proposed_plan("test", &input),
+                    Err(PlanningError::InvalidPlanOutput(_))
+                ),
+                "{action} bypassed the planner credential fence"
+            );
+        }
+
+        let offered = offered_actions(&propose_plan_tool_def(Some(&ubuntu)));
+        for action in [
+            "ProStatus",
+            "ProDetach",
+            "EnableProService",
+            "DisableProService",
+        ] {
+            assert!(
+                offered.iter().any(|name| name == action),
+                "{action} withheld"
+            );
+        }
+    }
+
+    #[test]
+    fn every_catalogued_credential_param_requires_a_separate_entry_channel() {
+        // Scan parameter names in the descriptions, so a future credential
+        // action fails this test until its planner entry path is decided.
+        let credential_names = ["password", "passphrase", "token", "secret", "api_key"];
+        for &(action, description) in KNOWN_ACTIONS {
+            let Some((_, params)) = description.split_once("param") else {
+                continue;
+            };
+            // Parentheses describe allowed values, such as sshd's
+            // PasswordAuthentication option. Those are not parameter names.
+            let mut depth: usize = 0;
+            let names: String = params
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .chars()
+                .filter(|&c| match c {
+                    '(' => {
+                        depth += 1;
+                        false
+                    }
+                    ')' => {
+                        depth = depth.saturating_sub(1);
+                        false
+                    }
+                    _ => depth == 0,
+                })
+                .collect();
+            let has_credential_param = names
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .any(|word| credential_names.contains(&word));
+            if has_credential_param {
+                assert!(
+                    requires_unavailable_credential_entry(action),
+                    "{action} names a credential parameter but is offered to the planner"
+                );
+            }
         }
     }
 
@@ -1216,11 +1352,16 @@ mod tests {
     }
 
     #[test]
-    fn unknown_family_tool_def_offers_every_action() {
-        // No hint means no basis to exclude anything: a generic deployment must
-        // still be able to plan for whatever it is running on.
+    fn unknown_family_tool_def_offers_every_action_without_credential_entry() {
+        // No hint means no distro exclusion; the credential fence still applies.
         let offered = offered_actions(&propose_plan_tool_def(None));
-        assert_eq!(offered.len(), KNOWN_ACTIONS.len());
+        assert_eq!(
+            offered.len(),
+            KNOWN_ACTIONS
+                .iter()
+                .filter(|(name, _)| !requires_unavailable_credential_entry(name))
+                .count()
+        );
     }
 
     #[test]

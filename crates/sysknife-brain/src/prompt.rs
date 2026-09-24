@@ -444,7 +444,7 @@ CreateLogicalVolume, CreateLvSnapshot, SetServiceResourceLimits
 
 RebootSystem,
 MaskService,
-ConfigureWifi, SetDnsServers,
+SetDnsServers,
 CreateUser,
 AddUserToGroup, RemoveUserFromGroup, DeleteUser,
 AddAuthorizedKey, RemoveAuthorizedKey,
@@ -585,7 +585,6 @@ Use `"username"` as the key — NOT `"user"`.
 - `SetNtp`: `{"enabled":true}`
 
 **Network**:
-- `ConfigureWifi`: `{"ssid":"MyNetwork","password":"secret"}` (password optional for open networks)
 - `SetDnsServers`: `{"interface":"wlp1s0","servers":["1.1.1.1","8.8.8.8"]}` —
   uses NetworkManager via `nmcli`. **Prefer `ResolvectlSetDns` (below) for
   setting DNS servers**: it works regardless of network backend
@@ -617,7 +616,10 @@ const CONSTRAINTS: &str = r#"
   that HAD a valid plan is the worse error.
 - Never suggest raw shell commands or free-form execution.
 - Never generate RunCommand, ExecuteScript, or any action not in the list.
-- Never include secrets, passwords, or API keys as literal values in params. Use only credential reference handles provided by the user.
+- No credential entry or reference resolver is available in this planner. Refuse
+  requests to attach an Ubuntu Pro subscription or configure a Wi-Fi connection;
+  never ask the operator to put a subscription token or Wi-Fi password in an intent.
+- Never include secrets, passwords, or API keys as literal values in params.
 - Keep step summaries and explanations in plain user-facing language.
 - If the intent is ambiguous, choose the most conservative interpretation (prefer read-only actions, prefer fewer steps).
 - Steps are executed in order. A later step depends on earlier steps succeeding.
@@ -819,7 +821,7 @@ UfwEnable, UfwDisable, UfwAllow, UfwDeny, UfwReset, UfwDeleteRule, UfwLimit,
 NetplanApply, NetplanSet,
 AppArmorEnforce,
 Fail2banBanIp,
-ProAttach, ProDetach, EnableProService, DisableProService,
+ProDetach, EnableProService, DisableProService,
 UbuntuReleaseUpgrade
 "#;
 
@@ -854,7 +856,6 @@ const DEBIAN_SELECTION_RULES: &str = r#"
 - "the network config" on Ubuntu means the netplan YAML, so the read is `NetplanGetConfig`. `GetNetworkStatus` reports live interface state and is NOT a configuration. The pairing decides it: what `NetplanApply` applies is exactly what `NetplanGetConfig` reads, so "show me the network config and then apply it" is `NetplanGetConfig` + `NetplanApply`. Reach for `GetNetworkStatus` only when the request asks about the live state — "network status", addresses, whether an interface is up.
 - `DistroboxCreate` creates an isolated container that can be cleanly removed — MEDIUM.
 - `ProStatus` shows Ubuntu Pro subscription state — LOW, read-only. Use for "is Ubuntu Pro active?", "what Pro services are enabled?".
-- `ProAttach` binds the machine to an Ubuntu Pro subscription — HIGH. Requires a token param (treated as a credential — never log or echo it). Use only when the user provides an explicit token.
 - `ProDetach` removes the active Ubuntu Pro subscription — HIGH. No params.
 - `EnableProService` / `DisableProService` toggle a single Pro service — HIGH. Param `service` must be one of the fixed allowlist (esm-apps, esm-infra, livepatch, usg, fips, …). Use for "enable ESM", "turn on livepatch". Requires an attached subscription.
 - `LivepatchStatus` shows Canonical Livepatch kernel-patch state — LOW, read-only. Requires `canonical-livepatch` installed and Ubuntu Pro; surfaces "command not found" if binary is absent.
@@ -941,7 +942,6 @@ ProStatus, ProDetach, LivepatchStatus, MultipassList, UbuntuReleaseUpgrade.
 
 **Ubuntu Pro**:
 - `ProStatus`: `{}`
-- `ProAttach`: `{"token":"<ubuntu-pro-token>"}` — token is a credential; never echo or log it
 - `ProDetach`: `{}`
 - `EnableProService` / `DisableProService`: `{"service":"esm-apps"}` (service ∈ the fixed allowlist)
 
@@ -1198,6 +1198,25 @@ mod tests {
             id: "ubuntu".into(),
             family: DISTRO_FAMILY_DEBIAN,
             version: Some("Ubuntu 24.04".to_string()),
+        }
+    }
+
+    #[test]
+    fn planner_prompt_does_not_advertise_credential_actions() {
+        for hint in [None, Some(debian_hint()), Some(fedora_hint())] {
+            let prompt = build_system_prompt(None, hint.as_ref());
+            assert!(!prompt.contains("ProAttach"));
+            assert!(!prompt.contains("ConfigureWifi"));
+            assert!(prompt.contains("No credential entry or reference resolver"));
+        }
+        let debian = build_system_prompt(None, Some(&debian_hint()));
+        for action in [
+            "ProStatus",
+            "ProDetach",
+            "EnableProService",
+            "DisableProService",
+        ] {
+            assert!(debian.contains(action), "{action} should remain available");
         }
     }
 
