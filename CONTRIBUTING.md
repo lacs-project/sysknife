@@ -179,6 +179,11 @@ regenerate all four files before merge. This is the supported fallback; an
 honest missing measurement is better than metadata that describes a run which
 never happened.
 
+**When GUI library dependencies are missing, this fallback takes precedence over
+the Pre-Commit Gate in `CLAUDE.md`.** Run `scripts/ci-local.sh --no-postgres`
+to exercise the non-GUI gates locally before pushing; a maintainer will run the
+full suite before merge.
+
 CI gates both halves, so bumping the artifact alone turns `docs-and-hygiene` red
 after `rust` goes green.
 
