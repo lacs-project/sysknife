@@ -104,10 +104,10 @@ SysKnife, not an afterthought.
 
 > **ℹ️ Distro support**
 >
-> The current suite is 86 Ubuntu stories. All three Ubuntu LTS releases have a
+> The current suite is 89 Ubuntu stories. All three Ubuntu LTS releases have a
 > committed live-VM run covering 79 of those Ubuntu stories, in
 > `tests/evidence/story-runs/`:
-> 22.04, 24.04 and 26.04 all at 79/79. The seven additional stories are not yet
+> 22.04, 24.04 and 26.04 all at 79/79. The ten additional stories are not yet
 > included in a committed live-VM run. Each run has a replay twin that
 > reproduces it, serving every call with zero misses.
 > Every Debian-only action has a story.
