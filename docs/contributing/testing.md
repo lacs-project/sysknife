@@ -453,7 +453,7 @@ Per-story timeout defaults to 10 minutes (`SYSKNIFE_STORY_TIMEOUT=600`) —
 small tool-capable models on 4 vCPUs need that much headroom.
 
 For the full history of what we tried and why, see
-[HACKING.md](../../HACKING.md) §8.
+[HACKING.md](https://github.com/lacs-project/sysknife/blob/main/HACKING.md) §8.
 
 **Tip:** once provision succeeds end-to-end, immediately `stop` the VM
 and `snapshot baseline`. Then every subsequent test cycle becomes

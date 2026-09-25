@@ -5,7 +5,7 @@ natural-language intent into a risk-labelled plan, asks for approval where
 needed, and streams execution output in real time.
 
 If you want SysKnife inside Claude Code / Cursor / Codex CLI instead, see
-the [main README](../README.md) and run `npx sysknife-setup`. Both paths
+the [main README](https://github.com/lacs-project/sysknife/blob/main/README.md) and run `npx sysknife-setup`. Both paths
 share the daemon, the audit chain, and the typed-action set.
 
 <img

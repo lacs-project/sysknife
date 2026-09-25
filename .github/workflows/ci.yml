@@ -153,6 +153,26 @@ jobs:
       - name: Check markdown link file discovery
         run: bash tests/release/markdown-link-files.test.sh
 
+      - name: Install mdBook and plugins
+        env:
+          MDBOOK_VERSION: "0.4.40"
+          MDBOOK_ADMONISH_VERSION: "1.18.0"
+          MDBOOK_SHA256: "9ef07fd288ba58ff3b99d1c94e6d414d431c9a61fdb20348e5beb74b823d546b"
+          MDBOOK_ADMONISH_SHA256: "5d19ec6376c646204235f197c91398cf95873e96e6100982137112056da96fe4"
+        run: |
+          set -euo pipefail
+          curl -sSfL -o mdbook.tar.gz \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${MDBOOK_SHA256}  mdbook.tar.gz" | sha256sum --check --strict -
+          tar -xzf mdbook.tar.gz --directory /usr/local/bin
+          curl -sSfL -o mdbook-admonish.tar.gz \
+            "https://github.com/tommilligan/mdbook-admonish/releases/download/v${MDBOOK_ADMONISH_VERSION}/mdbook-admonish-v${MDBOOK_ADMONISH_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${MDBOOK_ADMONISH_SHA256}  mdbook-admonish.tar.gz" | sha256sum --check --strict -
+          tar -xzf mdbook-admonish.tar.gz --directory /usr/local/bin
+
+      - name: Check generated mdBook HTML links
+        run: bash tests/release/mdbook-links.test.sh
+
       - name: Check provider parity across E2E entry points
         run: bash tests/e2e/provider-parity.test.sh
 
