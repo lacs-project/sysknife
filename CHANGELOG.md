@@ -12,6 +12,107 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-09-23
+
+### Added
+
+- **The syslog forwarder's IANA Private Enterprise Number is configurable.**
+  ([#445](https://github.com/lacs-project/sysknife/pull/445))
+  `[audit.forward.syslog] enterprise_number` sets the SD-ID the RFC 5424
+  structured data carries (`sysknife@<pen>`), instead of the hardcoded value.
+  It defaults to 32473, RFC 5612's reserved documentation and test PEN, so a
+  site that has not registered one is not squatting somebody else's, and `0` is
+  refused because the IANA registry starts at 1 (closes
+  [#218](https://github.com/lacs-project/sysknife/issues/218)). Thanks to
+  [@atanishka308](https://github.com/atanishka308).
+
+  `SyslogForwardSection` gains a public field, which Cargo counts as a breaking
+  change for any caller constructing it literally, so this moves the middle
+  digit while the leading zero stands.
+
+### Fixed
+
+- **The story-evidence writer refuses a missing `EV_CASSETTE_SHA` at preflight
+  instead of raising `KeyError` mid-assembly.**
+  ([#505](https://github.com/lacs-project/sysknife/pull/505)) The variable was
+  read with a strict `os.environ[...]` but was absent from `REQUIRED_ENV`, so
+  the caller got a two-variable diagnostic and then a traceback rather than the
+  complete missing-variable list. No live caller reached it:
+  `run-stories.sh:618` always sets it. A test derives the required reads from
+  the Python AST, so the declaration cannot drift from the code again (closes
+  [#448](https://github.com/lacs-project/sysknife/issues/448)). Thanks to
+  [@mikevillari](https://github.com/mikevillari).
+- **A local action reference outside `.github/actions` is refused rather than
+  skipped.** ([#510](https://github.com/lacs-project/sysknife/pull/510)) GitHub
+  accepts `uses: ./any/directory`, both pin checks returned early on any `./`
+  reference, and `discover()` only walks `.github/actions`, so an unpinned
+  `uses: attacker/exfil@main` inside `ci/setup/action.yml` passed the rehearsal
+  contract, the pin-comment checker, the Node EOL check and yamllint. A shared
+  `check_local()` now normalises the reference and requires it to land in
+  `.github/actions` or on a top-level reusable workflow, and the symlink guard
+  in `discover()` has the test it never had (closes
+  [#507](https://github.com/lacs-project/sysknife/issues/507)).
+- **`scripts/check_evidence_claims.py` and `tests/release/public-claims.test.sh`
+  are executable again.** Both lost the bit in #487's merge. CI calls them
+  through an interpreter so nothing went red, and `CONTRIBUTING.md` tells
+  contributors to run the first one directly, which failed with
+  `Permission denied`.
+
+### Documented
+
+- **The Security Model says what the layers are.**
+  ([#487](https://github.com/lacs-project/sysknife/pull/487)) They are
+  sequential gates on one request path inside one process running as one
+  root-equivalent account, not independent walls, and `SECURITY.md` now says so
+  with the grants that make it true. `check_public_claims.sh` pins the retired
+  "every layer is independent" wording, and `SECURITY.md` joined `CLAIM_FILES`,
+  without which the pin could not fire on the file it was written for. Thanks
+  to [@yuee3](https://github.com/yuee3).
+
+## [0.21.0] — 2026-09-23
+
+### Security
+
+- **`useradd`, `usermod` and the eight unit verbs run through the validating
+  helper, because the 0.20.0 narrowing did not hold.** GHSA-j9c3-j2qr-65c4 was
+  published as fixed in 0.20.0, where each bare grant became a literal
+  subcommand followed by a trailing `*`. sudoers matches a command's arguments
+  as one concatenated string, so a trailing `*` accepts further *options* as
+  readily as a value, and three of the escapes that advisory named still
+  matched: `useradd --create-home -o -u 0 -g 0 backdoor` (a second uid-0
+  account) against `/usr/sbin/useradd --create-home *`, `usermod --lock -o -u 0
+  <user>` against `/usr/sbin/usermod --lock *`, and `systemctl start
+  debug-shell.service` against `/usr/bin/systemctl start *`, which the daemon's
+  own `ROOT_SHELL_UNITS` denylist refuses on its own path and a grant cannot
+  refuse at all.
+
+  sudoers has no way to express "this subcommand and no further options", so
+  the grammar moved to `/usr/lib/sysknife/action-steps`, which already backs the
+  group, ssh and container actions: it re-validates the account name, the home
+  directory, the shell, the unit verb and the unit name on whatever path reaches
+  it, then builds the same `useradd`/`usermod`/`systemctl` argv the daemon used
+  to build. `packaging/sysknife-sudoers` no longer grants `useradd`, `usermod`
+  or any of the eight unit verbs; `systemctl daemon-reload` and `reboot` keep
+  literal grants with no wildcard to swallow anything.
+
+  The test that was supposed to hold the line asserted only that those grants
+  carried at least one argument token, which stayed true while all three escapes
+  matched. It now runs each escape through the repository's own sudoers matcher
+  and fails if any grant admits one, and the helper's denylist is derived from
+  the daemon's `ROOT_SHELL_UNITS` rather than restated, the way the grub-kargs
+  helper's copy drifted in GHSA-f8vp-j3jh-7wjx. Both directions are
+  mutation-proved: restoring `/usr/sbin/useradd --create-home *` turns the new
+  test red, naming the grant and the escape.
+
+  **Upgrading is not crate-only.** The daemon now builds
+  `sudo /usr/lib/sysknife/action-steps …` for these actions, and the grant that
+  authorises it lives in the packaged sudoers fragment, so a host that takes the
+  new binary while keeping the old `/etc/sudoers.d` fragment and the old helper
+  gets "a password is required" on every user and service action. Install the
+  package, or re-run `make install`, rather than replacing the binary alone.
+  That coupling is why this is a middle-digit release: a call that used to
+  succeed now refuses until both sides move.
+
 ## [0.20.1] — 2026-09-23
 
 ### Fixed

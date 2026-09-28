@@ -138,10 +138,12 @@ assert_action_pins() {
     done
 
     # Run the parser directly: a process substitution would hide its failures.
-    python3 - "$workflows_dir" "$min_uses" "${workflows[@]}" <<'PYTHON'
+    PYTHONPATH="$repo_root/scripts" python3 - "$workflows_dir" "$min_uses" "${workflows[@]}" <<'PYTHON'
 from pathlib import Path
 import re
 import sys
+
+from github_yaml import check_local
 
 try:
     import yaml
@@ -164,6 +166,10 @@ def check_reference(reference, workflow):
     # Remote reusable workflows must still pin a full SHA.
     if isinstance(reference, str):
         if reference.startswith("./"):
+            try:
+                check_local(reference)
+            except ValueError as error:
+                fail(f"{workflow.name} {error}")
             return
         if re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", reference):
             return

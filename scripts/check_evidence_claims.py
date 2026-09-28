@@ -53,11 +53,17 @@ from record_test_baseline import validate_document
 # So the rule is now: if a file states a figure about this project, it belongs
 # here. Adding a file is cheap; the guard only complains about numbers it can
 # derive an answer for.
+#
+# SECURITY.md carries the Security Model wording that
+# check_public_claims.sh's independence pin screens. Without it listed here the
+# pin ran over claim_files and could not fire on the one file it was written
+# for: restoring the retired sentence left the check green.
 CLAIM_FILES = (
     "README.md",
     "ROADMAP.md",
     "CONTRIBUTING.md",
     "HACKING.md",
+    "SECURITY.md",
     "docs/introduction.md",
     "docs/quickstart.md",
     "docs/distro-support.md",

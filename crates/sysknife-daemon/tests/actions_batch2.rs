@@ -47,7 +47,8 @@ fn reload_service_uses_reload_not_restart() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
-                "systemctl".to_string(),
+                "/usr/lib/sysknife/action-steps".to_string(),
+                "unit".to_string(),
                 "reload".to_string(),
                 "nginx.service".to_string()
             ],
@@ -163,6 +164,12 @@ fn get_firewall_state_uses_list_all_not_state() {
 
 #[test]
 fn restart_service_uses_sudo_systemctl() {
+    // Through `action-steps unit <verb> <unit>`, not `sudo systemctl <verb>`.
+    // The per-subcommand grants put the unit name in a trailing wildcard, and
+    // sudoers matches arguments as one concatenated string, so
+    // `systemctl start debug-shell.service` matched a grant meant for services.
+    // The helper applies the daemon's own root-shell denylist to the verbs that
+    // bring a unit up, on whatever path reaches it.
     let spec = services::restart_service("NetworkManager.service");
 
     assert_eq!(spec.action_name, "RestartService");
@@ -172,7 +179,8 @@ fn restart_service_uses_sudo_systemctl() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
-                "systemctl".to_string(),
+                "/usr/lib/sysknife/action-steps".to_string(),
+                "unit".to_string(),
                 "restart".to_string(),
                 "NetworkManager.service".to_string()
             ],
@@ -209,7 +217,8 @@ fn service_enable_and_disable_use_matching_systemctl_commands() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
-                "systemctl".to_string(),
+                "/usr/lib/sysknife/action-steps".to_string(),
+                "unit".to_string(),
                 "enable".to_string(),
                 "sshd.service".to_string()
             ],
@@ -220,7 +229,8 @@ fn service_enable_and_disable_use_matching_systemctl_commands() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
-                "systemctl".to_string(),
+                "/usr/lib/sysknife/action-steps".to_string(),
+                "unit".to_string(),
                 "disable".to_string(),
                 "sshd.service".to_string()
             ],
@@ -491,7 +501,13 @@ fn users_family_covers_listing_and_account_management() {
 }
 
 #[test]
-fn account_lock_unlock_uses_sudo_usermod() {
+fn account_lock_unlock_goes_through_the_validating_helper() {
+    // Not `sudo usermod --lock <user>` any more. That grant was
+    // `/usr/sbin/usermod --lock *`, and a trailing `*` in sudoers matches
+    // across word boundaries, so it also authorised
+    // `usermod --lock -o -u 0 <user>`, which makes an existing account uid 0.
+    // The helper re-validates the account name and builds the same usermod
+    // argv, so the grant can name the helper instead.
     let lock = users::lock_user_account("alice");
     let unlock = users::unlock_user_account("alice");
     assert_eq!(lock.risk_level, RiskLevel::High);
@@ -501,8 +517,8 @@ fn account_lock_unlock_uses_sudo_usermod() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
-                "usermod".to_string(),
-                "--lock".to_string(),
+                "/usr/lib/sysknife/action-steps".to_string(),
+                "user-lock".to_string(),
                 "alice".to_string()
             ],
         }
@@ -512,8 +528,8 @@ fn account_lock_unlock_uses_sudo_usermod() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
-                "usermod".to_string(),
-                "--unlock".to_string(),
+                "/usr/lib/sysknife/action-steps".to_string(),
+                "user-unlock".to_string(),
                 "alice".to_string()
             ],
         }
@@ -570,13 +586,13 @@ fn user_creation_and_group_changes_use_sudo_prefixed_shadow_tools() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
-                "useradd".to_string(),
-                "--create-home".to_string(),
+                "/usr/lib/sysknife/action-steps".to_string(),
+                "user-create".to_string(),
+                "alice".to_string(),
                 "--home-dir".to_string(),
                 "/home/alice".to_string(),
                 "--shell".to_string(),
                 "/bin/bash".to_string(),
-                "alice".to_string(),
             ],
         }
     );

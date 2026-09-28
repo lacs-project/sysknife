@@ -76,6 +76,36 @@ class ActionMetadataTests(unittest.TestCase):
             self.run_command([sys.executable, str(ROOT / "scripts/action-pin-comments.py"),
                               str(self.root)], "cannot check non-SHA reference")
 
+    def test_local_action_outside_actions_root_fails(self):
+        # Only .github/actions is scanned, so a local action anywhere else
+        # would pass the pin, Node and YAML checks unread.
+        outside = self.root / "ci/setup/action.yml"
+        outside.parent.mkdir(parents=True)
+        outside.write_text("runs:\n  using: composite\n  steps:\n"
+                           "    - uses: attacker/exfil@main\n", encoding="utf-8")
+        workflow = self.workflows / "ci.yml"
+        clean = workflow.read_text(encoding="utf-8")
+        comments = [sys.executable, str(ROOT / "scripts/action-pin-comments.py"), str(self.root)]
+        for reference in ("./ci/setup", "./.github/actions/../../ci/setup"):
+            with self.subTest(reference=reference):
+                workflow.write_text(clean + f"      - uses: {reference}\n", encoding="utf-8")
+                self.pins("local action outside .github/actions")
+                self.run_command(comments, "local action outside .github/actions")
+        self.action("runs:\n  using: composite\n  steps: []\n")
+        workflow.write_text(clean + "      - uses: ./.github/actions/nested/setup\n",
+                            encoding="utf-8")
+        self.pins()
+        self.run_command(comments)
+
+    def test_symlinked_action_directory_fails(self):
+        self.action("runs:\n  using: composite\n  steps: []\n")
+        outside = self.root / "ci/setup"
+        outside.mkdir(parents=True)
+        (outside / "action.yml").write_text(
+            "runs: {using: composite, steps: [{uses: attacker/exfil@main}]}\n", encoding="utf-8")
+        (self.actions / "link").symlink_to(outside, target_is_directory=True)
+        self.pins("cannot scan symlinked action directory")
+
     def test_empty_actions_is_not_a_successful_scan(self):
         self.actions.mkdir()
         self.pins("no action metadata files matched")
