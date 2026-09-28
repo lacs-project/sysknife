@@ -130,6 +130,8 @@ PYEOF
 fixture_files=(
     "${claim_files_from_checker[@]}"
     ".githooks/pre-commit"
+    ".pre-commit-config.yaml"
+    "docs/contributing/CONTRIBUTING.md"
     "assets/demo/mcp-flow-mock.sh"
     # Evidence the numeric claims derive from, and the source the action count is
     # counted out of. Without these the checker aborts on its own input check and
@@ -195,6 +197,45 @@ cp "$repo_root/.githooks/pre-commit" "$fixture/.githooks/pre-commit"
 sed '/^scripts\/test_baseline.sh$/d' "$repo_root/.githooks/pre-commit" > "$fixture/.githooks/pre-commit"
 assert_rejected_with_diagnostic 'documented step removed from hook' 'pre-commit steps differ' 'scripts/test_baseline.sh'
 cp "$repo_root/.githooks/pre-commit" "$fixture/.githooks/pre-commit"
+
+# The two places that name the framework on purpose must stay legal: the
+# prohibition in the developer guide and the header of the unused config.
+grep -Fq 'pip install pre-commit && pre-commit install' "$fixture/docs/developer-guide.md" || {
+    printf 'FAIL: fixture developer guide lost the pre-commit prohibition
+' >&2
+    exit 1
+}
+grep -Fq 'pre-commit run --all-files' "$fixture/.pre-commit-config.yaml" || {
+    printf 'FAIL: fixture .pre-commit-config.yaml lost its header
+' >&2
+    exit 1
+}
+printf '
+Prose may say `pre-commit run --all-files` without running it.
+'     >> "$fixture/docs/contributing/CONTRIBUTING.md"
+if ! output=$("$checker" "$fixture" 2>&1); then
+    printf 'FAIL: framework screen fired on prose or on the prohibition
+%s
+' "$output" >&2
+    exit 1
+fi
+cp "$repo_root/docs/contributing/CONTRIBUTING.md" "$fixture/docs/contributing/CONTRIBUTING.md"
+
+printf '
+```sh
+pre-commit run --all-files
+```
+' >> "$fixture/docs/contributing/CONTRIBUTING.md"
+assert_rejected_with_diagnostic 'framework command in the contributing page'     'docs/contributing/CONTRIBUTING.md:' 'pre-commit run --all-files'
+cp "$repo_root/docs/contributing/CONTRIBUTING.md" "$fixture/docs/contributing/CONTRIBUTING.md"
+
+printf '
+```bash
+$ pip install pre-commit && pre-commit install
+```
+' >> "$fixture/HACKING.md"
+assert_rejected_with_diagnostic 'framework install in another doc' 'HACKING.md:' 'pre-commit install'
+cp "$repo_root/HACKING.md" "$fixture/HACKING.md"
 
 # The story coverage sentence is a derived claim, not a second catalogue. Mutate
 # its published All-family figure without repeating today's value in this test.
