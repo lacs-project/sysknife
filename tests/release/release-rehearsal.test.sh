@@ -361,6 +361,18 @@ mutations = [
     'cargo_args=(publish)\ncargo "${cargo_args[@]}"',
     "npm publish --access public",
     "gh release create v9.9.9",
+    "{ gh release create v9.9.9; }",
+    "echo `gh release create v9.9.9`",
+    "sudo gh release create v9.9.9",
+    "time -p gh release create v9.9.9",
+    "env -i gh release create v9.9.9",
+    "command -p gh release create v9.9.9",
+    "nohup gh release create v9.9.9",
+    "xargs gh release create < f",
+    "if time -p env -i FOO='two words' command -p gh release create v9.9.9; then :; fi",
+    "true && sudo nohup git push origin v9.9.9",
+    "{ env -i git tag v9.9.9; }",
+    'echo "`command -p gh release create v9.9.9`"',
     "if gh release create v9.9.9; then :; fi",
     "if true; then gh release create v9.9.9; fi",
     "if false; then :; else gh release create v9.9.9; fi",
@@ -407,7 +419,13 @@ with tempfile.TemporaryDirectory() as directory:
     candidate.write_text(source, encoding="utf-8")
     run(checker, candidate)
     # Tool names in comments and ordinary output are not invocations.
-    for harmless in ("# if gh release create v9.9.9", "printf '%s\\n' 'if gh release create'"):
+    for harmless in (
+        "# if gh release create v9.9.9",
+        "printf '%s\\n' 'if gh release create'",
+        "# { sudo gh release create v9.9.9; }",
+        "# echo `gh release create v9.9.9`",
+        "printf '%s\\n' 'time -p env -i command -p gh release create'",
+    ):
         candidate.write_text(source + "\n" + harmless + "\n", encoding="utf-8")
         run(checker, candidate)
     for mutation in mutations:
