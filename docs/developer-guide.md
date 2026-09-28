@@ -19,7 +19,7 @@ environment and covers everything you need to contribute confidently.
 |---|---|---|
 | Rust stable | latest stable | [rustup.rs](https://rustup.rs) |
 | A C compiler and linker | — | `sudo apt-get install -y build-essential` |
-| Node.js | 20+ | [nodejs.org](https://nodejs.org) or your distro |
+| Node.js | 22+ | [nodejs.org](https://nodejs.org) or your distro |
 | `cargo-nextest` | latest | `cargo install cargo-nextest --locked` |
 
 **Required to reproduce the `docs-and-hygiene` job**, which is one of the five
