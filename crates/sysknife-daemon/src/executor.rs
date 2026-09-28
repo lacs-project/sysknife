@@ -851,18 +851,10 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "ListTimers" => Ok(services::list_timers()),
         "ReloadDaemon" => Ok(services::reload_daemon()),
         "CreateScheduledJob" => {
-            // Job name: safe unit stem (no path/dot/@ templating).
+            // Job name: safe logical name. The service module owns the
+            // exact sysknife-<name> unit-path rendering used by preview.
             let name = require_str(params, "name")?;
-            if name.is_empty()
-                || name.len() > 64
-                || !name
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_alphanumeric())
-                || !name
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            {
+            if services::scheduled_job_unit_paths(name).is_none() {
                 return Err(ExecutorError::InvalidParam("name"));
             }
             // Command: reject control characters (newlines would inject extra

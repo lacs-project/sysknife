@@ -48,7 +48,18 @@ pub fn preview_action(
     current_state: Value,
     proposed_change: Value,
 ) -> PreviewEnvelope {
-    let profile = preview_profile(&request.action_name);
+    let mut profile = preview_profile(&request.action_name);
+    if request.action_name == "CreateScheduledJob" {
+        if let Some(name) = request.params.get("name").and_then(Value::as_str) {
+            if let Some((service_path, timer_path)) =
+                crate::actions::services::scheduled_job_unit_paths(name)
+            {
+                profile.expected_side_effects.push(format!(
+                    "unit files {service_path} and {timer_path} will be created; existing paths are refused, not overwritten"
+                ));
+            }
+        }
+    }
     // Risk, reboot, and rollback are OWNED by the action's `ActionSpec` (the
     // single source of truth, `crate::actions`) and derived here so the approval
     // gate and the displayed reboot/rollback flags can never disagree with the
@@ -881,6 +892,19 @@ mod tests {
                 "{action} should not have rollback available"
             );
         }
+    }
+
+    #[test]
+    fn create_scheduled_job_preview_names_exact_unit_paths() {
+        let mut request = req("CreateScheduledJob");
+        request.params = serde_json::json!({"name": "nightly"});
+
+        let envelope = preview_action(&request, serde_json::Value::Null, serde_json::Value::Null);
+
+        let paths = envelope.expected_side_effects.join("\n");
+        assert!(paths.contains("/etc/systemd/system/sysknife-nightly.service"));
+        assert!(paths.contains("/etc/systemd/system/sysknife-nightly.timer"));
+        assert!(paths.contains("refused, not overwritten"));
     }
 
     #[test]

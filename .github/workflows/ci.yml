@@ -97,6 +97,9 @@ jobs:
       - name: Check mount-edit refuses symlinked mountpoints
         run: bash tests/release/mount-edit.test.sh
 
+      - name: Check scheduled-job unit collision safety
+        run: bash tests/release/scheduled-job-edit.test.sh
+
       - name: Check a replay reproduces the run that recorded it
         run: bash tests/release/cassette-replay-parity.test.sh
 
