@@ -55,6 +55,7 @@ mkdir -p "$src_dir"
 
 # Copy just enough structure for mdBook to compile the book.
 cp -r "$repo_root/docs" "$src_dir/docs"
+cp -r "$repo_root/assets" "$src_dir/assets"
 cp "$repo_root/book.toml" "$src_dir/"
 # theme/custom.css is referenced in book.toml
 if [ -d "$repo_root/theme" ]; then
