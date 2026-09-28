@@ -439,7 +439,8 @@ SYSKNIFE_TEST_MODEL=qwen2.5:3b     ./tests/e2e/atomic-vm.sh provision  # alt too
 
 The harness default is **`qwen3:8b`** (`SYSKNIFE_TEST_MODEL:-qwen3:8b`
 in `tests/e2e/provision.sh`), the most reliable tool-caller — but it
-needs a GPU (see the table in [HACKING.md](../../HACKING.md) §8).
+needs a GPU (see the table in
+[HACKING.md](https://github.com/lacs-project/sysknife/blob/main/HACKING.md) §8).
 
 On a CPU-only VM, override to **`llama3.2:3b`** after empirical live
 testing on a CPU-only 4-vCPU / 10 GB VM: ~2 GB download, no thinking
