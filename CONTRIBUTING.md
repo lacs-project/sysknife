@@ -44,10 +44,10 @@ table below.
 
 | Area | Why it matters | Difficulty |
 |---|---|---|
-| **Ubuntu LTS support** | The current suite is 86 Ubuntu stories. Committed live-VM evidence covers 79 of those Ubuntu stories on each LTS release, with a committed replay twin that reproduces each run: 22.04, 24.04 and 26.04 all at 79/79. The seven additional stories are not yet included in a committed live-VM run. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: story coverage for the cross-family actions, and every Debian-only action has a story. | medium |
+| **Ubuntu LTS support** | The current suite is 89 Ubuntu stories. Committed live-VM evidence covers 79 of those Ubuntu stories on each LTS release, with a committed replay twin that reproduces each run: 22.04, 24.04 and 26.04 all at 79/79. The ten additional stories are not yet included in a committed live-VM run. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: story coverage for the cross-family actions, and every Debian-only action has a story. | medium |
 | **Distro detection coverage** | Robust `/etc/os-release` parsing for every release we claim to support. Pure-function tests against real fixture files, no integration mocks. The existing fixtures at the bottom of `crates/sysknife-core/src/distro.rs` show the shape. | easy |
 | **Action catalogue gaps** | Add a typed action (for example `EnableFirewallZone`). Small and isolated, and every PR carries the policy entry, the risk level and the tests. | easy |
-| **E2E story coverage** | Real prompts, real LLM, real daemon. The suite is 140 stories: 54 atomic + 86 Ubuntu. What is left is the cross-family middle: of the action names available on both families, 59 are still untouched by any story, plus 10 Fedora-only and 0 Ubuntu-only ones. See #233 for the clustered map. | medium |
+| **E2E story coverage** | Real prompts, real LLM, real daemon. The suite is 143 stories: 54 atomic + 89 Ubuntu. What is left is the cross-family middle: of the action names available on both families, 56 are still untouched by any story, plus 10 Fedora-only and 0 Ubuntu-only ones. See #233 for the clustered map. | medium |
 | **Fedora Atomic validation** | The action families exist and `DistroId::is_supported()` returns true for Atomic 41 and up. Nobody has run `tests/e2e/atomic-vm.sh` against a current release. Needs Fedora Atomic hardware or a VM host. | tedious |
 | **Demo recording on real hardware** | Replace the bundled demo GIF with a 30-second recording on real Ubuntu 26.04 with rollback visible. | easy |
 
