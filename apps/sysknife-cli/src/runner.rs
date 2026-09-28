@@ -364,18 +364,16 @@ fn unattended_marker_present(warnings: &[String]) -> bool {
 // since_to_hours
 // ---------------------------------------------------------------------------
 
-/// Parse an RFC 3339 / ISO-8601 UTC datetime string and return the number of
+/// Parse an ISO-8601 datetime or calendar date and return the number of
 /// whole hours that have elapsed since that moment.
 ///
-/// Returns `None` when:
-/// - the string is not a valid UTC timestamp (`Z` or `+00:00` suffix),
-/// - the datetime is in the future, or
-/// - the value is too large to fit in `u32`.
+/// Datetimes may use Z or an explicit UTC offset. A bare YYYY-MM-DD is
+/// interpreted as midnight UTC on that date.
 ///
-/// Sub-second precision (`.NNN`) is accepted and truncated.  Non-zero UTC
-/// offsets are not supported and return `None`.
+/// Returns None when the value is invalid, in the future, or too large to
+/// fit in u32.
 pub fn since_to_hours(s: &str) -> Option<u32> {
-    let epoch = rfc3339_to_unix(s)?;
+    let epoch = iso8601_to_unix(s)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
@@ -386,64 +384,15 @@ pub fn since_to_hours(s: &str) -> Option<u32> {
     u32::try_from((now - epoch) / 3600).ok()
 }
 
-/// Parse a UTC RFC 3339 string to seconds since Unix epoch (no external dep).
-///
-/// Supports `YYYY-MM-DDThh:mm:ssZ` and `YYYY-MM-DDThh:mm:ss+00:00`.
-/// Sub-second fractions are stripped.
-///
-/// Uses Howard Hinnant's civil day algorithm to convert a proleptic-Gregorian
-/// date to a day count, then scales to seconds.
-fn rfc3339_to_unix(s: &str) -> Option<i64> {
-    let s = s.strip_suffix('Z').or_else(|| s.strip_suffix("+00:00"))?;
-
-    // Split on the 'T' separator.
-    let (date_part, time_and_frac) = s.split_once('T')?;
-
-    // Drop sub-second fractions: keep only up to "hh:mm:ss".
-    let time_part = &time_and_frac[..time_and_frac.find('.').unwrap_or(time_and_frac.len())];
-    if time_part.len() < 8 {
-        return None;
+fn iso8601_to_unix(s: &str) -> Option<i64> {
+    if let Ok(datetime) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(datetime.timestamp());
     }
 
-    // Parse date components.
-    let mut date_iter = date_part.splitn(4, '-');
-    let y: i64 = date_iter.next()?.parse().ok()?;
-    let m: i64 = date_iter.next()?.parse().ok()?;
-    let d: i64 = date_iter.next()?.parse().ok()?;
-    if date_iter.next().is_some() {
-        return None; // extra segments → reject
-    }
-
-    // Parse time components.
-    let mut time_iter = time_part.splitn(4, ':');
-    let h: i64 = time_iter.next()?.parse().ok()?;
-    let mn: i64 = time_iter.next()?.parse().ok()?;
-    let sec: i64 = time_iter.next()?.parse().ok()?;
-    if time_iter.next().is_some() {
-        return None; // extra segments → reject
-    }
-
-    // Range validation.
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || h > 23 || mn > 59 || sec > 60
-    // allow leap second
-    {
-        return None;
-    }
-
-    // Howard Hinnant's civil_from_days: compute days since 1970-01-01.
-    //
-    // Reference: https://howardhinnant.github.io/date_algorithms.html
-    // The civil epoch starts on 0000-03-01; shift y back by 1 for Jan/Feb so
-    // Feb 29 falls at the end of its civil year.
-    let z = if m > 2 { y } else { y - 1 };
-    let era = (if z >= 0 { z } else { z - 399 }) / 400;
-    let yoe = z - era * 400; // year-of-era [0, 399]
-    let m_adj = if m > 2 { m - 3 } else { m + 9 }; // month-of-civil-year [0, 11]
-    let doy = (153 * m_adj + 2) / 5 + d - 1; // day-of-year from Mar 1
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // day-of-era
-    let days = era * 146097 + doe - 719468; // days since 1970-01-01
-
-    Some(days * 86_400 + h * 3600 + mn * 60 + sec)
+    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .ok()?
+        .and_hms_opt(0, 0, 0)
+        .map(|datetime| datetime.and_utc().timestamp())
 }
 
 // ---------------------------------------------------------------------------
@@ -807,10 +756,10 @@ pub async fn run_history(
         None => None,
         Some(s) => {
             // Distinguish the two failure modes so the user knows how to fix each.
-            if rfc3339_to_unix(s).is_none() {
+            if iso8601_to_unix(s).is_none() {
                 return Err(CliError::ConfigOrDaemon(format!(
-                    "--since: {s:?} is not a valid UTC RFC 3339 timestamp \
-                     (accepted formats: 2026-01-15T10:30:00Z or 2026-01-15T10:30:00+00:00)"
+                    "--since: {s:?} is not a valid ISO-8601 date or datetime \
+                     (accepted formats: 2026-01-15, 2026-01-15T10:30:00Z, or 2026-01-15T12:30:00+02:00)"
                 )));
             }
             match since_to_hours(s) {
@@ -3330,76 +3279,84 @@ mod tests {
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     // -----------------------------------------------------------------------
-    // rfc3339_to_unix — pure function, tests against known epoch values
+    // iso8601_to_unix — pure function, tests against known epoch values
     // -----------------------------------------------------------------------
 
     #[test]
     fn rfc3339_unix_epoch_z() {
-        assert_eq!(rfc3339_to_unix("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(iso8601_to_unix("1970-01-01T00:00:00Z"), Some(0));
     }
 
     #[test]
     fn rfc3339_unix_epoch_plus00() {
-        assert_eq!(rfc3339_to_unix("1970-01-01T00:00:00+00:00"), Some(0));
+        assert_eq!(iso8601_to_unix("1970-01-01T00:00:00+00:00"), Some(0));
     }
 
     #[test]
     fn rfc3339_unix_one_day() {
-        assert_eq!(rfc3339_to_unix("1970-01-02T00:00:00Z"), Some(86_400));
+        assert_eq!(iso8601_to_unix("1970-01-02T00:00:00Z"), Some(86_400));
     }
 
     #[test]
     fn rfc3339_unix_y2k() {
         // 2000-01-01T00:00:00Z = 946684800
-        assert_eq!(rfc3339_to_unix("2000-01-01T00:00:00Z"), Some(946_684_800));
+        assert_eq!(iso8601_to_unix("2000-01-01T00:00:00Z"), Some(946_684_800));
     }
 
     #[test]
     fn rfc3339_unix_leap_day_2000() {
         // 2000-02-29: Jan has 31 days, then 28 more days = 59 days from 2000-01-01.
         // 946684800 + 59 * 86400 = 946684800 + 5097600 = 951782400
-        assert_eq!(rfc3339_to_unix("2000-02-29T00:00:00Z"), Some(951_782_400));
+        assert_eq!(iso8601_to_unix("2000-02-29T00:00:00Z"), Some(951_782_400));
     }
 
     #[test]
     fn rfc3339_unix_with_subseconds() {
         // Sub-second fraction should be stripped.
         assert_eq!(
-            rfc3339_to_unix("2000-01-01T00:00:00.123456Z"),
+            iso8601_to_unix("2000-01-01T00:00:00.123456Z"),
             Some(946_684_800)
         );
     }
 
     #[test]
-    fn rfc3339_unix_non_utc_returns_none() {
-        assert!(rfc3339_to_unix("2000-01-01T00:00:00+05:00").is_none());
+    fn iso8601_nonzero_offset_is_normalized_to_utc() {
+        assert_eq!(
+            iso8601_to_unix("2000-01-01T05:00:00+05:00"),
+            Some(946_684_800)
+        );
+    }
+
+    #[test]
+    fn iso8601_bare_date_is_midnight_utc() {
+        assert_eq!(iso8601_to_unix("2000-01-01"), Some(946_684_800));
     }
 
     #[test]
     fn rfc3339_unix_no_suffix_returns_none() {
-        assert!(rfc3339_to_unix("2000-01-01T00:00:00").is_none());
+        assert!(iso8601_to_unix("2000-01-01T00:00:00").is_none());
     }
 
     #[test]
     fn rfc3339_unix_garbage_returns_none() {
-        assert!(rfc3339_to_unix("not-a-date").is_none());
-        assert!(rfc3339_to_unix("").is_none());
+        assert!(iso8601_to_unix("not-a-date").is_none());
+        assert!(iso8601_to_unix("").is_none());
     }
 
     #[test]
     fn rfc3339_unix_invalid_month_returns_none() {
-        assert!(rfc3339_to_unix("2000-13-01T00:00:00Z").is_none());
+        assert!(iso8601_to_unix("2000-13-01T00:00:00Z").is_none());
     }
 
     #[test]
     fn rfc3339_unix_invalid_hour_returns_none() {
-        assert!(rfc3339_to_unix("2000-01-01T25:00:00Z").is_none());
+        assert!(iso8601_to_unix("2000-01-01T25:00:00Z").is_none());
     }
 
     #[test]
     fn rfc3339_unix_day_zero_returns_none() {
         // Day 0 is out of range; the lower bound of the `!(1..=31)` check.
-        assert!(rfc3339_to_unix("2000-01-00T00:00:00Z").is_none());
+        assert!(iso8601_to_unix("2000-01-00T00:00:00Z").is_none());
     }
 
     // -----------------------------------------------------------------------
