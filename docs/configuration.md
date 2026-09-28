@@ -144,9 +144,10 @@ the CLI / shell:
 sysknife doctor
 ```
 
-Reports the resolved configuration (socket, host, provider, model, audit
-backend) plus a quick chain-integrity check. A failing `doctor` is the
-fastest way to catch a typo'd env var or a bad path.
+Reports connectivity and the resolved daemon configuration (socket, host,
+provider, model, and distro). For audit chain integrity, use
+`sysknife audit verify`. A failing `doctor` is the fastest way to catch a
+typo'd env var, a bad socket path, or an unreachable daemon.
 
 ## Where each setting lives in the source
 

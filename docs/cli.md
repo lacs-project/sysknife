@@ -87,10 +87,11 @@ Sample output:
 
 ```text
 ✓  daemon ok
-  socket    /run/sysknife/daemon.sock
+  socket    unix:///run/sysknife/daemon.sock
   host      my-silverblue
   provider  anthropic
   model     claude-sonnet-4-6
+  distro    fedora
 ```
 
 ---
