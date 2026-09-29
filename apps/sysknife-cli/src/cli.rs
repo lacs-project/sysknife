@@ -230,7 +230,7 @@ pub struct HistoryArgs {
     #[arg(long, value_name = "ACTION")]
     pub action: Option<String>,
 
-    /// Show only entries after this ISO-8601 datetime.
+    /// Show only entries after this ISO-8601 date or UTC-qualified datetime.
     #[arg(long, value_name = "DATETIME")]
     pub since: Option<String>,
 

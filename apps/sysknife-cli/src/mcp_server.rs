@@ -778,7 +778,7 @@ impl SysknifeMcpServer {
     /// Read-only and safe to call without first calling `sysknife_plan`;
     /// it never mutates system state. Mirrors `sysknife history`.
     #[tool(
-        description = "List past SysKnife audit-log entries. Read-only and safe to call without prior sysknife_plan. Filters: status (succeeded/failed/canceled/...), action (canonical action name), since (UTC RFC 3339 timestamp), limit (default 20). Returns a list of HistoryEntry rows."
+        description = "List past SysKnife audit-log entries. Read-only and safe to call without prior sysknife_plan. Filters: status (succeeded/failed/canceled/...), action (canonical action name), since (ISO-8601 date or UTC-qualified datetime), limit (default 20). Returns {"entries": [HistoryEntry, ...]}."
     )]
     async fn sysknife_history(
         &self,

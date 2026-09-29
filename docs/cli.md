@@ -115,7 +115,7 @@ sysknife history --status succeeded --limit 5 --since 2026-04-10T00:00:00Z
 | `--limit N` | `20` | Maximum entries to return |
 | `--status STATUS` | — | Filter by job status (`succeeded`, `failed`, `canceled`, …) |
 | `--action ACTION` | — | Filter by action name (e.g. `InstallPackages`) |
-| `--since DATETIME` | — | Only entries after this UTC RFC 3339 timestamp |
+| `--since DATETIME` | — | Only entries after this ISO-8601 date or UTC-qualified datetime |
 
 ---
 
