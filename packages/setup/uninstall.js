@@ -90,6 +90,72 @@ function footprint(cwd = process.cwd()) {
   };
 }
 
+
+function removeSysknifeMcpServers(target) {
+  if (!fs.existsSync(target)) return false;
+  let config;
+  try {
+    config = JSON.parse(fs.readFileSync(target, 'utf8'));
+  } catch {
+    return false;
+  }
+  if (!config || typeof config !== 'object' || Array.isArray(config) ||
+      !config.mcpServers || typeof config.mcpServers !== 'object') return false;
+
+  const before = Object.keys(config.mcpServers);
+  const kept = Object.fromEntries(
+    Object.entries(config.mcpServers).filter(([key]) => !key.startsWith('sysknife')),
+  );
+  if (Object.keys(kept).length === before.length) return false;
+
+  config.mcpServers = kept;
+  fs.writeFileSync(target, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+  fs.chmodSync(target, 0o600);
+  return true;
+}
+
+function removeTomlSysknifeBlocks(target) {
+  if (!fs.existsSync(target)) return false;
+  const original = fs.readFileSync(target, 'utf8');
+  const lines = original.split('\n');
+  const kept = [];
+  let dropping = false;
+
+  for (const line of lines) {
+    if (/^# --- sysknife \(added by sysknife-setup\) ---\s*$/.test(line)) {
+      dropping = true;
+      continue;
+    }
+    const table = line.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (table) {
+      if (table[1].startsWith('mcp_servers.sysknife')) {
+        dropping = true;
+        continue;
+      }
+      dropping = false;
+    }
+    if (!dropping) kept.push(line);
+  }
+
+  const next = kept.join('\n').replace(/\n{3,}/g, '\n\n');
+  if (next === original) return false;
+  fs.writeFileSync(target, next, { mode: 0o600 });
+  fs.chmodSync(target, 0o600);
+  return true;
+}
+
+function removeAgentsBlock(target) {
+  if (!fs.existsSync(target)) return false;
+  const original = fs.readFileSync(target, 'utf8');
+  const start = original.indexOf('\n## SysKnife MCP rules\n');
+  if (start < 0) return false;
+  const nextHeading = original.indexOf('\n## ', start + 2);
+  const end = nextHeading < 0 ? original.length : nextHeading;
+  const next = (original.slice(0, start) + original.slice(end)).replace(/\n{3,}/g, '\n\n');
+  fs.writeFileSync(target, next.endsWith('\n') ? next : next + '\n');
+  return true;
+}
+
 /** Stop and disable the user service, ignoring "not loaded" on a partial install. */
 function stopUserService(log) {
   for (const args of [
@@ -154,6 +220,25 @@ function uninstall(opts = {}) {
       continue;
     }
     if (removePath(target)) removed.push(target);
+  }
+
+  const managed = [
+    [path.join(cwd, '.cursor', 'mcp.json'), removeSysknifeMcpServers],
+    [path.join(os.homedir(), '.codex', 'config.toml'), removeTomlSysknifeBlocks],
+    [path.join(cwd, 'AGENTS.md'), removeAgentsBlock],
+  ];
+  const cursorRule = path.join(cwd, '.cursor', 'rules', 'sysknife.mdc');
+
+  if (dryRun) {
+    for (const [target] of managed) {
+      if (fs.existsSync(target)) removed.push(target);
+    }
+    if (fs.existsSync(cursorRule)) removed.push(cursorRule);
+  } else {
+    for (const [target, removeManagedContent] of managed) {
+      if (removeManagedContent(target)) removed.push(target);
+    }
+    if (removePath(cursorRule)) removed.push(cursorRule);
   }
 
   for (const entry of fp.data) {

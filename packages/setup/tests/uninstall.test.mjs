@@ -100,3 +100,66 @@ test('the legacy entries are derived from install-daemon, not restated', () => {
   assert.ok(entry, 'legacy database is listed');
   assert.match(entry.what, /audit chain/i, 'and it says what it is');
 });
+
+
+test('uninstall removes Cursor SysKnife entries without deleting other MCP servers', async () => {
+  const { uninstall } = require('../uninstall.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-uninstall-cursor-'));
+  const cursorDir = path.join(tmp, '.cursor');
+  const rulesDir = path.join(cursorDir, 'rules');
+  fs.mkdirSync(rulesDir, { recursive: true });
+  fs.writeFileSync(path.join(cursorDir, 'mcp.json'), JSON.stringify({
+    mcpServers: {
+      other: { command: 'other' },
+      sysknife: { command: 'sysknife', env: { API_KEY: 'secret' } },
+    },
+  }));
+  fs.writeFileSync(path.join(rulesDir, 'sysknife.mdc'), 'managed rule');
+
+  uninstall({ cwd: tmp, log: () => {} });
+
+  const config = JSON.parse(fs.readFileSync(path.join(cursorDir, 'mcp.json'), 'utf8'));
+  assert.deepEqual(config.mcpServers, { other: { command: 'other' } });
+  assert.equal(fs.existsSync(path.join(rulesDir, 'sysknife.mdc')), false);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('uninstall removes only SysKnife Codex and AGENTS blocks', async () => {
+  const { uninstall } = require('../uninstall.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-uninstall-codex-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-uninstall-home-'));
+  const oldHome = process.env.HOME;
+  process.env.HOME = home;
+  const codexDir = path.join(home, '.codex');
+  fs.mkdirSync(codexDir, { recursive: true });
+  const codex = path.join(codexDir, 'config.toml');
+  fs.writeFileSync(codex, [
+    '[model]',
+    'name = "keep"',
+    '# --- sysknife (added by sysknife-setup) ---',
+    '[mcp_servers.sysknife]',
+    'command = "sysknife"',
+    '[mcp_servers.sysknife.env]',
+    'API_KEY = "secret"',
+    '[mcp_servers.other]',
+    'command = "keep"',
+    '',
+  ].join('\n'));
+  const agents = path.join(tmp, 'AGENTS.md');
+  fs.writeFileSync(agents, '# Project instructions\n\n## SysKnife MCP rules\nmanaged\n\n## Keep me\nuser text\n');
+
+  try {
+    uninstall({ cwd: tmp, log: () => {} });
+    const codexText = fs.readFileSync(codex, 'utf8');
+    assert.doesNotMatch(codexText, /sysknife|API_KEY = "secret"/);
+    assert.match(codexText, /\[model\]/);
+    assert.match(codexText, /\[mcp_servers\.other\]/);
+    const agentsText = fs.readFileSync(agents, 'utf8');
+    assert.doesNotMatch(agentsText, /SysKnife MCP rules|managed/);
+    assert.match(agentsText, /## Keep me\nuser text/);
+  } finally {
+    process.env.HOME = oldHome;
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
