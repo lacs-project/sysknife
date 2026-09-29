@@ -1877,6 +1877,24 @@ pub fn checkpoint_outcome_to_exit_code(outcome: &CheckpointOutcome) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn audit_key_env_resolution_is_centralised() {
+        const INLINE_RESOLUTION: &str = "std::env::var(\"SYSKNIFE_AUDIT_KEY_PATH\")";
+        for (name, source) in [
+            ("daemon main", include_str!("main.rs")),
+            ("transaction store", include_str!("transactions.rs")),
+            (
+                "MCP server",
+                include_str!("../../../apps/sysknife-cli/src/mcp_server.rs"),
+            ),
+        ] {
+            assert!(
+                !source.contains(INLINE_RESOLUTION),
+                "{name} must resolve the audit key through resolve_audit_key_path"
+            );
+        }
+    }
+
     /// The exhaustiveness the old comment claimed and did not have.
     ///
     /// This match is over the enum, so adding a variant without an arm fails

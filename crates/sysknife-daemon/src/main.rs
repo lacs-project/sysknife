@@ -497,14 +497,7 @@ async fn build_postgres_audit(
     // The Postgres backend uses the same on-disk audit key as SQLite for
     // chain signature computation. Resolution mirrors `TransactionStore::open`:
     // env var > sibling of `database_path` > production default.
-    let key_path = std::env::var("SYSKNIFE_AUDIT_KEY_PATH")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            sysknife_core::default_database_path()
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .join("audit-key")
-        });
+    let key_path = audit_chain::resolve_audit_key_path(&sysknife_core::default_database_path());
     let key = audit_chain::AuditKey::load_or_generate(&key_path)
         .map_err(|e| std::io::Error::other(format!("audit key load failed: {e}")))?;
 

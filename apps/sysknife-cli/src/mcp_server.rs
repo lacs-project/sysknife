@@ -37,7 +37,7 @@
 //! }
 //! ```
 
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use rmcp::{
     handler::server::{
@@ -1260,14 +1260,7 @@ async fn audit_chain_quick_check(
     use sysknife_daemon::audit_chain::{AuditKey, BindingOutcome, VerifyOutcome};
 
     let db_path = sysknife_core::default_database_path();
-    let key_path = std::env::var("SYSKNIFE_AUDIT_KEY_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            db_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .join("audit-key")
-        });
+    let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(&db_path);
 
     if !key_path.exists() {
         warnings.push(format!("audit key not found at {}", key_path.display()));
@@ -1344,14 +1337,7 @@ async fn audit_verify_local_store() -> AuditVerifyReport {
     };
 
     let db_path = sysknife_core::default_database_path();
-    let key_path = std::env::var("SYSKNIFE_AUDIT_KEY_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            db_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .join("audit-key")
-        });
+    let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(&db_path);
 
     if !key_path.exists() {
         return cannot_verify_report(

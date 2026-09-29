@@ -362,14 +362,7 @@ impl TransactionStore {
     /// override with `SYSKNIFE_AUDIT_KEY_PATH=/etc/sysknife/audit-key`.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, TransactionStoreError> {
         let db_path = path.as_ref();
-        let key_path = std::env::var("SYSKNIFE_AUDIT_KEY_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                db_path
-                    .parent()
-                    .unwrap_or_else(|| Path::new("."))
-                    .join("audit-key")
-            });
+        let key_path = crate::audit_chain::resolve_audit_key_path(db_path);
         let key = AuditKey::load_or_generate(&key_path).map_err(|e| {
             TransactionStoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
