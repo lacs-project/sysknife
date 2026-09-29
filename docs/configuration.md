@@ -110,7 +110,7 @@ file's section.field path.
 | `SYSKNIFE_ANTHROPIC_URL` | `https://api.anthropic.com` | Anthropic base URL |
 | `SYSKNIFE_BRAIN_MAX_TURNS` | `10` | Planning loop turn limit |
 | `SYSKNIFE_MAX_RPM` | `20` | Rate limit (requests / 60s sliding window) |
-| `SYSKNIFE_AUDIT_KEY_PATH` | `<db_dir>/audit-key` | Ed25519 signing key path for the audit chain |
+| `SYSKNIFE_AUDIT_KEY_PATH` | `<db_dir>/audit-key` | Ed25519 signing key path for the audit chain (daemon, CLI/MCP: e.g. `audit verify`, `audit checkpoint`, `doctor`) |
 | `SYSKNIFE_CHECKPOINT_DB` | — | Postgres URL for `audit checkpoint` external anchoring (keeps DB credentials off the command line) |
 | `SYSKNIFE_SOCKET` | falls back to the same default as `SYSKNIFE_LISTEN_URI` | CLI / MCP daemon address |
 | `SYSKNIFE_TOKEN` | — | Vsock auth token (when daemon runs in a VM) |
@@ -130,15 +130,6 @@ Required when the corresponding provider is selected:
 - `MISTRAL_API_KEY` — Mistral
 - `XAI_API_KEY` — xAI
 - _none_ — Ollama (local, no key)
-
-## Daemon-only configuration
-
-These environment variables are read only by `sysknife-daemon`, not by
-the CLI / shell:
-
-| Variable | Purpose |
-|---|---|
-| `SYSKNIFE_AUDIT_KEY_PATH` | Ed25519 audit signing key path (default: alongside the database) |
 
 ## Validating your config
 
