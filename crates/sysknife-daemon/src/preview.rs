@@ -60,6 +60,34 @@ pub fn preview_action(
             }
         }
     }
+    // A grant whose command list runs an arbitrary program is a grant of
+    // everything, whatever the list says. The daemon refuses that combined with
+    // `nopasswd`; with a password prompt it is permitted, on the same footing as
+    // `commands = "ALL"`, and an operator approving it has to be told what they
+    // are signing. The generic "this configures privilege escalation" line does
+    // not tell them: the refusal that existed was written against a string, and
+    // so was the warning.
+    if request.action_name == "GrantSudoAccess" {
+        if let Some(commands) = request.params.get("commands").and_then(Value::as_str) {
+            if let Some(offender) =
+                crate::actions::validate::shell_equivalent_sudo_command(commands)
+            {
+                let user = request
+                    .params
+                    .get("user")
+                    .and_then(Value::as_str)
+                    .unwrap_or("the target user");
+                profile.warnings.insert(
+                    0,
+                    format!(
+                        "{offender} runs an arbitrary command, so this grant gives {user} \
+                         the same authority as `commands = \"ALL\"` however narrow the list \
+                         looks"
+                    ),
+                );
+            }
+        }
+    }
     // Risk, reboot, and rollback are OWNED by the action's `ActionSpec` (the
     // single source of truth, `crate::actions`) and derived here so the approval
     // gate and the displayed reboot/rollback flags can never disagree with the

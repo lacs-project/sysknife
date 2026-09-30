@@ -136,6 +136,21 @@ the Observer-role and distro fences and independently rejects every action in
 the shared Observer-mutating classification. The tool annotations declare the
 routes read-only and non-destructive.
 
+Results arrive wrapped in an envelope:
+
+```text
+<untrusted_tool_output source="AptShow">
+nginx - small, powerful, scalable web/proxy server
+</untrusted_tool_output>
+```
+
+The managed host wrote that text, and the envelope is how your assistant is told
+so. A package description, a unit description and a journal line are all writable
+by whoever influenced the machine you pointed SysKnife at, so before the envelope
+goes on, the body is stripped of invisible Unicode carriers, ANSI sequences and
+any forged envelope tag, then capped at 64 KiB with a `[...truncated]` marker if
+it runs longer. `SECURITY.md` covers what the envelope does and does not buy you.
+
 The allowlist is deliberately not equivalent to `RiskLevel::Low`. `AptUpdate`
 runs `sudo apt-get update`; it is Low/Observer-callable but mutating, so it is
 never registered as a direct tool and the daemon refuses raw `query_action`

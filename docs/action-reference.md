@@ -87,7 +87,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `ReloadDaemon` | `sudo systemctl daemon-reload` | Medium | All | – | – | run systemctl daemon-reload to pick up changed unit files — no params |
 | `CreateScheduledJob` | `sudo /usr/lib/sysknife/scheduled-job-edit --name example --command /usr/bin/true --schedule "*-*-* 02:00:00"` | High | All | – | – | schedule a recurring command as a systemd timer — params: name\* (unit-safe id), command\* (executable line), schedule\* (systemd OnCalendar, e.g. "\*-\*-\* 02:00:00" or "daily") |
 | `GetServiceResourceLimits` | `systemctl show nginx.service --property=MemoryMax,MemoryHigh,CPUQuotaPerSecUSec,TasksMax` | Low | All | – | – | show a service's cgroup limits (MemoryMax/CPUQuota/TasksMax) via systemctl show — param: unit\*; read-only |
-| `SetServiceResourceLimits` | `sudo systemctl set-property nginx.service MemoryMax=500M CPUQuota=50%` | Medium | All | – | – | cap a service's resources via systemctl set-property (applies live + persists) — params: unit\*, plus at least one of memory_max (e.g. '500M' or 'infinity'), memory_high, cpu_quota (e.g. '50%'), tasks_max (integer or 'infinity'); Medium risk; undo with systemctl revert |
+| `SetServiceResourceLimits` | `sudo systemctl set-property nginx.service MemoryMax=500M CPUQuota=50%` | Medium | All | – | – | cap a service's resources via systemctl set-property (applies live + persists) — params: unit\*, plus at least one of memory_max (e.g. '500M' or 'infinity'), memory_high, cpu_quota (e.g. '50%'), tasks_max (integer or 'infinity'); Medium risk; refuses .slice and .scope targets and the sysknife-daemon, auditd, journald, rsyslog, polkit, dbus, logind and ssh units; undo with systemctl revert |
 
 ## Processes
 
@@ -169,7 +169,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GetSudoGrants` | `/usr/lib/sysknife/sudoers-edit --op list` | Low | All | – | – | list SysKnife-managed sudoers.d drop-ins — no params; read-only |
-| `GrantSudoAccess` | `sudo /usr/lib/sysknife/sudoers-edit --op grant --name deploy-restart --user deploy --commands /usr/bin/systemctl --nopasswd` | High | All | – | – | grant a scoped sudo rule (validated with visudo before install) — params: name\* (^\[a-z0-9\]\[a-z0-9_-\]\*$), user\*, commands\* ('ALL' or comma-separated ABSOLUTE paths), runas (default root, or 'ALL'), nopasswd (bool); High risk — this configures privilege escalation |
+| `GrantSudoAccess` | `sudo /usr/lib/sysknife/sudoers-edit --op grant --name deploy-restart --user deploy --commands /usr/bin/systemctl` | High | All | – | – | grant a scoped sudo rule (validated with visudo before install) — params: name\* (^\[a-z0-9\]\[a-z0-9_-\]\*$), user\*, commands\* ('ALL' or comma-separated ABSOLUTE paths), runas (default root, or 'ALL'), nopasswd (bool); High risk — this configures privilege escalation; nopasswd=true is REFUSED when commands is 'ALL' or names a shell, an interpreter, or any program that runs another program (bash, sh, python3, perl, awk, sed, vim, less, env, find, tar, git, systemctl, docker, ...), because such a grant is equivalent to 'ALL' |
 | `RevokeSudoAccess` | `sudo /usr/lib/sysknife/sudoers-edit --op revoke --name deploy-restart` | High | All | – | – | remove a SysKnife-managed sudoers.d drop-in — param: name\*; High risk |
 
 ## Network
@@ -279,8 +279,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `Fail2banStatus` | `sudo fail2ban-client status` | Low | Ubuntu | – | – | show fail2ban jail status — optional param: jail (omit for all jails); read-only |
-| `Fail2banBanIp` | `sudo fail2ban-client set sshd banip 192.0.2.1` | High | Ubuntu | – | – | ban an IP address in a fail2ban jail — params: jail\* (string), ip\* (IPv4 or IPv6); High risk |
-| `Fail2banUnbanIp` | `sudo fail2ban-client set sshd unbanip 192.0.2.1` | Medium | Ubuntu | – | – | unban an IP address from a fail2ban jail — params: jail\*, ip\*; Medium risk |
+| `Fail2banBanIp` | `sudo /usr/lib/sysknife/fail2ban-ban --op ban --jail sshd --ip 192.0.2.1` | High | Ubuntu | – | – | ban an IP address in a fail2ban jail — params: jail\* (string), ip\* (IPv4 or IPv6); High risk |
+| `Fail2banUnbanIp` | `sudo /usr/lib/sysknife/fail2ban-ban --op unban --jail sshd --ip 192.0.2.1` | Medium | Ubuntu | – | – | unban an IP address from a fail2ban jail — params: jail\*, ip\*; Medium risk |
 | `ConfigureFail2banJail` | `sudo /usr/lib/sysknife/fail2ban-jail-edit --name sshd --maxretry 3` | High | Ubuntu | – | – | write a fail2ban jail override (/etc/fail2ban/jail.d/) — params: name\*, plus at least one of enabled (bool), maxretry (1-100), bantime/findtime (seconds 0-2592000); High risk; needs fail2ban installed |
 
 ## apt

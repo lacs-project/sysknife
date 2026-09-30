@@ -1,7 +1,7 @@
 {
   "name": "sysknife-shell",
   "private": true,
-  "version": "0.23.0",
+  "version": "0.24.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -21,9 +21,9 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
     "@vitest/coverage-v8": "^4.1.11",
-    "jsdom": "^30.0.1",
+    "jsdom": "^30.1.1",
     "typescript": "^7.0.2",
-    "vite": "^8.3.0",
+    "vite": "^8.3.1",
     "vitest": "^4.1.4"
   },
   "overrides": {

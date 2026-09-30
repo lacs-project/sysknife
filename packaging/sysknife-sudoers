@@ -237,12 +237,25 @@ sysknife ALL=(root) NOPASSWD: /usr/sbin/aa-status
 sysknife ALL=(root) NOPASSWD: /usr/sbin/aa-enforce
 sysknife ALL=(root) NOPASSWD: /usr/sbin/aa-complain
 
-# fail2ban-client — Fail2banStatus (read-only) / BanIp / UnbanIp.
-# `fail2ban-client set <jail> action ... actionban <cmd>` executes a command as
-# root, and `restart`/`reload` reread config a bare grant also permitted.
+# fail2ban-client — Fail2banStatus (read-only). Status only.
+#
+# `set *` used to be granted here, and the comment above it already named why
+# that was wrong: `fail2ban-client set <jail> action <name> actionban <cmd>`
+# runs <cmd> as root, so the grant permitted the technique it documented.
+#
+# It cannot be narrowed the way `certbot certonly *` was. sudo's `*` matches
+# across spaces and is not anchored to a single argument, so `set * banip *`
+# still admits `set sshd action p actionban '...' banip 1.2.3.4`; and the
+# variable jail name sits *before* the fixed `banip` token, which sudoers has
+# no syntax to pin. Fail2banBanIp and Fail2banUnbanIp go through the helper
+# below instead, whose argv is fixed.
 sysknife ALL=(root) NOPASSWD: /usr/bin/fail2ban-client status
 sysknife ALL=(root) NOPASSWD: /usr/bin/fail2ban-client status *
-sysknife ALL=(root) NOPASSWD: /usr/bin/fail2ban-client set *
+
+# fail2ban ban/unban — Fail2banBanIp / Fail2banUnbanIp delegate to this
+# root-owned helper, which validates the jail and the address and then runs
+# `fail2ban-client set <jail> banip|unbanip <ip>` with a fixed argv.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/fail2ban-ban *
 
 # fail2ban jail config — ConfigureFail2banJail delegates to this root-owned
 # helper, which writes /etc/fail2ban/jail.d/sysknife-<name>.local, tests it with

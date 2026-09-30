@@ -95,6 +95,17 @@ pub enum Command {
     Approve {
         /// Transaction ID returned by `sysknife_plan`.
         transaction_id: String,
+
+        /// Print the complete proposed change, with no line or length caps.
+        ///
+        /// The default view is capped so a long change cannot scroll the action
+        /// name and risk level off the screen before you answer. When the cap
+        /// hides anything, approval is refused and points you here rather than
+        /// accepting consent to text you were not shown. With this flag the
+        /// change is printed in full and the decision context is printed
+        /// *after* it, so the cap has nothing left to protect.
+        #[arg(long)]
+        full: bool,
     },
 
     /// Print shell completion script to stdout.
@@ -484,6 +495,50 @@ mod tests {
             cli.log_to.as_deref(),
             Some(std::path::Path::new("/tmp/sysknife.log"))
         );
+    }
+
+    /// The refusal `sysknife approve` returns on a truncated view tells the
+    /// operator to re-run with `--full`. A message naming a flag the parser does
+    /// not accept sends them in a circle, which is the same defect as
+    /// `a_missing_terminal_is_not_reported_as_a_flag_the_user_never_passed` in
+    /// error.rs, one layer further out.
+    #[test]
+    fn approve_accepts_the_full_flag_the_truncation_refusal_names() {
+        let refusal = crate::error::CliError::ApprovalViewIncomplete {
+            transaction_id: "tx-abc123".to_string(),
+            withheld: 7,
+            shortened_note: String::new(),
+        }
+        .to_string();
+        assert!(
+            refusal.contains("--full"),
+            "the refusal must name the escape hatch: {refusal}"
+        );
+
+        let cli = Cli::try_parse_from(["sysknife", "approve", "tx-abc123", "--full"])
+            .expect("--full must parse, because the refusal above tells operators to use it");
+        match cli.command {
+            Some(Command::Approve {
+                ref transaction_id,
+                full,
+            }) => {
+                assert_eq!(transaction_id, "tx-abc123");
+                assert!(full);
+            }
+            other => panic!("expected Approve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn approve_defaults_to_the_bounded_view() {
+        let cli = Cli::try_parse_from(["sysknife", "approve", "tx-abc123"]).unwrap();
+        match cli.command {
+            Some(Command::Approve { full, .. }) => assert!(
+                !full,
+                "the bounded view is the default; --full is the deliberate escape"
+            ),
+            other => panic!("expected Approve, got {other:?}"),
+        }
     }
 
     #[test]

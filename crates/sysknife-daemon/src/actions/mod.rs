@@ -248,6 +248,10 @@ static SPEC_META: std::sync::LazyLock<std::collections::HashMap<&'static str, Sp
             .collect()
     });
 
+/// Actions handled by the dispatcher before reaching the executor. These are
+/// part of the public action catalogue but deliberately have no `ActionSpec`.
+pub const DISPATCHER_INTERNAL_ACTIONS: &[&str] = &["ListJobHistory"];
+
 /// Canonical static metadata for `action_name`, or `None` for actions with no
 /// `ActionSpec` (e.g. the dispatcher-internal `ListJobHistory`).
 pub fn spec_meta(action_name: &str) -> Option<SpecMeta> {
