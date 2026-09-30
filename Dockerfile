@@ -6,7 +6,7 @@
 # Base images are pinned by manifest-list digest (not just tag) so a moved or
 # compromised tag cannot silently change the build. Dependabot's Docker
 # ecosystem tracks these and bumps both the tag and the digest together.
-FROM docker.io/library/rust:1-bookworm@sha256:9a73a5088750b4c95158ab26629c854c3d6fc4b173cb7bc8079ad252d8ed7bfa AS builder
+FROM docker.io/library/rust:1-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS builder
 
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
@@ -16,7 +16,7 @@ COPY apps/sysknife-cli ./apps/sysknife-cli
 COPY apps/sysknife-shell/src-tauri ./apps/sysknife-shell/src-tauri
 RUN cargo build --locked --release --package sysknife-cli
 
-FROM docker.io/library/debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS runtime
+FROM docker.io/library/debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS runtime
 
 RUN apt-get update \
     && apt-get install --no-install-recommends --yes ca-certificates \
