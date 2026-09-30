@@ -12,6 +12,286 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-09-29
+
+### Security
+
+- **`sysknife approve` refuses when the proposed change did not fit the view,
+  and `--full` prints all of it.**
+  The prompt rendered the change through `operator_text::operator_safe_block`,
+  which drops lines past 40 and cuts lines past 512 characters, marked both, and
+  then asked for confirmation anyway. So a receipt could be minted on a change
+  the operator had seen the first forty lines of, or whose 4 KB path list had
+  been cut mid-line. The marker said something was missing. It did not say how
+  much, and nothing stopped the approval, which left the receipt proving a human
+  typed a word rather than that a human read the change. That is the one thing
+  the receipt exists to prove. `approve` now refuses, names how many lines were
+  withheld and how many were cut short, and names `--full`, which prints every
+  line and every character with the same neutralisation applied. Both counters,
+  not just the line count: one over-long line hides its tail as effectively as a
+  dropped line, and a line-count check alone passes it. `--full` prints the
+  action, risk and summary **after** the change rather than before, which is
+  what makes an uncapped render safe there: the bounds exist so a long change
+  cannot scroll the decision context off the screen, and a context printed last
+  cannot be scrolled away. Nothing becomes unapprovable; seeing all of it costs
+  one flag. `operator_safe_block` returns the counts alongside the text instead
+  of a bare `String`, so a caller printing the block holds the numbers in the
+  same value, and the refusal and the printable text now come out of one
+  function, so there is no way to print an approval view without having asked
+  whether it was complete. An earlier draft printed the block and then returned
+  the refusal, which left the print ungated: deleting the check still compiled
+  and still printed. `docs/cli.md` shows the refusal and the flag, and
+  `SECURITY.md` Layer 4 states what the receipt does and does not prove.
+
+- **`Fail2banBanIp` and `Fail2banUnbanIp` go through a helper with a fixed
+  argv, and the `fail2ban-client set *` grant is gone.**
+  `packaging/sysknife-sudoers` carried this, with the comment directly above the
+  grant naming the reason it was wrong:
+
+  ```
+  # `fail2ban-client set <jail> action ... actionban <cmd>` executes a command as
+  # root, and `restart`/`reload` reread config a bare grant also permitted.
+  sysknife ALL=(root) NOPASSWD: /usr/bin/fail2ban-client set *
+  ```
+
+  So four commands reached root through a grant that documented the technique:
+  `set <jail> addaction <name>`, then `set <jail> action <name> actionban
+  <command>`, then any ban to fire it. The daemon only ever built
+  `set <jail> banip <ip>` and the unban twin, so the wildcard was strictly wider
+  than anything SysKnife needed. Narrowing it to `set * banip *` does not work,
+  which is what the advisory draft for this proposed and what checking sudo's
+  own rules corrected: `*` matches across spaces and is not anchored to one
+  argument, so that pattern still admits `set sshd action p actionban '...'
+  banip 1.2.3.4`, and `certbot certonly *` is only narrow because its variable
+  part is trailing while fail2ban's jail name sits before the fixed `banip`
+  token. sudoers has no syntax to pin a middle argument.
+  `packaging/sysknife-fail2ban-ban` takes `--op ban|unban --jail <j> --ip <a>`,
+  re-validates both (`--op` is a fixed choice, the address goes through
+  `ipaddress.ip_address` so a CIDR or a range is refused, the jail regex is
+  transcribed from the daemon's `jail_is_valid`), and then runs
+  `fail2ban-client` with an argv nothing the caller supplies can reach. It
+  propagates a non-zero exit rather than reporting a ban that did not happen.
+  The helper joins the eight others this repository already uses for the same
+  reason. `tests/release/fail2ban-ban.test.sh` pins the fixed argv, proves an
+  unknown `--op` never reaches `fail2ban-client`, and carries a canary on
+  `jail_is_valid` so an edit there points at the transcribed regex; the first
+  draft of that regex refused a leading `_` or `.` that the daemon accepts,
+  which would have been a grant working through one path and failing through
+  the other.
+
+  **Upgrading is not crate-only.** `Fail2banBanIp` and `Fail2banUnbanIp` now
+  build `sudo /usr/lib/sysknife/fail2ban-ban …`, and both the helper and the
+  grant that authorises it live in the packaged install, so a host that takes
+  the new binary while keeping the old `/etc/sudoers.d` fragment gets "a
+  password is required" on every ban and unban. Install the package, or re-run
+  `make install`, rather than replacing the binary alone. That coupling is part
+  of why this is a middle-digit release: a call that used to succeed now refuses
+  until both sides move.
+
+- **`GrantSudoAccess` refuses a passwordless grant whose command list is `ALL`
+  under another name, and the preview says so when it is.**
+  `packaging/sysknife-sudoers` opens by stating that no shell or general runuser
+  grant is permitted. Both the daemon and `packaging/sysknife-sudoers-edit`
+  enforced that against the literal string `"ALL"`, while
+  `validated_sudo_commands` accepts any absolute path with a safe charset and no
+  wildcard, which `/bin/bash` satisfies. So
+  `GrantSudoAccess(commands="/bin/bash", nopasswd=true)` wrote
+  `<user> ALL=(root) NOPASSWD: /bin/bash`, which `visudo -cf` accepts and which
+  is a standing passwordless unrestricted root shell. `/bin/sh`,
+  `/usr/bin/python3`, `/usr/bin/perl`, `/usr/bin/env`, `/usr/bin/find` and the
+  rest of the interpreter list were equally accepted. The refusal that existed
+  was written against a string rather than against a capability.
+  `SHELL_EQUIVALENT_COMMANDS` holds 118 basenames across four groups (shells,
+  run-as and namespace tools, interpreters, and utilities whose job is running
+  another program), matched on the lowercased basename so `/bin/bash`,
+  `/usr/bin/bash` and `/BIN/BASH` are one thing. The refusal fires together with
+  `nopasswd`, which is the line `"ALL"` has always been held to: this repository
+  permits granting broad authority and does not permit granting it as a standing
+  passwordless credential. The preview names the offending command and the
+  target user whether or not `nopasswd` is set, because at High risk the control
+  is the human understanding what they are signing, and "this configures
+  privilege escalation" does not tell them that a two-entry list is a root
+  shell. The privileged helper carries the same list, because its wildcard
+  `NOPASSWD` grant makes it callable directly, skipping the preview, the receipt
+  and the signed chain; `tests/release/sudoers-edit.test.sh` parses the daemon's
+  constant, compares both directions, proves the refusal behaviourally for every
+  entry, and refuses to compare against nothing if the constant stops parsing.
+  Two hand-copied screens kept in step by a comment claiming parity is how
+  GHSA-f8vp-j3jh-7wjx happened. The catalogue's own published example was
+  `--commands /usr/bin/systemctl --nopasswd`, so the example `SECURITY.md`
+  readers and the planner's system prompt both carried was itself a root-
+  equivalent grant; both now keep the command and drop the passwordless half,
+  and `SECURITY.md` records what a basename screen cannot see.
+
+- **Untrusted host text reaching the calling assistant over MCP is screened,
+  and the results of the read-only query tools are spotlighted.**
+  `crates/sysknife-brain/src/sanitize.rs` strips the Unicode TAG block
+  (`U+E0000..=U+E007F`), the Private Use Areas, BiDi and zero-width characters,
+  strips ANSI, normalises to NFC, rewrites forged prompt-envelope tags and caps
+  the length. Its only callers were in `planner.rs`, so the defence guarded
+  SysKnife's own model and not the operator's. Every `sysknife_<action>`
+  read-only result and the free-text fields `merge_preview_into_step` copies out
+  of the daemon's `PreviewEnvelope` reached the assistant as raw bytes, and a
+  TAG-block payload is invisible in every mainstream renderer while arriving at
+  a tokenizer byte for byte. The managed host writes a package `Description:`, a
+  unit `Description=` and a journal line, and none of the roughly seventy
+  read-only tools requires approval. Mutations still need a receipt typed at a
+  terminal the model does not sit on, and that path was already screened by
+  `operator_text::operator_safe`; the exposure was the decision in front of it,
+  because the human decides whether to type that command based on what their
+  assistant tells them the plan does. Read-only results now carry the same
+  `<untrusted_tool_output source="...">` envelope the planner uses, capped at
+  `MCP_MAX_OUTPUT_BYTES` (64 KiB, eight times the planner's cap, because the
+  assistant's context is not the one this crate is competing for and a journal
+  tail truncated at 8 KiB is a tool nobody calls twice). Every free-text field
+  of `sysknife_plan`, `sysknife_execute`, `sysknife_history`, `sysknife_doctor`
+  and `sysknife_audit_verify` is normalised before it leaves the process, keys of
+  free-form JSON subtrees included, and two keys that normalise to one string
+  are refused rather than silently collapsed. A plan step's `params`,
+  `transaction_id` and `approval_receipt` travel verbatim on purpose:
+  `compute_request_hash` hashes the action name and params, the receipt is bound
+  to that hash, and `sysknife_execute` recomputes it from what the caller sends
+  back, so normalising them would mean no approved request ever executed again.
+  Everything not on that list is screened by default. The envelope is applied
+  inside `direct_query_with_client` rather than in the router's closure, so the
+  socket-backed integration test drives the same function the router does; an
+  earlier draft put it in the closure and removing it there left every test
+  green, because the test was calling the sanitiser directly. `SECURITY.md` now
+  describes both channels and both residual risks, and its Known Limitations
+  table no longer says `query_*` results re-enter the context unsanitized or
+  cite #98, which is a merged pull request rather than a tracked issue and had
+  stood there since the initial public release.
+
+  **This changes what MCP clients receive.** A read-only query that returned a
+  bare string now returns that string inside an `<untrusted_tool_output
+  source="...">` envelope, so a client parsing the result text sees two extra
+  lines. That is a deliberate wire-shape change and the other reason this is a
+  middle-digit release. An assistant reading the result needs no change; a
+  script scraping it does.
+
+- **`SetServiceResourceLimits` refuses the units SysKnife's own enforcement and
+  the host's evidence depend on, and every cgroup container.**
+  The action is `RiskLevel::Medium`, which `role_for_risk_level` maps to
+  `CallerRole::Dev`, and it validated its `unit` parameter by charset alone. The
+  lowest mutating tier could therefore run `systemctl set-property
+  sysknife-daemon.service TasksMax=0`, writing a persistent drop-in that stops
+  the process enforcing the Dev/Admin split and signing the audit chain. The
+  same call against `auditd` or `systemd-journald` stopped the host recording
+  what came next, against `sshd` it removed the way an operator reaches the
+  machine to undo it, and `MemoryMax=1K` on `system.slice` reached every service
+  on the box. All of them survived a reboot. `validated_activatable_unit` did
+  not cover this: its denylist is about units that hand out a root shell when
+  started, and setting a property is not a start, so that screen never ran on
+  this path. The new `validated_resource_limit_unit` refuses eleven named units
+  across four categories (SysKnife's enforcement, the host's evidence, the
+  authorization path, remote administrative access), the `systemd-journald` and
+  `auditd` families whole, and `.slice` and `.scope` targets as a class, because
+  capping a slice is a decision about every unit beneath it. Naming
+  `systemd-journald` alone would have protected the reader and left its pipes:
+  `systemd-journald-audit.socket` carries the kernel audit stream into the
+  journal and is a stock unit on every systemd host. Capping an ordinary service
+  stays a Dev-tier operation. Both unit screens now share one normaliser, which
+  lowercases, strips the type suffix and reduces an instance to its template, so
+  `sshd@1.service` no longer reduces to `sshd@1` and slips a list holding
+  `sshd`. They shared nothing before, and two hand-copied screens of this shape
+  drifted once already: the kernel-argument denylist in `executor.rs` was
+  missing `debug-shell`, so one path refused a root shell while the other
+  granted it (GHSA-f8vp-j3jh-7wjx). A name-based screen still cannot see a site-local alias;
+  masking the units you do not want touched remains the stronger control, as
+  [#144](https://github.com/lacs-project/sysknife/issues/144) says.
+
+### Fixed
+
+- **The action reference derives its catalogue total instead of assuming one
+  dispatcher-internal action.**
+  ([#529](https://github.com/lacs-project/sysknife/pull/529))
+  `crates/sysknife-daemon/tests/action_reference_doc.rs` wrote the published
+  total as `total + 1` and spelled `ListJobHistory` into the sentence by hand, so
+  a second action that the dispatcher handles before the executor would have left
+  `docs/action-reference.md` claiming a number one short of the catalogue, with
+  nothing to catch it. `DISPATCHER_INTERNAL_ACTIONS` now sits beside the daemon's
+  action metadata as public API on `sysknife-daemon`, both test binaries read
+  that one list, and the footer derives the tabled count from
+  `KNOWN_ACTION_NAMES` minus it, refusing rather than wrapping if the list ever
+  outgrows the catalogue. The generated document is unchanged at one element
+  (closes [#455](https://github.com/lacs-project/sysknife/issues/455)). Thanks to
+  [@tayfuryldz](https://github.com/tayfuryldz).
+
+## [0.23.0] — 2026-09-28
+
+### Added
+
+- **Broken links in the generated mdBook fail the build.**
+  ([#379](https://github.com/lacs-project/sysknife/pull/379))
+  `scripts/check-mdbook-links.sh` walks the built `book/` and resolves every
+  internal `.html` href against the file it sits next to, so a page that lost
+  its target during the build is caught before Pages publishes it. It runs in
+  `docs.yml` after `mdbook build` and in `docs-and-hygiene` against a fixture,
+  and it refuses when it has checked zero links, because a book nobody built
+  and a book with no broken links are otherwise the same silence (closes
+  [#371](https://github.com/lacs-project/sysknife/issues/371)). Thanks to
+  [@sonalisrisivani](https://github.com/sonalisrisivani).
+
+### Fixed
+
+- **`CreateScheduledJob` namespaces its units and never overwrites an existing
+  one.** ([#520](https://github.com/lacs-project/sysknife/pull/520))
+  `packaging/sysknife-scheduled-job-edit` opened `/etc/systemd/system/<name>.service`
+  and `.timer` with `open(path, "w")`, so a job named after a unit already on the
+  system truncated it. Units are now created as `sysknife-<name>` with
+  `O_CREAT | O_EXCL`, an existing unprefixed path is refused as ambiguous rather
+  than migrated, and a timer-path collision removes the service that call had
+  already created, so a refused request leaves no half of a pair behind. The
+  `CreateScheduledJob` preview names both exact paths and says that existing
+  ones are refused, and the daemon and the helper now derive that name from one
+  function instead of two copies (closes
+  [#484](https://github.com/lacs-project/sysknife/issues/484)). Thanks to
+  [@ITSMERNB](https://github.com/ITSMERNB).
+- **The release rehearsal screen sees a publishing command behind a group, a
+  backtick or a command wrapper.**
+  ([#523](https://github.com/lacs-project/sysknife/pull/523))
+  `{ gh release create ...; }`, `` `gh release create ...` ``, and the `sudo`,
+  `nohup`, `xargs`, `time -p`, `env -i` and `command -p` wrapper forms all
+  passed a screen whose whole job is to catch them. `{` and a backtick join the
+  command-boundary class, and the wrappers compose with the shell prefixes and
+  assignments added in #513, so `nohup env -i command -p gh release create`
+  is caught as readily as the bare form. Twelve more fixtures, and the harmless
+  cases still pass (closes
+  [#522](https://github.com/lacs-project/sysknife/issues/522)). Thanks to
+  [@mikevillari](https://github.com/mikevillari).
+- **The release rehearsal screen sees a publishing command behind a shell
+  prefix.** ([#513](https://github.com/lacs-project/sysknife/pull/513))
+  `check-rehearsal-publication.py` matched a tool name only at the start of a
+  command, so `if gh release create ...`, `FOO=1 gh release create ...` and
+  `env ... command gh release create ...` all passed a screen whose whole job
+  is to catch them. The pattern now accepts a run of shell prefixes before the
+  tool, handles a quoted assignment value containing a space, and adds `git` to
+  the tool list so a tag or a push is screened too. Twenty-one fixtures cover
+  the shapes, and two harmless lines hold the other edge (closes
+  [#503](https://github.com/lacs-project/sysknife/issues/503)). Thanks to
+  [@mikevillari](https://github.com/mikevillari).
+- **The contributing guide no longer tells you to install and run the
+  pre-commit framework.**
+  ([#512](https://github.com/lacs-project/sysknife/pull/512)) SysKnife's hooks
+  run through `core.hooksPath`; the framework is not used, and the guide's
+  "Check Locally" block listed `pre-commit run --all-files` alongside the real
+  commands. It now names `bash .githooks/pre-commit` and `scripts/ci-local.sh`,
+  and the Node prerequisite reads 22 in both places it appears.
+  `check_evidence_claims.py` gained a screen that refuses a framework command
+  inside any Markdown shell block, so the guide cannot drift back (closes
+  [#464](https://github.com/lacs-project/sysknife/issues/464)). Thanks to
+  [@Osheun](https://github.com/Osheun).
+- **The testing guide's provisioning default matches what `provision.sh`
+  pulls.** ([#515](https://github.com/lacs-project/sysknife/pull/515)) The
+  guide named `llama3.2:3b` as the default while the script defaulted to
+  `qwen3:8b`, the model the same page calls unusable without GPU passthrough,
+  so a contributor on a CPU-only VM downloaded 5 GB and then lost every story
+  to the thinking-mode timeout. `provider-parity.test.sh` now reads the default
+  out of the script and requires the guide's sentence and its `# default`
+  comment to name the same model (closes
+  [#501](https://github.com/lacs-project/sysknife/issues/501)). Thanks to
+  [@yuee3](https://github.com/yuee3).
+
 ## [0.22.0] — 2026-09-23
 
 ### Added

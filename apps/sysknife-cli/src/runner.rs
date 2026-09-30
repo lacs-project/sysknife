@@ -525,10 +525,60 @@ fn daemon_risk_within_approved(approved: &PlanRiskLevel, daemon: &PlanRiskLevel)
     daemon <= approved
 }
 
+/// The stderr payload for an approval prompt, or a refusal when the operator
+/// would not have seen the whole proposed change.
+///
+/// `sysknife approve` rendered the change through the capped block renderer,
+/// printed it, and prompted. The renderer marked what it had dropped and the
+/// prompt accepted anyway, so a receipt could be taken on a change the operator
+/// had seen the first forty lines of, or whose 4 KB path list had been cut at
+/// 512 characters. The receipt proved a human typed a word. It did not prove a
+/// human read the change, which is the only thing it is for.
+///
+/// Refusing costs the operator one flag and shows them everything. Nothing
+/// becomes unapprovable.
+///
+/// Layout differs by view on purpose. The caps exist so a long change cannot
+/// scroll the action name and risk level off the screen before the answer; forty
+/// lines cannot do that, so the capped view prints the context first and reads
+/// naturally. The full view has no cap, so the context goes *after* the block
+/// and is the last thing on screen however long the change is. That ordering is
+/// what makes an uncapped render safe here and nowhere else.
+fn approval_view(
+    context: &str,
+    pretty: &str,
+    transaction_id: &TransactionId,
+    full: bool,
+) -> Result<String, CliError> {
+    if full {
+        let block = crate::operator_text::operator_safe_block_full(pretty);
+        return Ok(format!(
+            "Proposed change (complete):\n{}\n\n{}",
+            block.text(),
+            context
+        ));
+    }
+    let block = crate::operator_text::operator_safe_block(pretty);
+    if !block.is_complete() {
+        let shortened = block.shortened_lines();
+        return Err(CliError::ApprovalViewIncomplete {
+            transaction_id: transaction_id.as_str().to_string(),
+            withheld: block.withheld_lines(),
+            shortened_note: if shortened == 0 {
+                String::new()
+            } else {
+                format!(", and {shortened} shown line(s) were cut short")
+            },
+        });
+    }
+    Ok(format!("{}\nProposed change:\n{}", context, block.text()))
+}
+
 pub async fn run_approve(
     transaction_id: &TransactionId,
     socket: SocketTarget,
     json: bool,
+    full: bool,
     log: &Logger,
 ) -> Result<(), CliError> {
     if !std::io::stdin().is_terminal() {
@@ -536,21 +586,27 @@ pub async fn run_approve(
     }
     let client = DaemonClient::new(socket);
     let details = client.approval_details(transaction_id).await?;
-    log.print_stderr(&format!(
-        "Action:  {}\nRisk:    {:?}\nSummary: {}\nProposed change:\n{}",
+    // `to_string_pretty` is not a sanitiser: it escapes C0 controls but emits
+    // U+202E and U+200B literally. The proposed change is the authoritative
+    // statement of what will happen, the one string on screen that must not be
+    // able to lie about its own target.
+    let pretty = serde_json::to_string_pretty(&details.preview.proposed_change)
+        .unwrap_or_else(|_| "<unavailable>".to_string());
+    // The decision context: action, risk and summary. Printed before the block
+    // in the capped view, where forty lines cannot scroll it away, and after the
+    // block in the full view, where an unbounded block could.
+    let context = format!(
+        "Action:  {}\nRisk:    {:?}\nSummary: {}",
         details.action_name,
         details.preview.risk_level,
         crate::operator_text::operator_safe(&details.preview.summary),
-        // `to_string_pretty` is not a sanitiser: it escapes C0 controls but
-        // emits U+202E and U+200B literally. This is the last thing printed
-        // before the operator is asked to approve, and the proposed change is
-        // the authoritative statement of what will happen — the one string on
-        // screen that must not be able to lie about its own target.
-        crate::operator_text::operator_safe_block(
-            &serde_json::to_string_pretty(&details.preview.proposed_change)
-                .unwrap_or_else(|_| "<unavailable>".to_string())
-        )
-    ));
+    );
+
+    // One call produces the text and decides whether it may be shown at all, so
+    // there is no way to print an approval view without having asked. An earlier
+    // shape printed the block and then returned the refusal, which left the
+    // print ungated: deleting the check still compiled and still printed.
+    log.print_stderr(&approval_view(&context, &pretty, transaction_id, full)?);
     let approved = if details.preview.risk_level == RiskLevel::High {
         prompt_exact(
             "High-risk action. Type the exact action name to approve",
@@ -2239,6 +2295,97 @@ async fn prompt_exact(msg: &str, expected: &str) -> bool {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod approval_view_tests {
+    use super::*;
+
+    fn tx() -> TransactionId {
+        TransactionId::new("tx-abc123")
+    }
+
+    fn context() -> String {
+        "Action:  InstallPackages\nRisk:    Medium\nSummary: install nginx".to_string()
+    }
+
+    /// The ordinary case, unchanged: a short change prints context first and
+    /// then the block, and approval proceeds.
+    #[test]
+    fn a_change_that_fits_is_shown_and_approvable() {
+        let pretty = "{\n  \"packages\": [\n    \"nginx\"\n  ]\n}";
+        let view = approval_view(&context(), pretty, &tx(), false).expect("fits");
+        assert!(view.starts_with("Action:  InstallPackages"));
+        assert!(view.contains("\"nginx\""));
+        assert!(!view.contains("truncated"));
+    }
+
+    /// Forty-one lines. The operator would have seen forty and a marker, and
+    /// the old code prompted anyway.
+    #[test]
+    fn a_change_taller_than_the_view_is_refused_and_counted() {
+        let pretty = (0..80)
+            .map(|i| format!("  \"key{i}\": \"value{i}\""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let err = approval_view(&context(), &pretty, &tx(), false).expect_err("must refuse");
+        let msg = err.to_string();
+        assert!(matches!(err, CliError::ApprovalViewIncomplete { withheld, .. } if withheld == 40));
+        assert!(msg.contains("40 line(s) were not shown"), "{msg}");
+        assert!(msg.contains("--full"), "{msg}");
+        assert!(msg.contains("tx-abc123"), "{msg}");
+        assert_eq!(err.exit_code(), 1);
+    }
+
+    /// One line, longer than the per-line cap. Nothing is dropped, so a
+    /// line-count check alone would pass this: the tail of a 4 KB path list is
+    /// as unseen as a dropped line.
+    #[test]
+    fn a_change_wider_than_the_view_is_refused_too() {
+        let pretty = format!("  \"paths\": \"{}\"", "/a/very/long/path".repeat(200));
+        let err = approval_view(&context(), &pretty, &tx(), false).expect_err("must refuse");
+        let msg = err.to_string();
+        assert!(matches!(err, CliError::ApprovalViewIncomplete { withheld, .. } if withheld == 0));
+        assert!(msg.contains("cut short"), "{msg}");
+    }
+
+    /// `--full` shows every line and every character, and puts the decision
+    /// context last so an unbounded block cannot scroll it away.
+    #[test]
+    fn the_full_view_shows_everything_and_ends_on_the_context() {
+        let pretty = (0..80)
+            .map(|i| format!("  \"key{i}\": \"value{i}\""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let view =
+            approval_view(&context(), &pretty, &tx(), true).expect("full view never refuses");
+        assert!(view.contains("\"key79\""), "the last line must be present");
+        assert!(!view.contains("truncated"));
+        assert!(
+            view.trim_end().ends_with("Summary: install nginx"),
+            "the context must be the last thing on screen: {}",
+            &view[view.len().saturating_sub(120)..]
+        );
+    }
+
+    /// The full view lifts the caps and keeps every character rule. A bidi
+    /// override in the change must not survive into the terminal just because
+    /// the operator asked to see all of it.
+    #[test]
+    fn the_full_view_still_neutralises_the_text() {
+        let pretty =
+            "  \"target\": \"/etc/\u{202e}fnoc.dwssap\u{202c}\"\n  \"zero\": \"a\u{200b}b\"";
+        let view = approval_view(&context(), pretty, &tx(), true).expect("full");
+        assert!(
+            !view.contains('\u{202e}'),
+            "a bidi override reached the terminal"
+        );
+        assert!(
+            !view.contains('\u{200b}'),
+            "a zero-width character reached the terminal"
+        );
+        assert!(view.contains("/etc/"), "the legitimate text must survive");
+    }
+}
 
 #[cfg(test)]
 mod tests {

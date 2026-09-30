@@ -12,11 +12,11 @@ const setupDir = path.resolve(here, '..');
 const source = fs.readFileSync(path.join(setupDir, 'index.js'), 'utf8');
 const daemonInstaller = fs.readFileSync(path.join(setupDir, 'install-daemon.js'), 'utf8');
 
-function runWizard({ daemonMode = 'skip', daemonInstall, cwd: suppliedCwd, env = {}, noPrompts = true, input = '' } = {}) {
+function runWizard({ daemonMode = 'skip', daemonInstall, cwd: suppliedCwd, env = {}, noPrompts = true, input = '', integrationArgs = ['--claude'] } = {}) {
   const cwd = suppliedCwd ?? fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-setup-contract-'));
   const ownsCwd = suppliedCwd === undefined;
   const entry = path.join(setupDir, 'index.js');
-  const setupArgs = ['--claude', '--no-binary', `--daemon-mode=${daemonMode}`];
+  const setupArgs = [...integrationArgs, '--no-binary', `--daemon-mode=${daemonMode}`];
   if (noPrompts) setupArgs.push('--no-prompts');
   const childEnv = { ...process.env, HOME: cwd, XDG_RUNTIME_DIR: cwd };
   for (const name of ['SYSKNIFE_LLM_PROVIDER', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
@@ -325,6 +325,28 @@ test('an interactive provider answer overrides the environment suggestion', () =
     });
     assert.equal(result.status, 3, `${result.stdout}${result.stderr}`);
     assert.equal(JSON.parse(fs.readFileSync(path.join(cwd, '.mcp.json'), 'utf8')).mcpServers.sysknife.env.SYSKNIFE_LLM_PROVIDER, 'openai');
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('pressing Enter at the integration prompt wires Claude Code', () => {
+  // The MCP server is how almost everybody reaches SysKnife, and this prompt
+  // used to have no default: the shortest path through the wizard was to read
+  // four options and type a number. Enter now picks Claude Code. Driven rather
+  // than grepped, because a default that is displayed and not honoured looks
+  // identical in the source.
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-setup-integration-default-'));
+  try {
+    const result = runWizard({ cwd, noPrompts: false, integrationArgs: [],
+      input: 'ollama\n\n\n\n\n\nn\n',
+      daemonInstall: { mode: 'skip', daemonInstalled: false, manualSteps: ['Start manually: fixture'] },
+    });
+    const out = `${result.stdout}${result.stderr}`;
+    assert.doesNotMatch(out, /Please choose 1, 2, 3, or 4/, `the empty answer was rejected: ${out}`);
+    assert.equal(fs.existsSync(path.join(cwd, '.mcp.json')), true, `no .mcp.json written: ${out}`);
+    assert.equal(fs.existsSync(path.join(cwd, '.cursor', 'mcp.json')), false,
+      'the default wrote a Cursor config as well');
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }

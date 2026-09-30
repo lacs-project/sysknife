@@ -44,6 +44,18 @@ use std::borrow::Cow;
 /// practice; truncation past this cap is signalled inline.
 pub const MAX_OUTPUT_BYTES: usize = 8 * 1024;
 
+/// Maximum bytes of normalised output the MCP boundary hands to the calling
+/// assistant per tool call.
+///
+/// Eight times [`MAX_OUTPUT_BYTES`], for a different consumer. The planner's cap
+/// protects a context this crate is building and competing for; this one
+/// protects a context somebody else owns, and a `sysknife_get_journal_tail`
+/// truncated at 8 KiB is a tool nobody calls twice. It stays bounded because the
+/// managed host is the untrusted party here: without a cap, a hostile machine
+/// floods the operator's assistant by making one read-only query return
+/// megabytes.
+pub const MCP_MAX_OUTPUT_BYTES: usize = 64 * 1024;
+
 const PROMPT_ENVELOPE_NAMES: &[&str] = &["untrusted_tool_output", "user_preferences"];
 
 /// A tool output wrapped in a spotlighting envelope and ready to ship to the
@@ -119,7 +131,22 @@ impl SanitizedToolOutput {
 /// attacker who controls the tool name (they don't, but defence-in-depth)
 /// can't inject the envelope opening tag.
 pub fn sanitize_tool_output(tool_name: &str, raw: &str) -> SanitizedToolOutput {
-    let normalised = normalise_free_text(raw);
+    sanitize_tool_output_capped(tool_name, raw, MAX_OUTPUT_BYTES)
+}
+
+/// As [`sanitize_tool_output`], with the truncation cap named by the caller.
+///
+/// The 8 KiB default is sized for the planner's own context, where every tool
+/// result competes with the plan being built. The MCP boundary hands its result
+/// to somebody else's assistant, which has its own budget, and capping a journal
+/// tail at 8 KiB there removes most of the reason to call the tool. See
+/// [`MCP_MAX_OUTPUT_BYTES`].
+pub fn sanitize_tool_output_capped(
+    tool_name: &str,
+    raw: &str,
+    max_bytes: usize,
+) -> SanitizedToolOutput {
+    let normalised = normalise_free_text_capped(raw, max_bytes);
     let safe_tool = sanitise_tool_name(tool_name);
 
     SanitizedToolOutput(format!(
@@ -166,8 +193,13 @@ fn sanitise_tool_name(name: &str) -> Cow<'_, str> {
 /// planted, then collapse runs of blank lines, then truncate to
 /// [`MAX_OUTPUT_BYTES`].
 pub fn normalise_free_text(raw: &str) -> String {
+    normalise_free_text_capped(raw, MAX_OUTPUT_BYTES)
+}
+
+/// As [`normalise_free_text`], with the truncation cap named by the caller.
+pub fn normalise_free_text_capped(raw: &str, max_bytes: usize) -> String {
     let s = normalise_unbounded_text(raw);
-    truncate_with_marker(&s, MAX_OUTPUT_BYTES)
+    truncate_with_marker(&s, max_bytes)
 }
 
 /// Normalise saved preferences without applying the tool-output length cap.

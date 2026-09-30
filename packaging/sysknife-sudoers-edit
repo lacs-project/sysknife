@@ -40,6 +40,49 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 IDENT_RE = re.compile(r"^[a-z_][a-z0-9_-]*\$?$")  # unix user/group name
 CMD_RE = re.compile(r"^/[A-Za-z0-9/._-]+$")
 
+# Command basenames that make a command list equivalent to ALL.
+#
+# This helper is reachable directly through its wildcard NOPASSWD grant, which
+# skips the daemon's preview, the approval receipt and the signed chain, so its
+# own screen is the only guard on that path and it cannot defer to executor.rs.
+#
+# Authoritative copy: SHELL_EQUIVALENT_COMMANDS in
+# crates/sysknife-daemon/src/actions/validate.rs, which documents what the list
+# covers and what it leaves to the preview.
+# tests/release/sudoers-edit.test.sh parses that constant and fails when the two
+# disagree. A comment claiming parity is what went stale last time
+# (GHSA-f8vp-j3jh-7wjx), so the claim is checked rather than asserted.
+SHELL_EQUIVALENT_COMMANDS = frozenset((
+    "sh", "bash", "rbash", "dash", "ash", "zsh", "ksh", "ksh93", "mksh",
+    "csh", "tcsh", "fish", "busybox", "pwsh", "powershell", "su", "sudo",
+    "sudoedit", "doas", "runuser", "pkexec", "setpriv", "chroot",
+    "unshare", "nsenter", "capsh", "python", "python2", "python3", "perl",
+    "perl5", "ruby", "irb", "lua", "luac", "node", "nodejs", "php",
+    "tclsh", "wish", "expect", "gdb", "julia", "guile", "rscript", "awk",
+    "gawk", "mawk", "nawk", "sed", "ed", "vi", "vim", "vimdiff", "view",
+    "ex", "nvim", "emacs", "nano", "less", "more", "most", "man", "pg",
+    "info", "env", "nice", "ionice", "taskset", "stdbuf", "setarch",
+    "timeout", "watch", "flock", "xargs", "find", "script", "scriptreplay",
+    "socat", "nc", "ncat", "netcat", "tar", "cpio", "zip", "unzip",
+    "rsync", "scp", "sftp", "ftp", "ssh", "tmux", "screen", "byobu",
+    "make", "cmake", "strace", "ltrace", "tcpdump", "docker", "podman",
+    "git", "crontab", "at", "systemctl", "journalctl", "apt", "apt-get",
+    "dpkg", "rpm", "yum", "dnf", "zypper", "pip", "pip3", "gem", "npm",
+    "mount"
+))
+
+
+def shell_equivalent_command(commands: str) -> str | None:
+    """First entry that makes `commands` equivalent to ALL, else None."""
+    if commands == "ALL":
+        return None
+    for c in commands.split(","):
+        if not c:
+            continue
+        if c.rsplit("/", 1)[-1].lower() in SHELL_EQUIVALENT_COMMANDS:
+            return c
+    return None
+
 
 def die(msg: str) -> None:
     print(f"sysknife-sudoers-edit: {msg}", file=sys.stderr)
@@ -55,10 +98,22 @@ def validated_ident(value: str, what: str) -> str:
 
 
 def build_rule(user: str, runas: str, nopasswd: bool, commands: str) -> str:
-    if commands == "ALL" and nopasswd:
+    shell_equivalent = shell_equivalent_command(commands)
+    if (commands == "ALL" or shell_equivalent) and nopasswd:
         # A standing passwordless unrestricted root credential. visudo accepts
         # it, so this is the only layer that can refuse it. Mirrors the same
         # refusal in executor.rs so the helper is safe when called directly.
+        #
+        # `/bin/bash` reaches the same end state as `ALL` and used to pass here,
+        # because the refusal was written against a string rather than against a
+        # capability.
+        if shell_equivalent:
+            die(
+                f"refusing to grant {shell_equivalent} with NOPASSWD: it runs an "
+                "arbitrary command as the target user, so this grant is "
+                "equivalent to ALL; scope --commands to a program that is not a "
+                "shell or an interpreter, or drop --nopasswd"
+            )
         die(
             "refusing to grant unrestricted commands with NOPASSWD: scope "
             "--commands to specific absolute paths, or drop --nopasswd"

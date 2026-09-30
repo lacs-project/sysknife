@@ -114,6 +114,8 @@ file's section.field path.
 | `SYSKNIFE_CHECKPOINT_DB` | — | Postgres URL for `audit checkpoint` external anchoring (keeps DB credentials off the command line) |
 | `SYSKNIFE_SOCKET` | falls back to the same default as `SYSKNIFE_LISTEN_URI` | CLI / MCP daemon address |
 | `SYSKNIFE_TOKEN` | — | Vsock auth token (when daemon runs in a VM) |
+| `SYSKNIFE_TOKEN_ROLE` | `Dev` | `CallerRole` granted to a vsock caller that presents `SYSKNIFE_TOKEN`. An unrecognised value fails closed to `Observer` (read-only) with a warning rather than granting the mutating tier on a typo |
+| `SYSKNIFE_ACTION_TIMEOUT_SECS` | `7200` (2 hours) | Backstop before the daemon kills a running action. Deliberately generous: a release upgrade or an OSTree rebase legitimately runs for tens of minutes, and killing a half-finished package transaction is worse than waiting. A non-numeric or zero value is ignored with a warning |
 | `XDG_CONFIG_HOME` | `~/.config` | Base path for `sysknife/config.toml` |
 
 ### Provider API keys

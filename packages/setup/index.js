@@ -119,14 +119,20 @@ async function askIntegration(rl, lineQueue) {
   hr();
   console.log(`  ${B}Integration to configure${X}`);
   console.log();
-  console.log(`  1) Claude Code`);
+  console.log(`  1) Claude Code  ${D}(default)${X}`);
   console.log(`  2) Cursor`);
   console.log(`  3) Codex CLI`);
   console.log(`  4) All three`);
   console.log();
 
+  // Enter picks Claude Code. The MCP server is the way almost everybody reaches
+  // SysKnife, and this prompt had no default, so the shortest path through the
+  // wizard was to read four options and type a number. An explicit 1/2/3/4 or a
+  // name still wins, and `--no-prompts` never reaches here: it exits above
+  // unless one of --claude/--cursor/--codex/--all was passed, so an unattended
+  // install still has to say which client it means.
   while (true) {
-    const answer = (await ask(rl, lineQueue, 'Choose integration', '')).trim().toLowerCase();
+    const answer = (await ask(rl, lineQueue, 'Choose integration', '1')).trim().toLowerCase();
     if (answer === '1' || answer === 'claude' || answer === 'claude code') {
       return { doClaude: true, doCursor: false, doCodex: false };
     }

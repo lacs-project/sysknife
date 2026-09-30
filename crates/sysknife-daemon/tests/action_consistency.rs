@@ -16,15 +16,11 @@ use std::collections::BTreeSet;
 use serde_json::json;
 use sysknife_brain::planning_tools::propose_plan::KNOWN_ACTIONS;
 use sysknife_core::action_family::{DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS, UBUNTU_ONLY_ACTIONS};
-use sysknife_daemon::actions::{all_specs, ActionSpec};
+use sysknife_daemon::actions::{all_specs, ActionSpec, DISPATCHER_INTERNAL_ACTIONS};
 use sysknife_daemon::executor::build_action_spec;
 use sysknife_daemon::policy::{min_role_for_action, role_for_risk_level};
 use sysknife_daemon::preview::preview_action;
 use sysknife_types::{CallerRole, RequestEnvelope, RequestHash, RiskLevel};
-
-/// Actions intercepted by the dispatcher before reaching the executor. They have
-/// policy entries and KNOWN_ACTIONS entries but no `ActionSpec`.
-const DISPATCHER_INTERNAL_ACTIONS: &[&str] = &["ListJobHistory"];
 
 /// Every action name in the catalogue, plus dispatcher-internal actions that
 /// bypass the executor.

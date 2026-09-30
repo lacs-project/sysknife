@@ -18,7 +18,10 @@ use sysknife_brain::planning_tools::propose_plan::KNOWN_ACTIONS;
 use sysknife_core::action_family::{
     DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS, NON_CANONICAL_ON_FEDORA, UBUNTU_ONLY_ACTIONS,
 };
-use sysknife_daemon::actions::{catalogue, ActionMechanism, ActionSpec};
+use sysknife_daemon::actions::{
+    catalogue, ActionMechanism, ActionSpec, DISPATCHER_INTERNAL_ACTIONS,
+};
+use sysknife_types::KNOWN_ACTION_NAMES;
 
 /// Ordered (section title, specs) pairs — one per action module. The order and
 /// titles are the ONLY hand-authored input; every cell below is derived.
@@ -136,11 +139,23 @@ fn build_reference() -> String {
         out.push('\n');
     }
 
+    let catalogue_total = KNOWN_ACTION_NAMES.len();
+    let expected_tabled = catalogue_total
+        .checked_sub(DISPATCHER_INTERNAL_ACTIONS.len())
+        .expect("dispatcher-internal action count exceeds the catalogue");
+    assert_eq!(
+        total, expected_tabled,
+        "ActionSpec table count must equal KNOWN_ACTION_NAMES minus dispatcher-internal actions"
+    );
+    let dispatcher_names = DISPATCHER_INTERNAL_ACTIONS
+        .iter()
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
     out.push_str(&format!(
         "---\n\n_{total} actions have an `ActionSpec` and are tabled above. The \
-         full catalogue (`KNOWN_ACTION_NAMES`) also includes `ListJobHistory`, \
-         which the dispatcher handles before the executor, for **{}** total._\n",
-        total + 1
+         full catalogue (`KNOWN_ACTION_NAMES`) also includes {dispatcher_names}, \
+         which the dispatcher handles before the executor, for **{catalogue_total}** total._\n"
     ));
     out
 }
@@ -191,6 +206,35 @@ fn diff_message(committed: &str, generated: &str) -> Option<String> {
         committed_line.trim_end_matches('\r'),
         generated_line.trim_end_matches('\r'),
     ))
+}
+
+#[test]
+fn footer_counts_match_catalogue_and_dispatcher_internal_actions() {
+    let tabled = catalogue()
+        .iter()
+        .map(|(_, specs)| specs.len())
+        .sum::<usize>();
+    assert_eq!(
+        tabled,
+        KNOWN_ACTION_NAMES.len() - DISPATCHER_INTERNAL_ACTIONS.len()
+    );
+
+    let generated = build_reference();
+    assert!(generated.contains(&format!(
+        "_{tabled} actions have an `ActionSpec` and are tabled above."
+    )));
+    assert!(generated.contains(&format!("for **{}** total.", KNOWN_ACTION_NAMES.len())));
+}
+
+#[test]
+fn footer_names_every_dispatcher_internal_action() {
+    let generated = build_reference();
+    for name in DISPATCHER_INTERNAL_ACTIONS {
+        assert!(
+            generated.contains(&format!("`{name}`")),
+            "generated footer must name dispatcher-internal action {name}"
+        );
+    }
 }
 
 #[test]

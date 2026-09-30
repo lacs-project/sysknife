@@ -48,7 +48,46 @@ pub fn preview_action(
     current_state: Value,
     proposed_change: Value,
 ) -> PreviewEnvelope {
-    let profile = preview_profile(&request.action_name);
+    let mut profile = preview_profile(&request.action_name);
+    if request.action_name == "CreateScheduledJob" {
+        if let Some(name) = request.params.get("name").and_then(Value::as_str) {
+            if let Some((service_path, timer_path)) =
+                crate::actions::services::scheduled_job_unit_paths(name)
+            {
+                profile.expected_side_effects.push(format!(
+                    "unit files {service_path} and {timer_path} will be created; existing paths are refused, not overwritten"
+                ));
+            }
+        }
+    }
+    // A grant whose command list runs an arbitrary program is a grant of
+    // everything, whatever the list says. The daemon refuses that combined with
+    // `nopasswd`; with a password prompt it is permitted, on the same footing as
+    // `commands = "ALL"`, and an operator approving it has to be told what they
+    // are signing. The generic "this configures privilege escalation" line does
+    // not tell them: the refusal that existed was written against a string, and
+    // so was the warning.
+    if request.action_name == "GrantSudoAccess" {
+        if let Some(commands) = request.params.get("commands").and_then(Value::as_str) {
+            if let Some(offender) =
+                crate::actions::validate::shell_equivalent_sudo_command(commands)
+            {
+                let user = request
+                    .params
+                    .get("user")
+                    .and_then(Value::as_str)
+                    .unwrap_or("the target user");
+                profile.warnings.insert(
+                    0,
+                    format!(
+                        "{offender} runs an arbitrary command, so this grant gives {user} \
+                         the same authority as `commands = \"ALL\"` however narrow the list \
+                         looks"
+                    ),
+                );
+            }
+        }
+    }
     // Risk, reboot, and rollback are OWNED by the action's `ActionSpec` (the
     // single source of truth, `crate::actions`) and derived here so the approval
     // gate and the displayed reboot/rollback flags can never disagree with the
@@ -881,6 +920,19 @@ mod tests {
                 "{action} should not have rollback available"
             );
         }
+    }
+
+    #[test]
+    fn create_scheduled_job_preview_names_exact_unit_paths() {
+        let mut request = req("CreateScheduledJob");
+        request.params = serde_json::json!({"name": "nightly"});
+
+        let envelope = preview_action(&request, serde_json::Value::Null, serde_json::Value::Null);
+
+        let paths = envelope.expected_side_effects.join("\n");
+        assert!(paths.contains("/etc/systemd/system/sysknife-nightly.service"));
+        assert!(paths.contains("/etc/systemd/system/sysknife-nightly.timer"));
+        assert!(paths.contains("refused, not overwritten"));
     }
 
     #[test]
