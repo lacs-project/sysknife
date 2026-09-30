@@ -581,6 +581,13 @@ mod tests {
             positions.windows(2).all(|w| w[0] < w[1]),
             "docs/cli.md doctor sample field order must match print_doctor_ok"
         );
+
+        for line in rendered.lines().filter(|l| l.starts_with("  ")) {
+            assert!(
+                sample.contains(line),
+                "docs/cli.md doctor sample must contain the rendered line `{line}`"
+            );
+        }
     }
 
     #[test]
