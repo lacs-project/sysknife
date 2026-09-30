@@ -526,6 +526,83 @@ mod tests {
     }
 
     #[test]
+    fn doctor_ok_sample_matches_cli_docs_field_labels_in_order() {
+        use crate::runner::Logger;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("doctor.log");
+        let log = Logger::new(Some(&path)).expect("logger");
+        print_doctor_ok(
+            "unix:///run/sysknife/daemon.sock",
+            "my-silverblue",
+            "anthropic",
+            "claude-sonnet-4-6",
+            "fedora",
+            &log,
+        );
+        let rendered = std::fs::read_to_string(&path).expect("logger tee");
+
+        let labels: Vec<&str> = rendered
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim_start();
+                trimmed
+                    .strip_prefix("socket ")
+                    .map(|_| "socket")
+                    .or_else(|| trimmed.strip_prefix("host ").map(|_| "host"))
+                    .or_else(|| trimmed.strip_prefix("provider ").map(|_| "provider"))
+                    .or_else(|| trimmed.strip_prefix("model ").map(|_| "model"))
+                    .or_else(|| trimmed.strip_prefix("distro ").map(|_| "distro"))
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            ["socket", "host", "provider", "model", "distro"],
+            "doctor field labels must match docs/cli.md sample order; got: {rendered}"
+        );
+
+        let cli_doc = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/cli.md"),
+        )
+        .expect("docs/cli.md");
+        let sample_start = cli_doc
+            .find("✓  daemon ok")
+            .expect("cli.md must include the doctor sample block");
+        let sample = &cli_doc[sample_start..];
+        let mut positions = Vec::new();
+        for label in &labels {
+            let needle = format!("  {label}");
+            let pos = sample
+                .find(&needle)
+                .unwrap_or_else(|| panic!("docs/cli.md doctor sample must document `{label}`"));
+            positions.push(pos);
+        }
+        assert!(
+            positions.windows(2).all(|w| w[0] < w[1]),
+            "docs/cli.md doctor sample field order must match print_doctor_ok"
+        );
+
+        for line in rendered.lines().filter(|l| l.starts_with("  ")) {
+            assert!(
+                sample.contains(line),
+                "docs/cli.md doctor sample must contain the rendered line `{line}`"
+            );
+        }
+    }
+
+    #[test]
+    fn configuration_doc_does_not_claim_doctor_runs_chain_integrity() {
+        let config_doc = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/configuration.md"),
+        )
+        .expect("docs/configuration.md");
+        assert!(
+            !config_doc.to_lowercase().contains("chain-integrity"),
+            "doctor docs must not claim a chain-integrity check; use `sysknife audit verify` instead"
+        );
+    }
+
+    #[test]
     fn risk_badges_are_distinct_so_a_skim_can_tell_them_apart() {
         // Quick smoke: the three rendered badges must be three distinct
         // strings.  A regression that maps Medium → "low" or High → "medium"
