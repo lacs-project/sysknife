@@ -317,8 +317,8 @@ pub struct HistoryInput {
     pub status: Option<String>,
     /// Filter by action name (e.g. `"InstallPackages"`).
     pub action: Option<String>,
-    /// Show only entries after this UTC RFC 3339 timestamp
-    /// (e.g. `"2026-01-15T10:30:00Z"`).
+    /// Show only entries after this ISO-8601 date or UTC-qualified datetime
+    /// (e.g. `"2026-01-15"` or `"2026-01-15T10:30:00Z"`).
     pub since: Option<String>,
     /// Maximum number of entries to return. Defaults to 20.
     pub limit: Option<u32>,
@@ -1122,8 +1122,8 @@ async fn history_with_client(
             Some(h) => Some(h),
             None => {
                 return Err(format!(
-                    "since: {s:?} is not a valid past UTC RFC 3339 timestamp \
-                     (accepted: 2026-01-15T10:30:00Z)"
+                    "since: {s:?} is not a valid past ISO-8601 date or datetime \
+                     (accepted: 2026-01-15 or 2026-01-15T10:30:00Z)"
                 ));
             }
         },
