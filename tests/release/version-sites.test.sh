@@ -67,9 +67,9 @@ for site in cfg["json_sites"]:
         if got != release:
             failures.append(f'{site["file"]}: path {path} holds {got!r}, not {release!r}')
 
-# 3. COMPLETENESS. Any tracked manifest carrying the release version in a
-#    version field must be registered. This is the assertion that catches a
-#    new crate, and the one the other two cannot make.
+# 3. COMPLETENESS. Every internal crate manifest must be registered, even at
+#    its initial version. Also discover other files carrying the release
+#    version, so a new version site cannot silently escape the registry.
 tracked = subprocess.run(["git", "-C", str(root), "ls-files", "-z"],
                          capture_output=True, check=True).stdout.decode().split("\0")
 tracked = [t for t in tracked if t]
@@ -77,7 +77,8 @@ if not tracked:
     failures.append("git ls-files returned nothing; this check inspected no files")
 
 ignore = set(cfg.get("not_a_version_site", []))
-found = []
+prefix = cfg["internal_dep_prefix"]
+found = {}
 for rel in tracked:
     if not rel.endswith((".toml", ".json")):
         continue
@@ -87,8 +88,15 @@ for rel in tracked:
         continue
     hit = (re.search(rf'^version\s*=\s*"{re.escape(release)}"', text, re.M)
            or re.search(rf'"version"\s*:\s*"{re.escape(release)}"', text))
-    if hit:
-        found.append(rel)
+    why = f"carries version {release}" if hit else None
+    # A new internal crate starts at 0.1.0, not necessarily this release.
+    if Path(rel).name == "Cargo.toml":
+        package = re.search(r'^\[package\]\s*$(.*?)(?=^\[|\Z)', text, re.M | re.S)
+        name = package and re.search(r'^name\s*=\s*"([^"]+)"', package.group(1), re.M)
+        if name and name.group(1).startswith(prefix):
+            why = f"is the manifest of {name.group(1)}"
+    if why:
+        found[rel] = why
 
 if not found:
     failures.append(
@@ -97,15 +105,23 @@ if not found:
 
 for rel in sorted(set(found) - registered - ignore):
     failures.append(
-        f"{rel} carries version {release} and is not in release-versions.json. "
+        f"{rel} {found[rel]} and is not in release-versions.json. "
         "Register it, or add it to not_a_version_site with a reason.")
 
 # 4. The writer and the checker must read the SAME registry, or the whole
-#    point of having one is lost.
-for script in ("scripts/bump_version.sh", "scripts/check_release_versions.sh"):
-    body = (root / script).read_text()
-    if "release-versions.json" not in body:
-        failures.append(f"{script} does not read release-versions.json")
+#    point of having one is lost. Header and trailing comments cannot prove
+#    that a script still calls the reader or opens the registry.
+reads = {
+    "scripts/bump_version.sh": 'scripts/release_versions.py" bump',
+    "scripts/check_release_versions.sh": 'scripts/release_versions.py" values',
+    "scripts/release_versions.py": 'CONFIG = ROOT / "release-versions.json"',
+}
+for script, call in reads.items():
+    code = "\n".join(re.sub(r'(^|\s)#.*$', '', line)
+                     for line in (root / script).read_text().splitlines())
+    if call not in code:
+        failures.append(f"{script} has no code line containing {call}, "
+                        "so it does not read release-versions.json")
 
 if failures:
     for f in failures:

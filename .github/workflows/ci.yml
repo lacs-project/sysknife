@@ -64,6 +64,9 @@ jobs:
       - name: Check release version consistency
         run: bash scripts/check_release_versions.sh
 
+      - name: Check the release waits for crates.io to index each crate
+        run: bash tests/release/crates-index-poll.test.sh
+
       - name: Test internal dependency pin coverage
         run: bash tests/release/release-version-pins.test.sh
 
@@ -94,6 +97,9 @@ jobs:
       - name: Check mount-edit refuses symlinked mountpoints
         run: bash tests/release/mount-edit.test.sh
 
+      - name: Check scheduled-job unit collision safety
+        run: bash tests/release/scheduled-job-edit.test.sh
+
       - name: Check a replay reproduces the run that recorded it
         run: bash tests/release/cassette-replay-parity.test.sh
 
@@ -105,6 +111,9 @@ jobs:
 
       - name: Check no workflow pins an end-of-life Node release
         run: bash tests/release/node-eol.test.sh
+
+      - name: Check npm audit stays off the pull-request path
+        run: bash tests/release/npm-audit-off-pr-path.test.sh
 
       - name: Check tracked files use portable line endings
         run: bash tests/release/tracked-eol.test.sh
@@ -123,6 +132,12 @@ jobs:
 
       - name: Check grub-kargs-edit screens karg deletions
         run: bash tests/release/grub-kargs-edit.test.sh
+
+      - name: Check sudoers-edit refuses ALL-equivalent grants
+        run: bash tests/release/sudoers-edit.test.sh
+
+      - name: Check fail2ban-ban builds a fixed argv
+        run: bash tests/release/fail2ban-ban.test.sh
 
       - name: Check the docs share cards name an image the build produces
         run: bash tests/release/docs-share-cards.test.sh
@@ -146,6 +161,26 @@ jobs:
 
       - name: Check markdown link file discovery
         run: bash tests/release/markdown-link-files.test.sh
+
+      - name: Install mdBook and plugins
+        env:
+          MDBOOK_VERSION: "0.4.40"
+          MDBOOK_ADMONISH_VERSION: "1.18.0"
+          MDBOOK_SHA256: "9ef07fd288ba58ff3b99d1c94e6d414d431c9a61fdb20348e5beb74b823d546b"
+          MDBOOK_ADMONISH_SHA256: "5d19ec6376c646204235f197c91398cf95873e96e6100982137112056da96fe4"
+        run: |
+          set -euo pipefail
+          curl -sSfL -o mdbook.tar.gz \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${MDBOOK_SHA256}  mdbook.tar.gz" | sha256sum --check --strict -
+          tar -xzf mdbook.tar.gz --directory /usr/local/bin
+          curl -sSfL -o mdbook-admonish.tar.gz \
+            "https://github.com/tommilligan/mdbook-admonish/releases/download/v${MDBOOK_ADMONISH_VERSION}/mdbook-admonish-v${MDBOOK_ADMONISH_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${MDBOOK_ADMONISH_SHA256}  mdbook-admonish.tar.gz" | sha256sum --check --strict -
+          tar -xzf mdbook-admonish.tar.gz --directory /usr/local/bin
+
+      - name: Check generated mdBook HTML links
+        run: bash tests/release/mdbook-links.test.sh
 
       - name: Check provider parity across E2E entry points
         run: bash tests/e2e/provider-parity.test.sh
@@ -221,7 +256,7 @@ jobs:
           [[ "$count" -gt 0 ]] || { printf 'markdown-link-files: no files checked\n' >&2; exit 1; }
 
       - name: Lint GitHub issue templates
-        run: yamllint .github/ISSUE_TEMPLATE/*.yml .github/workflows/*.yml
+        run: bash scripts/lint-github-yaml.sh
 
   frontend:
     runs-on: ubuntu-latest
@@ -240,8 +275,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
+      # No npm audit here. It gated every pull request on registry.npmjs.org,
+      # so an outage failed this required job like a real advisory would (#367).
+      # It runs against main in npm-audit.yml; dependency-review below covers
+      # what a pull request introduces.
 
       - name: Type check
         run: ./node_modules/.bin/tsc --noEmit
@@ -273,9 +310,13 @@ jobs:
             patchelf
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable (branch)
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable (branch)
         with:
+          toolchain: stable
           components: rustfmt, clippy
+
+      - name: Check release crate lists against Cargo metadata
+        run: bash tests/release/release-crates.test.sh
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
@@ -296,7 +337,7 @@ jobs:
         run: cargo doc --no-deps --workspace --locked
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c  # v2.87.10
+        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172  # v2.87.20
         with:
           tool: cargo-nextest
 
@@ -331,7 +372,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable (branch)
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable (branch)
+        with:
+          toolchain: stable
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
@@ -351,7 +394,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c  # v2.87.10
+        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172  # v2.87.20
         with:
           tool: cargo-audit
 

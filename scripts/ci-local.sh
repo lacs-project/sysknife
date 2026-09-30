@@ -206,13 +206,18 @@ run_frontend_group() {
         return
     fi
 
-    # A hard gate in CI (.github/workflows/ci.yml runs it as a plain step, so a
-    # high-severity advisory fails the frontend job), therefore a hard gate here.
-    # It used to be full-mode-only AND non-fatal, which meant `--fast` -- the mode
-    # pre-push actually runs -- never checked it at all, and a full run reported
-    # the failure as a WARN and still exited 0. The local gate could not fail on
-    # the one thing the remote gate fails on.
-    run_step 'frontend: npm audit --omit=dev --audit-level=high' frontend_audit
+    # Not a pull-request gate in CI any more: it gated every PR on the
+    # availability of registry.npmjs.org (#367) and now runs against main in
+    # .github/workflows/npm-audit.yml. It still runs here so an advisory is
+    # visible before push, but as a WARN, because failing a pre-push run on
+    # something CI will not fail the pull request on is the mirror drifting the
+    # other way.
+    printf '\n==> %s\n' 'frontend: npm audit --omit=dev --audit-level=high (advisory)'
+    if frontend_audit; then
+        record PASS 'frontend: npm audit --omit=dev --audit-level=high'
+    else
+        record WARN 'frontend: npm audit --omit=dev --audit-level=high -- advisory or registry unreachable; not a PR gate (see npm-audit.yml)'
+    fi
 
     run_step 'frontend: tsc --noEmit' frontend_tsc
     run_step 'frontend: vitest run (+ test baseline)' frontend_vitest
@@ -257,7 +262,7 @@ hygiene_markdown_link_check() (
 
 hygiene_yamllint() (
     cd "$repo_root" || exit 1
-    yamllint .github/ISSUE_TEMPLATE/*.yml .github/workflows/*.yml
+    bash scripts/lint-github-yaml.sh
 )
 
 # Same scan as e2e.yml's "ShellCheck maintained scripts" step -- kept here too

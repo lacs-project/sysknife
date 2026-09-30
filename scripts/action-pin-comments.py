@@ -11,6 +11,7 @@ from pathlib import Path
 
 import yaml
 from yaml.nodes import MappingNode, ScalarNode, SequenceNode
+from github_yaml import check_local, discover
 
 
 def entries(node, key):
@@ -20,6 +21,14 @@ def entries(node, key):
 
 
 def references(document):
+    for runs in entries(document, "runs"):
+        if not isinstance(runs, MappingNode):
+            raise ValueError("runs must be a mapping")
+        for steps in entries(runs, "steps"):
+            if not isinstance(steps, SequenceNode):
+                raise ValueError("steps must be a sequence")
+            for step in steps.value:
+                yield from entries(step, "uses")
     for jobs in entries(document, "jobs"):
         if not isinstance(jobs, MappingNode):
             raise ValueError("jobs must be a mapping")
@@ -33,10 +42,7 @@ def references(document):
 
 
 def extract(root):
-    directory = root / ".github/workflows"
-    files = sorted(path for path in directory.iterdir() if path.suffix in (".yml", ".yaml"))
-    if not files:
-        raise ValueError("no workflow files")
+    files = discover(root / ".github/workflows", root / ".github/actions")
     rows = []
     for path in files:
         try:
@@ -54,7 +60,10 @@ def extract(root):
                 if not isinstance(node, ScalarNode):
                     raise ValueError("uses must be a scalar")
                 # Local and Docker references have no GitHub tag comment to check.
-                if node.value.startswith(("./", "docker://")):
+                if node.value.startswith("./"):
+                    check_local(node.value)
+                    continue
+                if node.value.startswith("docker://"):
                     continue
                 match = re.fullmatch(r"([\w.-]+/[\w./-]+)@([0-9a-fA-F]{40})", node.value)
                 if not match:

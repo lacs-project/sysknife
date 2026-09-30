@@ -25,6 +25,7 @@ mutates each claim and asserts this rejects it.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -53,11 +54,17 @@ from record_test_baseline import validate_document
 # So the rule is now: if a file states a figure about this project, it belongs
 # here. Adding a file is cheap; the guard only complains about numbers it can
 # derive an answer for.
+#
+# SECURITY.md carries the Security Model wording that
+# check_public_claims.sh's independence pin screens. Without it listed here the
+# pin ran over claim_files and could not fire on the one file it was written
+# for: restoring the retired sentence left the check green.
 CLAIM_FILES = (
     "README.md",
     "ROADMAP.md",
     "CONTRIBUTING.md",
     "HACKING.md",
+    "SECURITY.md",
     "docs/introduction.md",
     "docs/quickstart.md",
     "docs/distro-support.md",
@@ -829,6 +836,36 @@ def check_pre_commit_commands(root: Path, guide: str) -> list[str]:
     ]
 
 
+SHELL_FENCE = re.compile(r"^\s*```(?:sh|bash|shell|console|zsh)\s*$")
+FRAMEWORK_COMMAND = re.compile(
+    r"\bpre-commit\s+(?:install|run)\b|\b(?:pip3?|pipx|uv\s+tool)\s+install\s+pre-commit\b"
+)
+SKIPPED_DIRS = {".git", "node_modules", "target", "dist", "book"}
+
+
+def check_framework_commands(root: Path) -> list[str]:
+    """Reject the pre-commit framework as a command in any Markdown shell block."""
+    problems = []
+    for directory, subdirs, names in os.walk(root):
+        subdirs[:] = sorted(d for d in subdirs if d not in SKIPPED_DIRS)
+        for name in sorted(n for n in names if n.endswith(".md")):
+            path = Path(directory) / name
+            rel = path.relative_to(root).as_posix()
+            in_shell = False
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if line.lstrip().startswith("```"):
+                    in_shell = not in_shell and bool(SHELL_FENCE.match(line))
+                    continue
+                command = line.strip().removeprefix("$ ")
+                if in_shell and not command.startswith("#") and FRAMEWORK_COMMAND.search(command):
+                    problems.append(
+                        f"{rel}:{number}: runs `{command}`, but the hooks run through "
+                        "core.hooksPath and the pre-commit framework is not used "
+                        "(see docs/developer-guide.md)"
+                    )
+    return problems
+
+
 def main() -> int:
     root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     try:
@@ -838,6 +875,7 @@ def main() -> int:
 
         problems = []
         problems += check_pre_commit_commands(root, texts["docs/developer-guide.md"])
+        problems += check_framework_commands(root)
         problems += check_figure(texts, "Rust tests", baseline["tests"])
         problems += check_figure(texts, "frontend tests", baseline["frontend_tests"])
         problems += check_figure(texts, "typed actions", count_actions(root))

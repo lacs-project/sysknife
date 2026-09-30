@@ -36,8 +36,21 @@ pub fn list_groups() -> ActionSpec {
     }
 }
 
+/// Create a local account (`sudo action-steps user-create <name> [...]`).
+///
+/// Through the helper rather than `sudo useradd` directly. A sudoers grant
+/// cannot say "this subcommand and no further options": the arguments are
+/// matched as one concatenated string, so `/usr/sbin/useradd --create-home *`
+/// authorised `useradd --create-home -o -u 0 -g 0 backdoor` too. The helper
+/// re-validates the account name, the home directory and the shell, and builds
+/// the same `useradd --create-home [--home-dir H] [--shell S] <name>` argv this
+/// function used to build itself.
 pub fn create_user(username: &str, shell: Option<&str>, home: Option<&str>) -> ActionSpec {
-    let mut args = vec!["useradd".to_string(), "--create-home".to_string()];
+    let mut args = vec![
+        "/usr/lib/sysknife/action-steps".to_string(),
+        "user-create".to_string(),
+        username.to_string(),
+    ];
     if let Some(home) = home {
         args.push("--home-dir".to_string());
         args.push(home.to_string());
@@ -46,7 +59,6 @@ pub fn create_user(username: &str, shell: Option<&str>, home: Option<&str>) -> A
         args.push("--shell".to_string());
         args.push(shell.to_string());
     }
-    args.push(username.to_string());
 
     ActionSpec {
         action_name: "CreateUser",
@@ -167,7 +179,10 @@ pub fn delete_group(group: &str) -> ActionSpec {
 pub fn lock_user_account(username: &str) -> ActionSpec {
     ActionSpec {
         action_name: "LockUserAccount",
-        mechanism: command_mechanism("sudo", ["usermod", "--lock", username]),
+        mechanism: command_mechanism(
+            "sudo",
+            ["/usr/lib/sysknife/action-steps", "user-lock", username],
+        ),
         risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
@@ -181,7 +196,10 @@ pub fn lock_user_account(username: &str) -> ActionSpec {
 pub fn unlock_user_account(username: &str) -> ActionSpec {
     ActionSpec {
         action_name: "UnlockUserAccount",
-        mechanism: command_mechanism("sudo", ["usermod", "--unlock", username]),
+        mechanism: command_mechanism(
+            "sudo",
+            ["/usr/lib/sysknife/action-steps", "user-unlock", username],
+        ),
         risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,

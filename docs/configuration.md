@@ -80,6 +80,11 @@ InstallFlatpak = "High"     # require Admin in this org (default: Medium/Dev)
 [audit.forward.syslog]
 host     = "siem.internal:514"
 facility = 1                 # 1 = user-level (default)
+enterprise_number = 32473    # IANA Private Enterprise Number for the SD-ID.
+                              # Defaults to RFC 5612's documentation/test PEN
+                              # (32473) — replace with your own IANA-assigned
+                              # PEN before forwarding into a production SIEM.
+                              # Rejected at startup if set to 0.
 ```
 
 The transaction database is the durable audit record. Safety-fence JSONL,
@@ -105,10 +110,12 @@ file's section.field path.
 | `SYSKNIFE_ANTHROPIC_URL` | `https://api.anthropic.com` | Anthropic base URL |
 | `SYSKNIFE_BRAIN_MAX_TURNS` | `10` | Planning loop turn limit |
 | `SYSKNIFE_MAX_RPM` | `20` | Rate limit (requests / 60s sliding window) |
-| `SYSKNIFE_AUDIT_KEY_PATH` | `<db_dir>/audit-key` | Ed25519 signing key path for the audit chain |
+| `SYSKNIFE_AUDIT_KEY_PATH` | `<db_dir>/audit-key` | Ed25519 signing key path for the audit chain (daemon, CLI/MCP: e.g. `audit verify`, `audit checkpoint`, `doctor`) |
 | `SYSKNIFE_CHECKPOINT_DB` | — | Postgres URL for `audit checkpoint` external anchoring (keeps DB credentials off the command line) |
 | `SYSKNIFE_SOCKET` | falls back to the same default as `SYSKNIFE_LISTEN_URI` | CLI / MCP daemon address |
 | `SYSKNIFE_TOKEN` | — | Vsock auth token (when daemon runs in a VM) |
+| `SYSKNIFE_TOKEN_ROLE` | `Dev` | `CallerRole` granted to a vsock caller that presents `SYSKNIFE_TOKEN`. An unrecognised value fails closed to `Observer` (read-only) with a warning rather than granting the mutating tier on a typo |
+| `SYSKNIFE_ACTION_TIMEOUT_SECS` | `7200` (2 hours) | Backstop before the daemon kills a running action. Deliberately generous: a release upgrade or an OSTree rebase legitimately runs for tens of minutes, and killing a half-finished package transaction is worse than waiting. A non-numeric or zero value is ignored with a warning |
 | `XDG_CONFIG_HOME` | `~/.config` | Base path for `sysknife/config.toml` |
 
 ### Provider API keys
@@ -124,24 +131,16 @@ Required when the corresponding provider is selected:
 - `XAI_API_KEY` — xAI
 - _none_ — Ollama (local, no key)
 
-## Daemon-only configuration
-
-These environment variables are read only by `sysknife-daemon`, not by
-the CLI / shell:
-
-| Variable | Purpose |
-|---|---|
-| `SYSKNIFE_AUDIT_KEY_PATH` | Ed25519 audit signing key path (default: alongside the database) |
-
 ## Validating your config
 
 ```sh
 sysknife doctor
 ```
 
-Reports the resolved configuration (socket, host, provider, model, audit
-backend) plus a quick chain-integrity check. A failing `doctor` is the
-fastest way to catch a typo'd env var or a bad path.
+Reports connectivity and the resolved daemon configuration (socket, host,
+provider, model, and distro). For audit chain integrity, use
+`sysknife audit verify`. A failing `doctor` is the fastest way to catch a
+typo'd env var, a bad socket path, or an unreachable daemon.
 
 ## Where each setting lives in the source
 

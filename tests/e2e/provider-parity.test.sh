@@ -165,6 +165,42 @@ else
     done
 fi
 
+# provision.sh fires `ollama pull` at whatever SYSKNIFE_TEST_MODEL defaults to.
+# testing.md's provisioning section once promised that this default was
+# llama3.2:3b while the script pulled qwen3:8b — the model the same section
+# calls unusable on CPU — so a contributor without a GPU pulled 5 GB and then
+# lost every story to the thinking-mode HTTP 500. Read the default back out of
+# the script and require the section's "We default to" sentence and its
+# `# default` comment to name the same model.
+provision_sh="$repo_root/tests/e2e/provision.sh"
+if [ ! -f "$provision_sh" ]; then
+    report "tests/e2e/provision.sh is missing; the provisioning default cannot be checked"
+else
+    default_line="$(grep -E '^    SYSKNIFE_TEST_MODEL="\$\{SYSKNIFE_TEST_MODEL:-[^}]+\}"' "$provision_sh" || true)"
+    if [ -z "$default_line" ]; then
+        report "tests/e2e/provision.sh has no \`SYSKNIFE_TEST_MODEL=\"\${SYSKNIFE_TEST_MODEL:-...}\"\` assignment; renamed or reformatted, the default is unchecked"
+    else
+        provisioned_default="$(printf '%s' "$default_line" | sed -E 's/.*:-([^}]+)\}".*/\1/')"
+        if [ -z "$provisioned_default" ]; then
+            report "could not extract the model from provision.sh's SYSKNIFE_TEST_MODEL default"
+        else
+            default_re="${provisioned_default//./\.}"
+            # A backtick inside double quotes starts command substitution, so
+            # the inline-code fence is passed through a variable instead.
+            local_bt=$(printf '`')
+            if ! grep -Eq "^(We default to|The harness default is) \*\*${local_bt}${default_re}${local_bt}\*\*" "$testing_doc"; then
+                report "testing.md does not name $provisioned_default as the provisioning default while provision.sh pulls it by default"
+            fi
+            # The `# default` comment must sit on the override line for that
+            # model, not on an alternative, or readers set the default
+            # explicitly and nothing on the true default line says what it is.
+            if ! grep -E "^SYSKNIFE_TEST_MODEL=${default_re} .+# default" "$testing_doc" >/dev/null; then
+                report "testing.md's SYSKNIFE_TEST_MODEL block has no comment marking $provisioned_default as the no-override entry"
+            fi
+        fi
+    fi
+fi
+
 if [ "$failures" -ne 0 ]; then
     printf '\n%d provider-parity failure(s) across %d providers.\n' "$failures" "${#keys[@]}" >&2
     exit 1

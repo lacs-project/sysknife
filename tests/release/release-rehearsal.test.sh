@@ -3,11 +3,31 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 rehearsal="${repo_root}/scripts/release_rehearsal.sh"
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+assert_file_pattern() {
+    local file="$1" pattern="$2" purpose="$3"
+    if [[ -z "$pattern" ]]; then
+        printf 'FAIL: %s: empty pattern; %s\n' "$file" "$purpose" >&2
+        return 1
+    fi
+    if [[ ! -f "$file" || ! -r "$file" ]]; then
+        printf 'FAIL: %s: cannot read file for pattern %s; %s\n' \
+            "$file" "$pattern" "$purpose" >&2
+        return 1
+    fi
+    if ! grep -Eq -- "$pattern" "$file"; then
+        printf 'FAIL: %s: pattern %s did not match; %s\n' \
+            "$file" "$pattern" "$purpose" >&2
+        return 1
+    fi
+}
 
 # Invalid registry versions must fail validation before attempting any network
 # requests, including when no positional argument was supplied.
 assert_invalid_registry_version() {
-    local output status
+    local output status output_file="${tmp_dir}/invalid-registry.out"
     if output="$(bash "${repo_root}/scripts/check_registry_versions.sh" "$@" 2>&1)"; then
         printf 'FAIL: registry preflight accepted an invalid version\n' >&2
         exit 1
@@ -18,7 +38,9 @@ assert_invalid_registry_version() {
         printf 'FAIL: registry preflight expected exit 2, got %s: %s\n' "$status" "$output" >&2
         exit 1
     fi
-    grep -Fq 'ERROR: expected a semantic version' <<<"$output"
+    printf '%s\n' "$output" >"$output_file"
+    assert_file_pattern "$output_file" 'ERROR: expected a semantic version' \
+        'invalid registry versions must be rejected before network access'
 }
 
 assert_invalid_registry_version nope
@@ -30,13 +52,44 @@ if [[ ! -x "$rehearsal" ]]; then
     exit 1
 fi
 
-help="$($rehearsal --help)"
-grep -Fq -- '--check' <<<"$help"
-grep -Fq -- '--full' <<<"$help"
-grep -Fq 'never publishes' <<<"$help"
+helper_fixture="${tmp_dir}/helper.fixture"
+printf 'release preflight anchor\n' >"$helper_fixture"
 
-tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT
+if output="$(assert_file_pattern "$helper_fixture" 'missing anchor' 'protects the release preflight' 2>&1)"; then
+    printf 'FAIL: a missing assertion pattern was accepted\n' >&2
+    exit 1
+fi
+for expected in "$helper_fixture" 'missing anchor' 'protects the release preflight'; do
+    [[ "$output" == *"$expected"* ]] || {
+        printf 'FAIL: assertion diagnostic omitted %s: %s\n' "$expected" "$output" >&2
+        exit 1
+    }
+done
+
+if output="$(assert_file_pattern "${tmp_dir}/missing.fixture" 'anchor' 'checks a fixture' 2>&1)"; then
+    printf 'FAIL: a missing assertion file was accepted\n' >&2
+    exit 1
+fi
+[[ "$output" == *'cannot read'* ]] || {
+    printf 'FAIL: missing-file diagnostic was unclear: %s\n' "$output" >&2
+    exit 1
+}
+
+if output="$(assert_file_pattern "$helper_fixture" '' 'checks a fixture' 2>&1)"; then
+    printf 'FAIL: an empty assertion pattern was accepted\n' >&2
+    exit 1
+fi
+[[ "$output" == *'empty pattern'* ]] || {
+    printf 'FAIL: empty-pattern diagnostic was unclear: %s\n' "$output" >&2
+    exit 1
+}
+
+help_file="${tmp_dir}/help.out"
+"$rehearsal" --help >"$help_file"
+assert_file_pattern "$help_file" '--check' 'the help must advertise check mode'
+assert_file_pattern "$help_file" '--full' 'the help must advertise full mode'
+assert_file_pattern "$help_file" 'never publishes' 'the help must state the no-publish guarantee'
+
 set +e
 "$rehearsal" --publish >"${tmp_dir}/publish.out" 2>&1
 publish_status=$?
@@ -49,52 +102,70 @@ if [[ ! -s "${tmp_dir}/publish.out" ]]; then
     printf 'FAIL: rehearsal output was not captured (exit %s)\n' "$publish_status" >&2
     exit 1
 fi
-grep -Fq 'never publishes' "${tmp_dir}/publish.out"
+assert_file_pattern "${tmp_dir}/publish.out" 'never publishes' \
+    'refused publish mode must explain that the rehearsal never publishes'
 
-check_output="$($rehearsal --check)"
-grep -Eq 'sysknife-v[0-9]+\.[0-9]+\.[0-9]+-linux-(x86_64|aarch64)' <<<"$check_output"
-grep -Eq 'sysknife-daemon-v[0-9]+\.[0-9]+\.[0-9]+-linux-(x86_64|aarch64)' <<<"$check_output"
-grep -Fq 'Rehearsal preflight passed' <<<"$check_output"
+check_file="${tmp_dir}/check.out"
+"$rehearsal" --check >"$check_file"
+assert_file_pattern "$check_file" 'sysknife-v[0-9]+\.[0-9]+\.[0-9]+-linux-(x86_64|aarch64)' \
+    'check mode must list the CLI release artifact'
+assert_file_pattern "$check_file" 'sysknife-daemon-v[0-9]+\.[0-9]+\.[0-9]+-linux-(x86_64|aarch64)' \
+    'check mode must list the daemon release artifact'
+assert_file_pattern "$check_file" 'Rehearsal preflight passed' \
+    'check mode must report a successful preflight'
 
 for crate in sysknife-proto sysknife-core sysknife-types sysknife-brain \
              sysknife-daemon; do
-    grep -Fq "patch.crates-io.${crate}.path" "$rehearsal"
+    assert_file_pattern "$rehearsal" "patch\\.crates-io\\.${crate}\\.path" \
+        "rehearsal must use the workspace override for ${crate}"
 done
-grep -Fq 'npm pack ./packages/setup' "$rehearsal"
+assert_file_pattern "$rehearsal" 'npm pack \./packages/setup' \
+    'rehearsal must package the setup directory'
 if grep -Fq -- '--no-verify' "$rehearsal"; then
     printf 'FAIL: rehearsal skips generated crate verification\n' >&2
     exit 1
 fi
 
 release_workflow="${repo_root}/.github/workflows/release.yml"
-grep -Fq 'check_registry_versions.sh' "$release_workflow"
-grep -Fq 'already exists; skipping' "$release_workflow"
+assert_file_pattern "$release_workflow" 'check_registry_versions\.sh' \
+    'release workflow must validate registry versions'
+assert_file_pattern "$release_workflow" 'already exists; skipping' \
+    'release workflow must report when a release already exists'
 
 # The MCP Registry listing is published by CI, and the ordering is the part
 # worth pinning: the registry validator reads the *published* crate's rendered
 # README for the ownership marker, so a publish job that stopped depending on
 # publish-crates would fail with an error that looks like a permissions problem.
 publish_mcp_workflow="${repo_root}/.github/workflows/publish-mcp.yml"
-grep -Fq './.github/workflows/publish-mcp.yml' "$release_workflow"
-grep -Fq 'publish-crates' "$release_workflow"
-grep -Fq 'mcp-publisher publish' "$publish_mcp_workflow"
+assert_file_pattern "$release_workflow" '\./\.github/workflows/publish-mcp\.yml' \
+    'release workflow must call the MCP publishing workflow'
+assert_file_pattern "$release_workflow" 'publish-crates' \
+    'release workflow must depend on crate publication before MCP listing'
+assert_file_pattern "$publish_mcp_workflow" 'mcp-publisher publish' \
+    'MCP workflow must publish the registry listing'
 # OIDC is not an implementation detail here. A device-code login mints a token
 # for the *user's* namespace, so it cannot publish io.github.lacs-project/*;
 # only the repository identity can. Swapping this back would 403 at release
 # time, long after the change looked fine.
-grep -Fq 'login github-oidc' "$publish_mcp_workflow"
-grep -Fq 'id-token: write' "$publish_mcp_workflow"
+assert_file_pattern "$publish_mcp_workflow" 'login github-oidc' \
+    'MCP publishing must authenticate through GitHub OIDC'
+assert_file_pattern "$publish_mcp_workflow" 'id-token: write' \
+    'MCP publishing must request an OIDC token'
 
 # Glama's build spec stays browser-only, so it is still forgotten after releases
 # unless something names it. The workflow files a checklist issue with the
 # freshly published checksum filled in, so the work is visible without anyone
 # reading a build log.
-grep -Fq 'Post-release manual steps' "$release_workflow"
-grep -Fq 'glama.ai' "$release_workflow"
+assert_file_pattern "$release_workflow" 'Post-release manual steps' \
+    'release workflow must create a post-release checklist'
+assert_file_pattern "$release_workflow" 'glama\.ai' \
+    'post-release checklist must include the Glama listing step'
 # The checklist is only useful if it carries the real checksum for this tag,
 # and only honest if it appears after publication actually succeeded.
-grep -Fq 'sha256sums-linux-x86_64.txt' "$release_workflow"
-grep -Eq 'needs: \[release\]' "$release_workflow"
+assert_file_pattern "$release_workflow" 'sha256sums-linux-x86_64\.txt' \
+    'post-release checklist must include the published checksum file'
+assert_file_pattern "$release_workflow" 'needs: \[release\]' \
+    'post-release checklist must wait for the release job'
 # Positive invariant: EVERY `uses:` in EVERY workflow MUST pin a full 40-hex
 # commit SHA. This catches every mutable form (semver tags like @v6.1.0,
 # @stable, @main, per-tool tags like @cargo-nextest, and short SHAs), across
@@ -112,6 +183,19 @@ assert_action_pins() {
     local -a workflows=("$workflows_dir"/*.yml "$workflows_dir"/*.yaml)
     eval "$old_nullglob"
 
+    # An absent actions root is normal; an existing but empty/unreadable root
+    # must fail discovery. Keep the workflow-only fixture interface unchanged.
+    if [[ $# -ge 3 ]]; then
+        local manifest
+        manifest="$(mktemp)"
+        if ! python3 "$repo_root/scripts/github_yaml.py" "$workflows_dir" "$3" > "$manifest"; then
+            rm -f "$manifest"
+            return 1
+        fi
+        mapfile -d '' -t workflows < "$manifest"
+        rm -f "$manifest"
+    fi
+
     ((${#workflows[@]})) || {
         printf 'FAIL: no workflow files matched under %s\n' "$workflows_dir" >&2
         return 1
@@ -125,10 +209,12 @@ assert_action_pins() {
     done
 
     # Run the parser directly: a process substitution would hide its failures.
-    python3 - "$workflows_dir" "$min_uses" "${workflows[@]}" <<'PYTHON'
+    PYTHONPATH="$repo_root/scripts" python3 - "$workflows_dir" "$min_uses" "${workflows[@]}" <<'PYTHON'
 from pathlib import Path
 import re
 import sys
+
+from github_yaml import check_local
 
 try:
     import yaml
@@ -151,6 +237,10 @@ def check_reference(reference, workflow):
     # Remote reusable workflows must still pin a full SHA.
     if isinstance(reference, str):
         if reference.startswith("./"):
+            try:
+                check_local(reference)
+            except ValueError as error:
+                fail(f"{workflow.name} {error}")
             return
         if re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", reference):
             return
@@ -170,7 +260,15 @@ for path in paths:
         fail(f"cannot parse {workflow}")
 
     document = mapping(document, path)
-    jobs = mapping(document.get("jobs"), f"{path}: jobs")
+    if workflow.name in ("action.yml", "action.yaml") and "runs" in document:
+        runs = mapping(document["runs"], f"{path}: runs")
+        if runs.get("using") != "composite":
+            continue  # JavaScript/Docker action metadata has no nested uses.
+        if "steps" not in runs:
+            fail(f"{path}: composite action is missing steps")
+        jobs = {"composite": runs}
+    else:
+        jobs = mapping(document.get("jobs"), f"{path}: jobs")
     for name, job in jobs.items():
         location = f"{path}: job {name}"
         job = mapping(job, location)
@@ -192,12 +290,12 @@ print(f"Checked {uses_count} uses: entries.")
 PYTHON
 }
 
-assert_action_pins "${repo_root}/.github/workflows" 20
+assert_action_pins "${repo_root}/.github/workflows" 20 "${repo_root}/.github/actions"
 
 # Exercise the shipped checker against both YAML spellings and both locations
 # GitHub accepts: step actions and job-level reusable workflows.
-pin_fixture="$(mktemp -d)"
-trap 'rm -rf "$pin_fixture"' EXIT
+pin_fixture="${tmp_dir}/pin-fixture"
+mkdir "$pin_fixture"
 
 assert_pin_failure() {
     local directory="$1" minimum="$2" expected="$3" output
@@ -233,8 +331,10 @@ jobs:
     steps:
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 }
 EOF
-pin_output="$(assert_action_pins "$pin_fixture/workflows" 1)"
-grep -Fxq 'Checked 1 uses: entries.' <<<"$pin_output"
+pin_output_file="${tmp_dir}/pin-output.log"
+assert_action_pins "$pin_fixture/workflows" 1 >"$pin_output_file"
+assert_file_pattern "$pin_output_file" 'Checked 1 uses: entries\.' \
+    'the pin checker must report the single discovered action'
 
 cat > "$pin_fixture/workflows/mixed.yaml" <<'EOF'
 jobs:
@@ -247,8 +347,9 @@ jobs:
       - run: |
           uses: attacker/this-is-command-text@main
 EOF
-pin_output="$(assert_action_pins "$pin_fixture/workflows" 4)"
-grep -Fxq 'Checked 4 uses: entries.' <<<"$pin_output"
+assert_action_pins "$pin_fixture/workflows" 4 >"$pin_output_file"
+assert_file_pattern "$pin_output_file" 'Checked 4 uses: entries\.' \
+    'the pin checker must report all four discovered actions'
 assert_pin_failure "$pin_fixture/workflows" 5 \
     "FAIL: extracted 4 uses: entries under $pin_fixture/workflows; need at least 5"
 
@@ -334,6 +435,39 @@ mutations = [
     'cargo_args=(publish)\ncargo "${cargo_args[@]}"',
     "npm publish --access public",
     "gh release create v9.9.9",
+    "{ gh release create v9.9.9; }",
+    "echo `gh release create v9.9.9`",
+    "sudo gh release create v9.9.9",
+    "time -p gh release create v9.9.9",
+    "env -i gh release create v9.9.9",
+    "command -p gh release create v9.9.9",
+    "nohup gh release create v9.9.9",
+    "xargs gh release create < f",
+    "if time -p env -i FOO='two words' command -p gh release create v9.9.9; then :; fi",
+    "true && sudo nohup git push origin v9.9.9",
+    "{ env -i git tag v9.9.9; }",
+    'echo "`command -p gh release create v9.9.9`"',
+    "if gh release create v9.9.9; then :; fi",
+    "if true; then gh release create v9.9.9; fi",
+    "if false; then :; else gh release create v9.9.9; fi",
+    "if false; then :; elif gh release create v9.9.9; then :; fi",
+    "for release in v9.9.9; do gh release create v9.9.9; done",
+    "while gh release create v9.9.9; do break; done",
+    "until gh release create v9.9.9; do break; done",
+    "! gh release create v9.9.9",
+    "command gh release create v9.9.9",
+    "exec gh release create v9.9.9",
+    "time gh release create v9.9.9",
+    "env gh release create v9.9.9",
+    "env X=1 cargo owner --add foo sysknife-cli",
+    "FOO=1 gh release create v9.9.9",
+    "FOO= gh release create v9.9.9",
+    "env FOO='two words' gh release create v9.9.9",
+    'FOO="two words" gh release create v9.9.9',
+    "if command git push origin v9.9.9; then :; fi",
+    "if ! env FOO=1 BAR=2 command gh release create v9.9.9; then :; fi",
+    "git tag v9.9.9",
+    "git push origin v9.9.9",
     "gh api -X POST repos/o/r/releases",
     "curl -X PUT https://crates.io/api/v1/crates/new",
     "wget --post-file=x.crate https://crates.io/api/v1/crates/new",
@@ -358,6 +492,16 @@ with tempfile.TemporaryDirectory() as directory:
     candidate = directory / "rehearsal.sh"
     candidate.write_text(source, encoding="utf-8")
     run(checker, candidate)
+    # Tool names in comments and ordinary output are not invocations.
+    for harmless in (
+        "# if gh release create v9.9.9",
+        "printf '%s\\n' 'if gh release create'",
+        "# { sudo gh release create v9.9.9; }",
+        "# echo `gh release create v9.9.9`",
+        "printf '%s\\n' 'time -p env -i command -p gh release create'",
+    ):
+        candidate.write_text(source + "\n" + harmless + "\n", encoding="utf-8")
+        run(checker, candidate)
     for mutation in mutations:
         candidate.write_text(source + "\n" + mutation + "\n", encoding="utf-8")
         run(checker, candidate, "not on the reviewed list")
@@ -375,7 +519,9 @@ with tempfile.TemporaryDirectory() as directory:
     run(checker, directory / "missing.sh", "cannot read")
     candidate.write_text("", encoding="utf-8")
     run(checker, candidate, "screen read 0 line(s)")
-print("Publication guard: clean source accepted; 16 mutations/invalid inputs rejected.")
+print(f"Publication guard: clean source accepted; {len(mutations) + 4} mutations/invalid inputs rejected.")
 PYTHON
+
+python3 "$repo_root/tests/test_github_yaml.py"
 
 printf 'Release rehearsal contract passed.\n'

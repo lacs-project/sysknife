@@ -11,6 +11,99 @@ fi
 
 "$checker" "$repo_root"
 
+# Exercise the writer's preflight directly; malformed input must not hide a
+# missing environment variable or overwrite an existing evidence artifact.
+python3 - "$repo_root/scripts/record_story_run.py" <<'PY'
+import ast
+import json
+import os
+from pathlib import Path
+import runpy
+import subprocess
+import sys
+import tempfile
+import unittest
+
+writer = Path(sys.argv.pop())
+
+
+class StoryRunPreflight(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.output = Path(temporary.name) / "run.json"
+        self.output.write_text("existing evidence\n")
+        self.env = {key: value for key, value in os.environ.items()
+                    if not key.startswith("EV_")}
+        self.values = {
+            "EV_PATH": str(self.output), "EV_DISTRO_ID": "ubuntu",
+            "EV_RELEASE": "24.04", "EV_SURFACE": "cli",
+            "EV_CASSETTE_MODE": "replay", "EV_CASSETTE_SHA": "deadbeef",
+            "EV_CASSETTE_HITS": "1", "EV_CASSETTE_MISSES": "0",
+            "EV_CASSETTE_VERDICT": "ok", "EV_STORY_SET": "ubuntu",
+            "EV_RAN_AT": "2026-01-01T00:00:00Z", "EV_TOTAL": "1",
+            "EV_PASSED": "1", "EV_FAILED": "0", "EV_SKIPPED": "0",
+            "EV_RATELIMITED": "0",
+        }
+
+    def invoke(self, values, rows="1\tPASS\tfixture story\n"):
+        return subprocess.run([sys.executable, str(writer)],
+                              env={**self.env, **values}, input=rows,
+                              text=True, capture_output=True, check=False)
+
+    def assert_missing(self, names, rows="1\tPASS\tfixture story\n"):
+        values = {key: value for key, value in self.values.items() if key not in names}
+        result = self.invoke(values, rows=rows)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr,
+                         f"missing required environment: {', '.join(names)}\n")
+        self.assertEqual(self.output.read_text(), "existing evidence\n")
+
+    def test_each_missing_variable_is_named(self):
+        for name in self.values:
+            with self.subTest(name=name):
+                self.assert_missing([name])
+
+    def test_multiple_missing_variables_are_reported_together(self):
+        self.assert_missing(["EV_PATH", "EV_CASSETTE_SHA"])
+
+    def test_preflight_precedes_input_parsing(self):
+        self.assert_missing(["EV_CASSETTE_SHA"], rows="malformed input")
+
+    def test_present_sha_is_recorded(self):
+        result = self.invoke(self.values)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        doc = json.loads(self.output.read_text())
+        self.assertEqual(doc["cassette_sha256"], "deadbeef")
+        self.assertEqual(doc["stories"]["1"]["verdict"], "PASS")
+
+    def test_empty_sha_is_still_allowed(self):
+        result = self.invoke({**self.values, "EV_CASSETTE_SHA": ""})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(json.loads(self.output.read_text())["cassette_sha256"])
+
+    def test_every_required_environment_read_is_declared(self):
+        reads = {
+            node.slice.value
+            for node in ast.walk(ast.parse(writer.read_text()))
+            if isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "os" and node.value.attr == "environ"
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+            and node.slice.value.startswith("EV_")
+        }
+        self.assertTrue(reads, "no EV_ environment reads discovered")
+        declared = set(runpy.run_path(str(writer))["REQUIRED_ENV"])
+        self.assertEqual(reads - declared, set(),
+                         f"environment reads missing from REQUIRED_ENV: {sorted(reads - declared)}")
+
+
+unittest.main()
+PY
+
 fixture="$(mktemp -d)"
 trap 'rm -rf "$fixture"' EXIT
 
@@ -37,6 +130,8 @@ PYEOF
 fixture_files=(
     "${claim_files_from_checker[@]}"
     ".githooks/pre-commit"
+    ".pre-commit-config.yaml"
+    "docs/contributing/CONTRIBUTING.md"
     "assets/demo/mcp-flow-mock.sh"
     # Evidence the numeric claims derive from, and the source the action count is
     # counted out of. Without these the checker aborts on its own input check and
@@ -102,6 +197,45 @@ cp "$repo_root/.githooks/pre-commit" "$fixture/.githooks/pre-commit"
 sed '/^scripts\/test_baseline.sh$/d' "$repo_root/.githooks/pre-commit" > "$fixture/.githooks/pre-commit"
 assert_rejected_with_diagnostic 'documented step removed from hook' 'pre-commit steps differ' 'scripts/test_baseline.sh'
 cp "$repo_root/.githooks/pre-commit" "$fixture/.githooks/pre-commit"
+
+# The two places that name the framework on purpose must stay legal: the
+# prohibition in the developer guide and the header of the unused config.
+grep -Fq 'pip install pre-commit && pre-commit install' "$fixture/docs/developer-guide.md" || {
+    printf 'FAIL: fixture developer guide lost the pre-commit prohibition
+' >&2
+    exit 1
+}
+grep -Fq 'pre-commit run --all-files' "$fixture/.pre-commit-config.yaml" || {
+    printf 'FAIL: fixture .pre-commit-config.yaml lost its header
+' >&2
+    exit 1
+}
+printf '
+Prose may say `pre-commit run --all-files` without running it.
+'     >> "$fixture/docs/contributing/CONTRIBUTING.md"
+if ! output=$("$checker" "$fixture" 2>&1); then
+    printf 'FAIL: framework screen fired on prose or on the prohibition
+%s
+' "$output" >&2
+    exit 1
+fi
+cp "$repo_root/docs/contributing/CONTRIBUTING.md" "$fixture/docs/contributing/CONTRIBUTING.md"
+
+printf '
+```sh
+pre-commit run --all-files
+```
+' >> "$fixture/docs/contributing/CONTRIBUTING.md"
+assert_rejected_with_diagnostic 'framework command in the contributing page'     'docs/contributing/CONTRIBUTING.md:' 'pre-commit run --all-files'
+cp "$repo_root/docs/contributing/CONTRIBUTING.md" "$fixture/docs/contributing/CONTRIBUTING.md"
+
+printf '
+```bash
+$ pip install pre-commit && pre-commit install
+```
+' >> "$fixture/HACKING.md"
+assert_rejected_with_diagnostic 'framework install in another doc' 'HACKING.md:' 'pre-commit install'
+cp "$repo_root/HACKING.md" "$fixture/HACKING.md"
 
 # The story coverage sentence is a derived claim, not a second catalogue. Mutate
 # its published All-family figure without repeating today's value in this test.
@@ -778,6 +912,14 @@ cp "$repo_root/README.md" "$fixture/README.md"
 printf '\nFedora Workstation 44 is fully supported.\n' >> "$fixture/docs/architecture.md"
 assert_rejected 'forbidden claim in a file only the Python list knew about'
 cp "$repo_root/docs/architecture.md" "$fixture/docs/architecture.md"
+
+# The layer-independence framing the Security Model rewrite retired.
+# SECURITY.md was not in CLAIM_FILES, so the pin written for this file
+# could not fire on it: restoring the sentence left the check green even
+# with the reject_pattern in place. Both lists now include SECURITY.md.
+printf '\nSysKnife uses a layered enforcement model. Every layer is independent; a\nbypass of one does not bypass the others.\n' >> "$fixture/SECURITY.md"
+assert_rejected 'layer-independence framing restored in SECURITY.md'
+cp "$repo_root/SECURITY.md" "$fixture/SECURITY.md"
 
 printf '\nlocal-clone path until npm publish lands\n' >> "$fixture/README.md"
 assert_rejected 'publish-pending setup language'

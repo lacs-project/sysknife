@@ -82,6 +82,12 @@ fn jail_is_valid(jail: &str) -> bool {
 /// Root-owned helper that writes a jail override to `/etc/fail2ban/jail.d/`.
 const JAIL_HELPER: &str = "/usr/lib/sysknife/fail2ban-jail-edit";
 
+/// Installed path of the privileged ban/unban helper.
+/// See `packaging/sysknife-fail2ban-ban` and the matching NOPASSWD grant
+/// in `packaging/sysknife-sudoers`, which replaced a `fail2ban-client set *`
+/// wildcard that permitted `set <jail> action <name> actionban <cmd>`.
+const BAN_HELPER: &str = "/usr/lib/sysknife/fail2ban-ban";
+
 /// Return one representative `ActionSpec` per fail2ban action name.
 pub fn specs() -> Vec<ActionSpec> {
     vec![
@@ -140,7 +146,10 @@ pub fn fail2ban_ban_ip(jail: &str, ip: &str) -> Result<ActionSpec, Fail2banError
     IpAddr::from_str(ip).map_err(|_| Fail2banError::InvalidIpAddress(ip.to_string()))?;
     Ok(ActionSpec {
         action_name: "Fail2banBanIp",
-        mechanism: command_mechanism("sudo", ["fail2ban-client", "set", jail, "banip", ip]),
+        mechanism: command_mechanism(
+            "sudo",
+            [BAN_HELPER, "--op", "ban", "--jail", jail, "--ip", ip],
+        ),
         risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
@@ -162,7 +171,10 @@ pub fn fail2ban_unban_ip(jail: &str, ip: &str) -> Result<ActionSpec, Fail2banErr
     IpAddr::from_str(ip).map_err(|_| Fail2banError::InvalidIpAddress(ip.to_string()))?;
     Ok(ActionSpec {
         action_name: "Fail2banUnbanIp",
-        mechanism: command_mechanism("sudo", ["fail2ban-client", "set", jail, "unbanip", ip]),
+        mechanism: command_mechanism(
+            "sudo",
+            [BAN_HELPER, "--op", "unban", "--jail", jail, "--ip", ip],
+        ),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
@@ -274,16 +286,30 @@ mod tests {
 
     #[test]
     fn fail2ban_ban_ip_argv_ordering() {
-        // argv must be: sudo fail2ban-client set <jail> banip <ip>
+        // argv goes through the helper, whose own argv to fail2ban-client is
+        // fixed. It used to be `sudo fail2ban-client set <jail> banip <ip>`,
+        // authorised by a `fail2ban-client set *` grant that also permitted
+        // `set <jail> action <name> actionban <cmd>`, which runs a command as
+        // root. sudoers cannot pin the `banip` token, because the variable jail
+        // name precedes it, so the subcommand moved behind a helper.
         let spec = fail2ban_ban_ip("sshd", "198.51.100.42").unwrap();
         let (prog, args) = extract_args(&spec);
         assert_eq!(prog, "sudo");
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
-        assert_eq!(a[0], "fail2ban-client");
-        assert_eq!(a[1], "set");
-        assert_eq!(a[2], "sshd");
-        assert_eq!(a[3], "banip");
-        assert_eq!(a[4], "198.51.100.42");
+        assert_eq!(
+            a,
+            [
+                "/usr/lib/sysknife/fail2ban-ban",
+                "--op",
+                "ban",
+                "--jail",
+                "sshd",
+                "--ip",
+                "198.51.100.42"
+            ]
+        );
+        // The literal the sudoers grant is written against.
+        assert_eq!(a[0], BAN_HELPER);
     }
 
     #[test]
@@ -336,16 +362,24 @@ mod tests {
 
     #[test]
     fn fail2ban_unban_ip_argv_ordering() {
-        // argv must be: sudo fail2ban-client set <jail> unbanip <ip>
+        // Same helper, `--op unban`. See the ban test for why.
         let spec = fail2ban_unban_ip("nginx-http-auth", "203.0.113.7").unwrap();
         let (prog, args) = extract_args(&spec);
         assert_eq!(prog, "sudo");
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
-        assert_eq!(a[0], "fail2ban-client");
-        assert_eq!(a[1], "set");
-        assert_eq!(a[2], "nginx-http-auth");
-        assert_eq!(a[3], "unbanip");
-        assert_eq!(a[4], "203.0.113.7");
+        assert_eq!(
+            a,
+            [
+                "/usr/lib/sysknife/fail2ban-ban",
+                "--op",
+                "unban",
+                "--jail",
+                "nginx-http-auth",
+                "--ip",
+                "203.0.113.7"
+            ]
+        );
+        assert_eq!(a[0], BAN_HELPER);
     }
 
     #[test]

@@ -28,9 +28,24 @@ class ShellGrants(unittest.TestCase):
     def test_no_unrestricted_helper_grant(self):
         grants = [line for line in Path('packaging/sysknife-sudoers').read_text(encoding='utf-8').splitlines()
                   if line.startswith('sysknife ') and '/action-steps' in line]
-        self.assertEqual(len(grants), 9)
+        self.assertEqual(len(grants), 13)
         for grant in grants:
-            self.assertRegex(grant, r'/action-steps (firewall|group-add|group-remove|snap-install-hold|ssh-add|ssh-remove|flatpak|podman|toolbox) \*$')
+            self.assertRegex(grant, r'/action-steps (firewall|group-add|group-remove|snap-install-hold|ssh-add|ssh-remove|flatpak|podman|toolbox|user-create|user-lock|user-unlock|unit) \*$')
+
+    def test_no_useradd_usermod_or_unit_verb_grant_remains(self):
+        # The escapes GHSA-j9c3-j2qr-65c4 named matched the "narrowed" grants
+        # `/usr/sbin/useradd --create-home *`, `/usr/sbin/usermod --lock *` and
+        # `/usr/bin/systemctl start *`, because sudoers matches the arguments as
+        # one concatenated string and a trailing `*` accepts further options.
+        # Those grants are gone; if one comes back, this says so here as well as
+        # in tests/sudoers_grants_match_argv.rs.
+        text = Path('packaging/sysknife-sudoers').read_text(encoding='utf-8')
+        live = [l for l in text.splitlines() if l.startswith('sysknife ')]
+        for pattern in (r'/usr/sbin/useradd\b', r'/usr/sbin/usermod\b',
+                        r'/usr/bin/systemctl (start|stop|restart|reload|enable|disable|mask|unmask)\b'):
+            offenders = [l for l in live if re.search(pattern, l)]
+            self.assertEqual(offenders, [], f'{pattern} is granted directly again: {offenders}')
+
 
     def test_fixed_sequence_stops_at_failure(self):
         for args, expected in [
@@ -194,6 +209,86 @@ else: raise AssertionError('root can be regained')
             result = subprocess.run([*command, 'symlink'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(protected.read_text(), 'must remain unchanged\n')
+
+
+class UserAndUnitVerbs(unittest.TestCase):
+    """The verbs that replaced those grants, and what they refuse."""
+
+    def argv_for(self, args):
+        with mock.patch.dict(helper, run=mock.Mock()) as patched:
+            helper['main'](args)
+            return [call.args[0] for call in patched['run'].call_args_list]
+
+    def test_builds_the_argv_the_daemon_used_to_build_itself(self):
+        for args, expected in [
+            (['user-create', 'alice'],
+             [['/usr/sbin/useradd', '--create-home', 'alice']]),
+            (['user-create', 'alice', '--home-dir', '/home/alice', '--shell', '/bin/bash'],
+             [['/usr/sbin/useradd', '--create-home', '--home-dir', '/home/alice',
+               '--shell', '/bin/bash', 'alice']]),
+            (['user-lock', 'alice'], [['/usr/sbin/usermod', '--lock', 'alice']]),
+            (['user-unlock', 'alice'], [['/usr/sbin/usermod', '--unlock', 'alice']]),
+            (['unit', 'start', 'nginx.service'],
+             [['/usr/bin/systemctl', 'start', 'nginx.service']]),
+            (['unit', 'stop', 'nginx.service'],
+             [['/usr/bin/systemctl', 'stop', 'nginx.service']]),
+            (['unit', 'mask', 'debug-shell.service'],
+             [['/usr/bin/systemctl', 'mask', 'debug-shell.service']]),
+        ]:
+            with self.subTest(args=args):
+                self.assertEqual(self.argv_for(args), expected)
+
+    def test_refuses_what_the_wildcard_grants_admitted(self):
+        bad = [
+            # useradd: every one of these matched `useradd --create-home *`.
+            ['user-create', 'alice', '-o'],
+            ['user-create', 'alice', '-o', '-u', '0'],
+            ['user-create', '-o', '-u', '0', 'backdoor'],
+            ['user-create', 'alice', '--uid', '0'],
+            ['user-create', 'alice', '--home-dir'],
+            ['user-create', 'alice', '--home-dir', '../etc/skel'],
+            ['user-create', 'alice', '--home-dir', '/home/../root'],
+            ['user-create', 'alice', '--home-dir', 'home/alice'],
+            ['user-create', 'alice', '--shell', '-o'],
+            ['user-create', 'alice', '--shell', '/bin/sh', '--shell', '/bin/bash'],
+            # usermod: matched `usermod --lock *`.
+            ['user-lock', '-o'],
+            ['user-lock', 'alice', 'extra'],
+            ['user-unlock', 'alice', '-o', '-u', '0'],
+            # systemctl: matched `systemctl start *` and `systemctl <verb> *`.
+            ['unit', 'start', 'debug-shell.service'],
+            ['unit', 'restart', 'rescue.target'],
+            ['unit', 'enable', 'RESCUE.SOCKET'],
+            ['unit', 'unmask', 'emergency'],
+            ['unit', 'link', '/tmp/evil.service'],
+            ['unit', 'start', '../etc/passwd'],
+            ['unit', 'start', '-x.service'],
+            ['unit', 'start', 'nginx.service', 'extra'],
+        ]
+        runner = mock.Mock(side_effect=AssertionError('must not execute'))
+        with mock.patch.dict(helper, run=runner):
+            for args in bad:
+                with self.subTest(args=args), self.assertRaises(ValueError):
+                    helper['main'](args)
+
+    def test_root_shell_denylist_is_the_daemon_own_list(self):
+        # Derived, not restated. The grub-kargs helper kept its own copy of this
+        # idea and drifted to three entries while the daemon had five, which is
+        # GHSA-f8vp-j3jh-7wjx. Reading the Rust source is what stops a repeat.
+        rust = Path('crates/sysknife-daemon/src/actions/validate.rs').read_text(encoding='utf-8')
+        decl = re.search(r'ROOT_SHELL_UNITS:\s*&\[&str\]\s*=\s*&\[(.*?)\];', rust, re.S)
+        self.assertIsNotNone(decl, 'ROOT_SHELL_UNITS not found; this check inspected nothing')
+        daemon_units = set(re.findall(r'"([^"]+)"', decl.group(1)))
+        self.assertTrue(daemon_units, 'ROOT_SHELL_UNITS parsed empty; refusing to compare against nothing')
+        self.assertLessEqual(daemon_units, set(helper['ROOT_SHELL_UNITS']))
+        # Behavioural, so agreement between two lists is not the only evidence.
+        runner = mock.Mock(side_effect=AssertionError('must not execute'))
+        with mock.patch.dict(helper, run=runner):
+            for unit in sorted(daemon_units):
+                for spelling in (unit, f'{unit}.service', f'{unit}.target', unit.upper()):
+                    for verb in ('start', 'restart', 'enable', 'unmask'):
+                        with self.subTest(unit=spelling, verb=verb), self.assertRaises(ValueError):
+                            helper['main'](['unit', verb, spelling])
 
 
 unittest.main(verbosity=2)

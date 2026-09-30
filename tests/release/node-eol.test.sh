@@ -15,10 +15,15 @@
 # Host-side only: no network, no VM.
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+repo_root="${1:-$script_root}"
 workflows="$repo_root/.github/workflows"
 
 [ -d "$workflows" ] || { printf 'missing %s\n' "$workflows" >&2; exit 1; }
+manifest="$(mktemp)"
+trap 'rm -f "$manifest"' EXIT
+python3 "$script_root/scripts/github_yaml.py" "$workflows" "$repo_root/.github/actions" > "$manifest"
+mapfile -d '' -t files < "$manifest"
 
 # major:end-of-life
 NODE_SCHEDULE="18:2025-04-30 20:2026-04-30 22:2027-04-30 24:2028-04-30 26:2029-04-30"
@@ -49,7 +54,7 @@ while IFS= read -r hit; do
     line="${rest%%:*}"
     # `node-version: "20"`, `node-version: '20'` and `node-version: 20` all
     # reach here; keep only the leading integer.
-    version="$(printf '%s' "${rest#*:}" | tr -d "\"' " | sed 's/^node-version://')"
+    version="$(printf '%s' "${rest#*:}" | tr -d "\"' " | sed -e 's/^node-version://' -e 's/^using:node//')"
     major="${version%%.*}"
     pins=$((pins + 1))
 
@@ -68,7 +73,7 @@ while IFS= read -r hit; do
     if [ "$eol" \< "$today" ]; then
         report "$(basename "$file"):$line pins Node $major, end-of-life since $eol"
     fi
-done < <(grep -rn '^[[:space:]]*node-version:' "$workflows" || true)
+done < <(grep -nHE '^[[:space:]]*(node-version:|using:.*node[0-9])' "${files[@]}" || true)
 
 # The extraction above recognises the block-style `node-version:` key only.
 # Two other spellings pin a Node major without matching it, and neither would
@@ -81,10 +86,10 @@ while IFS= read -r hit; do
     file="${hit%%:*}"
     rest="${hit#*:}"
     report "$(basename "$file"):${rest%%:*} pins Node through a form this check cannot read; use a literal \`node-version:\` line"
-done < <(grep -rnE '^[[:space:]]*node-version-file:|\{[^}]*node-version[[:space:]]*:' "$workflows" || true)
+done < <(grep -nHE '^[[:space:]]*node-version-file:|\{[^}]*node-version[[:space:]]*:|\{[^}]*using[[:space:]]*:.*node[0-9]' "${files[@]}" || true)
 
 if [ "$pins" -eq 0 ]; then
-    printf 'no node-version pin found under .github/workflows; the extraction is broken, not the workflows\n' >&2
+    printf 'no Node pin found in workflows or actions; the extraction is broken, not the inputs\n' >&2
     exit 1
 fi
 

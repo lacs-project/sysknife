@@ -207,22 +207,24 @@ jobs:
         #   proto + core -> types -> brain -> daemon -> cli
         # Every generated crate archive is verified before upload. Existing
         # versions are skipped so a partially completed release can be resumed.
-        # sleep 30 lets crates.io index each crate before its dependents publish.
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           VERSION: ${{ github.ref_name }}
         run: |
           test -n "${CARGO_REGISTRY_TOKEN:-}" || { echo '::error::CARGO_REGISTRY_TOKEN is not configured'; exit 1; }
+          source scripts/crates-index-poll.sh
           VERSION="${VERSION#v}"
           for crate in sysknife-proto sysknife-core sysknife-types \
                        sysknife-brain sysknife-daemon sysknife-cli; do
-            if curl --fail --silent --retry 3 --retry-connrefused \
-              --user-agent 'sysknife-release/1.0 (https://github.com/lacs-project/sysknife)' \
-              "https://crates.io/api/v1/crates/${crate}/${VERSION}" >/dev/null; then
+            if crate_version_status "$crate" "$VERSION"; then
               echo "${crate} ${VERSION} already exists; skipping"
             else
+              status=$?
+              if ((status != 1)); then
+                exit "$status"
+              fi
               cargo publish -p "$crate" --locked --token "$CARGO_REGISTRY_TOKEN"
-              sleep 30
+              wait_for_crate_version "$crate" "$VERSION"
             fi
           done
 

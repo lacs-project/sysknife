@@ -122,6 +122,7 @@ daemon-install: daemon-install-preflight build
 	install -Dm 755 packaging/sysknife-firewall-state $(HELPERS)/firewall-state
 	install -Dm 755 packaging/sysknife-audit-edit $(HELPERS)/audit-edit
 	install -Dm 755 packaging/sysknife-fail2ban-jail-edit $(HELPERS)/fail2ban-jail-edit
+	install -Dm 755 packaging/sysknife-fail2ban-ban $(HELPERS)/fail2ban-ban
 	install -Dm 755 packaging/sysknife-grub-kargs-edit $(HELPERS)/grub-kargs-edit
 	install -Dm 755 packaging/sysknife-log-edit $(HELPERS)/log-edit
 	install -Dm 755 packaging/sysknife-mount-edit $(HELPERS)/mount-edit
@@ -154,6 +155,7 @@ daemon-uninstall:
 	rm -f $(HELPERS)/firewall-state
 	rm -f $(HELPERS)/audit-edit
 	rm -f $(HELPERS)/fail2ban-jail-edit
+	rm -f $(HELPERS)/fail2ban-ban
 	rm -f $(HELPERS)/grub-kargs-edit
 	rm -f $(HELPERS)/log-edit
 	rm -f $(HELPERS)/mount-edit
