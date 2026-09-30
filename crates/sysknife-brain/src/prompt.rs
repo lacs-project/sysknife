@@ -566,7 +566,7 @@ Use `"username"` as the key — NOT `"user"`.
 
 **Scoped sudoers.d**:
 - `GetSudoGrants`: `{}` (read-only).
-- `GrantSudoAccess`: `{"name":"deploy-restart","user":"deploy","commands":"/usr/bin/systemctl","runas":"root","nopasswd":true}` (`commands` is `"ALL"` or comma-separated absolute paths; `runas`/`nopasswd` optional).
+- `GrantSudoAccess`: `{"name":"deploy-restart","user":"deploy","commands":"/usr/bin/systemctl","runas":"root","nopasswd":false}` (`commands` is `"ALL"` or comma-separated absolute paths; `runas`/`nopasswd` optional). `nopasswd:true` is refused when `commands` names a shell, an interpreter, or any program that runs another program, because such a grant is equivalent to `"ALL"`; keep the password prompt or name a narrower command.
 - `RevokeSudoAccess`: `{"name":"deploy-restart"}`.
 
 **Users and groups**:

@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+# sysknife-fail2ban-ban — ban or unban one IP address in one fail2ban jail.
+#
+# Install to: /usr/lib/sysknife/fail2ban-ban
+# Mode:       0755
+# Owner:      root:root
+#
+# Invoked exclusively by the sysknife-daemon via:
+#   sudo /usr/lib/sysknife/fail2ban-ban --op ban|unban --jail <jail> --ip <addr>
+#
+# WHY THIS EXISTS INSTEAD OF A SUDOERS RULE
+#
+# The catalogue only ever needs `fail2ban-client set <jail> banip <ip>` and the
+# unban twin, and the grant that authorised them was:
+#
+#   sysknife ALL=(root) NOPASSWD: /usr/bin/fail2ban-client set *
+#
+# The comment directly above that line already named the problem:
+# `fail2ban-client set <jail> action <name> actionban <cmd>` runs <cmd> as root.
+# So the grant permitted the technique its own comment documented.
+#
+#   sudo fail2ban-client set sshd addaction pwn
+#   sudo fail2ban-client set sshd action pwn actionban "chmod +s /bin/bash"
+#   sudo fail2ban-client set sshd banip 203.0.113.7
+#   /bin/bash -p
+#
+# Narrowing the rule to `set * banip *` does not fix it. sudo's `*` matches
+# across spaces and is not anchored to one argument, so that pattern still
+# admits `set sshd action p actionban '...' banip 1.2.3.4`. It cannot be
+# narrowed the way `certbot certonly *` and `pro attach *` were, because there
+# the variable part is trailing and here the jail name sits *before* the fixed
+# `banip` token. sudoers has no way to pin a middle argument.
+#
+# Hence a helper with a fixed argv, which is what this repository already does
+# for grub-kargs, mount, log, rmswap, scheduled-job, sudoers, audit and
+# fail2ban-jail. Its grant carries a trailing wildcard, so it is callable
+# directly and the screen below is the only guard on that path: the daemon's
+# preview, the approval receipt and the signed chain are all skipped. Every
+# input is therefore re-validated here, and `--op` is a fixed choice rather
+# than a string that reaches fail2ban-client.
+
+import argparse
+import ipaddress
+import re
+import subprocess
+import sys
+
+FAIL2BAN_CLIENT = "/usr/bin/fail2ban-client"
+
+# Transcribed from jail_is_valid in crates/sysknife-daemon/src/actions/fail2ban.rs:
+# non-empty, at most 64 characters, does not start with `-`, and every character
+# is ASCII alphanumeric or one of `_`, `-`, `.`.
+#
+# A leading `_` or `.` is permitted, because the daemon permits it. The first
+# draft of this regex required a leading alphanumeric and so refused a jail the
+# daemon accepts, which is a grant that works through one path and fails through
+# the other: a bug report nobody can reproduce. The release test pins both
+# directions, and carries a canary on the Rust character class so an edit there
+# points at this file.
+JAIL_RE = re.compile(r"^[a-zA-Z0-9_.][a-zA-Z0-9_.-]{0,63}$")
+
+SUBCOMMAND = {"ban": "banip", "unban": "unbanip"}
+
+
+def die(msg: str) -> None:
+    print(f"sysknife-fail2ban-ban: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def validated_jail(value: str) -> str:
+    if not JAIL_RE.match(value):
+        die(f"invalid jail name {value!r}")
+    return value
+
+
+def validated_ip(value: str) -> str:
+    try:
+        # Rejects CIDR, ranges, hostnames and anything fail2ban would treat as
+        # more than one address. The catalogue bans one address at a time.
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        die(f"invalid IP address {value!r}")
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="Ban or unban one IP in one fail2ban jail.")
+    p.add_argument("--op", required=True, choices=sorted(SUBCOMMAND))
+    p.add_argument("--jail", required=True)
+    p.add_argument("--ip", required=True)
+    args = p.parse_args()
+
+    jail = validated_jail(args.jail)
+    ip = validated_ip(args.ip)
+
+    # Fixed argv. Nothing the caller supplies can become a subcommand, so the
+    # `action`/`actionban` path the old grant permitted is unreachable from
+    # here even on a direct call.
+    argv = [FAIL2BAN_CLIENT, "set", jail, SUBCOMMAND[args.op], ip]
+    try:
+        completed = subprocess.run(argv, check=False)
+    except OSError as exc:
+        die(f"cannot run {FAIL2BAN_CLIENT}: {exc}")
+    if completed.returncode != 0:
+        # Propagate rather than swallow: the daemon records the outcome, and a
+        # helper that exits 0 over a failed ban reports a host as protected
+        # when it is not.
+        return completed.returncode
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -51,7 +51,9 @@ const LINE_TRUNCATION_MARKER: &str = "… [truncated: block too long to display]
 /// U+200B as literal UTF-8 — the two classes that reorder and hide text. A
 /// preview dumped straight from `to_string_pretty` therefore carries exactly the
 /// characters [`operator_safe`] exists to remove.
-pub(crate) fn operator_safe_block(s: &str) -> String {
+pub(crate) fn operator_safe_block(s: &str) -> OperatorBlock {
+    let total = s.lines().count();
+    let mut shortened = 0usize;
     let mut lines: Vec<String> = s
         .lines()
         .take(MAX_RENDERED_LINES)
@@ -59,14 +61,89 @@ pub(crate) fn operator_safe_block(s: &str) -> String {
             // Keep leading indentation: it carries the JSON's structure, and
             // `operator_safe` would trim it away as collapsible whitespace.
             let indent_len = line.len() - line.trim_start().len();
-            format!("{}{}", &line[..indent_len], operator_safe(line))
+            let rendered = operator_safe(line);
+            if rendered.ends_with(TRUNCATION_MARKER) {
+                shortened += 1;
+            }
+            format!("{}{}", &line[..indent_len], rendered)
         })
         .collect();
 
-    if s.lines().count() > MAX_RENDERED_LINES {
-        lines.push(LINE_TRUNCATION_MARKER.to_string());
+    let withheld = total.saturating_sub(MAX_RENDERED_LINES);
+    if withheld > 0 {
+        lines.push(format!("{LINE_TRUNCATION_MARKER} ({withheld} more)"));
     }
-    lines.join("\n")
+    OperatorBlock {
+        text: lines.join("\n"),
+        withheld_lines: withheld,
+        shortened_lines: shortened,
+    }
+}
+
+/// A multi-line block rendered safe to print, and what it left out.
+///
+/// The counts are the point. `operator_safe_block` dropped lines past
+/// [`MAX_RENDERED_LINES`] and shortened lines past [`MAX_RENDERED_LEN`], marked
+/// both, and returned a bare `String`, so `sysknife approve` printed a partial
+/// proposed change and then asked the operator to approve it. The marker told
+/// them something was missing; nothing told them how much, and nothing stopped
+/// the approval. A receipt taken on that view proves a human typed a word, not
+/// that a human read the change.
+///
+/// Returning the counts instead of a string makes the omission awkward to
+/// ignore: a caller printing the text has the numbers in the same value.
+pub(crate) struct OperatorBlock {
+    text: String,
+    withheld_lines: usize,
+    shortened_lines: usize,
+}
+
+impl OperatorBlock {
+    /// The rendered block, safe to print above a prompt.
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Whole lines dropped past [`MAX_RENDERED_LINES`].
+    pub(crate) fn withheld_lines(&self) -> usize {
+        self.withheld_lines
+    }
+
+    /// Lines kept but cut short past [`MAX_RENDERED_LEN`].
+    pub(crate) fn shortened_lines(&self) -> usize {
+        self.shortened_lines
+    }
+
+    /// Did the operator see every byte of the original?
+    ///
+    /// Both counters, not just the line count. A single JSON line holding a
+    /// 4 KB path list is cut at 512 characters, and the tail of that line is as
+    /// unseen as a dropped one.
+    pub(crate) fn is_complete(&self) -> bool {
+        self.withheld_lines == 0 && self.shortened_lines == 0
+    }
+}
+
+/// Render a block with no caps in either dimension.
+///
+/// Every character rule still applies, so the text cannot rewrite the terminal.
+/// The caps are gone, and they exist to stop a long block scrolling the prompt's
+/// context off the screen, so the only safe caller is one that prints the
+/// context *after* the block. `sysknife approve --full` does exactly that.
+pub(crate) fn operator_safe_block_full(s: &str) -> OperatorBlock {
+    let text = s
+        .lines()
+        .map(|line| {
+            let indent_len = line.len() - line.trim_start().len();
+            format!("{}{}", &line[..indent_len], operator_safe_unbounded(line))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    OperatorBlock {
+        text,
+        withheld_lines: 0,
+        shortened_lines: 0,
+    }
 }
 
 /// Return `s` rendered safe to print on one line of the operator's terminal.
@@ -90,6 +167,16 @@ pub(crate) fn operator_safe_block(s: &str) -> String {
 ///   attacker can produce is bounded.
 /// - The result is capped at [`MAX_RENDERED_LEN`] and marked when cut.
 pub(crate) fn operator_safe(s: &str) -> String {
+    let out = operator_safe_chars(s);
+    if out.chars().count() > MAX_RENDERED_LEN {
+        let cut: String = out.chars().take(MAX_RENDERED_LEN).collect();
+        return format!("{cut}{TRUNCATION_MARKER}");
+    }
+    out
+}
+
+/// The character rules, with no length bound. One definition, two callers.
+fn operator_safe_chars(s: &str) -> String {
     let mut out = String::with_capacity(s.len().min(MAX_RENDERED_LEN));
     let mut pending_space = false;
 
@@ -139,12 +226,19 @@ pub(crate) fn operator_safe(s: &str) -> String {
         out.push(ch);
     }
 
-    if out.chars().count() > MAX_RENDERED_LEN {
-        // Cut on a char boundary, never a byte one.
-        let cut: String = out.chars().take(MAX_RENDERED_LEN).collect();
-        return format!("{cut}{TRUNCATION_MARKER}");
-    }
     out
+}
+
+/// As [`operator_safe`], with no length cap.
+///
+/// Every character class [`operator_safe`] removes is still removed, so the text
+/// cannot rewrite the terminal. Only the length bound is gone, and that bound
+/// exists for a different reason: a very long string scrolls the prompt's
+/// context off the screen. `sysknife approve --full` prints the context *after*
+/// the block for exactly that reason, which is what makes an unbounded render
+/// safe there and nowhere else.
+pub(crate) fn operator_safe_unbounded(s: &str) -> String {
+    operator_safe_chars(s)
 }
 
 #[cfg(test)]
@@ -172,7 +266,8 @@ mod tests {
             "serde_json escaped the override"
         );
 
-        let safe = operator_safe_block(&hostile);
+        let block = operator_safe_block(&hostile);
+        let safe = block.text();
         assert!(
             !safe.contains('\u{202e}'),
             "bidi override survived: {safe:?}"
@@ -191,11 +286,79 @@ mod tests {
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let safe = operator_safe_block(&tall);
+        let block = operator_safe_block(&tall);
+        let safe = block.text();
         assert_eq!(safe.lines().count(), MAX_RENDERED_LINES + 1);
         assert!(
-            safe.ends_with(LINE_TRUNCATION_MARKER),
+            safe.contains(LINE_TRUNCATION_MARKER),
             "truncation unmarked: {safe:?}"
+        );
+        // The marker used to say only that something was dropped. How much is
+        // what an operator needs in order to judge whether to ask for the rest.
+        assert_eq!(block.withheld_lines(), 500 - MAX_RENDERED_LINES);
+        assert!(
+            safe.ends_with(&format!("({} more)", 500 - MAX_RENDERED_LINES)),
+            "the count must be on screen, not only in the error: {safe:?}"
+        );
+        assert!(!block.is_complete());
+    }
+
+    /// A block that fits reports itself complete, or the refusal in
+    /// `approval_view` would fire on every ordinary approval.
+    #[test]
+    fn a_block_that_fits_reports_complete() {
+        let short = "line one\nline two\nline three";
+        let block = operator_safe_block(short);
+        assert!(block.is_complete());
+        assert_eq!(block.withheld_lines(), 0);
+        assert_eq!(block.shortened_lines(), 0);
+        assert_eq!(block.text(), short);
+    }
+
+    /// Nothing is dropped and nothing fits: one line past the length cap is as
+    /// unseen as a dropped one, and a line-count check alone misses it.
+    #[test]
+    fn a_wide_block_is_counted_as_incomplete() {
+        let wide = format!("  \"paths\": \"{}\"", "/a/long/path".repeat(200));
+        let block = operator_safe_block(&wide);
+        assert_eq!(block.withheld_lines(), 0);
+        assert_eq!(block.shortened_lines(), 1);
+        assert!(!block.is_complete());
+    }
+
+    /// The uncapped renderer keeps every character rule and drops only the
+    /// bounds. `sysknife approve --full` is its only caller, and it prints the
+    /// decision context after the block so the bounds have nothing to protect.
+    #[test]
+    fn the_full_renderer_keeps_the_character_rules_and_drops_the_bounds() {
+        let tall: String = (0..500)
+            .map(|i| format!("line {i} \u{202e}\u{200b}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let block = operator_safe_block_full(&tall);
+        assert!(block.is_complete());
+        assert_eq!(block.text().lines().count(), 500);
+        assert!(block.text().contains("line 499"));
+        assert!(!block.text().contains('\u{202e}'));
+        assert!(!block.text().contains('\u{200b}'));
+        assert!(!block.text().contains(TRUNCATION_MARKER));
+
+        // Both bounds, not just the line count. The first version of this test
+        // used only short lines, so swapping the uncapped per-line render back
+        // to the capped one left it green: the tall case proves the line cap is
+        // gone and says nothing about the length cap.
+        let wide = format!("  \"paths\": \"{}\"", "/a/long/path".repeat(200));
+        let block = operator_safe_block_full(&wide);
+        assert!(block.is_complete());
+        assert!(
+            !block.text().contains(TRUNCATION_MARKER),
+            "the length cap is still cutting lines in the full view: {}",
+            block.text()
+        );
+        assert!(
+            block.text().matches("/a/long/path").count() == 200,
+            "the full view dropped part of a line: {} of 200 present",
+            block.text().matches("/a/long/path").count()
         );
     }
 

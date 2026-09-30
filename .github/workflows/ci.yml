@@ -133,6 +133,12 @@ jobs:
       - name: Check grub-kargs-edit screens karg deletions
         run: bash tests/release/grub-kargs-edit.test.sh
 
+      - name: Check sudoers-edit refuses ALL-equivalent grants
+        run: bash tests/release/sudoers-edit.test.sh
+
+      - name: Check fail2ban-ban builds a fixed argv
+        run: bash tests/release/fail2ban-ban.test.sh
+
       - name: Check the docs share cards name an image the build produces
         run: bash tests/release/docs-share-cards.test.sh
 

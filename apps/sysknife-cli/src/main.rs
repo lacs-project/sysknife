@@ -134,11 +134,15 @@ async fn dispatch(
         Some(Command::History(args)) => runner::run_history(args.clone(), socket, log).await,
 
         // --- sysknife approve <transaction-id> ---
-        Some(Command::Approve { transaction_id }) => {
+        Some(Command::Approve {
+            transaction_id,
+            full,
+        }) => {
             runner::run_approve(
                 &sysknife_types::TransactionId::new(transaction_id.clone()),
                 socket,
                 cli.json,
+                *full,
                 log,
             )
             .await

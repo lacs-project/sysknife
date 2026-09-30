@@ -16,7 +16,21 @@ const HELPER: &str = "/usr/lib/sysknife/sudoers-edit";
 pub fn specs() -> Vec<ActionSpec> {
     vec![
         get_sudo_grants(),
-        grant_sudo_access("deploy-restart", "deploy", "/usr/bin/systemctl", None, true),
+        // `nopasswd: false` on purpose. This example is what the catalogue
+        // shows and what `docs/action-reference.md` publishes, and it used to
+        // read `--commands /usr/bin/systemctl --nopasswd`, which is a standing
+        // passwordless root credential: `systemctl edit` opens an editor,
+        // `systemctl link` takes an arbitrary unit path. The daemon refuses
+        // that combination now, so the published example was also an example
+        // that no longer runs. Keeping the realistic command and dropping the
+        // passwordless half is the accurate version of the same story.
+        grant_sudo_access(
+            "deploy-restart",
+            "deploy",
+            "/usr/bin/systemctl",
+            None,
+            false,
+        ),
         revoke_sudo_access("deploy-restart"),
     ]
 }

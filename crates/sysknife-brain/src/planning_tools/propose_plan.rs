@@ -136,7 +136,7 @@ pub const KNOWN_ACTIONS: &[(&str, &str)] = &[
     ("GetServiceResourceLimits",
      "show a service's cgroup limits (MemoryMax/CPUQuota/TasksMax) via systemctl show — param: unit*; read-only"),
     ("SetServiceResourceLimits",
-     "cap a service's resources via systemctl set-property (applies live + persists) — params: unit*, plus at least one of memory_max (e.g. '500M' or 'infinity'), memory_high, cpu_quota (e.g. '50%'), tasks_max (integer or 'infinity'); Medium risk; undo with systemctl revert"),
+     "cap a service's resources via systemctl set-property (applies live + persists) — params: unit*, plus at least one of memory_max (e.g. '500M' or 'infinity'), memory_high, cpu_quota (e.g. '50%'), tasks_max (integer or 'infinity'); Medium risk; refuses .slice and .scope targets and the sysknife-daemon, auditd, journald, rsyslog, polkit, dbus, logind and ssh units; undo with systemctl revert"),
     // Network
     ("GetFirewallState",
      "show current firewalld zones, open services, and port rules — no params"),
@@ -205,7 +205,7 @@ this is runtime status, NOT the saved configuration; on Ubuntu the saved config 
     ("GetSudoGrants",
      "list SysKnife-managed sudoers.d drop-ins — no params; read-only"),
     ("GrantSudoAccess",
-     "grant a scoped sudo rule (validated with visudo before install) — params: name* (^[a-z0-9][a-z0-9_-]*$), user*, commands* ('ALL' or comma-separated ABSOLUTE paths), runas (default root, or 'ALL'), nopasswd (bool); High risk — this configures privilege escalation"),
+     "grant a scoped sudo rule (validated with visudo before install) — params: name* (^[a-z0-9][a-z0-9_-]*$), user*, commands* ('ALL' or comma-separated ABSOLUTE paths), runas (default root, or 'ALL'), nopasswd (bool); High risk — this configures privilege escalation; nopasswd=true is REFUSED when commands is 'ALL' or names a shell, an interpreter, or any program that runs another program (bash, sh, python3, perl, awk, sed, vim, less, env, find, tar, git, systemctl, docker, ...), because such a grant is equivalent to 'ALL'"),
     ("RevokeSudoAccess",
      "remove a SysKnife-managed sudoers.d drop-in — param: name*; High risk"),
     // Log management

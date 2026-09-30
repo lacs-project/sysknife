@@ -131,6 +131,28 @@ action name.
 ```sh
 sysknife approve 018f2c9d-...
 sysknife --json approve 018f2c9d-...
+sysknife approve 018f2c9d-... --full
+```
+
+The proposed change is displayed through a bounded renderer: 40 lines, 512
+characters per line. The bounds are there so a long change cannot scroll the
+action name and risk level off the screen before you answer.
+
+When the bounds hide anything, approval is refused rather than accepted, and the
+message says how many lines were withheld and how many were cut short. Approving
+a change you were shown part of would produce a receipt proving you typed a word,
+not that you read what you agreed to.
+
+`--full` prints every line and every character, with the same neutralisation
+applied, and prints the action, risk and summary **after** the change so the
+decision context is the last thing on screen however long the change is. Pipe it
+to a pager if you like; the text cannot rewrite your terminal either way.
+
+```text
+$ sysknife approve 018f2c9d-...
+error: the proposed change does not fit the approval view: 132 line(s) were not
+shown. Approving would mean consenting to text you were not shown. Re-run with
+--full to see all of it: sysknife approve 018f2c9d-... --full
 ```
 
 Give the printed `approval_receipt` to the MCP client for that exact step. The
