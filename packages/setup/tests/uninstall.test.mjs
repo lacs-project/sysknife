@@ -143,6 +143,10 @@ test('uninstall removes only SysKnife Codex and AGENTS blocks', async () => {
     'API_KEY = "secret"',
     '[mcp_servers.other]',
     'command = "keep"',
+    '[profiles.work] # added later by the user',
+    'model = "o4"',
+    '[[skills]]',
+    'name = "keep-skill"',
     '',
   ].join('\n'));
   const agents = path.join(tmp, 'AGENTS.md');
@@ -154,6 +158,8 @@ test('uninstall removes only SysKnife Codex and AGENTS blocks', async () => {
     assert.doesNotMatch(codexText, /sysknife|API_KEY = "secret"/);
     assert.match(codexText, /\[model\]/);
     assert.match(codexText, /\[mcp_servers\.other\]/);
+    assert.match(codexText, /\[profiles\.work\] # added later by the user\nmodel = "o4"/);
+    assert.match(codexText, /\[\[skills\]\]\nname = "keep-skill"/);
     const agentsText = fs.readFileSync(agents, 'utf8');
     assert.doesNotMatch(agentsText, /SysKnife MCP rules|managed/);
     assert.match(agentsText, /## Keep me\nuser text/);

@@ -126,7 +126,7 @@ function removeTomlSysknifeBlocks(target) {
       dropping = true;
       continue;
     }
-    const table = line.match(/^\s*\[([^\]]+)\]\s*$/);
+    const table = line.match(/^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$/);
     if (table) {
       if (table[1].startsWith('mcp_servers.sysknife')) {
         dropping = true;
