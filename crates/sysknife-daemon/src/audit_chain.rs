@@ -1880,18 +1880,25 @@ mod tests {
     #[test]
     fn audit_key_env_resolution_is_centralised() {
         const INLINE_RESOLUTION: &str = "std::env::var(\"SYSKNIFE_AUDIT_KEY_PATH\")";
-        for (name, source) in [
-            ("daemon main", include_str!("main.rs")),
-            ("transaction store", include_str!("transactions.rs")),
-            (
-                "MCP server",
-                include_str!("../../../apps/sysknife-cli/src/mcp_server.rs"),
-            ),
-        ] {
-            assert!(
-                !source.contains(INLINE_RESOLUTION),
-                "{name} must resolve the audit key through resolve_audit_key_path"
-            );
+        let daemon_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let cli_src =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/sysknife-cli/src");
+
+        for root in [&daemon_src, &cli_src] {
+            for entry in std::fs::read_dir(root).expect("source directory must be readable") {
+                let path = entry.expect("source entry must be readable").path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("rs")
+                    || path == daemon_src.join("audit_chain.rs")
+                {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).expect("Rust source must be readable");
+                assert!(
+                    !source.contains(INLINE_RESOLUTION),
+                    "{} must resolve the audit key through resolve_audit_key_path",
+                    path.display()
+                );
+            }
         }
     }
 
