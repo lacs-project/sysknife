@@ -347,6 +347,10 @@ jobs:
         # matches the suite, because the docs derive their figure from it.
         run: scripts/test_baseline.sh
 
+      - name: The macOS survey command documented in CONTRIBUTING.md still selects tests
+        # Runs after the suite so the list pass is metadata-only. See #411.
+        run: bash tests/release/macos-survey-command.test.sh
+
   postgres-contract:
     runs-on: ubuntu-latest
     services:
