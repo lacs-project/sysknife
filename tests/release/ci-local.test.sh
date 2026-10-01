@@ -33,6 +33,23 @@ def bash(code, root=ROOT):
 
 
 class LocalGates(unittest.TestCase):
+    def test_action_pin_verifier_failure_is_a_hard_gate(self):
+        code = functions('record', 'run_step', 'run_hygiene_group') + '''
+RESULTS=(); hard_failures=0
+have() { return 1; }
+python3() { :; }
+npm() { :; }
+run_shell_tests() { :; }
+bash() { [[ "$1" != */verify-action-pins.sh ]]; }
+run_hygiene_group
+printf 'failures=%s\\n' "$hard_failures"
+printf '%s\\n' "${RESULTS[@]}"
+'''
+        result = bash(code)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('failures=1', result.stdout)
+        self.assertIn('FAIL  hygiene: verify-action-pins.sh', result.stdout)
+
     def test_hygiene_runs_every_discovered_and_ci_shell_test(self):
         code = functions('run_hygiene_group')
         # Include any extracted discovery function: the real hygiene entrypoint

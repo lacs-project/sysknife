@@ -127,7 +127,10 @@ every other job result:
 One nuance worth knowing: the Ed25519 hash chain in
 `crates/sysknife-daemon/src/audit_chain.rs` signs the **immutable fields**
 captured when a transaction row is first inserted (the authorization
-decision — who approved what, at what risk level). `status` is a mutable
+decision — who asked for what, at what risk level). The transaction row
+names the requester; the accounts that approved, spent, or revoked the
+approval live in the approval-event chain (see
+[the-audit-chain.md](the-audit-chain.md)). `status` is a mutable
 column and is explicitly excluded from the signed payload — see the
 "Status mutations are not in the chain" note in `audit_chain.rs`. That means
 a completed rollback is durably recorded and forwarded, but the chain's

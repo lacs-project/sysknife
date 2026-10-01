@@ -12,6 +12,620 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Added
+
+- **Approval events sign the account that granted, spent or revoked them.**
+  ([#491](https://github.com/lacs-project/sysknife/pull/491)) The transaction
+  chain has named its requester since `ChainIdentity::V3`, but
+  `approval_granted`, `approval_consumed` and `approval_revoked` signed six
+  fields and no account, so on a host with two admins the chain could not say
+  who authorised what an agent proposed. Migration 4 adds `chain_version` and
+  `caller_principal` to `audit_events` on both backends. New approval events are
+  written at version 2 with the acting account inside the signed message, and
+  every existing row stays at version 1 untouched, because rewriting a signed
+  row's message would report the whole chain as broken. `sysknife audit verify`
+  reads a mixed chain, reports a version 2 row relabelled as version 1 as
+  broken, and exits 2 on a version it does not know. Status events stay at
+  version 1: they are written with no caller in scope (closes
+  [#249](https://github.com/lacs-project/sysknife/issues/249)). Thanks to
+  [@Georgefifth](https://github.com/Georgefifth).
+
+  **Upgrade the CLI with the daemon.** Once a new daemon has applied migration
+  4, `sysknife` 0.24.0 and earlier refuse the audit database outright, on
+  SQLite and Postgres alike: `schema version 4 is newer than this binary
+  supports (3)`.
+
+### Fixed
+
+- **`sysknife-setup --uninstall` removes the editor files it wrote, and only
+  those.** ([#539](https://github.com/lacs-project/sysknife/pull/539))
+  Uninstall left `.cursor/mcp.json`, the SysKnife block in
+  `~/.codex/config.toml`, which can hold a provider API key, and the managed
+  section of `AGENTS.md` on disk. It now takes SysKnife's server out of
+  `.cursor/mcp.json` and keeps every other server, rewriting the file at mode
+  `0600`, and cuts only SysKnife's block out of the Codex config and
+  `AGENTS.md`. Tables a user added after the block survive, including
+  `[[array]]` tables and headers with a trailing comment (closes
+  [#526](https://github.com/lacs-project/sysknife/issues/526)). Thanks to
+  [@tayfuryldz](https://github.com/tayfuryldz).
+- **The audit key path is resolved in one place.**
+  ([#540](https://github.com/lacs-project/sysknife/pull/540))
+  `resolve_audit_key_path`'s doc comment called it the single definition of the
+  key's location, and four call sites read `SYSKNIFE_AUDIT_KEY_PATH` by hand
+  instead. All four now call it with the database path their old copy used, so
+  no key moves on disk, and a test walks both crates' source trees and fails if
+  an inline copy comes back anywhere in them (closes
+  [#530](https://github.com/lacs-project/sysknife/issues/530)). Thanks to
+  [@tayfuryldz](https://github.com/tayfuryldz).
+- **`sysknife history --since` accepts the ISO-8601 dates its help text
+  promised.** ([#521](https://github.com/lacs-project/sysknife/pull/521))
+  `--help` said ISO-8601 and the parser accepted only UTC RFC 3339, so
+  `--since 2026-09-01` and `--since 2026-09-01T02:00:00+02:00` were both
+  refused. A bare date now means midnight UTC, and a datetime with any offset is
+  normalised to UTC. The CLI help, `docs/cli.md`, the MCP `sysknife_history`
+  schema description and its error message describe that one parser the same
+  way. `audit export --since` is unchanged and still validated by the daemon
+  (closes [#519](https://github.com/lacs-project/sysknife/issues/519)). Thanks
+  to [@tayfuryldz](https://github.com/tayfuryldz).
+
+### Documented
+
+- **`sysknife doctor` is documented as doing what it does.**
+  ([#517](https://github.com/lacs-project/sysknife/pull/517))
+  `docs/configuration.md` promised a chain-integrity check, and `run_doctor`
+  never opens the audit store. The page now sends readers to
+  `sysknife audit verify` for the chain, and the sample in `docs/cli.md` shows
+  the socket as the URI `doctor` prints plus the `distro` line it had left out.
+  Two tests hold the docs to `print_doctor_ok`'s field order and refuse the old
+  chain-integrity claim (closes
+  [#500](https://github.com/lacs-project/sysknife/issues/500)). Thanks to
+  [@syf2211](https://github.com/syf2211).
+- **`SYSKNIFE_AUDIT_KEY_PATH` is no longer listed as daemon-only.**
+  ([#528](https://github.com/lacs-project/sysknife/pull/528))
+  `sysknife audit verify`, `sysknife audit checkpoint` and the MCP `doctor` and
+  audit-verify tools all resolve it. An operator who moved the key and set the
+  variable only in the daemon's unit, as that section said, got
+  `audit key not found` from `sysknife audit verify` in their own shell. The
+  section is gone and the variable's row names both surfaces. Thanks to
+  [@syf2211](https://github.com/syf2211).
+
+## [0.24.0] — 2026-09-29
+
+### Security
+
+- **`sysknife approve` refuses when the proposed change did not fit the view,
+  and `--full` prints all of it.**
+  The prompt rendered the change through `operator_text::operator_safe_block`,
+  which drops lines past 40 and cuts lines past 512 characters, marked both, and
+  then asked for confirmation anyway. So a receipt could be minted on a change
+  the operator had seen the first forty lines of, or whose 4 KB path list had
+  been cut mid-line. The marker said something was missing. It did not say how
+  much, and nothing stopped the approval, which left the receipt proving a human
+  typed a word rather than that a human read the change. That is the one thing
+  the receipt exists to prove. `approve` now refuses, names how many lines were
+  withheld and how many were cut short, and names `--full`, which prints every
+  line and every character with the same neutralisation applied. Both counters,
+  not just the line count: one over-long line hides its tail as effectively as a
+  dropped line, and a line-count check alone passes it. `--full` prints the
+  action, risk and summary **after** the change rather than before, which is
+  what makes an uncapped render safe there: the bounds exist so a long change
+  cannot scroll the decision context off the screen, and a context printed last
+  cannot be scrolled away. Nothing becomes unapprovable; seeing all of it costs
+  one flag. `operator_safe_block` returns the counts alongside the text instead
+  of a bare `String`, so a caller printing the block holds the numbers in the
+  same value, and the refusal and the printable text now come out of one
+  function, so there is no way to print an approval view without having asked
+  whether it was complete. An earlier draft printed the block and then returned
+  the refusal, which left the print ungated: deleting the check still compiled
+  and still printed. `docs/cli.md` shows the refusal and the flag, and
+  `SECURITY.md` Layer 4 states what the receipt does and does not prove.
+
+- **`Fail2banBanIp` and `Fail2banUnbanIp` go through a helper with a fixed
+  argv, and the `fail2ban-client set *` grant is gone.**
+  `packaging/sysknife-sudoers` carried this, with the comment directly above the
+  grant naming the reason it was wrong:
+
+  ```
+  # `fail2ban-client set <jail> action ... actionban <cmd>` executes a command as
+  # root, and `restart`/`reload` reread config a bare grant also permitted.
+  sysknife ALL=(root) NOPASSWD: /usr/bin/fail2ban-client set *
+  ```
+
+  So four commands reached root through a grant that documented the technique:
+  `set <jail> addaction <name>`, then `set <jail> action <name> actionban
+  <command>`, then any ban to fire it. The daemon only ever built
+  `set <jail> banip <ip>` and the unban twin, so the wildcard was strictly wider
+  than anything SysKnife needed. Narrowing it to `set * banip *` does not work,
+  which is what the advisory draft for this proposed and what checking sudo's
+  own rules corrected: `*` matches across spaces and is not anchored to one
+  argument, so that pattern still admits `set sshd action p actionban '...'
+  banip 1.2.3.4`, and `certbot certonly *` is only narrow because its variable
+  part is trailing while fail2ban's jail name sits before the fixed `banip`
+  token. sudoers has no syntax to pin a middle argument.
+  `packaging/sysknife-fail2ban-ban` takes `--op ban|unban --jail <j> --ip <a>`,
+  re-validates both (`--op` is a fixed choice, the address goes through
+  `ipaddress.ip_address` so a CIDR or a range is refused, the jail regex is
+  transcribed from the daemon's `jail_is_valid`), and then runs
+  `fail2ban-client` with an argv nothing the caller supplies can reach. It
+  propagates a non-zero exit rather than reporting a ban that did not happen.
+  The helper joins the eight others this repository already uses for the same
+  reason. `tests/release/fail2ban-ban.test.sh` pins the fixed argv, proves an
+  unknown `--op` never reaches `fail2ban-client`, and carries a canary on
+  `jail_is_valid` so an edit there points at the transcribed regex; the first
+  draft of that regex refused a leading `_` or `.` that the daemon accepts,
+  which would have been a grant working through one path and failing through
+  the other.
+
+  **Upgrading is not crate-only.** `Fail2banBanIp` and `Fail2banUnbanIp` now
+  build `sudo /usr/lib/sysknife/fail2ban-ban …`, and both the helper and the
+  grant that authorises it live in the packaged install, so a host that takes
+  the new binary while keeping the old `/etc/sudoers.d` fragment gets "a
+  password is required" on every ban and unban. Install the package, or re-run
+  `make install`, rather than replacing the binary alone. That coupling is part
+  of why this is a middle-digit release: a call that used to succeed now refuses
+  until both sides move.
+
+- **`GrantSudoAccess` refuses a passwordless grant whose command list is `ALL`
+  under another name, and the preview says so when it is.**
+  `packaging/sysknife-sudoers` opens by stating that no shell or general runuser
+  grant is permitted. Both the daemon and `packaging/sysknife-sudoers-edit`
+  enforced that against the literal string `"ALL"`, while
+  `validated_sudo_commands` accepts any absolute path with a safe charset and no
+  wildcard, which `/bin/bash` satisfies. So
+  `GrantSudoAccess(commands="/bin/bash", nopasswd=true)` wrote
+  `<user> ALL=(root) NOPASSWD: /bin/bash`, which `visudo -cf` accepts and which
+  is a standing passwordless unrestricted root shell. `/bin/sh`,
+  `/usr/bin/python3`, `/usr/bin/perl`, `/usr/bin/env`, `/usr/bin/find` and the
+  rest of the interpreter list were equally accepted. The refusal that existed
+  was written against a string rather than against a capability.
+  `SHELL_EQUIVALENT_COMMANDS` holds 118 basenames across four groups (shells,
+  run-as and namespace tools, interpreters, and utilities whose job is running
+  another program), matched on the lowercased basename so `/bin/bash`,
+  `/usr/bin/bash` and `/BIN/BASH` are one thing. The refusal fires together with
+  `nopasswd`, which is the line `"ALL"` has always been held to: this repository
+  permits granting broad authority and does not permit granting it as a standing
+  passwordless credential. The preview names the offending command and the
+  target user whether or not `nopasswd` is set, because at High risk the control
+  is the human understanding what they are signing, and "this configures
+  privilege escalation" does not tell them that a two-entry list is a root
+  shell. The privileged helper carries the same list, because its wildcard
+  `NOPASSWD` grant makes it callable directly, skipping the preview, the receipt
+  and the signed chain; `tests/release/sudoers-edit.test.sh` parses the daemon's
+  constant, compares both directions, proves the refusal behaviourally for every
+  entry, and refuses to compare against nothing if the constant stops parsing.
+  Two hand-copied screens kept in step by a comment claiming parity is how
+  GHSA-f8vp-j3jh-7wjx happened. The catalogue's own published example was
+  `--commands /usr/bin/systemctl --nopasswd`, so the example `SECURITY.md`
+  readers and the planner's system prompt both carried was itself a root-
+  equivalent grant; both now keep the command and drop the passwordless half,
+  and `SECURITY.md` records what a basename screen cannot see.
+
+- **Untrusted host text reaching the calling assistant over MCP is screened,
+  and the results of the read-only query tools are spotlighted.**
+  `crates/sysknife-brain/src/sanitize.rs` strips the Unicode TAG block
+  (`U+E0000..=U+E007F`), the Private Use Areas, BiDi and zero-width characters,
+  strips ANSI, normalises to NFC, rewrites forged prompt-envelope tags and caps
+  the length. Its only callers were in `planner.rs`, so the defence guarded
+  SysKnife's own model and not the operator's. Every `sysknife_<action>`
+  read-only result and the free-text fields `merge_preview_into_step` copies out
+  of the daemon's `PreviewEnvelope` reached the assistant as raw bytes, and a
+  TAG-block payload is invisible in every mainstream renderer while arriving at
+  a tokenizer byte for byte. The managed host writes a package `Description:`, a
+  unit `Description=` and a journal line, and none of the roughly seventy
+  read-only tools requires approval. Mutations still need a receipt typed at a
+  terminal the model does not sit on, and that path was already screened by
+  `operator_text::operator_safe`; the exposure was the decision in front of it,
+  because the human decides whether to type that command based on what their
+  assistant tells them the plan does. Read-only results now carry the same
+  `<untrusted_tool_output source="...">` envelope the planner uses, capped at
+  `MCP_MAX_OUTPUT_BYTES` (64 KiB, eight times the planner's cap, because the
+  assistant's context is not the one this crate is competing for and a journal
+  tail truncated at 8 KiB is a tool nobody calls twice). Every free-text field
+  of `sysknife_plan`, `sysknife_execute`, `sysknife_history`, `sysknife_doctor`
+  and `sysknife_audit_verify` is normalised before it leaves the process, keys of
+  free-form JSON subtrees included, and two keys that normalise to one string
+  are refused rather than silently collapsed. A plan step's `params`,
+  `transaction_id` and `approval_receipt` travel verbatim on purpose:
+  `compute_request_hash` hashes the action name and params, the receipt is bound
+  to that hash, and `sysknife_execute` recomputes it from what the caller sends
+  back, so normalising them would mean no approved request ever executed again.
+  Everything not on that list is screened by default. The envelope is applied
+  inside `direct_query_with_client` rather than in the router's closure, so the
+  socket-backed integration test drives the same function the router does; an
+  earlier draft put it in the closure and removing it there left every test
+  green, because the test was calling the sanitiser directly. `SECURITY.md` now
+  describes both channels and both residual risks, and its Known Limitations
+  table no longer says `query_*` results re-enter the context unsanitized or
+  cite #98, which is a merged pull request rather than a tracked issue and had
+  stood there since the initial public release.
+
+  **This changes what MCP clients receive.** A read-only query that returned a
+  bare string now returns that string inside an `<untrusted_tool_output
+  source="...">` envelope, so a client parsing the result text sees two extra
+  lines. That is a deliberate wire-shape change and the other reason this is a
+  middle-digit release. An assistant reading the result needs no change; a
+  script scraping it does.
+
+- **`SetServiceResourceLimits` refuses the units SysKnife's own enforcement and
+  the host's evidence depend on, and every cgroup container.**
+  The action is `RiskLevel::Medium`, which `role_for_risk_level` maps to
+  `CallerRole::Dev`, and it validated its `unit` parameter by charset alone. The
+  lowest mutating tier could therefore run `systemctl set-property
+  sysknife-daemon.service TasksMax=0`, writing a persistent drop-in that stops
+  the process enforcing the Dev/Admin split and signing the audit chain. The
+  same call against `auditd` or `systemd-journald` stopped the host recording
+  what came next, against `sshd` it removed the way an operator reaches the
+  machine to undo it, and `MemoryMax=1K` on `system.slice` reached every service
+  on the box. All of them survived a reboot. `validated_activatable_unit` did
+  not cover this: its denylist is about units that hand out a root shell when
+  started, and setting a property is not a start, so that screen never ran on
+  this path. The new `validated_resource_limit_unit` refuses eleven named units
+  across four categories (SysKnife's enforcement, the host's evidence, the
+  authorization path, remote administrative access), the `systemd-journald` and
+  `auditd` families whole, and `.slice` and `.scope` targets as a class, because
+  capping a slice is a decision about every unit beneath it. Naming
+  `systemd-journald` alone would have protected the reader and left its pipes:
+  `systemd-journald-audit.socket` carries the kernel audit stream into the
+  journal and is a stock unit on every systemd host. Capping an ordinary service
+  stays a Dev-tier operation. Both unit screens now share one normaliser, which
+  lowercases, strips the type suffix and reduces an instance to its template, so
+  `sshd@1.service` no longer reduces to `sshd@1` and slips a list holding
+  `sshd`. They shared nothing before, and two hand-copied screens of this shape
+  drifted once already: the kernel-argument denylist in `executor.rs` was
+  missing `debug-shell`, so one path refused a root shell while the other
+  granted it (GHSA-f8vp-j3jh-7wjx). A name-based screen still cannot see a site-local alias;
+  masking the units you do not want touched remains the stronger control, as
+  [#144](https://github.com/lacs-project/sysknife/issues/144) says.
+
+### Fixed
+
+- **The action reference derives its catalogue total instead of assuming one
+  dispatcher-internal action.**
+  ([#529](https://github.com/lacs-project/sysknife/pull/529))
+  `crates/sysknife-daemon/tests/action_reference_doc.rs` wrote the published
+  total as `total + 1` and spelled `ListJobHistory` into the sentence by hand, so
+  a second action that the dispatcher handles before the executor would have left
+  `docs/action-reference.md` claiming a number one short of the catalogue, with
+  nothing to catch it. `DISPATCHER_INTERNAL_ACTIONS` now sits beside the daemon's
+  action metadata as public API on `sysknife-daemon`, both test binaries read
+  that one list, and the footer derives the tabled count from
+  `KNOWN_ACTION_NAMES` minus it, refusing rather than wrapping if the list ever
+  outgrows the catalogue. The generated document is unchanged at one element
+  (closes [#455](https://github.com/lacs-project/sysknife/issues/455)). Thanks to
+  [@tayfuryldz](https://github.com/tayfuryldz).
+
+## [0.23.0] — 2026-09-28
+
+### Added
+
+- **Broken links in the generated mdBook fail the build.**
+  ([#379](https://github.com/lacs-project/sysknife/pull/379))
+  `scripts/check-mdbook-links.sh` walks the built `book/` and resolves every
+  internal `.html` href against the file it sits next to, so a page that lost
+  its target during the build is caught before Pages publishes it. It runs in
+  `docs.yml` after `mdbook build` and in `docs-and-hygiene` against a fixture,
+  and it refuses when it has checked zero links, because a book nobody built
+  and a book with no broken links are otherwise the same silence (closes
+  [#371](https://github.com/lacs-project/sysknife/issues/371)). Thanks to
+  [@sonalisrisivani](https://github.com/sonalisrisivani).
+
+### Fixed
+
+- **`CreateScheduledJob` namespaces its units and never overwrites an existing
+  one.** ([#520](https://github.com/lacs-project/sysknife/pull/520))
+  `packaging/sysknife-scheduled-job-edit` opened `/etc/systemd/system/<name>.service`
+  and `.timer` with `open(path, "w")`, so a job named after a unit already on the
+  system truncated it. Units are now created as `sysknife-<name>` with
+  `O_CREAT | O_EXCL`, an existing unprefixed path is refused as ambiguous rather
+  than migrated, and a timer-path collision removes the service that call had
+  already created, so a refused request leaves no half of a pair behind. The
+  `CreateScheduledJob` preview names both exact paths and says that existing
+  ones are refused, and the daemon and the helper now derive that name from one
+  function instead of two copies (closes
+  [#484](https://github.com/lacs-project/sysknife/issues/484)). Thanks to
+  [@ITSMERNB](https://github.com/ITSMERNB).
+- **The release rehearsal screen sees a publishing command behind a group, a
+  backtick or a command wrapper.**
+  ([#523](https://github.com/lacs-project/sysknife/pull/523))
+  `{ gh release create ...; }`, `` `gh release create ...` ``, and the `sudo`,
+  `nohup`, `xargs`, `time -p`, `env -i` and `command -p` wrapper forms all
+  passed a screen whose whole job is to catch them. `{` and a backtick join the
+  command-boundary class, and the wrappers compose with the shell prefixes and
+  assignments added in #513, so `nohup env -i command -p gh release create`
+  is caught as readily as the bare form. Twelve more fixtures, and the harmless
+  cases still pass (closes
+  [#522](https://github.com/lacs-project/sysknife/issues/522)). Thanks to
+  [@mikevillari](https://github.com/mikevillari).
+- **The release rehearsal screen sees a publishing command behind a shell
+  prefix.** ([#513](https://github.com/lacs-project/sysknife/pull/513))
+  `check-rehearsal-publication.py` matched a tool name only at the start of a
+  command, so `if gh release create ...`, `FOO=1 gh release create ...` and
+  `env ... command gh release create ...` all passed a screen whose whole job
+  is to catch them. The pattern now accepts a run of shell prefixes before the
+  tool, handles a quoted assignment value containing a space, and adds `git` to
+  the tool list so a tag or a push is screened too. Twenty-one fixtures cover
+  the shapes, and two harmless lines hold the other edge (closes
+  [#503](https://github.com/lacs-project/sysknife/issues/503)). Thanks to
+  [@mikevillari](https://github.com/mikevillari).
+- **The contributing guide no longer tells you to install and run the
+  pre-commit framework.**
+  ([#512](https://github.com/lacs-project/sysknife/pull/512)) SysKnife's hooks
+  run through `core.hooksPath`; the framework is not used, and the guide's
+  "Check Locally" block listed `pre-commit run --all-files` alongside the real
+  commands. It now names `bash .githooks/pre-commit` and `scripts/ci-local.sh`,
+  and the Node prerequisite reads 22 in both places it appears.
+  `check_evidence_claims.py` gained a screen that refuses a framework command
+  inside any Markdown shell block, so the guide cannot drift back (closes
+  [#464](https://github.com/lacs-project/sysknife/issues/464)). Thanks to
+  [@Osheun](https://github.com/Osheun).
+- **The testing guide's provisioning default matches what `provision.sh`
+  pulls.** ([#515](https://github.com/lacs-project/sysknife/pull/515)) The
+  guide named `llama3.2:3b` as the default while the script defaulted to
+  `qwen3:8b`, the model the same page calls unusable without GPU passthrough,
+  so a contributor on a CPU-only VM downloaded 5 GB and then lost every story
+  to the thinking-mode timeout. `provider-parity.test.sh` now reads the default
+  out of the script and requires the guide's sentence and its `# default`
+  comment to name the same model (closes
+  [#501](https://github.com/lacs-project/sysknife/issues/501)). Thanks to
+  [@yuee3](https://github.com/yuee3).
+
+## [0.22.0] — 2026-09-23
+
+### Added
+
+- **The syslog forwarder's IANA Private Enterprise Number is configurable.**
+  ([#445](https://github.com/lacs-project/sysknife/pull/445))
+  `[audit.forward.syslog] enterprise_number` sets the SD-ID the RFC 5424
+  structured data carries (`sysknife@<pen>`), instead of the hardcoded value.
+  It defaults to 32473, RFC 5612's reserved documentation and test PEN, so a
+  site that has not registered one is not squatting somebody else's, and `0` is
+  refused because the IANA registry starts at 1 (closes
+  [#218](https://github.com/lacs-project/sysknife/issues/218)). Thanks to
+  [@atanishka308](https://github.com/atanishka308).
+
+  `SyslogForwardSection` gains a public field, which Cargo counts as a breaking
+  change for any caller constructing it literally, so this moves the middle
+  digit while the leading zero stands.
+
+### Fixed
+
+- **The story-evidence writer refuses a missing `EV_CASSETTE_SHA` at preflight
+  instead of raising `KeyError` mid-assembly.**
+  ([#505](https://github.com/lacs-project/sysknife/pull/505)) The variable was
+  read with a strict `os.environ[...]` but was absent from `REQUIRED_ENV`, so
+  the caller got a two-variable diagnostic and then a traceback rather than the
+  complete missing-variable list. No live caller reached it:
+  `run-stories.sh:618` always sets it. A test derives the required reads from
+  the Python AST, so the declaration cannot drift from the code again (closes
+  [#448](https://github.com/lacs-project/sysknife/issues/448)). Thanks to
+  [@mikevillari](https://github.com/mikevillari).
+- **A local action reference outside `.github/actions` is refused rather than
+  skipped.** ([#510](https://github.com/lacs-project/sysknife/pull/510)) GitHub
+  accepts `uses: ./any/directory`, both pin checks returned early on any `./`
+  reference, and `discover()` only walks `.github/actions`, so an unpinned
+  `uses: attacker/exfil@main` inside `ci/setup/action.yml` passed the rehearsal
+  contract, the pin-comment checker, the Node EOL check and yamllint. A shared
+  `check_local()` now normalises the reference and requires it to land in
+  `.github/actions` or on a top-level reusable workflow, and the symlink guard
+  in `discover()` has the test it never had (closes
+  [#507](https://github.com/lacs-project/sysknife/issues/507)).
+- **`scripts/check_evidence_claims.py` and `tests/release/public-claims.test.sh`
+  are executable again.** Both lost the bit in #487's merge. CI calls them
+  through an interpreter so nothing went red, and `CONTRIBUTING.md` tells
+  contributors to run the first one directly, which failed with
+  `Permission denied`.
+
+### Documented
+
+- **The Security Model says what the layers are.**
+  ([#487](https://github.com/lacs-project/sysknife/pull/487)) They are
+  sequential gates on one request path inside one process running as one
+  root-equivalent account, not independent walls, and `SECURITY.md` now says so
+  with the grants that make it true. `check_public_claims.sh` pins the retired
+  "every layer is independent" wording, and `SECURITY.md` joined `CLAIM_FILES`,
+  without which the pin could not fire on the file it was written for. Thanks
+  to [@yuee3](https://github.com/yuee3).
+
+## [0.21.0] — 2026-09-23
+
+### Security
+
+- **`useradd`, `usermod` and the eight unit verbs run through the validating
+  helper, because the 0.20.0 narrowing did not hold.** GHSA-j9c3-j2qr-65c4 was
+  published as fixed in 0.20.0, where each bare grant became a literal
+  subcommand followed by a trailing `*`. sudoers matches a command's arguments
+  as one concatenated string, so a trailing `*` accepts further *options* as
+  readily as a value, and three of the escapes that advisory named still
+  matched: `useradd --create-home -o -u 0 -g 0 backdoor` (a second uid-0
+  account) against `/usr/sbin/useradd --create-home *`, `usermod --lock -o -u 0
+  <user>` against `/usr/sbin/usermod --lock *`, and `systemctl start
+  debug-shell.service` against `/usr/bin/systemctl start *`, which the daemon's
+  own `ROOT_SHELL_UNITS` denylist refuses on its own path and a grant cannot
+  refuse at all.
+
+  sudoers has no way to express "this subcommand and no further options", so
+  the grammar moved to `/usr/lib/sysknife/action-steps`, which already backs the
+  group, ssh and container actions: it re-validates the account name, the home
+  directory, the shell, the unit verb and the unit name on whatever path reaches
+  it, then builds the same `useradd`/`usermod`/`systemctl` argv the daemon used
+  to build. `packaging/sysknife-sudoers` no longer grants `useradd`, `usermod`
+  or any of the eight unit verbs; `systemctl daemon-reload` and `reboot` keep
+  literal grants with no wildcard to swallow anything.
+
+  The test that was supposed to hold the line asserted only that those grants
+  carried at least one argument token, which stayed true while all three escapes
+  matched. It now runs each escape through the repository's own sudoers matcher
+  and fails if any grant admits one, and the helper's denylist is derived from
+  the daemon's `ROOT_SHELL_UNITS` rather than restated, the way the grub-kargs
+  helper's copy drifted in GHSA-f8vp-j3jh-7wjx. Both directions are
+  mutation-proved: restoring `/usr/sbin/useradd --create-home *` turns the new
+  test red, naming the grant and the escape.
+
+  **Upgrading is not crate-only.** The daemon now builds
+  `sudo /usr/lib/sysknife/action-steps …` for these actions, and the grant that
+  authorises it lives in the packaged sudoers fragment, so a host that takes the
+  new binary while keeping the old `/etc/sudoers.d` fragment and the old helper
+  gets "a password is required" on every user and service action. Install the
+  package, or re-run `make install`, rather than replacing the binary alone.
+  That coupling is why this is a middle-digit release: a call that used to
+  succeed now refuses until both sides move.
+
+## [0.20.1] — 2026-09-23
+
+### Fixed
+
+- **The GitHub YAML gates open every file a `uses:` can hide in.**
+  ([#471](https://github.com/lacs-project/sysknife/pull/471)) A mutable action
+  reference inside a local composite action under `.github/actions/` was checked
+  by nothing: SHA pinning, version-comment verification, the Node EOL check and
+  yamllint all globbed `.github/workflows/*.yml` and stopped there.
+  `scripts/github_yaml.py` now discovers nested `action.yml` and `action.yaml`
+  beside the workflows and every gate reads the same set, locally through
+  `scripts/lint-github-yaml.sh` and in CI. An absent actions directory stays
+  valid; one that exists and holds no metadata fails discovery instead of
+  reporting a clean scan, as does an empty issue-template set, because a scan
+  that read nothing must not print an all-clear. Nine fixtures cover pinned and
+  unpinned block and flow composites, both metadata extensions, empty roots,
+  malformed and directory-shaped inputs, and the lint entry point itself
+  (closes [#459](https://github.com/lacs-project/sysknife/issues/459)). Thanks
+  to [@QinXi-ai](https://github.com/QinXi-ai).
+- **The release workflow waits for crates.io to serve what it just published.**
+  ([#463](https://github.com/lacs-project/sysknife/pull/463)) Publication walked
+  the dependency order with a fixed `sleep 30` between crates, which is a guess
+  about index latency rather than an observation of it, and a slow index left a
+  dependent crate publishing against a version the registry did not yet serve.
+  `scripts/crates-index-poll.sh` polls for the exact version and separates "not
+  published yet" from a transport error, so the loop cannot read a failed
+  request as an absent crate. This release is the first to use it.
+
+### Changed
+
+- **The version registry catches a bypass and an unlisted crate.**
+  ([#498](https://github.com/lacs-project/sysknife/pull/498))
+  `tests/release/version-sites.test.sh` now fails when `bump_version.sh` or
+  `check_release_versions.sh` stops going through `scripts/release_versions.py`,
+  and when a workspace manifest carrying the release version is missing from
+  `release-versions.json`. Thanks to
+  [@mikevillari](https://github.com/mikevillari).
+- Dependency bumps: async-openai 0.42.0
+  ([#494](https://github.com/lacs-project/sysknife/pull/494)), rmcp 3.4.0 with
+  clap 4.6.7 and clap_complete 4.6.11
+  ([#493](https://github.com/lacs-project/sysknife/pull/493)),
+  `taiki-e/install-action` 2.87.14
+  ([#495](https://github.com/lacs-project/sysknife/pull/495)), and react and
+  react-dom 19.3.0 with vite 8.3.0 in the paused desktop shell
+  ([#492](https://github.com/lacs-project/sysknife/pull/492)). Two of those
+  needed the code to follow: rmcp 3.4 deprecates the `ServerInfo` alias in
+  favour of `ServerConfig` (both alias `InitializeResult`, so the served MCP
+  handshake is unchanged), and async-openai 0.42 adds `metadata` and
+  `moderation` to `CreateChatCompletionResponse` and `misalignment` to
+  `ApiError`, which the adapter's test fixtures name field by field.
+
+## [0.20.0] — 2026-09-22
+
+### Security
+
+- `AddMount` refuses the `suid` and `dev` mount options and adds `nosuid,nodev`
+  to every mount it makes. `validated_mount_options` was a charset check with no
+  denylist, alone among the dangerous-value validators in that file, and
+  omitting the parameter reached the helper as `defaults`, which Linux expands
+  to `rw,suid,dev,exec,auto,nouser,async`. A setuid-root binary on
+  attacker-supplied media then granted root to whoever ran it. `exec` stays
+  allowed: running an ordinary binary from a mounted volume is a legitimate
+  need, and `nosuid` with `nodev` is what removes the escalation. The helper
+  carries the same list, and a test derives it from the Rust source so the two
+  cannot drift (GHSA-gqhr-84x9-x898).
+- Eight more sudo grant families carry argument constraints: `certbot`,
+  `fail2ban-client`, `snap`, `rpm-ostree`, `ostree`, `pro` and `netplan` at both
+  of its packaged paths. Each can run an arbitrary command as root through a
+  subcommand no action builds, by hook, jail action, snap, or rpm scriptlet.
+  Unconstrained grants fall from thirty-one to fifteen, and what remains is the
+  set whose first argument is the parameter itself, none of which can spawn a
+  shell (GHSA-j9c3-j2qr-65c4).
+
+## [0.19.0] — 2026-09-22
+
+### Security
+
+- `PinDeployment` and `UnpinDeployment` bind to the deployment that was
+  approved. Both take an ordinal index into the live `rpm-ostree` list, and the
+  request hash covers only `{"index": N}`, which is byte-identical however much
+  has moved into slot N since the operator approved it. Any concurrent
+  `UpdateSystem`, `CleanupDeployments` or `RollbackDeployment` inside the
+  approval window reorders that list, so the effect that executed could differ
+  from the effect that was previewed while the hash binding and the signed audit
+  row both showed a clean match. The preview now captures the deployment's ostree
+  checksum and execute re-checks it, the way `AptAutoremove` has captured its
+  deletion set since #151, and a preview that captured no identity cannot
+  execute (GHSA-93hm-phfx-6mg8).
+- `CreateUser` validates `home` as an absolute path. It used `validated_safe_arg`,
+  which enforces a charset and rejects a leading dash and accepts both `..` and a
+  relative path, while `validated_absolute_path` in the same file rejects both and
+  already guarded every other root-acting path parameter. `home` reaches
+  `useradd --create-home --home-dir` as root (GHSA-93hm-phfx-6mg8).
+- A job's terminal outcome is in the audit chain. `update_status` called
+  `append_event` zero times, so `audit_events` held the approval lifecycle and
+  nothing recorded `Running -> Succeeded`, `Failed`, `RolledBack` or
+  `NeedsReboot`. An action that ran to completion could be rewritten in the
+  `status` column as `Canceled`, `sysknife history` reported it canceled, and
+  `sysknife audit verify` still reported the chain `Intact`, while the module
+  documentation told the reader the outcome was protected. The status write and
+  the event that records it now share one sqlite transaction, `audit verify`
+  compares each row against the newest status event chained for it, and the
+  documentation says what the code does (GHSA-8g7w-7g2g-g55w).
+- Eight sudo grant families carry argument constraints. `systemctl`, `useradd`,
+  `usermod`, `kill`, `hostnamectl`, `timedatectl`, `localectl` and `resolvectl`
+  were granted with no argument tokens, which authorises every invocation of
+  each: `systemctl link` on an attacker-written unit file, `systemctl start
+  debug-shell.service` past the denylist the daemon applies on its own path,
+  `useradd -o -u 0` for a second uid-0 account, `usermod -p` over root's password
+  hash. Each is now restricted to the argv the catalogue builds. The existing
+  check asked only whether every action had a grant, which cannot see a grant
+  wider than any action needs; a second check now fails on a new unconstrained
+  grant and on a stale entry in the inventory of the ones that remain
+  (GHSA-j9c3-j2qr-65c4).
+
+## [0.18.0] — 2026-09-22
+
+### Security
+
+- `AddSwap` and `RemoveSwap` resolve the whole swap path before acting on it.
+  `O_EXCL|O_NOFOLLOW` constrains the final component only, so a symlinked
+  ancestor directory could place a root file create, and a root unlink, outside
+  the intended path. Both operations now refuse a path that resolves through a
+  symlink anywhere along it, and work relative to a pinned parent descriptor
+  rather than by name (GHSA-gqhr-84x9-x898).
+- `sysknife-grub-kargs-edit` refuses `debug-shell` and `runlevel1` as
+  `systemd.unit=` boot targets. The helper is callable directly through its
+  sudoers grant, where the daemon's own refusal does not apply, and its list
+  carried three of the five entries the daemon refuses. A test now derives the
+  daemon's list from its source and fails on any gap, so the two cannot drift
+  apart again (GHSA-f8vp-j3jh-7wjx).
+
+## [0.17.0] — 2026-09-22
+
+### Changed
+
+- `sysknife-setup` requires Node 22 or newer. Node 18 and 20 no longer receive
+  security fixes, so this drops support for them rather than retiring an
+  untested claim: `engines.node`, the preflight guard and all six published
+  support statements move together, and the refusal message says why the floor
+  moved. Nothing in CI is affected; every job that touches JavaScript already
+  runs Node 24 (#327).
+
+### Fixed
+
+- `sysknife audit verify` now reports `cannot_verify` and exits 2 over an empty
+  transaction log with no external checkpoint anchor, instead of reporting
+  `intact` and exiting 0. An erased store and a store that was never written
+  read the same to the chain check on its own, so the verdict says it cannot
+  tell them apart rather than calling the trail sound. Configuring
+  `SYSKNIFE_CHECKPOINT_DB` restores a definite answer. The MCP
+  `sysknife_audit_verify` tool still reports `intact` in this case and is
+  tracked separately (#338, #466).
+- The release-rehearsal pin check now fails when it extracted too few `uses:`
+  lines, instead of reporting the invariant holding over an empty set (#407).
+
 ## [0.16.0] — 2026-09-15
 
 ### Added

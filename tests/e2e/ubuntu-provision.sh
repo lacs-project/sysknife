@@ -296,6 +296,10 @@ install -Dm 755 packaging/sysknife-audit-edit /usr/lib/sysknife/audit-edit \
 # fail2ban-jail-edit: invoked by ConfigureFail2banJail (needs fail2ban to test/reload).
 install -Dm 755 packaging/sysknife-fail2ban-jail-edit /usr/lib/sysknife/fail2ban-jail-edit \
     || fail "Install sysknife-fail2ban-jail-edit"
+# fail2ban-ban: invoked by Fail2banBanIp / Fail2banUnbanIp in place of a
+# `fail2ban-client set *` sudoers wildcard.
+install -Dm 755 packaging/sysknife-fail2ban-ban /usr/lib/sysknife/fail2ban-ban \
+    || fail "Install sysknife-fail2ban-ban"
 
 # ---------------------------------------------------------------------------
 # Step 6: Add VM user to sysknife groups

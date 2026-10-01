@@ -63,6 +63,13 @@ if ! python3 "$script_dir/check_evidence_claims.py" "$repo_root"; then
 fi
 reject_pattern 'until npm publish lands|publish[- ]pending' \
     'setup package is documented as unpublished' "${claim_files[@]}"
+# SECURITY.md once said every enforcement layer is independent and a bypass of
+# one does not bypass the others. The layers are sequential gates on one
+# request path sharing one root-equivalent account (see issue 483); the sudoers
+# header wording is the accurate one. Pin the claim so the independence
+# framing cannot drift back.
+reject_pattern 'Every layer is independent|a bypass of one does not bypass the others' \
+    'layers are sequential gates on one request path, not independent walls' "${claim_files[@]}"
 reject_pattern 'Fedora([^\n]|$)*(Workstation|Server)([^\n]|$)*fully supported|(Workstation|Server)([^\n]|$)*fully supported' \
     'plain Fedora requires the unfinished dnf action family' "${claim_files[@]}"
 reject_pattern 'plan and approve from inside (Claude|chat)|chat approval is sufficient' \

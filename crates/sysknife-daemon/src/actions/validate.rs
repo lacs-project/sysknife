@@ -193,18 +193,135 @@ pub(crate) const ROOT_SHELL_UNITS: &[&str] =
 /// risk is in bringing a unit up, not in reading or stopping it.
 pub fn validated_activatable_unit(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     let unit = validated_unit_name(s, param)?;
-    // Lowercase first: systemd unit names are case-insensitive, so `.SERVICE`
-    // must strip like `.service`. Strip every unit-type suffix, not just
-    // service/target, so a `rescue.socket`-style spelling cannot slip past the
-    // denylist by wearing a different type.
+    if ROOT_SHELL_UNITS.contains(&bare_unit_name(&unit).as_str()) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(unit)
+}
+
+/// The unit-type suffixes a name-based screen has to strip before it compares.
+///
+/// systemd unit names are case-insensitive and a unit can wear more than one
+/// type, so a screen that only knows `.service` lets `rescue.socket` through by
+/// spelling it differently.
+const UNIT_TYPE_SUFFIXES: &[&str] = &[
+    ".service", ".target", ".socket", ".mount", ".path", ".slice", ".scope",
+];
+
+/// Lowercase a unit name and strip its type suffix, so one denylist entry
+/// matches every spelling of the same unit.
+///
+/// Both unit denylists below run through this rather than each carrying its own
+/// copy of the suffix list. Two hand-copied screens of this shape drifted once
+/// already: `executor.rs` kept a second kernel-argument denylist that was
+/// missing `debug-shell`, so one path refused a root shell and the other
+/// granted it. A suffix added to one copy and not the other is that bug again
+/// in a new place.
+fn bare_unit_name(unit: &str) -> String {
     let lower = unit.to_ascii_lowercase();
-    let bare = [
-        ".service", ".target", ".socket", ".mount", ".path", ".slice", ".scope",
-    ]
-    .iter()
-    .find_map(|suffix| lower.strip_suffix(suffix))
-    .unwrap_or(&lower);
-    if ROOT_SHELL_UNITS.contains(&bare) {
+    let stripped = UNIT_TYPE_SUFFIXES
+        .iter()
+        .find_map(|suffix| lower.strip_suffix(suffix))
+        .unwrap_or(&lower);
+    // An instance carries its template name before the `@`, and systemd treats
+    // the two as one unit for every purpose a denylist cares about. Without
+    // this, `sshd@1.service` reduces to `sshd@1` and misses a list holding
+    // `sshd`, which is an instance-shaped bypass of both screens below.
+    match stripped.split_once('@') {
+        Some((template, _)) => template.to_string(),
+        None => stripped.to_string(),
+    }
+}
+
+/// Units whose resource limits a Medium-risk caller must not set.
+///
+/// `SetServiceResourceLimits` is Medium, which `role_for_risk_level` maps to
+/// `CallerRole::Dev`, and it validated its unit by charset alone. That let the
+/// lowest mutating tier run `systemctl set-property sysknife-daemon.service
+/// TasksMax=0`, which writes a persistent drop-in and stops the process that
+/// enforces the tiers and signs the audit chain. The same call against `auditd`
+/// or `systemd-journald` stops the host recording what happened next, and
+/// against `sshd` it removes the way an operator would reach the box to undo
+/// any of it.
+///
+/// `validated_activatable_unit` does not cover this. Its list is about units
+/// that hand out a root shell when started, which is a different question from
+/// "may this tier disable the security infrastructure". Setting a property is
+/// not an activation, so that screen never ran.
+///
+/// Four categories, and nothing beyond them: SysKnife's own enforcement, the
+/// host's evidence, the authorization path every privileged action crosses, and
+/// remote administrative access. Throttling NetworkManager is bad, and it is the
+/// ordinary blast radius of an action that exists to cap services; that stays a
+/// Dev decision.
+///
+/// This is a name-based screen and it inherits the limit named in issue #144: a
+/// site-local alias pointing at one of these units is spelled differently and
+/// will not match. Masking the units an operator does not want touched is still
+/// the stronger control.
+pub(crate) const RESOURCE_LIMIT_PROTECTED_UNITS: &[&str] = &[
+    // SysKnife's own enforcement and the process that signs the audit chain.
+    "sysknife-daemon",
+    // The host's record of what happened.
+    "auditd",
+    "systemd-journald",
+    "rsyslog",
+    // The authorization path every privileged action crosses.
+    "dbus",
+    "dbus-broker",
+    "polkit",
+    "polkitd",
+    "systemd-logind",
+    // The way an operator reaches the machine to undo the above. Debian ships
+    // it as `ssh.service` and Fedora as `sshd.service`; both are listed because
+    // the daemon does not know which distribution it is screening for here.
+    "ssh",
+    "sshd",
+];
+
+/// Unit-name prefixes whose whole family belongs to a protected category.
+///
+/// Naming the reader and leaving its pipes protects nothing.
+/// `systemd-journald` ships as a service and as `systemd-journald.socket`,
+/// `systemd-journald-audit.socket`, `systemd-journald-dev-log.socket` and
+/// `systemd-journald-varlink@…​.socket`; the audit socket is how the kernel's
+/// audit stream reaches the journal, and an exact-match list covering only
+/// `systemd-journald` let every one of those through. `auditd` fans out the same
+/// way through `audit-rules.service`.
+///
+/// These are prefixes rather than a longer exact list because the families grow
+/// between systemd releases, and refusing a site's own
+/// `systemd-journald-something` costs nothing next to missing the next stock
+/// socket. Everything outside these two families is matched exactly, so
+/// `sysknife-nightly-backup.service` stays cappable while `sysknife-daemon` does
+/// not.
+const RESOURCE_LIMIT_PROTECTED_PREFIXES: &[&str] = &["systemd-journald", "auditd", "audit-rules"];
+
+/// Validate a unit name whose **resource limits** an action will set.
+///
+/// Layered on [`validated_unit_name`]: same syntax rules, plus a refusal of
+/// [`RESOURCE_LIMIT_PROTECTED_UNITS`] and of every cgroup container.
+///
+/// Slices and scopes are refused as a class rather than by name. A slice holds
+/// every unit beneath it, so capping `system.slice` is a decision about the
+/// whole host and not about one service, and there is no list to keep current:
+/// the caller has to spell the suffix, because `systemctl set-property system
+/// MemoryMax=1` resolves to `system.service` rather than to the slice.
+pub fn validated_resource_limit_unit(
+    s: &str,
+    param: &'static str,
+) -> Result<String, ExecutorError> {
+    let unit = validated_unit_name(s, param)?;
+    let lower = unit.to_ascii_lowercase();
+    if lower.ends_with(".slice") || lower.ends_with(".scope") {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    let bare = bare_unit_name(&unit);
+    if RESOURCE_LIMIT_PROTECTED_UNITS.contains(&bare.as_str())
+        || RESOURCE_LIMIT_PROTECTED_PREFIXES
+            .iter()
+            .any(|family| bare.starts_with(family))
+    {
         return Err(ExecutorError::InvalidParam(param));
     }
     Ok(unit)
@@ -767,6 +884,19 @@ fn validated_absolute_path(
     Ok(s.to_string())
 }
 
+/// Validate a home directory: absolute, no `..`, safe charset.
+///
+/// `CreateUser` passes this to `useradd --create-home --home-dir <home>`, which
+/// runs as root, so the caller names a path and root acts on it. It used to go
+/// through [`validated_safe_arg`], which enforces a charset and rejects a
+/// leading dash and accepts both a relative path and `..`. The stricter
+/// validator was already in this file and already used by every other
+/// root-acting path parameter; the weaker of the two was guarding the more
+/// dangerous one.
+pub fn validated_home_dir(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    validated_absolute_path(s, param, MAX_FSTAB_FIELD_LEN)
+}
+
 /// Validate a mountpoint: absolute, no `..`, safe charset, and not a critical
 /// system mountpoint. Mirrors `valid_mountpoint` in the helper.
 pub fn validated_mount_point(s: &str, param: &'static str) -> Result<String, ExecutorError> {
@@ -788,6 +918,44 @@ pub fn validated_fstype(s: &str, param: &'static str) -> Result<String, Executor
 
 /// Validate a comma-separated mount options string (charset only; the helper
 /// forces `nofail` in). Empty is allowed (helper defaults to `defaults`).
+/// Mount options that hand out privilege, refused outright.
+///
+/// `suid` lets a setuid-root binary on the mounted filesystem escalate whoever
+/// runs it; `dev` lets a device node on it reach any block device. Both are the
+/// standard reason `nosuid,nodev` is the default for anything an administrator
+/// did not author. `exec` is deliberately absent: running an ordinary binary
+/// from a mounted volume is a legitimate need, and with `nosuid` and `nodev`
+/// enforced it grants nothing extra.
+const MOUNT_OPTIONS_DENY: &[&str] = &["suid", "dev"];
+
+/// The options this mount will actually be made with.
+///
+/// `mount(8)` takes the last of a conflicting pair, so appending is enough and
+/// the operator's own list is left intact ahead of it. Appending rather than
+/// only refusing matters because omitting the parameter reaches the helper as
+/// `defaults`, which Linux expands to `rw,suid,dev,exec,auto,nouser,async`: the
+/// charset check saw an empty string and had nothing to object to, and the
+/// mount still came up with `suid` and `dev` set.
+///
+/// `ensure_nofail` in `packaging/sysknife-mount-edit` is the same move for
+/// `nofail`, which is where the shape comes from.
+pub fn hardened_mount_options(requested: &str) -> String {
+    let mut out: Vec<&str> = requested.split(',').filter(|o| !o.is_empty()).collect();
+    for required in ["nosuid", "nodev"] {
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(required)) {
+            out.push(required);
+        }
+    }
+    out.join(",")
+}
+
+/// Validate a comma-separated mount option list: charset, length, and the two
+/// options that grant privilege.
+///
+/// Every other dangerous-value validator in this file layers a denylist on top
+/// of its charset check. This one did not, so `suid` and `dev` passed a
+/// High-risk, Admin-only action whose ordinary phrasing is "mount my USB
+/// drive".
 pub fn validated_mount_options(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     if s.len() > MAX_FSTAB_FIELD_LEN {
         return Err(ExecutorError::InvalidParam(param));
@@ -798,7 +966,16 @@ pub fn validated_mount_options(s: &str, param: &'static str) -> Result<String, E
     }) {
         return Err(ExecutorError::InvalidParam(param));
     }
-    Ok(s.to_string())
+    // Refuse rather than silently strip. An operator who asked for `suid` has
+    // to be told it was refused, or they will believe the mount carries it.
+    if s.split(',').any(|opt| {
+        MOUNT_OPTIONS_DENY
+            .iter()
+            .any(|deny| opt.eq_ignore_ascii_case(deny))
+    }) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(hardened_mount_options(s))
 }
 
 /// Validate an absolute file path for a swap file (no `..`, safe charset).
@@ -945,6 +1122,190 @@ pub fn validated_apt_pin_expr(s: &str, param: &'static str) -> Result<String, Ex
 /// Validate a sudoers command spec: the literal `ALL`, or a comma-separated
 /// list of ABSOLUTE command paths with no wildcards, no `..`, and no shell
 /// metacharacters. Mirrors `build_rule`/`CMD_RE` in the helper.
+/// Command basenames that make a sudoers command list equivalent to `ALL`.
+///
+/// `packaging/sysknife-sudoers` opens by stating the invariant it keeps: no
+/// shell or general runuser grant is permitted. `GrantSudoAccess` enforced that
+/// against the string `"ALL"` and nothing else, while
+/// [`validated_sudo_commands`] happily accepts `/bin/bash`, which is the same
+/// capability spelled differently. `user ALL=(root) NOPASSWD: /bin/bash` is a
+/// standing passwordless root shell, and `visudo -cf` accepts it.
+///
+/// Matched on the **basename**, lowercased. The charset check in
+/// [`validated_sudo_commands`] already refuses `..` and wildcards, so
+/// `/usr/bin/../bin/bash` cannot arrive, and a basename match covers both
+/// `/bin/bash` and `/usr/bin/bash` on merged-`/usr` and split-`/usr` hosts
+/// without the daemon having to know which it is running on.
+///
+/// **What this list is, and is not.** It covers programs that hand back an
+/// interactive shell or run an arbitrary command directly. It deliberately does
+/// not try to cover every root-equivalent primitive: `cp`, `dd` and `tee` give
+/// arbitrary file write as root, which is just as severe and is a different
+/// class, and chasing it turns this into an unbounded list that refuses grants
+/// an operator has good reason to want. GTFOBins documents several hundred
+/// techniques and no name-based list will hold all of them.
+///
+/// Two things carry the rest. The refusal below only fires together with
+/// `nopasswd`, which is the same line `"ALL"` has always been held to: this
+/// repository permits granting broad authority and does not permit granting it
+/// as a standing passwordless credential. And the preview names the equivalence
+/// whenever it sees one, with or without `nopasswd`, because at Admin tier the
+/// control that matters is the human understanding what they are about to sign.
+///
+/// A copy of this list lives in `packaging/sysknife-sudoers-edit`, which is
+/// callable directly through its wildcard `NOPASSWD` grant and so needs its own
+/// screen. `tests/release/sudoers-edit.test.sh` parses this constant and fails
+/// when the two disagree, because the last time two screens of this shape were
+/// kept in step by a comment claiming parity, they drifted and one of them
+/// granted a root shell the other refused (GHSA-f8vp-j3jh-7wjx).
+pub(crate) const SHELL_EQUIVALENT_COMMANDS: &[&str] = &[
+    // Shells.
+    "sh",
+    "bash",
+    "rbash",
+    "dash",
+    "ash",
+    "zsh",
+    "ksh",
+    "ksh93",
+    "mksh",
+    "csh",
+    "tcsh",
+    "fish",
+    "busybox",
+    "pwsh",
+    "powershell",
+    // Run-as and namespace tools: they carry a command, so the grant is
+    // whatever they are asked to run.
+    "su",
+    "sudo",
+    "sudoedit",
+    "doas",
+    "runuser",
+    "pkexec",
+    "setpriv",
+    "chroot",
+    "unshare",
+    "nsenter",
+    "capsh",
+    // Interpreters. Each of these runs a program given on its command line.
+    "python",
+    "python2",
+    "python3",
+    "perl",
+    "perl5",
+    "ruby",
+    "irb",
+    "lua",
+    "luac",
+    "node",
+    "nodejs",
+    "php",
+    "tclsh",
+    "wish",
+    "expect",
+    "gdb",
+    "julia",
+    "guile",
+    "rscript",
+    "awk",
+    "gawk",
+    "mawk",
+    "nawk",
+    "sed",
+    "ed",
+    // Editors and pagers with a documented shell escape.
+    "vi",
+    "vim",
+    "vimdiff",
+    "view",
+    "ex",
+    "nvim",
+    "emacs",
+    "nano",
+    "less",
+    "more",
+    "most",
+    "man",
+    "pg",
+    "info",
+    // Utilities that exist to run another program, or that document an escape.
+    "env",
+    "nice",
+    "ionice",
+    "taskset",
+    "stdbuf",
+    "setarch",
+    "timeout",
+    "watch",
+    "flock",
+    "xargs",
+    "find",
+    "script",
+    "scriptreplay",
+    "socat",
+    "nc",
+    "ncat",
+    "netcat",
+    "tar",
+    "cpio",
+    "zip",
+    "unzip",
+    "rsync",
+    "scp",
+    "sftp",
+    "ftp",
+    "ssh",
+    "tmux",
+    "screen",
+    "byobu",
+    "make",
+    "cmake",
+    "strace",
+    "ltrace",
+    "tcpdump",
+    "docker",
+    "podman",
+    "git",
+    "crontab",
+    "at",
+    "systemctl",
+    "journalctl",
+    "apt",
+    "apt-get",
+    "dpkg",
+    "rpm",
+    "yum",
+    "dnf",
+    "zypper",
+    "pip",
+    "pip3",
+    "gem",
+    "npm",
+    "mount",
+];
+
+/// The first command in a validated sudoers list that makes it equivalent to
+/// `ALL`, or `None` when every entry is narrower than that.
+///
+/// Takes the list as [`validated_sudo_commands`] returns it, so the charset and
+/// absolute-path rules already hold. `"ALL"` answers `None`: it is not
+/// shell-*equivalent*, it is the thing itself, and its own refusal predates
+/// this one.
+pub fn shell_equivalent_sudo_command(commands: &str) -> Option<String> {
+    if commands == "ALL" {
+        return None;
+    }
+    commands
+        .split(',')
+        .filter(|c| !c.is_empty())
+        .find(|c| {
+            let base = c.rsplit('/').next().unwrap_or(c).to_ascii_lowercase();
+            SHELL_EQUIVALENT_COMMANDS.contains(&base.as_str())
+        })
+        .map(str::to_string)
+}
+
 pub fn validated_sudo_commands(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     if s == "ALL" {
         return Ok(s.to_string());
@@ -1112,6 +1473,90 @@ mod tests {
         // The denylist rides on top of the syntax check: garbage is still
         // rejected for the same reason `validated_unit_name` rejects it.
         assert!(validated_activatable_unit("-x.service", "unit").is_err());
+    }
+
+    #[test]
+    fn resource_limit_unit_rejects_the_enforcement_and_evidence_path() {
+        // `systemctl set-property <unit> TasksMax=0` is not an activation, so
+        // the activatable denylist never saw it, and it is Medium-risk, so a
+        // Dev-tier caller reaches it. Throttling any of these disables the
+        // machinery that would have recorded or refused what came next.
+        for protected in [
+            "sysknife-daemon.service",
+            "sysknife-daemon",
+            "SYSKNIFE-DAEMON.SERVICE",
+            "auditd.service",
+            "systemd-journald.service",
+            "systemd-journald.socket",
+            "rsyslog.service",
+            "polkit.service",
+            "dbus.service",
+            "dbus-broker.service",
+            "systemd-logind.service",
+            "sshd.service",
+            "ssh.service",
+            // Family members and instances. An exact-match list holding only
+            // `systemd-journald` let the socket carrying the kernel audit
+            // stream through, and `sshd@1.service` reduced to `sshd@1`.
+            "systemd-journald-audit.socket",
+            "systemd-journald-dev-log.socket",
+            "systemd-journald-varlink@7.socket",
+            "audit-rules.service",
+            "sshd@1.service",
+            "sysknife-daemon.socket",
+            "dbus.socket",
+        ] {
+            assert!(
+                validated_resource_limit_unit(protected, "unit").is_err(),
+                "{protected:?} resource limits must not be settable at Dev tier"
+            );
+        }
+    }
+
+    #[test]
+    fn resource_limit_unit_rejects_every_slice_and_scope() {
+        // A slice holds every unit beneath it, so capping one is a decision
+        // about the whole host rather than about one service. There is no
+        // name list to keep current here: the caller has to spell the suffix,
+        // because `systemctl set-property system MemoryMax=1` resolves to
+        // `system.service`, not to the slice.
+        for container in [
+            "system.slice",
+            "user.slice",
+            "machine.slice",
+            "user-1000.slice",
+            "init.scope",
+            "session-3.scope",
+            "SYSTEM.SLICE",
+        ] {
+            assert!(
+                validated_resource_limit_unit(container, "unit").is_err(),
+                "{container:?} is a cgroup container, not one service"
+            );
+        }
+    }
+
+    #[test]
+    fn resource_limit_unit_accepts_ordinary_services() {
+        // The common case stays at Dev tier: capping a runaway application is
+        // why this action is Medium-risk, and narrowing it further would push
+        // routine work to Admin for no gain.
+        for ok in [
+            "nginx.service",
+            "postgresql.service",
+            "my-app@1.service",
+            "podman.socket",
+            "sysknife-nightly-backup.service",
+        ] {
+            assert!(
+                validated_resource_limit_unit(ok, "unit").is_ok(),
+                "{ok:?} is an ordinary unit and must stay cappable"
+            );
+        }
+        // The denylist rides on top of the syntax check, as the activatable
+        // screen does: malformed names are still refused for the old reason.
+        assert!(validated_resource_limit_unit("-x.service", "unit").is_err());
+        assert!(validated_resource_limit_unit("", "unit").is_err());
     }
 
     #[test]
@@ -1938,6 +2383,43 @@ mod tests {
 
     #[test]
     fn mount_options_and_swap_path() {
+        // Every other dangerous-value validator in this file layers a denylist
+        // on the charset check. This one did not, so `suid` and `dev` passed.
+        // AddMount is High risk and Admin-only, but "mount my USB drive" is an
+        // ordinary-sounding request: a setuid-root binary on attacker-supplied
+        // media then grants root to whoever runs it, and a device node on it
+        // reaches any block device.
+        for bad in [
+            "suid",
+            "dev",
+            "ro,suid",
+            "suid,noatime",
+            "nodev,dev",
+            "DEV",
+            "SUID",
+        ] {
+            assert!(
+                validated_mount_options(bad, "o").is_err(),
+                "mount options {bad:?} were accepted; suid and dev are the two that escalate"
+            );
+        }
+        // The hardening must be added, not merely demanded, so an operator who
+        // omits the parameter does not get `defaults` expanding to suid,dev.
+        assert_eq!(
+            hardened_mount_options(""),
+            "nosuid,nodev",
+            "an empty option list must still be hardened"
+        );
+        assert_eq!(
+            hardened_mount_options("ro,noatime"),
+            "ro,noatime,nosuid,nodev"
+        );
+        // Already hardened stays as it is rather than repeating itself.
+        assert_eq!(hardened_mount_options("nosuid,nodev,ro"), "nosuid,nodev,ro");
+        // `exec` is left alone on purpose: running a non-setuid binary from a
+        // mounted volume is a legitimate admin need, and nosuid+nodev is what
+        // removes the escalation.
+        assert!(validated_mount_options("exec,ro", "o").is_ok());
         assert!(validated_mount_options("noatime,ro", "o").is_ok());
         assert!(validated_mount_options("", "o").is_ok()); // helper defaults it
         assert!(validated_mount_options("bad opt", "o").is_err()); // space

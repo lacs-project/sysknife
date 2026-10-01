@@ -25,6 +25,7 @@ mutates each claim and asserts this rejects it.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -53,11 +54,17 @@ from record_test_baseline import validate_document
 # So the rule is now: if a file states a figure about this project, it belongs
 # here. Adding a file is cheap; the guard only complains about numbers it can
 # derive an answer for.
+#
+# SECURITY.md carries the Security Model wording that
+# check_public_claims.sh's independence pin screens. Without it listed here the
+# pin ran over claim_files and could not fire on the one file it was written
+# for: restoring the retired sentence left the check green.
 CLAIM_FILES = (
     "README.md",
     "ROADMAP.md",
     "CONTRIBUTING.md",
     "HACKING.md",
+    "SECURITY.md",
     "docs/introduction.md",
     "docs/quickstart.md",
     "docs/distro-support.md",
@@ -647,7 +654,21 @@ def check_bare_story_counts(
     return problems
 
 
-def check_action_figures(texts: dict[str, str], catalogue: int) -> list[str]:
+def count_action_specs(root: Path) -> int:
+    """Derive the executor ActionSpec count from the generated reference table."""
+    path = root / "docs/action-reference.md"
+    if not path.exists():
+        raise Failure("docs/action-reference.md is missing; cannot derive ActionSpec count")
+    row = re.compile(r"^\| `[A-Za-z0-9_]+` \|")
+    count = sum(1 for line in path.read_text(encoding="utf-8").splitlines() if row.match(line))
+    if count == 0:
+        raise Failure("docs/action-reference.md contains no generated ActionSpec rows")
+    return count
+
+
+def check_action_figures(
+    texts: dict[str, str], catalogue: int, action_specs: int
+) -> list[str]:
     """Catch a bare "N actions" that is not the catalogue size.
 
     `check_figure` only sees the exact noun it is given ("typed actions"), so
@@ -664,11 +685,22 @@ def check_action_figures(texts: dict[str, str], catalogue: int) -> list[str]:
     drifting.
     """
     bare = re.compile(r"\b([0-9]{2,})\s+(?:typed\s+)?actions\b", re.IGNORECASE)
+    subset = re.compile(
+        r"\b([0-9]+)\s+actions\s+(?:with|have)\s+an\s+`?ActionSpec`?\b",
+        re.IGNORECASE,
+    )
 
     problems = []
     for rel, text in texts.items():
         for line in text.splitlines():
-            if "ActionSpec" in line:
+            subset_match = subset.search(line)
+            if subset_match:
+                count = int(subset_match.group(1))
+                if count != action_specs:
+                    problems.append(
+                        f"{rel}: claims {count} actions with an ActionSpec, "
+                        f"derived {action_specs} from docs/action-reference.md"
+                    )
                 continue
             for match in bare.finditer(line):
                 count = int(match.group(1))
@@ -782,6 +814,58 @@ def load_test_baseline(root: Path) -> dict:
     return baseline
 
 
+def check_pre_commit_commands(root: Path, guide: str) -> list[str]:
+    """Compare the documented gate with the executable hook, in order."""
+    hook = root / ".githooks/pre-commit"
+    if not hook.exists():
+        raise Failure(".githooks/pre-commit is missing")
+    commands = [
+        line.strip()
+        for line in hook.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+        and not line.lstrip().startswith(("#", "set ", "cd ", "echo "))
+    ]
+    section = guide.split("## Pre-commit Hooks\n", 1)[-1].split("\n## ", 1)[0]
+    block = re.search(r"```sh\n(.*?)\n```", section, re.S)
+    documented = block.group(1).splitlines() if block else []
+    if documented == commands:
+        return []
+    return [
+        "docs/developer-guide.md: pre-commit steps differ from .githooks/pre-commit; "
+        f"expected {commands!r}; documented {documented!r}"
+    ]
+
+
+SHELL_FENCE = re.compile(r"^\s*```(?:sh|bash|shell|console|zsh)\s*$")
+FRAMEWORK_COMMAND = re.compile(
+    r"\bpre-commit\s+(?:install|run)\b|\b(?:pip3?|pipx|uv\s+tool)\s+install\s+pre-commit\b"
+)
+SKIPPED_DIRS = {".git", "node_modules", "target", "dist", "book"}
+
+
+def check_framework_commands(root: Path) -> list[str]:
+    """Reject the pre-commit framework as a command in any Markdown shell block."""
+    problems = []
+    for directory, subdirs, names in os.walk(root):
+        subdirs[:] = sorted(d for d in subdirs if d not in SKIPPED_DIRS)
+        for name in sorted(n for n in names if n.endswith(".md")):
+            path = Path(directory) / name
+            rel = path.relative_to(root).as_posix()
+            in_shell = False
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if line.lstrip().startswith("```"):
+                    in_shell = not in_shell and bool(SHELL_FENCE.match(line))
+                    continue
+                command = line.strip().removeprefix("$ ")
+                if in_shell and not command.startswith("#") and FRAMEWORK_COMMAND.search(command):
+                    problems.append(
+                        f"{rel}:{number}: runs `{command}`, but the hooks run through "
+                        "core.hooksPath and the pre-commit framework is not used "
+                        "(see docs/developer-guide.md)"
+                    )
+    return problems
+
+
 def main() -> int:
     root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     try:
@@ -790,6 +874,8 @@ def main() -> int:
         baseline = load_test_baseline(root)
 
         problems = []
+        problems += check_pre_commit_commands(root, texts["docs/developer-guide.md"])
+        problems += check_framework_commands(root)
         problems += check_figure(texts, "Rust tests", baseline["tests"])
         problems += check_figure(texts, "frontend tests", baseline["frontend_tests"])
         problems += check_figure(texts, "typed actions", count_actions(root))
@@ -806,7 +892,7 @@ def main() -> int:
         problems += check_debian_only_prose_claims(texts, root)
         problems += check_bare_story_counts(texts, story_runs, root)
         problems += check_validated_tiers(texts, root)
-        problems += check_action_figures(texts, count_actions(root))
+        problems += check_action_figures(texts, count_actions(root), count_action_specs(root))
 
         expected_tests = f"{baseline['tests']:,} Rust tests"
         for rel in REQUIRE_TEST_COUNT:

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use sqlx_core::row::Row;
 use sqlx_postgres::{PgConnectOptions, PgPoolOptions};
 use sysknife_daemon::audit_chain::{AuditKey, BindingOutcome, VerifyOutcome};
+use sysknife_daemon::auth::CallerPrincipal;
 use sysknife_daemon::store::postgres::{PostgresConfig, PostgresStore};
 use sysknife_daemon::store::AuditStore;
 use sysknife_daemon::transactions::NewTransaction;
@@ -185,7 +186,7 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
     .await
     .expect("read schema migration version");
     assert_eq!(
-        migration, 3,
+        migration, 4,
         "every migration in MIGRATIONS must have applied"
     );
     assert!(store
@@ -259,26 +260,29 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
     );
 
     let receipt = store
-        .approve_transaction(transaction_id)
+        .approve_transaction(transaction_id, CallerPrincipal::Uid(1000))
         .await
         .expect("approve transaction")
         .expect("fresh transaction is approved");
     let receipt_digest = sysknife_daemon::audit_chain::approval_receipt_digest(&receipt);
     assert!(store
-        .approve_transaction(transaction_id)
+        .approve_transaction(transaction_id, CallerPrincipal::Uid(1000))
         .await
         .expect("reject duplicate approval")
         .is_none());
     assert!(!store
-        .claim_approved_for_execution(transaction_id, "wrong-digest")
+        .claim_approved_for_execution(transaction_id, "wrong-digest", CallerPrincipal::Uid(1001))
         .await
         .expect("reject wrong receipt"));
+    // A different account consumes than the one that granted: the store does
+    // not police ownership (the dispatcher does), and the chain must record
+    // both (#249).
     assert!(store
-        .claim_approved_for_execution(transaction_id, &receipt_digest)
+        .claim_approved_for_execution(transaction_id, &receipt_digest, CallerPrincipal::Uid(1001))
         .await
         .expect("claim approved transaction"));
     assert!(!store
-        .claim_approved_for_execution(transaction_id, &receipt_digest)
+        .claim_approved_for_execution(transaction_id, &receipt_digest, CallerPrincipal::Uid(1000))
         .await
         .expect("reject receipt replay"));
 
@@ -319,7 +323,7 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
     // Option A must refuse to cancel it and leave it Running.
     assert!(
         !store
-            .cancel_queued(transaction_id)
+            .cancel_queued(transaction_id, CallerPrincipal::Uid(1000))
             .await
             .expect("cancel_queued query"),
         "a Running transaction must not be cancelable on Postgres"
@@ -354,6 +358,19 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
         events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
         vec!["approval_granted", "approval_consumed"]
     );
+    // #249 acceptance on the Postgres backend: the event rows name the
+    // accounts that acted, a grant by uid:1000 and a consume by uid:1001 are
+    // two distinguishable signed records, and both carry the V2 encoding.
+    assert_eq!(events[0].caller_principal.as_deref(), Some("uid:1000"));
+    assert_eq!(events[1].caller_principal.as_deref(), Some("uid:1001"));
+    assert_eq!(
+        events[0].chain_version,
+        sysknife_daemon::audit_chain::EVENT_VERSION_CURRENT
+    );
+    assert_eq!(
+        events[1].chain_version,
+        sysknife_daemon::audit_chain::EVENT_VERSION_CURRENT
+    );
     assert_eq!(pubkey_only.exit_code(), 0);
 
     // cancel_queued success path on Postgres: a fresh, never-claimed Queued
@@ -362,7 +379,7 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
     let fresh = store.record(new_transaction()).await.expect("record fresh");
     assert!(
         store
-            .cancel_queued(&fresh.transaction_id)
+            .cancel_queued(&fresh.transaction_id, CallerPrincipal::Uid(1000))
             .await
             .expect("cancel queued"),
         "a queued transaction must be cancelable on Postgres"
@@ -387,17 +404,21 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
         .await
         .expect("record approved");
     let receipt = store
-        .approve_transaction(&approved.transaction_id)
+        .approve_transaction(&approved.transaction_id, CallerPrincipal::Uid(1000))
         .await
         .expect("approve fresh transaction")
         .expect("fresh transaction is approvable");
     assert!(store
-        .cancel_queued(&approved.transaction_id)
+        .cancel_queued(&approved.transaction_id, CallerPrincipal::Uid(1000))
         .await
         .expect("cancel approved transaction"));
     let receipt_digest = sysknife_daemon::audit_chain::approval_receipt_digest(&receipt);
     assert!(!store
-        .claim_approved_for_execution(&approved.transaction_id, &receipt_digest)
+        .claim_approved_for_execution(
+            &approved.transaction_id,
+            &receipt_digest,
+            CallerPrincipal::Uid(1000)
+        )
         .await
         .expect("revoked receipt must not execute"));
     let events = store.fetch_event_rows().await.expect("fetch events");
@@ -424,12 +445,13 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
             .expect("count migrations");
     // Idempotence: reconnecting re-runs `initialize`, which must not record a
     // migration a second time.
-    assert_eq!(migration_count, 3);
+    assert_eq!(migration_count, 4);
 
     for (version, name) in [
         (1_i64, "initial_audit_schema"),
         (2, "caller_identity_and_approval_events"),
         (3, "caller_principal"),
+        (4, "event_approver_identity"),
     ] {
         let migration_row = sqlx_core::query::query(
             "SELECT version, name FROM schema_migrations WHERE version = $1",
@@ -824,7 +846,10 @@ async fn an_auditor_denied_the_event_table_cannot_verify() {
         .await
         .expect("record previewed transaction");
     let receipt = store
-        .approve_transaction(&recorded.transaction.transaction_id)
+        .approve_transaction(
+            &recorded.transaction.transaction_id,
+            CallerPrincipal::Uid(1000),
+        )
         .await
         .expect("approve transaction")
         .expect("fresh transaction is approved");
@@ -832,6 +857,7 @@ async fn an_auditor_denied_the_event_table_cannot_verify() {
         .claim_approved_for_execution(
             &recorded.transaction.transaction_id,
             &sysknife_daemon::audit_chain::approval_receipt_digest(&receipt),
+            CallerPrincipal::Uid(1000),
         )
         .await
         .expect("claim approved transaction"));

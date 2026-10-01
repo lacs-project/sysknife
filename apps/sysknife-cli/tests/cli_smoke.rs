@@ -131,6 +131,103 @@ fn audit_verify_exits_with_code_2_when_the_key_file_is_missing() {
         .code(2);
 }
 
+fn audit_fixture_cli(dir: &tempfile::TempDir) -> Command {
+    let mut command = cli();
+    command
+        .env("SYSKNIFE_SOCKET", fake_socket(dir))
+        .env("SYSKNIFE_DATABASE_PATH", dir.path().join("daemon.sqlite"))
+        .env_remove("SYSKNIFE_CHECKPOINT_DB")
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("XDG_DATA_HOME", dir.path())
+        .args(["audit", "verify", "--pubkey"])
+        .arg(dir.path().join("audit-key.pub"));
+    command
+}
+
+fn assert_empty_unanchored_store_is_inconclusive(dir: &tempfile::TempDir) {
+    for json in [false, true] {
+        let mut command = audit_fixture_cli(dir);
+        if json {
+            command.arg("--json");
+        }
+        let output = command.output().expect("run audit verify on empty store");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "json={json}; stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if json {
+            let report: serde_json::Value =
+                serde_json::from_slice(&output.stdout).expect("one JSON report");
+            assert_eq!(report["status"], "cannot_verify");
+            assert_eq!(report["chain"]["rows_checked"], 0);
+            assert_eq!(report["approval_events"]["rows_checked"], 0);
+            assert_eq!(report["rows_censused"], 0);
+            assert_eq!(report["audit_anchor"]["configured"], false);
+        } else {
+            let text = String::from_utf8_lossy(&output.stdout);
+            assert!(text.starts_with("CANNOT VERIFY:"), "{text}");
+            assert!(text.contains("empty"), "{text}");
+            assert!(!text.starts_with("OK:"), "{text}");
+        }
+    }
+}
+
+#[test]
+fn audit_verify_fresh_empty_unanchored_store_is_inconclusive() {
+    let dir = tempfile::tempdir().expect("create audit fixture");
+    let key =
+        AuditKey::load_or_generate(&dir.path().join("audit-key")).expect("generate audit key");
+    let store = TransactionStore::open_with_key(dir.path().join("daemon.sqlite"), Arc::new(key))
+        .expect("create fresh empty store");
+    assert!(store.fetch_chain_rows().unwrap().is_empty());
+    assert!(store.fetch_event_rows().unwrap().is_empty());
+    drop(store);
+    assert_empty_unanchored_store_is_inconclusive(&dir);
+}
+
+#[test]
+fn audit_verify_erased_recreated_empty_unanchored_store_is_inconclusive() {
+    let dir = tempfile::tempdir().expect("create audit fixture");
+    let db_path = dir.path().join("daemon.sqlite");
+    let key = AuditKey::load_or_generate(&dir.path().join("audit-key"))
+        .expect("generate retained audit key");
+    let store = TransactionStore::open_with_key(&db_path, Arc::new(key.clone()))
+        .expect("create populated audit store");
+    store
+        .record(NewTransaction {
+            request_id: "erased-store".to_string(),
+            request_hash: "erased-store-hash".to_string(),
+            action_name: "UpdateSystem".to_string(),
+            risk_level: RiskLevel::High,
+            summary: "Synthetic audit fixture; no action is executed".to_string(),
+            warnings: vec![],
+            caller_role: CallerRole::Dev,
+            caller_principal: CallerPrincipal::Uid(1000),
+        })
+        .expect("record signed fixture row");
+    assert_eq!(store.fetch_chain_rows().unwrap().len(), 1);
+    drop(store);
+    let output = audit_fixture_cli(&dir).arg("--json").output().unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["status"], "intact");
+    assert_eq!(report["chain"]["rows_checked"], 1);
+
+    // Erase this test's database, retaining the same public/private key pair.
+    // The readable replacement is indistinguishable from a fresh empty store.
+    std::fs::remove_file(&db_path).expect("erase isolated fixture database");
+    let store = TransactionStore::open_with_key(&db_path, Arc::new(key))
+        .expect("recreate readable empty store");
+    assert!(store.fetch_chain_rows().unwrap().is_empty());
+    assert!(store.fetch_event_rows().unwrap().is_empty());
+    drop(store);
+    assert_empty_unanchored_store_is_inconclusive(&dir);
+}
+
 #[test]
 fn audit_verify_exit_code_prefers_broken_chain_to_inconclusive_anchor() {
     let dir = tempfile::tempdir().expect("create CLI fixture directory");

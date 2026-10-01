@@ -3,11 +3,31 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 rehearsal="${repo_root}/scripts/release_rehearsal.sh"
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+assert_file_pattern() {
+    local file="$1" pattern="$2" purpose="$3"
+    if [[ -z "$pattern" ]]; then
+        printf 'FAIL: %s: empty pattern; %s\n' "$file" "$purpose" >&2
+        return 1
+    fi
+    if [[ ! -f "$file" || ! -r "$file" ]]; then
+        printf 'FAIL: %s: cannot read file for pattern %s; %s\n' \
+            "$file" "$pattern" "$purpose" >&2
+        return 1
+    fi
+    if ! grep -Eq -- "$pattern" "$file"; then
+        printf 'FAIL: %s: pattern %s did not match; %s\n' \
+            "$file" "$pattern" "$purpose" >&2
+        return 1
+    fi
+}
 
 # Invalid registry versions must fail validation before attempting any network
 # requests, including when no positional argument was supplied.
 assert_invalid_registry_version() {
-    local output status
+    local output status output_file="${tmp_dir}/invalid-registry.out"
     if output="$(bash "${repo_root}/scripts/check_registry_versions.sh" "$@" 2>&1)"; then
         printf 'FAIL: registry preflight accepted an invalid version\n' >&2
         exit 1
@@ -18,7 +38,9 @@ assert_invalid_registry_version() {
         printf 'FAIL: registry preflight expected exit 2, got %s: %s\n' "$status" "$output" >&2
         exit 1
     fi
-    grep -Fq 'ERROR: expected a semantic version' <<<"$output"
+    printf '%s\n' "$output" >"$output_file"
+    assert_file_pattern "$output_file" 'ERROR: expected a semantic version' \
+        'invalid registry versions must be rejected before network access'
 }
 
 assert_invalid_registry_version nope
@@ -30,91 +52,476 @@ if [[ ! -x "$rehearsal" ]]; then
     exit 1
 fi
 
-help="$($rehearsal --help)"
-grep -Fq -- '--check' <<<"$help"
-grep -Fq -- '--full' <<<"$help"
-grep -Fq 'never publishes' <<<"$help"
+helper_fixture="${tmp_dir}/helper.fixture"
+printf 'release preflight anchor\n' >"$helper_fixture"
 
-if "$rehearsal" --publish >/tmp/sysknife-rehearsal-publish.out 2>&1; then
+if output="$(assert_file_pattern "$helper_fixture" 'missing anchor' 'protects the release preflight' 2>&1)"; then
+    printf 'FAIL: a missing assertion pattern was accepted\n' >&2
+    exit 1
+fi
+for expected in "$helper_fixture" 'missing anchor' 'protects the release preflight'; do
+    [[ "$output" == *"$expected"* ]] || {
+        printf 'FAIL: assertion diagnostic omitted %s: %s\n' "$expected" "$output" >&2
+        exit 1
+    }
+done
+
+if output="$(assert_file_pattern "${tmp_dir}/missing.fixture" 'anchor' 'checks a fixture' 2>&1)"; then
+    printf 'FAIL: a missing assertion file was accepted\n' >&2
+    exit 1
+fi
+[[ "$output" == *'cannot read'* ]] || {
+    printf 'FAIL: missing-file diagnostic was unclear: %s\n' "$output" >&2
+    exit 1
+}
+
+if output="$(assert_file_pattern "$helper_fixture" '' 'checks a fixture' 2>&1)"; then
+    printf 'FAIL: an empty assertion pattern was accepted\n' >&2
+    exit 1
+fi
+[[ "$output" == *'empty pattern'* ]] || {
+    printf 'FAIL: empty-pattern diagnostic was unclear: %s\n' "$output" >&2
+    exit 1
+}
+
+help_file="${tmp_dir}/help.out"
+"$rehearsal" --help >"$help_file"
+assert_file_pattern "$help_file" '--check' 'the help must advertise check mode'
+assert_file_pattern "$help_file" '--full' 'the help must advertise full mode'
+assert_file_pattern "$help_file" 'never publishes' 'the help must state the no-publish guarantee'
+
+set +e
+"$rehearsal" --publish >"${tmp_dir}/publish.out" 2>&1
+publish_status=$?
+set -e
+if [[ "$publish_status" -eq 0 ]]; then
     printf 'FAIL: rehearsal accepted a publishing mode\n' >&2
     exit 1
 fi
-grep -Fq 'never publishes' /tmp/sysknife-rehearsal-publish.out
+if [[ ! -s "${tmp_dir}/publish.out" ]]; then
+    printf 'FAIL: rehearsal output was not captured (exit %s)\n' "$publish_status" >&2
+    exit 1
+fi
+assert_file_pattern "${tmp_dir}/publish.out" 'never publishes' \
+    'refused publish mode must explain that the rehearsal never publishes'
 
-check_output="$($rehearsal --check)"
-grep -Eq 'sysknife-v[0-9]+\.[0-9]+\.[0-9]+-linux-(x86_64|aarch64)' <<<"$check_output"
-grep -Eq 'sysknife-daemon-v[0-9]+\.[0-9]+\.[0-9]+-linux-(x86_64|aarch64)' <<<"$check_output"
-grep -Fq 'Rehearsal preflight passed' <<<"$check_output"
+check_file="${tmp_dir}/check.out"
+"$rehearsal" --check >"$check_file"
+assert_file_pattern "$check_file" 'sysknife-v[0-9]+\.[0-9]+\.[0-9]+-linux-(x86_64|aarch64)' \
+    'check mode must list the CLI release artifact'
+assert_file_pattern "$check_file" 'sysknife-daemon-v[0-9]+\.[0-9]+\.[0-9]+-linux-(x86_64|aarch64)' \
+    'check mode must list the daemon release artifact'
+assert_file_pattern "$check_file" 'Rehearsal preflight passed' \
+    'check mode must report a successful preflight'
 
 for crate in sysknife-proto sysknife-core sysknife-types sysknife-brain \
              sysknife-daemon; do
-    grep -Fq "patch.crates-io.${crate}.path" "$rehearsal"
+    assert_file_pattern "$rehearsal" "patch\\.crates-io\\.${crate}\\.path" \
+        "rehearsal must use the workspace override for ${crate}"
 done
-grep -Fq 'npm pack ./packages/setup' "$rehearsal"
+assert_file_pattern "$rehearsal" 'npm pack \./packages/setup' \
+    'rehearsal must package the setup directory'
 if grep -Fq -- '--no-verify' "$rehearsal"; then
     printf 'FAIL: rehearsal skips generated crate verification\n' >&2
     exit 1
 fi
 
 release_workflow="${repo_root}/.github/workflows/release.yml"
-grep -Fq 'check_registry_versions.sh' "$release_workflow"
-grep -Fq 'already exists; skipping' "$release_workflow"
+assert_file_pattern "$release_workflow" 'check_registry_versions\.sh' \
+    'release workflow must validate registry versions'
+assert_file_pattern "$release_workflow" 'already exists; skipping' \
+    'release workflow must report when a release already exists'
 
 # The MCP Registry listing is published by CI, and the ordering is the part
 # worth pinning: the registry validator reads the *published* crate's rendered
 # README for the ownership marker, so a publish job that stopped depending on
 # publish-crates would fail with an error that looks like a permissions problem.
 publish_mcp_workflow="${repo_root}/.github/workflows/publish-mcp.yml"
-grep -Fq './.github/workflows/publish-mcp.yml' "$release_workflow"
-grep -Fq 'publish-crates' "$release_workflow"
-grep -Fq 'mcp-publisher publish' "$publish_mcp_workflow"
+assert_file_pattern "$release_workflow" '\./\.github/workflows/publish-mcp\.yml' \
+    'release workflow must call the MCP publishing workflow'
+assert_file_pattern "$release_workflow" 'publish-crates' \
+    'release workflow must depend on crate publication before MCP listing'
+assert_file_pattern "$publish_mcp_workflow" 'mcp-publisher publish' \
+    'MCP workflow must publish the registry listing'
 # OIDC is not an implementation detail here. A device-code login mints a token
 # for the *user's* namespace, so it cannot publish io.github.lacs-project/*;
 # only the repository identity can. Swapping this back would 403 at release
 # time, long after the change looked fine.
-grep -Fq 'login github-oidc' "$publish_mcp_workflow"
-grep -Fq 'id-token: write' "$publish_mcp_workflow"
+assert_file_pattern "$publish_mcp_workflow" 'login github-oidc' \
+    'MCP publishing must authenticate through GitHub OIDC'
+assert_file_pattern "$publish_mcp_workflow" 'id-token: write' \
+    'MCP publishing must request an OIDC token'
 
 # Glama's build spec stays browser-only, so it is still forgotten after releases
 # unless something names it. The workflow files a checklist issue with the
 # freshly published checksum filled in, so the work is visible without anyone
 # reading a build log.
-grep -Fq 'Post-release manual steps' "$release_workflow"
-grep -Fq 'glama.ai' "$release_workflow"
+assert_file_pattern "$release_workflow" 'Post-release manual steps' \
+    'release workflow must create a post-release checklist'
+assert_file_pattern "$release_workflow" 'glama\.ai' \
+    'post-release checklist must include the Glama listing step'
 # The checklist is only useful if it carries the real checksum for this tag,
 # and only honest if it appears after publication actually succeeded.
-grep -Fq 'sha256sums-linux-x86_64.txt' "$release_workflow"
-grep -Eq 'needs: \[release\]' "$release_workflow"
+assert_file_pattern "$release_workflow" 'sha256sums-linux-x86_64\.txt' \
+    'post-release checklist must include the published checksum file'
+assert_file_pattern "$release_workflow" 'needs: \[release\]' \
+    'post-release checklist must wait for the release job'
 # Positive invariant: EVERY `uses:` in EVERY workflow MUST pin a full 40-hex
 # commit SHA. This catches every mutable form (semver tags like @v6.1.0,
 # @stable, @main, per-tool tags like @cargo-nextest, and short SHAs), across
 # all workflows — not just the publishing one — for a uniform supply-chain
 # posture that cannot silently drift.
-for workflow in "${repo_root}"/.github/workflows/*.yml; do
-    while IFS= read -r uses_line; do
-        # A reusable workflow in this same repository is referenced by path and
-        # cannot carry a SHA at all: GitHub resolves `./...` at the caller's own
-        # commit, so it is pinned by construction and always to this tree. The
-        # exemption is deliberately anchored to `./` so a third-party
-        # `owner/repo/.github/workflows/x.yml@ref` still has to be pinned.
-        if printf '%s\n' "$uses_line" | grep -Eq 'uses:[[:space:]]+\./'; then
-            continue
+#
+# Parse YAML so block and flow mappings receive the same checks. Keep the
+# discovery floor: accepting a smaller extracted set is not proof of pinning.
+assert_action_pins() {
+    local workflows_dir="$1"
+    local min_uses="$2"
+    local old_nullglob workflow
+    old_nullglob="$(shopt -p nullglob || true)"
+    shopt -s nullglob
+    local -a workflows=("$workflows_dir"/*.yml "$workflows_dir"/*.yaml)
+    eval "$old_nullglob"
+
+    # An absent actions root is normal; an existing but empty/unreadable root
+    # must fail discovery. Keep the workflow-only fixture interface unchanged.
+    if [[ $# -ge 3 ]]; then
+        local manifest
+        manifest="$(mktemp)"
+        if ! python3 "$repo_root/scripts/github_yaml.py" "$workflows_dir" "$3" > "$manifest"; then
+            rm -f "$manifest"
+            return 1
         fi
-        if ! printf '%s\n' "$uses_line" | grep -Eq 'uses:[[:space:]]+[^@[:space:]]+@[0-9a-f]{40}([[:space:]]|$)'; then
-            printf 'FAIL: %s action is not pinned to a 40-hex SHA: %s\n' \
-                "$(basename "$workflow")" "$uses_line" >&2
-            exit 1
-        fi
-    done < <(grep -E '^[[:space:]]*(-[[:space:]]+)?uses:' "$workflow")
+        mapfile -d '' -t workflows < "$manifest"
+        rm -f "$manifest"
+    fi
+
+    ((${#workflows[@]})) || {
+        printf 'FAIL: no workflow files matched under %s\n' "$workflows_dir" >&2
+        return 1
+    }
+
+    for workflow in "${workflows[@]}"; do
+        [ -r "$workflow" ] || {
+            printf 'FAIL: cannot read %s\n' "$workflow" >&2
+            return 1
+        }
+    done
+
+    # Run the parser directly: a process substitution would hide its failures.
+    PYTHONPATH="$repo_root/scripts" python3 - "$workflows_dir" "$min_uses" "${workflows[@]}" <<'PYTHON'
+from pathlib import Path
+import re
+import sys
+
+from github_yaml import check_local
+
+try:
+    import yaml
+except ImportError:
+    sys.exit("FAIL: action pin check requires PyYAML; install it for python3")
+
+
+def fail(message):
+    sys.exit(f"FAIL: {message}")
+
+
+def mapping(value, location):
+    if not isinstance(value, dict):
+        fail(f"{location} must be a mapping")
+    return value
+
+
+def check_reference(reference, workflow):
+    # Local actions and reusable workflows resolve at the caller's commit.
+    # Remote reusable workflows must still pin a full SHA.
+    if isinstance(reference, str):
+        if reference.startswith("./"):
+            try:
+                check_local(reference)
+            except ValueError as error:
+                fail(f"{workflow.name} {error}")
+            return
+        if re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", reference):
+            return
+    fail(f"{workflow.name} action is not pinned to a 40-hex SHA: {reference}")
+
+
+workflows_dir, minimum, *paths = sys.argv[1:]
+uses_count = 0
+for path in paths:
+    workflow = Path(path)
+    try:
+        document = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError) as error:
+        fail(f"cannot read {workflow}: {error}")
+    except yaml.YAMLError as error:
+        print(error, file=sys.stderr)
+        fail(f"cannot parse {workflow}")
+
+    document = mapping(document, path)
+    if workflow.name in ("action.yml", "action.yaml") and "runs" in document:
+        runs = mapping(document["runs"], f"{path}: runs")
+        if runs.get("using") != "composite":
+            continue  # JavaScript/Docker action metadata has no nested uses.
+        if "steps" not in runs:
+            fail(f"{path}: composite action is missing steps")
+        jobs = {"composite": runs}
+    else:
+        jobs = mapping(document.get("jobs"), f"{path}: jobs")
+    for name, job in jobs.items():
+        location = f"{path}: job {name}"
+        job = mapping(job, location)
+        if "uses" in job:
+            check_reference(job["uses"], workflow)
+            uses_count += 1
+        steps = job.get("steps", [])
+        if not isinstance(steps, list):
+            fail(f"{location}: steps must be a sequence")
+        for index, step in enumerate(steps, start=1):
+            step = mapping(step, f"{location}: step {index}")
+            if "uses" in step:
+                check_reference(step["uses"], workflow)
+                uses_count += 1
+
+if uses_count < int(minimum):
+    fail(f"extracted {uses_count} uses: entries under {workflows_dir}; need at least {minimum}")
+print(f"Checked {uses_count} uses: entries.")
+PYTHON
+}
+
+assert_action_pins "${repo_root}/.github/workflows" 20 "${repo_root}/.github/actions"
+
+# Exercise the shipped checker against both YAML spellings and both locations
+# GitHub accepts: step actions and job-level reusable workflows.
+pin_fixture="${tmp_dir}/pin-fixture"
+mkdir "$pin_fixture"
+
+assert_pin_failure() {
+    local directory="$1" minimum="$2" expected="$3" output
+    if output="$(assert_action_pins "$directory" "$minimum" 2>&1)"; then
+        printf 'FAIL: pin check accepted %s; expected %s\n' "$directory" "$expected" >&2
+        exit 1
+    fi
+    if ! grep -Fxq "$expected" <<<"$output"; then
+        printf 'FAIL: expected %s; got %s\n' "$expected" "$output" >&2
+        exit 1
+    fi
+}
+
+mkdir "$pin_fixture/unpinned"
+for spelling in flow block; do
+    if [[ "$spelling" == block ]]; then
+        printf 'jobs:\n  x:\n    steps:\n      - uses: attacker/exfil@main\n' > "$pin_fixture/unpinned/action.yml"
+    else
+        printf 'jobs: {x: {steps: [{uses: attacker/exfil@main}]}}\n' > "$pin_fixture/unpinned/action.yml"
+    fi
+    # A zero floor ensures only rejection of the unpinned reference can pass.
+    assert_pin_failure "$pin_fixture/unpinned" 0 \
+        "FAIL: action.yml action is not pinned to a 40-hex SHA: attacker/exfil@main"
 done
+
+# The old missed.yml fixture must now be found, counted, and accepted.
+mkdir "$pin_fixture/workflows"
+cat > "$pin_fixture/workflows/missed.yml" <<'EOF'
+on: push
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    steps:
+      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 }
+EOF
+pin_output_file="${tmp_dir}/pin-output.log"
+assert_action_pins "$pin_fixture/workflows" 1 >"$pin_output_file"
+assert_file_pattern "$pin_output_file" 'Checked 1 uses: entries\.' \
+    'the pin checker must report the single discovered action'
+
+cat > "$pin_fixture/workflows/mixed.yaml" <<'EOF'
+jobs:
+  local:
+    uses: ./.github/workflows/local.yml
+  remote: {uses: owner/repo/.github/workflows/build.yml@3d3c42e5aac5ba805825da76410c181273ba90b1}
+  build:
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: |
+          uses: attacker/this-is-command-text@main
+EOF
+assert_action_pins "$pin_fixture/workflows" 4 >"$pin_output_file"
+assert_file_pattern "$pin_output_file" 'Checked 4 uses: entries\.' \
+    'the pin checker must report all four discovered actions'
+assert_pin_failure "$pin_fixture/workflows" 5 \
+    "FAIL: extracted 4 uses: entries under $pin_fixture/workflows; need at least 5"
+
+# A valid companion already clears the floor; no other file may be skipped.
+cp "$pin_fixture/workflows/missed.yml" "$pin_fixture/unpinned/valid.yml"
+printf 'jobs: {x: {steps: [{uses: attacker/exfil@main}]}}\n' > "$pin_fixture/unpinned/action.yml"
+assert_pin_failure "$pin_fixture/unpinned" 1 \
+    "FAIL: action.yml action is not pinned to a 40-hex SHA: attacker/exfil@main"
+for reference in owner/repo/.github/workflows/build.yml@main actions/checkout@1234567; do
+    printf 'jobs: {remote: {uses: %s}}\n' "$reference" > "$pin_fixture/unpinned/action.yml"
+    assert_pin_failure "$pin_fixture/unpinned" 1 \
+        "FAIL: action.yml action is not pinned to a 40-hex SHA: $reference"
+done
+
+# Parse and shape errors must fail even with a valid companion above the floor.
+printf 'jobs: [\n' > "$pin_fixture/unpinned/action.yml"
+assert_pin_failure "$pin_fixture/unpinned" 1 \
+    "FAIL: cannot parse $pin_fixture/unpinned/action.yml"
+printf 'jobs: {x: {steps: invalid}}\n' > "$pin_fixture/unpinned/action.yml"
+assert_pin_failure "$pin_fixture/unpinned" 1 \
+    "FAIL: $pin_fixture/unpinned/action.yml: job x: steps must be a sequence"
+printf 'jobs: {x: {steps: [{uses: null}]}}\n' > "$pin_fixture/unpinned/action.yml"
+assert_pin_failure "$pin_fixture/unpinned" 1 \
+    'FAIL: action.yml action is not pinned to a 40-hex SHA: None'
+
+# A directory-shaped workflow must fail even when valid.yml clears the floor.
+rm "$pin_fixture/unpinned/action.yml"
+mkdir "$pin_fixture/unpinned/blocked.yaml"
+assert_pin_failure "$pin_fixture/unpinned" 1 \
+    "FAIL: cannot read $pin_fixture/unpinned/blocked.yaml: [Errno 21] Is a directory: '$pin_fixture/unpinned/blocked.yaml'"
+
+mkdir "$pin_fixture/no-actions"
+printf 'jobs: {x: {steps: [{run: echo hello}]}}\n' > "$pin_fixture/no-actions/run.yml"
+assert_pin_failure "$pin_fixture/no-actions" 1 \
+    "FAIL: extracted 0 uses: entries under $pin_fixture/no-actions; need at least 1"
+
+# -S omits site-packages, including the external YAML parser, for this call only.
+(
+    python3() { command python3 -S "$@"; }
+    assert_pin_failure "$pin_fixture/workflows" 4 \
+        'FAIL: action pin check requires PyYAML; install it for python3'
+)
+
+# Discovery must fail with its own diagnostic, even when the count floor is zero.
+mkdir "$pin_fixture/empty"
+assert_pin_failure "$pin_fixture/empty" 0 \
+    "FAIL: no workflow files matched under $pin_fixture/empty"
+
+# The readable workflow clears the floor on its own: a skipped file must not
+# masquerade as a workflow with no uses. Root bypasses mode 000 permissions.
+if (( EUID == 0 )); then
+    printf 'SKIP: unreadable workflow fixture requires a non-root user\n' >&2
+else
+    mkdir "$pin_fixture/unreadable"
+    printf 'jobs: {local: {uses: ./.github/workflows/local.yml}}\n' > "$pin_fixture/unreadable/readable.yml"
+    cp "$pin_fixture/unreadable/readable.yml" "$pin_fixture/unreadable/blocked.yaml"
+    assert_action_pins "$pin_fixture/unreadable" 1
+    chmod 000 "$pin_fixture/unreadable/blocked.yaml"
+    assert_pin_failure "$pin_fixture/unreadable" 1 \
+        "FAIL: cannot read $pin_fixture/unreadable/blocked.yaml"
+fi
+
 if grep -Fq -- '--no-verify' "$release_workflow"; then
     printf 'FAIL: release publication skips generated crate verification\n' >&2
     exit 1
 fi
 
-if grep -Eiq '(^|[[:space:]])(cargo|npm)[[:space:]]+publish|gh[[:space:]]+release[[:space:]]+create' "$rehearsal"; then
-    printf 'FAIL: rehearsal contains a publication command\n' >&2
-    exit 1
-fi
+python3 "$repo_root/scripts/check-rehearsal-publication.py" "$rehearsal"
+
+# Mutate source text only: none of these publication commands is executed.
+python3 - "$repo_root" <<'PYTHON'
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+root = Path(sys.argv[1])
+checker = root / "scripts/check-rehearsal-publication.py"
+source = (root / "scripts/release_rehearsal.sh").read_text(encoding="utf-8")
+mutations = [
+    "cargo publish",
+    'CARGO_BIN=cargo\n"$CARGO_BIN" publish',
+    'cargo_args=(publish)\ncargo "${cargo_args[@]}"',
+    "npm publish --access public",
+    "gh release create v9.9.9",
+    "{ gh release create v9.9.9; }",
+    "echo `gh release create v9.9.9`",
+    "sudo gh release create v9.9.9",
+    "time -p gh release create v9.9.9",
+    "env -i gh release create v9.9.9",
+    "command -p gh release create v9.9.9",
+    "nohup gh release create v9.9.9",
+    "xargs gh release create < f",
+    "if time -p env -i FOO='two words' command -p gh release create v9.9.9; then :; fi",
+    "true && sudo nohup git push origin v9.9.9",
+    "{ env -i git tag v9.9.9; }",
+    'echo "`command -p gh release create v9.9.9`"',
+    "if gh release create v9.9.9; then :; fi",
+    "if true; then gh release create v9.9.9; fi",
+    "if false; then :; else gh release create v9.9.9; fi",
+    "if false; then :; elif gh release create v9.9.9; then :; fi",
+    "for release in v9.9.9; do gh release create v9.9.9; done",
+    "while gh release create v9.9.9; do break; done",
+    "until gh release create v9.9.9; do break; done",
+    "! gh release create v9.9.9",
+    "command gh release create v9.9.9",
+    "exec gh release create v9.9.9",
+    "time gh release create v9.9.9",
+    "env gh release create v9.9.9",
+    "env X=1 cargo owner --add foo sysknife-cli",
+    "FOO=1 gh release create v9.9.9",
+    "FOO= gh release create v9.9.9",
+    "env FOO='two words' gh release create v9.9.9",
+    'FOO="two words" gh release create v9.9.9',
+    "if command git push origin v9.9.9; then :; fi",
+    "if ! env FOO=1 BAR=2 command gh release create v9.9.9; then :; fi",
+    "git tag v9.9.9",
+    "git push origin v9.9.9",
+    "gh api -X POST repos/o/r/releases",
+    "curl -X PUT https://crates.io/api/v1/crates/new",
+    "wget --post-file=x.crate https://crates.io/api/v1/crates/new",
+    "out=$(cargo publish --dry-run)",
+    "true && npm publish",
+    # A reviewed substring must not conceal an additional command on its line.
+    "cargo metadata --locked; gh api -X POST repos/o/r/releases",
+    "# never publishes packages, creates tags; cargo publish",
+]
+
+def run(check, path, expected=None):
+    result = subprocess.run([sys.executable, str(check), str(path)],
+                            capture_output=True, text=True)
+    if expected is None:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0, f"accepted {path}"
+        assert expected in result.stderr, result.stderr
+
+with tempfile.TemporaryDirectory() as directory:
+    directory = Path(directory)
+    candidate = directory / "rehearsal.sh"
+    candidate.write_text(source, encoding="utf-8")
+    run(checker, candidate)
+    # Tool names in comments and ordinary output are not invocations.
+    for harmless in (
+        "# if gh release create v9.9.9",
+        "printf '%s\\n' 'if gh release create'",
+        "# { sudo gh release create v9.9.9; }",
+        "# echo `gh release create v9.9.9`",
+        "printf '%s\\n' 'time -p env -i command -p gh release create'",
+    ):
+        candidate.write_text(source + "\n" + harmless + "\n", encoding="utf-8")
+        run(checker, candidate)
+    for mutation in mutations:
+        candidate.write_text(source + "\n" + mutation + "\n", encoding="utf-8")
+        run(checker, candidate, "not on the reviewed list")
+    candidate.write_text(source, encoding="utf-8")
+    for pattern in ("PUBLICATION_PATTERN", "TOOL_PATTERN"):
+        broken = directory / "broken-checker.py"
+        text = checker.read_text(encoding="utf-8")
+        anchor = f"{pattern} = "
+        assert text.count(anchor) == 1, f"missing mutation anchor {anchor}"
+        lines = text.splitlines()
+        lines = ['%s = r"(?!)"' % pattern if line.startswith(anchor) else line
+                 for line in lines]
+        broken.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        run(broken, candidate, "screen read 0 line(s)")
+    run(checker, directory / "missing.sh", "cannot read")
+    candidate.write_text("", encoding="utf-8")
+    run(checker, candidate, "screen read 0 line(s)")
+print(f"Publication guard: clean source accepted; {len(mutations) + 4} mutations/invalid inputs rejected.")
+PYTHON
+
+python3 "$repo_root/tests/test_github_yaml.py"
 
 printf 'Release rehearsal contract passed.\n'

@@ -18,6 +18,8 @@ SCRIPT="$ROOT/packaging/sysknife-grub-kargs-edit"
 
 python3 - "$SCRIPT" <<'PY'
 import importlib.util
+import os
+import re
 import sys
 from importlib.machinery import SourceFileLoader
 
@@ -154,6 +156,47 @@ for tok in DEBUG_SHELL:
 for tok in ["quiet", "splash", "nomodeset", "console=ttyS0", "transparent_hugepage=madvise"]:
     if refused_append(tok):
         failures.append(f"--append {tok!r} was refused, but it carries no security meaning")
+
+# 3e. PARITY with the daemon's own list, derived rather than restated.
+#     The helper's header says it enforces the same policy independently
+#     because it is directly sudo-invocable through the wildcard grant. It
+#     held ("emergency", "rescue", "single") while the daemon's
+#     ROOT_SHELL_UNITS held five, so `systemd.unit=debug-shell.service` and
+#     `systemd.unit=runlevel1.target` reached the boot line through a direct
+#     call. systemd-debug-generator then pulls debug-shell.service into the
+#     boot transaction, which is a root shell on tty9 with no login prompt,
+#     persisting across reboots, with no preview, no approval receipt and no
+#     row in the signed chain.
+#
+#     Reading the daemon's list out of its source is the point. A copy of it
+#     here would drift exactly the way the helper drifted.
+repo_root = os.path.dirname(os.path.dirname(os.path.abspath(script_path)))
+validate_rs = os.path.join(repo_root, "crates/sysknife-daemon/src/actions/validate.rs")
+try:
+    rust_src = open(validate_rs, encoding="utf-8").read()
+except OSError as exc:
+    failures.append(f"cannot read {validate_rs}: {exc}; the parity check inspected nothing")
+    rust_src = ""
+decl = re.search(r"ROOT_SHELL_UNITS:\s*&\[&str\]\s*=\s*&\[(.*?)\];", rust_src, re.S)
+if decl is None:
+    failures.append(
+        "ROOT_SHELL_UNITS not found in validate.rs; this check would pass over an "
+        "empty set, so it fails instead")
+else:
+    daemon_units = set(re.findall(r'"([^"]+)"', decl.group(1)))
+    if not daemon_units:
+        failures.append("ROOT_SHELL_UNITS parsed as empty; refusing to compare against nothing")
+    helper_units = set(getattr(mod, "DENY_UNIT_TARGETS", ()))
+    missing = sorted(daemon_units - helper_units)
+    if missing:
+        failures.append(
+            f"DENY_UNIT_TARGETS is missing {missing}, which the daemon's ROOT_SHELL_UNITS "
+            "refuses; a direct sudo call to this helper bypasses the daemon entirely")
+    # And prove it behaviourally, so the lists agreeing is not the only evidence.
+    for unit in sorted(daemon_units):
+        for spelling in (f"systemd.unit={unit}.service", f"systemd.unit={unit}.target"):
+            if not refused_append(spelling):
+                failures.append(f"--append {spelling!r} was accepted; it yields a root shell")
 
 # 4. WIRING: main() must call the screen. Drive it end to end with a protective
 #    --delete and assert it exits non-zero before reading /etc/default/grub.

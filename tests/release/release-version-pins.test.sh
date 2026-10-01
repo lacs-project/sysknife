@@ -5,23 +5,30 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 fixture="$(mktemp -d)"
 trap 'rm -rf "$fixture"' EXIT
 
+# The fixture is built from release-versions.json, not from a list kept here.
+# This file used to carry its own copy of every manifest, which made four
+# places that had to agree about what a release touches: this test, the
+# checker, the bump script and the registry. Deriving it means a new crate is
+# registered once.
 paths=(
     scripts/check_release_versions.sh
-    apps/sysknife-cli/Cargo.toml
-    apps/sysknife-shell/package.json
-    apps/sysknife-shell/package-lock.json
-    apps/sysknife-shell/src-tauri/Cargo.toml
-    apps/sysknife-shell/src-tauri/tauri.conf.json
-    crates/sysknife-brain/Cargo.toml
-    crates/sysknife-core/Cargo.toml
-    crates/sysknife-daemon-test/Cargo.toml
-    crates/sysknife-daemon/Cargo.toml
-    crates/sysknife-proto/Cargo.toml
-    crates/sysknife-types/Cargo.toml
-    packages/setup/package.json
-    .codex-plugin/plugin.json
-    server.json
+    scripts/release_versions.py
+    release-versions.json
 )
+if ! registered="$(python3 "$repo_root/scripts/release_versions.py" sites)"; then
+    echo "FAIL: could not read the version registry; the fixture would be empty" >&2
+    exit 1
+fi
+while IFS= read -r site; do
+    [ -n "$site" ] && paths+=("$site")
+done <<<"$registered"
+
+# A fixture built from an empty registry would make every assertion below pass
+# over nothing, which is the shape this repository keeps catching.
+if [ "${#paths[@]}" -le 3 ]; then
+    echo "FAIL: the registry named no version sites; the fixture inspects nothing" >&2
+    exit 1
+fi
 
 for path in "${paths[@]}"; do
     mkdir -p "$fixture/$(dirname "$path")"

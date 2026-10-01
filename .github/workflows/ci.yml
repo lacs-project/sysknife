@@ -20,10 +20,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: "24"
 
@@ -36,22 +36,42 @@ jobs:
         run: python tests/test_firewall_state.py
 
       # Pinned, because this job holds the workflow token: an unpinned global
-      # install lets a compromised release of any of these three run arbitrary
+      # install lets a compromised release of any of these tools run arbitrary
       # code on the trusted side of the build. Bump deliberately.
       - name: Install lint tools
         run: |
           npm install --global markdownlint-cli2@0.23.2 markdown-link-check@3.15.0
           python -m pip install --upgrade pip
-          pip install yamllint==1.38.0
+          pip install yamllint==1.38.0 PyYAML==6.0.2
+
+      - name: Test action pin comment verification
+        run: bash tests/release/action-pin-comments.test.sh
+
+      - name: Verify action pin version comments
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/verify-action-pins.sh
 
       - name: Check required repository files
         run: bash scripts/check_repo_completeness.sh
 
+      - name: Check every release and E2E test is invoked by a gate
+        run: bash scripts/check_test_reachability.sh
+
+      - name: Test the reachability gate
+        run: bash tests/release/test-reachability.test.sh
+
       - name: Check release version consistency
         run: bash scripts/check_release_versions.sh
 
+      - name: Check the release waits for crates.io to index each crate
+        run: bash tests/release/crates-index-poll.test.sh
+
       - name: Test internal dependency pin coverage
         run: bash tests/release/release-version-pins.test.sh
+
+      - name: Test the version-site registry is complete
+        run: bash tests/release/version-sites.test.sh
 
       - name: Check public support and approval claims
         run: bash tests/release/public-claims.test.sh
@@ -77,6 +97,9 @@ jobs:
       - name: Check mount-edit refuses symlinked mountpoints
         run: bash tests/release/mount-edit.test.sh
 
+      - name: Check scheduled-job unit collision safety
+        run: bash tests/release/scheduled-job-edit.test.sh
+
       - name: Check a replay reproduces the run that recorded it
         run: bash tests/release/cassette-replay-parity.test.sh
 
@@ -89,8 +112,14 @@ jobs:
       - name: Check no workflow pins an end-of-life Node release
         run: bash tests/release/node-eol.test.sh
 
+      - name: Check npm audit stays off the pull-request path
+        run: bash tests/release/npm-audit-off-pr-path.test.sh
+
       - name: Check tracked files use portable line endings
         run: bash tests/release/tracked-eol.test.sh
+
+      - name: Check ShellCheck covers every tracked shell file
+        run: bash tests/release/shellcheck-coverage.test.sh
 
       - name: Check systemd directory modes match tmpfiles
         run: bash tests/release/systemd-directory-modes.test.sh
@@ -103,6 +132,12 @@ jobs:
 
       - name: Check grub-kargs-edit screens karg deletions
         run: bash tests/release/grub-kargs-edit.test.sh
+
+      - name: Check sudoers-edit refuses ALL-equivalent grants
+        run: bash tests/release/sudoers-edit.test.sh
+
+      - name: Check fail2ban-ban builds a fixed argv
+        run: bash tests/release/fail2ban-ban.test.sh
 
       - name: Check the docs share cards name an image the build produces
         run: bash tests/release/docs-share-cards.test.sh
@@ -126,6 +161,26 @@ jobs:
 
       - name: Check markdown link file discovery
         run: bash tests/release/markdown-link-files.test.sh
+
+      - name: Install mdBook and plugins
+        env:
+          MDBOOK_VERSION: "0.4.40"
+          MDBOOK_ADMONISH_VERSION: "1.18.0"
+          MDBOOK_SHA256: "9ef07fd288ba58ff3b99d1c94e6d414d431c9a61fdb20348e5beb74b823d546b"
+          MDBOOK_ADMONISH_SHA256: "5d19ec6376c646204235f197c91398cf95873e96e6100982137112056da96fe4"
+        run: |
+          set -euo pipefail
+          curl -sSfL -o mdbook.tar.gz \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${MDBOOK_SHA256}  mdbook.tar.gz" | sha256sum --check --strict -
+          tar -xzf mdbook.tar.gz --directory /usr/local/bin
+          curl -sSfL -o mdbook-admonish.tar.gz \
+            "https://github.com/tommilligan/mdbook-admonish/releases/download/v${MDBOOK_ADMONISH_VERSION}/mdbook-admonish-v${MDBOOK_ADMONISH_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${MDBOOK_ADMONISH_SHA256}  mdbook-admonish.tar.gz" | sha256sum --check --strict -
+          tar -xzf mdbook-admonish.tar.gz --directory /usr/local/bin
+
+      - name: Check generated mdBook HTML links
+        run: bash tests/release/mdbook-links.test.sh
 
       - name: Check provider parity across E2E entry points
         run: bash tests/e2e/provider-parity.test.sh
@@ -201,7 +256,7 @@ jobs:
           [[ "$count" -gt 0 ]] || { printf 'markdown-link-files: no files checked\n' >&2; exit 1; }
 
       - name: Lint GitHub issue templates
-        run: yamllint .github/ISSUE_TEMPLATE/*.yml .github/workflows/*.yml
+        run: bash scripts/lint-github-yaml.sh
 
   frontend:
     runs-on: ubuntu-latest
@@ -210,18 +265,20 @@ jobs:
         working-directory: apps/sysknife-shell
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: "24"
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
+      # No npm audit here. It gated every pull request on registry.npmjs.org,
+      # so an outage failed this required job like a real advisory would (#367).
+      # It runs against main in npm-audit.yml; dependency-review below covers
+      # what a pull request introduces.
 
       - name: Type check
         run: ./node_modules/.bin/tsc --noEmit
@@ -240,7 +297,7 @@ jobs:
       CARGO_INCREMENTAL: 0
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Tauri system dependencies
         run: |
@@ -253,9 +310,13 @@ jobs:
             patchelf
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable (branch)
         with:
+          toolchain: stable
           components: rustfmt, clippy
+
+      - name: Check release crate lists against Cargo metadata
+        run: bash tests/release/release-crates.test.sh
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
@@ -276,7 +337,7 @@ jobs:
         run: cargo doc --no-deps --workspace --locked
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2
+        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172  # v2.87.20
         with:
           tool: cargo-nextest
 
@@ -308,10 +369,12 @@ jobs:
       SYSKNIFE_REQUIRE_POSTGRES: "1"
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable (branch)
+        with:
+          toolchain: stable
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
@@ -328,10 +391,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2
+        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172  # v2.87.20
         with:
           tool: cargo-audit
 
@@ -356,7 +419,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Review dependency changes
         # dependency-review requires GitHub Advanced Security + the dependency
@@ -366,6 +429,6 @@ jobs:
         # (job stays green) while private and runs for real once public. The
         # job itself always runs, so this required check always reports a status.
         if: github.event.repository.visibility == 'public'
-        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v4
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
         with:
           fail-on-severity: high

@@ -429,6 +429,9 @@ fn build_forwarder(
     let Some(syslog) = forward.syslog.as_ref() else {
         return Ok(None);
     };
+    syslog
+        .validate()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
     let host: std::net::SocketAddr = syslog.host.parse().map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -441,6 +444,7 @@ fn build_forwarder(
     Ok(Some(audit_forward::spawn(AuditSinkSpec::SyslogUdp {
         host,
         facility: syslog.facility,
+        enterprise_number: syslog.enterprise_number,
     })))
 }
 
@@ -491,16 +495,9 @@ async fn build_postgres_audit(
     }
 
     // The Postgres backend uses the same on-disk audit key as SQLite for
-    // chain signature computation. Resolution mirrors `TransactionStore::open`:
-    // env var > sibling of `database_path` > production default.
-    let key_path = std::env::var("SYSKNIFE_AUDIT_KEY_PATH")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            sysknife_core::default_database_path()
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .join("audit-key")
-        });
+    // chain signature computation. An explicit env var wins; otherwise the key
+    // stays beside the default SQLite path because Postgres has no local database file.
+    let key_path = audit_chain::resolve_audit_key_path(&sysknife_core::default_database_path());
     let key = audit_chain::AuditKey::load_or_generate(&key_path)
         .map_err(|e| std::io::Error::other(format!("audit key load failed: {e}")))?;
 
@@ -641,5 +638,21 @@ mod tests {
             "with all reclaimed permits held, further acquires must be refused"
         );
         drop(reclaimed);
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn build_forwarder_refuses_a_zero_enterprise_number() {
+        use sysknife_core::config::{AuditForwardSection, AuditSection, SyslogForwardSection};
+        let audit = AuditSection {
+            forward: Some(AuditForwardSection {
+                syslog: Some(SyslogForwardSection {
+                    host: "127.0.0.1:65000".to_string(),
+                    facility: 1,
+                    enterprise_number: 0,
+                }),
+            }),
+        };
+        let err = super::build_forwarder(Some(&audit))
+            .expect_err("a zero PEN must stop the daemon building a forwarder");
+        assert!(err.to_string().contains("enterprise_number"), "got: {err}");
     }
 }

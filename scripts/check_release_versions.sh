@@ -1,92 +1,52 @@
 #!/usr/bin/env bash
+# Every place the release version lives must agree, and must match the tag.
+#
+# Where those places ARE is declared once, in release-versions.json, and read
+# by scripts/release_versions.py. scripts/bump_version.sh writes from the same
+# registry, so the writer and the checker cannot hold different ideas of what
+# a release touches. Keeping a second list here is exactly how they drift, and
+# tests/release/version-sites.test.sh fails if either stops reading it.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 expected="${1:-}"
 expected="${expected#v}"
 
-manifests=(
-    apps/sysknife-cli/Cargo.toml
-    apps/sysknife-shell/src-tauri/Cargo.toml
-    crates/sysknife-brain/Cargo.toml
-    crates/sysknife-core/Cargo.toml
-    crates/sysknife-daemon-test/Cargo.toml
-    crates/sysknife-daemon/Cargo.toml
-    crates/sysknife-proto/Cargo.toml
-    crates/sysknife-types/Cargo.toml
-)
+# Command substitution, not process substitution: `< <(...)` discards the
+# exit status, so a registry error printed a diagnostic and this script still
+# reported every version matching.
+if ! values="$(python3 "$repo_root/scripts/release_versions.py" values)"; then
+    printf 'Could not read the version registry; nothing was checked.\n' >&2
+    exit 1
+fi
+if ! pin_count="$(python3 "$repo_root/scripts/release_versions.py" pincount)"; then
+    printf 'Could not count internal dependency pins; nothing was checked.\n' >&2
+    exit 1
+fi
 
-versions=()
-for manifest in "${manifests[@]}"; do
-    version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$repo_root/$manifest" | head -n 1)"
-    if [[ -z "$version" ]]; then
-        printf 'No package version found in %s\n' "$manifest" >&2
-        exit 1
-    fi
-    versions+=("$version")
-done
-
-versions+=("$(node -p "require('$repo_root/apps/sysknife-shell/package.json').version")")
-versions+=("$(node -p "require('$repo_root/apps/sysknife-shell/package-lock.json').version")")
-versions+=("$(node -p "require('$repo_root/apps/sysknife-shell/src-tauri/tauri.conf.json').version")")
-versions+=("$(node -p "require('$repo_root/packages/setup/package.json').version")")
-# The Codex plugin manifest reports the version to plugin directories, so a
-# release that forgets it publishes a listing that misstates what is shipped.
-versions+=("$(node -p "require('$repo_root/.codex-plugin/plugin.json').version")")
-# server.json is the manifest published to the official MCP Registry. Its
-# version names the crate version whose rendered README carries the ownership
-# marker, so a stale value here fails authorization at publish time.
-versions+=("$(node -p "require('$repo_root/server.json').version")")
-versions+=("$(node -p "require('$repo_root/server.json').packages[0].version")")
+mapfile -t versions <<<"$values"
+# An empty list means the registry moved, not that everything agrees. Refuse
+# rather than report success over nothing.
+if [[ ${#versions[@]} -eq 0 || -z "${versions[0]}" ]]; then
+    printf 'The version registry resolved no sites; refusing to check nothing.\n' >&2
+    exit 1
+fi
 
 baseline="${versions[0]}"
 for version in "${versions[@]}"; do
     if [[ "$version" != "$baseline" ]]; then
-        printf 'Release versions are inconsistent: expected %s, found %s\n' "$baseline" "$version" >&2
+        printf 'Release versions are inconsistent: expected %s, found %s\n' \
+            "$baseline" "$version" >&2
+        printf 'Run scripts/release_versions.py values to see every site.\n' >&2
         exit 1
     fi
 done
 
 if [[ -n "$expected" && "$baseline" != "$expected" ]]; then
-    printf 'Release tag version %s does not match package version %s\n' "$expected" "$baseline" >&2
+    printf 'Release tag version %s does not match package version %s\n' \
+        "$expected" "$baseline" >&2
     exit 1
 fi
-
-# Internal path dependencies carry an explicit `version` next to `path`, and that
-# field is what crates.io resolves at publish time. A bump that misses one
-# publishes sysknife-brain 0.9.0 depending on sysknife-core ^0.8.0, which resolves
-# to the crate already on the registry instead of the tree that was just built,
-# and the mistake is invisible until someone builds against the published crate.
-# The package-version loop above reads only `[package] version`, so these need
-# their own pass.
-pins="$(grep -rn '^sysknife-[a-z-]* = {' \
-    "$repo_root"/crates/*/Cargo.toml \
-    "$repo_root"/apps/sysknife-cli/Cargo.toml \
-    "$repo_root"/apps/sysknife-shell/src-tauri/Cargo.toml || true)"
-
-# An empty result means the manifests moved, not that every pin agrees. Fail
-# loudly rather than reporting success for a check that inspected nothing.
-if [[ -z "$pins" ]]; then
-    printf 'No internal dependency pins found; the manifest paths in %s are stale.\n' \
-        "${BASH_SOURCE[0]}" >&2
-    exit 1
-fi
-
-pin_count=0
-while IFS= read -r pin; do
-    pin_count=$((pin_count + 1))
-    pinned="$(printf '%s' "$pin" | sed -n 's/.*version = "\([^"]*\)".*/\1/p')"
-    if [[ -z "$pinned" ]]; then
-        printf 'Internal dependency is missing an explicit version pin:\n  %s\n' \
-            "$pin" >&2
-        exit 1
-    fi
-    if [[ "$pinned" != "$baseline" ]]; then
-        printf 'Internal dependency pin does not match package version %s:\n  %s\n' \
-            "$baseline" "$pin" >&2
-        exit 1
-    fi
-done <<< "$pins"
 
 printf 'All release versions match %s (%d internal dependency pins checked).\n' \
     "$baseline" "$pin_count"

@@ -5,7 +5,7 @@ natural-language intent into a risk-labelled plan, asks for approval where
 needed, and streams execution output in real time.
 
 If you want SysKnife inside Claude Code / Cursor / Codex CLI instead, see
-the [main README](../README.md) and run `npx sysknife-setup`. Both paths
+the [main README](https://github.com/lacs-project/sysknife/blob/main/README.md) and run `npx sysknife-setup`. Both paths
 share the daemon, the audit chain, and the typed-action set.
 
 <img
@@ -87,10 +87,11 @@ Sample output:
 
 ```text
 ✓  daemon ok
-  socket    /run/sysknife/daemon.sock
+  socket    unix:///run/sysknife/daemon.sock
   host      my-silverblue
   provider  anthropic
   model     claude-sonnet-4-6
+  distro    fedora
 ```
 
 ---
@@ -115,7 +116,7 @@ sysknife history --status succeeded --limit 5 --since 2026-04-10T00:00:00Z
 | `--limit N` | `20` | Maximum entries to return |
 | `--status STATUS` | — | Filter by job status (`succeeded`, `failed`, `canceled`, …) |
 | `--action ACTION` | — | Filter by action name (e.g. `InstallPackages`) |
-| `--since DATETIME` | — | Only entries after this UTC RFC 3339 timestamp |
+| `--since DATETIME` | — | Only entries after this ISO-8601 date or UTC-qualified datetime |
 
 ---
 
@@ -131,6 +132,28 @@ action name.
 ```sh
 sysknife approve 018f2c9d-...
 sysknife --json approve 018f2c9d-...
+sysknife approve 018f2c9d-... --full
+```
+
+The proposed change is displayed through a bounded renderer: 40 lines, 512
+characters per line. The bounds are there so a long change cannot scroll the
+action name and risk level off the screen before you answer.
+
+When the bounds hide anything, approval is refused rather than accepted, and the
+message says how many lines were withheld and how many were cut short. Approving
+a change you were shown part of would produce a receipt proving you typed a word,
+not that you read what you agreed to.
+
+`--full` prints every line and every character, with the same neutralisation
+applied, and prints the action, risk and summary **after** the change so the
+decision context is the last thing on screen however long the change is. Pipe it
+to a pager if you like; the text cannot rewrite your terminal either way.
+
+```text
+$ sysknife approve 018f2c9d-...
+error: the proposed change does not fit the approval view: 132 line(s) were not
+shown. Approving would mean consenting to text you were not shown. Re-run with
+--full to see all of it: sysknife approve 018f2c9d-... --full
 ```
 
 Give the printed `approval_receipt` to the MCP client for that exact step. The
@@ -185,13 +208,17 @@ itself rather than as a sanitised report.
 Verify the audit trail: the transaction chain, the approval-event chain, and
 the binding between them. All three are reported and any one can fail the
 command. Exits `0` if everything is intact, `1` if any check finds tampering,
-`2` if a check cannot run at all (missing key, unreadable database). When the
-checks disagree the worst wins, and `1` outranks `2` — if something is provably
-broken, "could not verify" would understate it.
+`2` if a check cannot establish the history (missing key, unreadable database,
+or an empty unanchored transaction log). When the checks disagree the worst
+wins, and `1` outranks `2` — if something is provably broken, "could not verify"
+would understate it.
 
 With `--json` the report is an object with a top-level `status` plus a `chain`,
 `approval_events` and `binding` section, so a pipeline can act on which part
-failed.
+failed. A readable empty transaction log without an independent anchor reports
+`CANNOT VERIFY`, exit `2`, and top-level JSON `cannot_verify`, whether it is a
+fresh store or an erased one. Its `chain` subresult still reports zero intact
+rows: that row-integrity check does not establish which history occurred.
 
 ```sh
 sysknife audit verify
@@ -329,8 +356,13 @@ environment variable as well:
 
 ```sh
 SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1 \
-  sysknife --dangerously-skip-approval --json "apply pending security updates"
+  sysknife --dangerously-skip-approval --yes --max-risk high --json \
+     "apply pending security updates"
 ```
+
+`--yes` is not optional here. The flag raises the ceiling that `--yes` is
+clamped to; it does not switch auto-approval on by itself, so without `--yes`
+the run reaches the first prompt, reads EOF on a closed stdin and exits 1.
 
 Neither half is enough alone. A flag left in a script and a variable left in a
 shell profile are the two ways this gets armed by accident, and requiring both
@@ -404,7 +436,7 @@ snapshot beforehand costs less than the alternative.
 | Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | Plan or step **refused** — you rejected it, it exceeded the configured risk ceiling, or approval was required but the session is non-interactive |
+| `1` | Plan or step **refused** — you rejected it, it exceeded the configured risk ceiling, approval was required but the session is non-interactive, or the planner declined the request outright (distinct from a planning failure, which is `3`) |
 | `2` | **Execution failed**, a command-line usage error, or the whole-command `--timeout` expired (see below) |
 | `3` | **Planning failed** — LLM error, provider unreachable, or the intent could not be turned into a plan |
 | `4` | **Configuration or daemon error** — invalid configuration, or the daemon could not be reached |
@@ -501,7 +533,7 @@ sysknife --yes --max-risk low --non-interactive --timeout 60 \
 # Unattended, including HIGH-risk steps. Both keys are required, and every
 # step is recorded in the signed chain as having had no human approval.
 SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1 \
-  sysknife --dangerously-skip-approval --json --timeout 300 \
+  sysknife --dangerously-skip-approval --yes --max-risk high --json --timeout 300 \
      "apply pending security updates"
 ```
 

@@ -37,7 +37,7 @@ containers, 6m56s on 24.04 and 11m43s on 22.04. `cmake` is **not** required.
 Faster, and it installs both halves plus your MCP client config:
 
 ```sh
-npx sysknife-setup            # needs Node 18+
+npx sysknife-setup            # needs Node 22+
 ```
 
 The wizard downloads SHA-256-verified binaries from the release page, so there

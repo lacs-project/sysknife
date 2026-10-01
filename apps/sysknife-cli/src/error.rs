@@ -76,6 +76,25 @@ pub enum CliError {
     )]
     ApprovalNeedsTerminal,
 
+    /// The proposed change did not fit the approval view.
+    ///
+    /// The prompt marked the omission and let the approval through anyway, so a
+    /// receipt could be taken on a change the operator had seen the first forty
+    /// lines of. The receipt still proved a human typed a word; it no longer
+    /// proved the human read what they were approving. Refusing, and naming the
+    /// flag that shows all of it, is the whole fix: nothing becomes
+    /// unapprovable, it costs one word on the command line.
+    #[error(
+        "the proposed change does not fit the approval view: {withheld} line(s) were not \
+         shown{shortened_note}. Approving would mean consenting to text you were not shown. \
+         Re-run with --full to see all of it: sysknife approve {transaction_id} --full"
+    )]
+    ApprovalViewIncomplete {
+        transaction_id: String,
+        withheld: usize,
+        shortened_note: String,
+    },
+
     /// Produced by subcommands that have their own exit-code semantics (e.g.
     /// `sysknife audit verify` uses 0/1/2). The wrapped value is the literal
     /// exit code the process should return.
@@ -94,7 +113,8 @@ impl CliError {
             | Self::RiskCeilingExceeded { .. }
             | Self::NonInteractive
             | Self::UnattendedConsentMissing(_)
-            | Self::ApprovalNeedsTerminal => 1,
+            | Self::ApprovalNeedsTerminal
+            | Self::ApprovalViewIncomplete { .. } => 1,
             Self::ExecutionFailed(_) | Self::TimedOut(_) => 2,
             Self::PlanningFailed(_) => 3,
             Self::ConfigOrDaemon(_) => 4,

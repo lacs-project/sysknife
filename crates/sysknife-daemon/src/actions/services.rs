@@ -15,7 +15,7 @@ pub fn specs() -> Vec<ActionSpec> {
         reload_service("nginx.service"),
         list_timers(),
         reload_daemon(),
-        create_scheduled_job("sysknife-example", "/usr/bin/true", "*-*-* 02:00:00"),
+        create_scheduled_job("example", "/usr/bin/true", "*-*-* 02:00:00"),
         get_service_resource_limits("nginx.service"),
         set_service_resource_limits(
             "nginx.service",
@@ -74,14 +74,52 @@ pub fn set_service_resource_limits(unit: &str, assignments: &[String]) -> Action
 /// See `packaging/sysknife-scheduled-job-edit` and the matching NOPASSWD grant
 /// in `packaging/sysknife-sudoers`.
 const SCHEDULED_JOB_HELPER: &str = "/usr/lib/sysknife/scheduled-job-edit";
+const SCHEDULED_JOB_UNIT_DIR: &str = "/etc/systemd/system";
+const SCHEDULED_JOB_UNIT_PREFIX: &str = "sysknife-";
+
+/// Return the exact unit paths owned by a validated scheduled-job name.
+///
+/// The daemon owns this preview/display string; the privileged helper performs
+/// the actual exclusive filesystem create using the same fixed namespace.
+pub fn scheduled_job_unit_paths(name: &str) -> Option<(String, String)> {
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+
+    let stem = format!("{SCHEDULED_JOB_UNIT_PREFIX}{name}");
+    Some((
+        format!("{SCHEDULED_JOB_UNIT_DIR}/{stem}.service"),
+        format!("{SCHEDULED_JOB_UNIT_DIR}/{stem}.timer"),
+    ))
+}
+
+/// Installed path of the bounded multi-step helper.
+///
+/// The eight unit verbs run through `action-steps unit <verb> <unit>` rather
+/// than through a `sudo systemctl <verb> *` grant. sudoers matches arguments as
+/// one concatenated string, so the unit name sat in a wildcard that also
+/// accepted `debug-shell.service`, which the daemon's own `ROOT_SHELL_UNITS`
+/// denylist refuses and a grant cannot. The helper applies that denylist again,
+/// for the verbs that bring a unit up, on whatever path reaches it.
+const ACTION_STEPS: &str = "/usr/lib/sysknife/action-steps";
 
 /// Create a recurring scheduled job as a systemd `.service` + `.timer` pair.
 ///
 /// Risk: High. Persistent root-scheduled execution. Delegates to the root-owned
 /// helper, which re-validates the job name, rejects control characters in the
 /// command (blocking unit-file injection), validates the `OnCalendar`
-/// expression with `systemd-analyze calendar`, writes the units,
-/// `daemon-reload`s, and enables+starts the timer. The command is written to
+/// expression with `systemd-analyze calendar`, creates only namespaced
+/// `sysknife-<name>` units without overwriting existing paths, `daemon-reload`s,
+/// and enables+starts the timer. The command is written to
 /// `ExecStart`, which systemd argv-splits with no shell.
 pub fn create_scheduled_job(name: &str, command: &str, schedule: &str) -> ActionSpec {
     ActionSpec {
@@ -126,7 +164,7 @@ pub fn list_services() -> ActionSpec {
 pub fn start_service(unit: &str) -> ActionSpec {
     ActionSpec {
         action_name: "StartService",
-        mechanism: command_mechanism("sudo", ["systemctl", "start", unit]),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "unit", "start", unit]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
@@ -136,7 +174,7 @@ pub fn start_service(unit: &str) -> ActionSpec {
 pub fn stop_service(unit: &str) -> ActionSpec {
     ActionSpec {
         action_name: "StopService",
-        mechanism: command_mechanism("sudo", ["systemctl", "stop", unit]),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "unit", "stop", unit]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
@@ -146,7 +184,7 @@ pub fn stop_service(unit: &str) -> ActionSpec {
 pub fn restart_service(unit: &str) -> ActionSpec {
     ActionSpec {
         action_name: "RestartService",
-        mechanism: command_mechanism("sudo", ["systemctl", "restart", unit]),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "unit", "restart", unit]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
@@ -158,7 +196,7 @@ pub fn set_service_enabled(unit: &str, enabled: bool) -> ActionSpec {
 
     ActionSpec {
         action_name: "SetServiceEnabled",
-        mechanism: command_mechanism("sudo", ["systemctl", verb, unit]),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "unit", verb, unit]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
@@ -168,7 +206,7 @@ pub fn set_service_enabled(unit: &str, enabled: bool) -> ActionSpec {
 pub fn mask_service(unit: &str) -> ActionSpec {
     ActionSpec {
         action_name: "MaskService",
-        mechanism: command_mechanism("sudo", ["systemctl", "mask", unit]),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "unit", "mask", unit]),
         risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
@@ -178,7 +216,7 @@ pub fn mask_service(unit: &str) -> ActionSpec {
 pub fn unmask_service(unit: &str) -> ActionSpec {
     ActionSpec {
         action_name: "UnmaskService",
-        mechanism: command_mechanism("sudo", ["systemctl", "unmask", unit]),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "unit", "unmask", unit]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
@@ -206,7 +244,7 @@ pub fn reload_service(unit: &str) -> ActionSpec {
     // is sufficient and the unit supports it.
     ActionSpec {
         action_name: "ReloadService",
-        mechanism: command_mechanism("sudo", ["systemctl", "reload", unit]),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "unit", "reload", unit]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,

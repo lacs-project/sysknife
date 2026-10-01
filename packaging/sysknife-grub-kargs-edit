@@ -72,7 +72,17 @@ DENY_APPEND_PREFIXES = (
 # nosmap/nosmep disable SMAP/SMEP enforcement; they are in the executor's
 # BLOCKED_EXACT and were missing here.
 DENY_APPEND_EXACT = ("single", "s", "1", "nosmap", "nosmep")
-DENY_UNIT_TARGETS = ("emergency", "rescue", "single")
+# Mirrors ROOT_SHELL_UNITS in crates/sysknife-daemon/src/actions/validate.rs.
+# The helper is directly sudo-invocable through the wildcard grant, so the
+# daemon refusing these is not enough. It held three of the five, so
+# `systemd.unit=debug-shell.service` and `systemd.unit=runlevel1.target`
+# reached the boot line through a direct call: systemd-debug-generator pulls
+# debug-shell.service into the boot transaction, giving a root shell on tty9
+# with no login prompt, across reboots, with no preview, no approval receipt
+# and no row in the signed chain. tests/release/grub-kargs-edit.test.sh now
+# derives the daemon list from that Rust source and fails on any gap, so the
+# two cannot drift again.
+DENY_UNIT_TARGETS = ("debug-shell", "emergency", "rescue", "runlevel1", "single")
 
 # --delete is screened too. "Removing an arg is always safe" was the premise for
 # leaving it open, and it inverts the risk: the dangerous move is removing a

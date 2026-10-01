@@ -51,11 +51,35 @@ recipe_vars="$(printf '%s\n' "$recipe" \
     | grep -oE '\$\([A-Z_]+\)' | tr -d '$()' | sort -u)"
 [ -n "$recipe_vars" ] || { printf 'derived no variables from the recipe\n' >&2; exit 1; }
 
-declared="$(sed -nE 's/^INSTALL_DIRS[[:space:]]*=[[:space:]]*(.*)$/\1/p' "$makefile")"
-# The assignment is line-continued, so pull the whole logical line.
-declared="$(awk '/^INSTALL_DIRS[[:space:]]*=/{ found=1 } found { print; if ($0 !~ /\\$/) exit }' "$makefile" \
-    | grep -oE '\$\([A-Z_]+\)' | tr -d '$()' | sort -u)"
+# The variables $(INSTALL_DIRS) names, read from a Makefile as a sorted list.
+# #449 removed a second derivation that used `sed` on one physical line and
+# silently lost every variable past the continuation; this is the survivor.
+install_dirs_vars() {
+    # The assignment is line-continued, so pull the whole logical line.
+    awk '/^INSTALL_DIRS[[:space:]]*=/{ found=1 } found { print; if ($0 !~ /\\$/) exit }' "$1" \
+        | grep -oE '\$\([A-Z_]+\)' | tr -d '$()' | sort -u
+}
+
+declared="$(install_dirs_vars "$makefile")"
 [ -n "$declared" ] || { printf 'Makefile declares no INSTALL_DIRS\n' >&2; exit 1; }
+
+# Pin the property the survivor depends on: a line-continued INSTALL_DIRS has to
+# be read whole. Without this, a reader that stops at the backslash can be
+# restored — or preferred over the `awk` because the two look redundant — and
+# the only visible change is that check 1 stops covering $(HELPERS), which is
+# the exact path #301 is about.
+fixture="$(mktemp -d)"
+trap 'rm -rf "$fixture"' EXIT
+cat >"$fixture/Makefile" <<'FIXTURE'
+INSTALL_DIRS = $(BINDIR) $(SYSUSERS) $(TMPFILES) \
+               $(SUDOERS) $(HELPERS)
+FIXTURE
+fixture_vars="$(install_dirs_vars "$fixture/Makefile")"
+for expected in BINDIR SUDOERS HELPERS; do
+    if ! printf '%s\n' "$fixture_vars" | grep -qx "$expected"; then
+        note "a line-continued INSTALL_DIRS lost \$$expected; the reader stopped at the backslash"
+    fi
+done
 
 missing="$(comm -23 <(printf '%s\n' "$recipe_vars") <(printf '%s\n' "$declared") || true)"
 for v in $missing; do

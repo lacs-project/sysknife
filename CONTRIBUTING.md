@@ -44,10 +44,10 @@ table below.
 
 | Area | Why it matters | Difficulty |
 |---|---|---|
-| **Ubuntu LTS support** | The current suite is 83 Ubuntu stories. Committed live-VM evidence covers 79 of those Ubuntu stories on each LTS release, with a committed replay twin that reproduces each run: 22.04, 24.04 and 26.04 all at 79/79. The four additional stories are not yet included in a committed live-VM run. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: story coverage for the cross-family actions, and one Debian-only action still has no story: `GrubSetKargs`. | medium |
+| **Ubuntu LTS support** | The current suite is 89 Ubuntu stories. Committed live-VM evidence covers 79 of those Ubuntu stories on each LTS release, with a committed replay twin that reproduces each run: 22.04, 24.04 and 26.04 all at 79/79. The ten additional stories are not yet included in a committed live-VM run. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: story coverage for the cross-family actions, and every Debian-only action has a story. | medium |
 | **Distro detection coverage** | Robust `/etc/os-release` parsing for every release we claim to support. Pure-function tests against real fixture files, no integration mocks. The existing fixtures at the bottom of `crates/sysknife-core/src/distro.rs` show the shape. | easy |
 | **Action catalogue gaps** | Add a typed action (for example `EnableFirewallZone`). Small and isolated, and every PR carries the policy entry, the risk level and the tests. | easy |
-| **E2E story coverage** | Real prompts, real LLM, real daemon. The suite is 137 stories: 54 atomic + 83 Ubuntu. What is left is the cross-family middle: of the action names available on both families, 61 are still untouched by any story, plus 10 Fedora-only and 1 Ubuntu-only ones. See #233 for the clustered map. | medium |
+| **E2E story coverage** | Real prompts, real LLM, real daemon. The suite is 143 stories: 54 atomic + 89 Ubuntu. What is left is the cross-family middle: of the action names available on both families, 56 are still untouched by any story, plus 10 Fedora-only and 0 Ubuntu-only ones. See #233 for the clustered map. | medium |
 | **Fedora Atomic validation** | The action families exist and `DistroId::is_supported()` returns true for Atomic 41 and up. Nobody has run `tests/e2e/atomic-vm.sh` against a current release. Needs Fedora Atomic hardware or a VM host. | tedious |
 | **Demo recording on real hardware** | Replace the bundled demo GIF with a 30-second recording on real Ubuntu 26.04 with rollback visible. | easy |
 
@@ -97,6 +97,30 @@ git rm --cached -r . && git reset --hard
 with work you have not committed or stashed.
 
 ### 2. Branch, code, test
+
+Workflow action pins keep an exact tag in the adjacent comment, for example
+`uses: actions/checkout@<40-hex SHA> # v7.0.1`. The tag must resolve to that
+commit, including when it is annotated. Deliberate branch references use
+`# stable (branch)` or `# main (branch)`; the verifier reports those without
+comparing the pin to the moving branch head. Keep existing SHAs when correcting
+comments; review action upgrades separately.
+
+Run `bash scripts/verify-action-pins.sh` to check these comments. It needs
+authenticated `gh`, Python 3, and PyYAML (`python3 -m pip install PyYAML`, also
+installed by yamllint). Both `docs-and-hygiene` and `scripts/ci-local.sh` require
+this check, including a working GitHub API connection. Offline regression tests
+run with `bash tests/release/action-pin-comments.test.sh`.
+
+Workflow checks also discover nested `.github/actions/**/action.yml` and
+`action.yaml` metadata. Composite `runs.steps[*].uses` references require the
+same SHA pins and version comments as workflow steps. Local and CI YAML linting
+use `bash scripts/lint-github-yaml.sh`; Node EOL checks include both setup-node
+versions and local JavaScript actions' `runs.using` runtime. An absent actions
+directory is allowed; an existing empty or unreadable directory fails discovery.
+Run `python3 tests/test_github_yaml.py` for the cross-gate fixtures (requires
+PyYAML and yamllint). The full `bash tests/release/release-rehearsal.test.sh`
+gate invokes these fixtures too, so install both before running it locally:
+`python3 -m pip install PyYAML==6.0.2 yamllint==1.38.0`.
 
 ```sh
 git checkout -b feat/<short-name>
@@ -179,6 +203,27 @@ deterministic source-relative check, while external URLs stay bounded to
 `scripts/markdown-link-exclusions.txt` only when a source file must be skipped;
 the discovery test rejects exclusions that no longer name a tracked file.
 
+**Every release and E2E test must be reachable from a gate.**
+`scripts/check_test_reachability.sh` discovers `tests/release/*.test.sh` and
+`tests/e2e/*.test.sh`, then requires a standalone `bash <path>` command in a `run`
+step for each exact path in `ci.yml`, `e2e.yml`, or `release.yml`. Trailing
+comments and a `sudo` or `sudo -n` prefix are allowed. Other sudo options,
+comments alone, artifact paths, shell compound commands,
+heredoc text, and mentions in `ci-local.sh` do not count. Keep these test steps
+in that explicit form and add the invocation in the same change as a new test;
+a test without one makes both local and remote CI fail. This is a static
+invocation check; it does not evaluate job conditions or prove runtime execution.
+A YAML block scalar containing just that command is supported. Multi-line shell
+scripts, including a command with a separate comment line, are not; give each
+test its own standalone step instead.
+The local hygiene runner discovers these test files automatically; do not also
+add explicit local invocations, which would run a test twice.
+
+The workflow parser uses PyYAML, already installed with CI's `yamllint`
+prerequisite. Install it into the same Python environment used to run the gate:
+`python3 -m pip install yamllint==1.38.0`. A missing parser or unreadable workflow
+fails the gate instead of falling back to text matching.
+
 **A change that touches no Rust skips the Rust gate.** The workspace suite exists
 to stop a Rust regression reaching `main`, and a diff with no `.rs` file in it
 cannot cause one:
@@ -202,6 +247,16 @@ and the criteria for 1.0.0. Say so in your PR description when you remove or
 rename a public item, so it goes out in the right release.
 
 ### 3. Commit style
+
+The `container-image` check builds the shipped Dockerfile when an image input
+changes, then verifies the CLI version and uid 10001. It also proves the smoke
+checks reject an image reporting an incorrect version and one running as root. BuildKit caches
+layers between runs. The trigger set includes both Cargo manifests, all copied
+crate/CLI/Tauri sources, `.dockerignore`, Dockerfile, and the check itself;
+other paths are excluded by `.dockerignore` and are not copied into the build.
+Documentation-only changes still receive a successful check without a build.
+Repository administrators should require `container-image` in branch protection
+so Dependabot base-image updates cannot merge without this evidence.
 
 Conventional Commits on the title:
 
