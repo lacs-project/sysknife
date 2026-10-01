@@ -155,12 +155,6 @@ run_rust_group() {
         # where the number is actually known.
         run_step 'rust: cargo nextest run --workspace --locked (+ test baseline)' \
             bash "$repo_root/scripts/test_baseline.sh"
-
-        # The macOS survey command documented in CONTRIBUTING.md must keep
-        # selecting a non-empty slice of the suite (#411). Runs after the
-        # suite so the list pass is metadata-only.
-        run_step 'rust: macOS survey command (CONTRIBUTING.md) selects a non-empty set' \
-            bash "$repo_root/tests/release/macos-survey-command.test.sh"
     else
         record WARN 'rust: cargo nextest run -- SKIPPED (cargo-nextest not found; install: cargo install cargo-nextest --locked)'
     fi

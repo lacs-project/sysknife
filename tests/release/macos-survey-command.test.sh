@@ -22,8 +22,8 @@
 # Swaps `nextest run` for `nextest list` on the documented arguments, so the
 # check enumerates the selection without running it. Needs cargo and
 # cargo-nextest; place it after the suite step so the list pass is
-# metadata-only. Wired into the test-workspace job of .github/workflows/ci.yml
-# and the rust group of scripts/ci-local.sh.
+# metadata-only. Wired into the test-workspace job of .github/workflows/ci.yml;
+# scripts/ci-local.sh runs it with every other release test in its hygiene group.
 
 set -euo pipefail
 
@@ -31,6 +31,13 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 doc="$repo_root/CONTRIBUTING.md"
 
 [ -f "$doc" ] || { printf 'missing file: %s\n' "$doc" >&2; exit 1; }
+# Fail closed and say why: without nextest the listing below cannot run, and
+# cargo's own "no such command" reads like the documented command broke.
+if ! (cd "$repo_root" && cargo nextest --version) >/dev/null 2>&1; then
+    printf 'cargo-nextest is not installed, so the macOS survey command was not checked\n' >&2
+    printf '  install: cargo install cargo-nextest --locked\n' >&2
+    exit 1
+fi
 
 # Exactly one documented survey command. A second copy would let the two
 # drift apart, which is the defect this guard exists to stop.
@@ -57,8 +64,35 @@ case "${commands[0]}" in
         ;;
 esac
 
+# nextest ignores an --exclude naming no workspace package, so a renamed
+# sysknife-cli would put the package that does not build on macOS back into the
+# documented command while every check below still passed. Ask cargo which
+# packages exist and refuse an exclusion that names none of them.
+excluded=()
+for ((k = 0; k < ${#argv[@]}; k++)); do
+    if [ "${argv[k]}" = "--exclude" ] && [ $((k + 1)) -lt ${#argv[@]} ]; then
+        excluded+=("${argv[k + 1]}")
+    fi
+done
+if [ "${#excluded[@]}" -eq 0 ]; then
+    printf 'documented macOS survey command excludes no package: %s\n' "${commands[0]}" >&2
+    exit 1
+fi
+if ! members=$(cd "$repo_root" && cargo metadata --no-deps --format-version 1 --locked |
+    python3 -c 'import json, sys; print("\n".join(p["name"] for p in json.load(sys.stdin)["packages"]))'); then
+    printf 'could not list the workspace packages, so the exclusion was not checked\n' >&2
+    exit 1
+fi
+for pkg in "${excluded[@]}"; do
+    if ! grep -qxF -- "$pkg" <<<"$members"; then
+        printf 'documented macOS survey command excludes %s, which is not a workspace package\n' \
+            "$pkg" >&2
+        exit 1
+    fi
+done
+
 # Same selection, enumeration instead of execution. --no-fail-fast is
-# run-only; the excluded package must still exist or nextest fails here.
+# run-only.
 list_argv=()
 for word in "${argv[@]}"; do
     if [ "$word" = "run" ]; then
