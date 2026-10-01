@@ -176,7 +176,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `ConfigureWifi` | `sudo nmcli device wifi connect CafeHotspot` | High | All | – | – | connect to a Wi-Fi network — params: ssid\*, password (optional for open networks) |
+| `ConfigureWifi` | `sudo nmcli device wifi connect CafeHotspot` | High | All | – | – | connect to a Wi-Fi network — params: ssid\* (a planned step joins open networks only; a password is refused) |
 | `SetDnsServers` | `sudo resolvectl dns wlp1s0 1.1.1.1 8.8.8.8` | High | All | – | – | set DNS servers for an interface — params: interface\* (e.g. wlp1s0), servers\* (string\[\]) |
 | `ConfigureFirewall` | `sudo /usr/lib/sysknife/action-steps firewall public ssh add-service` | High | All | – | – | add/remove a service in a firewalld zone — params: zone\*, service\*, enabled\* (bool) |
 | `GetFirewallState` | `firewall-cmd --list-all` | Low | All | – | – | show current firewalld zones, open services, and port rules — no params |

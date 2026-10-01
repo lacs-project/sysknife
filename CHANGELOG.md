@@ -12,6 +12,8 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-10-01
+
 ### Added
 
 - **Approval events sign the account that granted, spent or revoked them.**
@@ -37,6 +39,19 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Fixed
 
+- **The planner no longer offers `ProAttach`, and plans a Wi-Fi connection
+  for open networks only.** ([#514](https://github.com/lacs-project/sysknife/pull/514))
+  The prompt told the model to put an Ubuntu Pro token or a Wi-Fi password into
+  a plan step, while admission refuses any intent that contains one, so neither
+  action could be planned the way the prompt described, and the planner has no
+  separate channel to collect a credential. `ProAttach` is gone from the schema
+  and the prompt, and plan parsing refuses it even when a provider ignores the
+  schema. `ConfigureWifi` stays available without a password, and parsing
+  refuses a step that carries one, checked after string-encoded params are
+  decoded. A scan over the action catalogue fails when a new action names a
+  credential parameter that the planner would accept (closes
+  [#476](https://github.com/lacs-project/sysknife/issues/476)). Thanks to
+  [@QinXi-ai](https://github.com/QinXi-ai).
 - **`sysknife_audit_verify` checks the configured checkpoint anchor, and agrees
   with `sysknife audit verify` on the verdict.**
   ([#496](https://github.com/lacs-project/sysknife/pull/496)) The MCP tool

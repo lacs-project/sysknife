@@ -283,6 +283,21 @@ async fn intent_containing_password_keyword_is_rejected() {
 }
 
 #[tokio::test]
+async fn credential_action_intents_are_refused_before_provider_call() {
+    for intent in [
+        "attach this machine to Ubuntu Pro using token test-only-value",
+        "connect to Wi-Fi with password test-only-value",
+    ] {
+        let planner = make_planner(MockProvider::new([]));
+        assert_eq!(
+            planner.plan_intent(intent).await.unwrap_err(),
+            PlanningError::IntentContainsSensitiveData,
+            "{intent} must be refused before the provider sees it"
+        );
+    }
+}
+
+#[tokio::test]
 async fn intent_without_sensitive_data_is_not_rejected() {
     // Regression guard: a normal intent must not be falsely blocked.
     let planner = make_planner(MockProvider::new([propose_plan(
@@ -372,10 +387,10 @@ async fn low_risk_step_has_no_approval_required() {
 #[tokio::test]
 async fn medium_risk_step_requires_approval() {
     let planner = make_planner(MockProvider::new([propose_plan(
-        "Configure wifi",
-        &[("ConfigureWifi", "Connect to home wifi", "medium")],
+        "Start service",
+        &[("StartService", "Start the service", "medium")],
     )]));
-    let plan = planner.plan_intent("connect to wifi").await.unwrap();
+    let plan = planner.plan_intent("start example service").await.unwrap();
     assert!(plan.steps()[0].approval_required());
 }
 
