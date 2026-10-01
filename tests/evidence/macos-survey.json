@@ -1,0 +1,46 @@
+{
+  "survey": "macOS platform survey for #411 — where the workspace suite is observed",
+  "measured_at": "2026-10-01",
+  "source_commit": "9d862835",
+  "runner": {
+    "image": "macos26 / 20260907.0351.1 (release tag macos-26-arm64/20260907.0351)",
+    "arch": "ARM64 — Apple Silicon",
+    "os": "macOS 26.6.2 (Build 25G83)",
+    "rustc": "1.99.0 (2026-09-28), host aarch64-apple-darwin"
+  },
+  "build_break": {
+    "package": "sysknife-cli",
+    "error": "E0599: no variant named `Vsock` found for enum `client::SocketTarget`",
+    "location": "apps/sysknife-cli/src/runner.rs:123",
+    "cause": "the variant is #[cfg(target_os = \"linux\")] at apps/sysknife-cli/src/client.rs:79; this use site is not gated"
+  },
+  "command": "cargo nextest run --workspace --locked --exclude sysknife-cli --no-fail-fast",
+  "totals": {
+    "run": 1563,
+    "passed": 1550,
+    "failed": 13,
+    "skipped": 5
+  },
+  "classification": "structural: none; incidental: all 13",
+  "families": {
+    "host_distro_assumption": 11,
+    "macos_sun_path_length": 2
+  },
+  "failing": [
+    { "package": "sysknife-daemon", "test": "dispatcher::tests::preview_captures_the_autoremove_set_and_warns_on_kernel_packages" },
+    { "package": "sysknife-daemon", "test": "dispatcher::tests::execute_refuses_autoremove_when_the_deletion_set_drifted" },
+    { "package": "sysknife-daemon", "test": "dispatcher::tests::execute_proceeds_when_the_autoremove_set_is_unchanged" },
+    { "package": "sysknife-daemon", "test": "dispatcher::tests::preview_that_cannot_simulate_captures_no_set_and_execute_refuses" },
+    { "package": "sysknife-daemon", "test": "dispatcher::tests::execute_refuses_when_the_autoremove_re_simulate_fails" },
+    { "package": "sysknife-daemon", "test": "concurrency_guard::mutating_action_blocked_while_system_lock_held" },
+    { "package": "sysknife-daemon", "test": "concurrency_guard::mutating_action_passes_when_no_lock_is_held" },
+    { "package": "sysknife-daemon", "test": "concurrency_guard::second_apt_action_blocked_while_dpkg_lock_held" },
+    { "package": "sysknife-daemon", "test": "concurrency_guard::unrelated_mutating_action_passes_while_dpkg_lock_held" },
+    { "package": "sysknife-daemon", "test": "fail_closed_paths::approve_denies_when_the_audit_store_cannot_persist" },
+    { "package": "sysknife-daemon", "test": "fail_closed_paths::preview_never_reaches_the_executor" },
+    { "package": "sysknife-daemon", "test": "transport::listen::tests::existing_socket_parent_keeps_its_mode" },
+    { "package": "sysknife-daemon", "test": "transport::listen::tests::newly_created_socket_parent_uses_runtime_directory_mode" }
+  ],
+  "notes": "The eleven distro-assumption reds are the dispatcher correctly answering unsupported_platform on a non-Debian host; the two listen reds are macOS's 104-byte sun_path limit tripping on long temp paths. Both families are test-side assumptions, not product defects. Raw output: https://github.com/yuee3/sysknife/actions/runs/36870964250 (artifact nextest-macos). Re-measure deliberately and update this file in the PR that changes the outcome.",
+  "regenerate": "rerun the survey workflow on a macOS runner (fork Actions → macOS survey) and replace this file from the run's output"
+}

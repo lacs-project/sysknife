@@ -22,6 +22,27 @@ cargo nextest run --workspace --locked
 A PR that passes CI, has tests, and follows the
 [trust-boundary rules](docs/architecture.md) is on track.
 
+**Running the suite on macOS?** The workspace suite is only *observed* on
+Linux: every job in `.github/workflows/ci.yml` is `runs-on: ubuntu-latest`.
+On a Mac, red does not mean your change broke something. The measured state
+as of `9d862835` (2026-10-01 survey,
+[#411](https://github.com/lacs-project/sysknife/issues/411), hosted
+`macos-26-arm64` runner): `sysknife-cli` does not compile there yet
+(`SocketTarget::Vsock` referenced without the `cfg` the variant itself
+carries), and with that package excluded the rest of the workspace runs with
+thirteen known host-assumption reds — distro-probe refusals in
+`sysknife-daemon` and two macOS `sun_path` length trips in
+`transport::listen`:
+
+```sh
+cargo nextest run --workspace --locked --exclude sysknife-cli --no-fail-fast
+```
+
+The exact failing set, the platform record and the raw counts live in
+`tests/evidence/macos-survey.json`. Reds beyond that list are worth a look
+before blaming the platform — and if your change turns one of the thirteen
+green, update that evidence file in the same PR.
+
 ---
 
 ## Where the effort goes right now
