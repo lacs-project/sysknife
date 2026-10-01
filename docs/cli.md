@@ -338,7 +338,7 @@ All flags apply to every subcommand and to free-form intents.
 | `--json` | Emit NDJSON to stdout — one JSON object per event (plan, preview, result).  All colour and spinner output is suppressed.  Safe to pipe. |
 | `--timeout SECS` | Hard wall-clock limit for the CLI invocation in seconds. Stops waiting when exceeded; see exit codes below. |
 | `--log-to FILE` | Tee stdout to FILE in addition to the terminal. Appends if the file exists; stderr diagnostics are not captured. |
-| `--dangerously-skip-approval` | Implies `--yes`, `--max-risk high`, and `--non-interactive` unless an explicit lower `--max-risk` is set. Refuses to run unless `SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1` is also set. See [Unattended mode](#unattended-mode). |
+| `--dangerously-skip-approval` | Raises the ceiling `--yes` is clamped to from MEDIUM to HIGH, so `--yes --max-risk high` approves HIGH-risk steps too. It does not switch on `--yes`, `--max-risk` or `--non-interactive`; pass them yourself. Refuses to run unless `SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1` is also set. See [Unattended mode](#unattended-mode). |
 
 ---
 
@@ -380,9 +380,10 @@ The flag has no short form and no abbreviation. Typing it has to be a decision.
 
 One thing: the approval gate.
 
-- `--yes`, `--max-risk high`, and `--non-interactive` are enabled implicitly.
-  An explicit lower `--max-risk` still wins.
-- The post-preview confirmation on a HIGH step no longer asks. The preview is
+- `--yes` may now auto-approve HIGH-risk steps. The cap moves from MEDIUM to
+  HIGH, and nothing else is switched on.
+- When `--yes` approves a HIGH step, its post-preview confirmation no longer
+  asks. The preview is
   still fetched and still printed, because it is the only record of what the
   run was about to change.
 
