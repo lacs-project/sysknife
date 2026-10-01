@@ -1884,14 +1884,21 @@ mod tests {
         let cli_src =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/sysknife-cli/src");
 
-        for root in [&daemon_src, &cli_src] {
-            for entry in std::fs::read_dir(root).expect("source directory must be readable") {
+        let mut roots = vec![daemon_src.clone(), cli_src.clone()];
+        let mut files_checked = 0;
+        while let Some(dir) = roots.pop() {
+            for entry in std::fs::read_dir(&dir).expect("source directory must be readable") {
                 let path = entry.expect("source entry must be readable").path();
+                if path.is_dir() {
+                    roots.push(path);
+                    continue;
+                }
                 if path.extension().and_then(|ext| ext.to_str()) != Some("rs")
                     || path == daemon_src.join("audit_chain.rs")
                 {
                     continue;
                 }
+                files_checked += 1;
                 let source = std::fs::read_to_string(&path).expect("Rust source must be readable");
                 assert!(
                     !source.contains(INLINE_RESOLUTION),
@@ -1900,6 +1907,10 @@ mod tests {
                 );
             }
         }
+        assert!(
+            files_checked >= 60,
+            "source walk unexpectedly checked only {files_checked} Rust files"
+        );
     }
 
     /// The exhaustiveness the old comment claimed and did not have.
