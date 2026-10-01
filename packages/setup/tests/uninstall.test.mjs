@@ -141,12 +141,12 @@ test('uninstall removes only SysKnife Codex and AGENTS blocks', async () => {
     'command = "sysknife"',
     '[mcp_servers.sysknife.env]',
     'API_KEY = "secret"',
-    '[mcp_servers.other]',
-    'command = "keep"',
     '[profiles.work] # added later by the user',
     'model = "o4"',
     '[[skills]]',
     'name = "keep-skill"',
+    '[mcp_servers.other]',
+    'command = "keep"',
     '',
   ].join('\n'));
   const agents = path.join(tmp, 'AGENTS.md');
