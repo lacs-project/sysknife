@@ -52,51 +52,35 @@ def read(rel):
         failures.append(f"{rel}: cannot read file: {exc}")
         return ""
 
-def extract_release_workflow(text):
-    match = re.search(
-        r"for\s+crate\s+in\s+(.+?);\s*do",
-        text,
-        re.S,
-    )
-    if not match:
-        return []
-    return re.findall(r"\bsysknife-[a-z0-9-]+\b", match.group(1))
-
-def extract_registry_check(text):
-    matches = re.findall(
-        r"for\s+crate\s+in\s+(.+?);\s*do",
-        text,
-        re.S,
-    )
-    for body in matches:
+def extract_lists(text, pattern):
+    # Every list, not the first one: a second loop that drops a crate must not
+    # hide behind an earlier complete one.
+    lists = []
+    for body in re.findall(pattern, text, re.S):
         crates = re.findall(r"\bsysknife-[a-z0-9-]+\b", body)
         if crates:
-            return crates
-    return []
+            lists.append(crates)
+    return lists
 
-def extract_rehearsal(text):
-    match = re.search(r"crates=\(\s*(.*?)\s*\)", text, re.S)
-    if not match:
-        return []
-    return re.findall(r"\bsysknife-[a-z0-9-]+\b", match.group(1))
+FOR_CRATE_LOOP = r"for\s+crate\s+in\s+(.+?);\s*do"
+CRATES_ARRAY = r"crates=\(\s*(.*?)\s*\)"
 
-lists = {
-    ".github/workflows/release.yml": extract_release_workflow(
-        read(".github/workflows/release.yml")
-    ),
-    "scripts/check_registry_versions.sh": extract_registry_check(
-        read("scripts/check_registry_versions.sh")
-    ),
-    "scripts/release_rehearsal.sh": extract_rehearsal(
-        read("scripts/release_rehearsal.sh")
-    ),
+sources = {
+    ".github/workflows/release.yml": FOR_CRATE_LOOP,
+    "scripts/check_registry_versions.sh": FOR_CRATE_LOOP,
+    "scripts/release_rehearsal.sh": CRATES_ARRAY,
 }
 
-for rel, crates in lists.items():
-    if not crates:
+lists = {}
+for rel, pattern in sources.items():
+    found = extract_lists(read(rel), pattern)
+    if not found:
         failures.append(f"{rel}: no release crate list found")
-        continue
+    for index, crates in enumerate(found, 1):
+        label = rel if len(found) == 1 else f"{rel} (list {index} of {len(found)})"
+        lists[label] = crates
 
+for rel, crates in lists.items():
     seen = set(crates)
 
     for crate in sorted(publishable - seen):
