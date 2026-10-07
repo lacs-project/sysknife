@@ -448,8 +448,8 @@ snapshot beforehand costs less than the alternative.
 |---|---|
 | `0` | Success |
 | `1` | Plan or step **refused** — you rejected it, it exceeded the configured risk ceiling, approval was required but the session is non-interactive, or the planner declined the request outright (distinct from a planning failure, which is `3`) |
-| `2` | **Execution failed**, a command-line usage error, or the whole-command `--timeout` expired (see below) |
-| `3` | **Planning failed** — LLM error, provider unreachable, or the intent could not be turned into a plan |
+| `2` | **Execution failed**, including a daemon preview failure after an earlier plan step executed; also a command-line usage error or the whole-command `--timeout` expired (see below) |
+| `3` | **Planning failed** — LLM error, provider unreachable, the intent could not be turned into a plan, or a daemon preview refusal before any plan step executed |
 | `4` | **Configuration or daemon error** — invalid configuration, or the daemon could not be reached |
 
 Subcommands with their own semantics (for example `sysknife audit verify`) pass
