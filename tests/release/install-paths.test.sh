@@ -12,7 +12,7 @@
 # there were two helpers and no $(HELPERS) variable; it has not changed since
 # f1d9806 while the helper count went to twelve. See issue #301.
 #
-# Two checks, both derived rather than restated:
+# Checks derived from the install recipe and the shared contributor gate:
 #
 #   1. $(INSTALL_DIRS), which the preflight iterates, must cover every $(VAR)
 #      the daemon-install recipe actually writes into. A preflight that has
@@ -21,6 +21,9 @@
 #   2. Every path variable whose default sits under a prefix that rpm-ostree
 #      mounts read-only must be redirected by that branch, or be listed here
 #      as a known gap with the issue that tracks it.
+#   3. sudoers grants must be installed last, after every privileged helper.
+#   4. make check must delegate to the baseline-aware, all-target/all-feature
+#      contributor gate rather than maintaining a weaker list of Cargo calls.
 #
 # Host-side only: reads the Makefile and one shell script. No make, no network.
 set -euo pipefail
@@ -45,6 +48,42 @@ recipe="$(awk '
     inside { print }
 ' "$makefile")"
 [ -n "$recipe" ] || { printf 'could not extract the daemon-install recipe\n' >&2; exit 1; }
+
+# A later helper failure must not leave newly installed grants live. Require
+# the sudoers install to be the final command, not just after today's helpers.
+sudoers_installed_last() {
+    awk '
+        /^\t[[:space:]]*install[[:space:]].*\$\(HELPERS\)\// { helpers++ }
+        /^\t[[:space:]]*install[[:space:]].*\$\(SUDOERS\)\// {
+            grants++
+            grant_line = NR
+        }
+        /^\t/ && $0 !~ /^\t[[:space:]]*(#|$)/ { last_command = NR }
+        END { exit !(helpers > 0 && grants == 1 && grant_line == last_command) }
+    '
+}
+
+if ! printf '%s\n' "$recipe" | sudoers_installed_last; then
+    note 'daemon-install must install sudoers grants last, after every privileged helper and other command'
+fi
+
+# Prove the guard rejects a helper added after the grants in a future edit.
+if { printf '%s\n' "$recipe"; printf '\tinstall -Dm 755 packaging/new-helper $(HELPERS)/new-helper\n'; } \
+    | sudoers_installed_last; then
+    note 'the sudoers ordering guard accepted a helper installed after the grants'
+fi
+
+check_recipe="$(awk '
+    /^check:/ { inside = 1; next }
+    inside && /^[^\t#]/ && NF { exit }
+    inside && /^\t/ && $0 !~ /^\t[[:space:]]*(#|$)/ {
+        sub(/^\t[[:space:]]*/, "")
+        print
+    }
+' "$makefile")"
+if [ "$check_recipe" != 'bash scripts/ci-local.sh --fast' ]; then
+    note 'make check must run bash scripts/ci-local.sh --fast (including the test baseline and strict Clippy)'
+fi
 
 # Variables the recipe writes into: the $(VAR) that appear as a destination.
 recipe_vars="$(printf '%s\n' "$recipe" \

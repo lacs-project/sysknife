@@ -405,6 +405,10 @@ scripts/ci-local.sh --no-postgres
 scripts/ci-local.sh --allow-missing-tools
 ```
 
+`make check` runs the same fast subset, including the workspace test baseline
+and Clippy with all features and all targets. It does not run the full hygiene,
+security or PostgreSQL groups; use the full command above before submitting.
+
 The hygiene group discovers every `tests/release/*.test.sh` and
 `tests/e2e/*.test.sh`; there are no deliberate exclusions. It also reads the
 workflow invocations and identifies tests that CI runs under `sudo`. If the
