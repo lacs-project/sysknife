@@ -553,15 +553,52 @@ fn approval_view(
 
 pub async fn run_approve(
     transaction_id: &TransactionId,
-    socket: SocketTarget,
-    json: bool,
+    opts: &RunOpts,
     full: bool,
     log: &Logger,
 ) -> Result<(), CliError> {
-    if !std::io::stdin().is_terminal() {
+    approve_with_confirmation(
+        transaction_id,
+        opts,
+        full,
+        log,
+        std::io::stdin().is_terminal(),
+        |risk, action_name, transaction_id| async move {
+            if risk == RiskLevel::High {
+                prompt_exact(
+                    "High-risk action. Type the exact action name to approve",
+                    &action_name,
+                )
+                .await
+            } else {
+                prompt_confirm(&format!("Approve transaction {transaction_id}?")).await
+            }
+        },
+    )
+    .await
+}
+
+async fn approve_with_confirmation<F, Fut>(
+    transaction_id: &TransactionId,
+    opts: &RunOpts,
+    full: bool,
+    log: &Logger,
+    terminal: bool,
+    confirm: F,
+) -> Result<(), CliError>
+where
+    F: FnOnce(RiskLevel, String, TransactionId) -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    // A receipt attests to a human's explicit approval. The auto-approval flags
+    // used when executing intents must never mint one in a script.
+    if opts.non_interactive && !opts.dry_run {
+        return Err(CliError::NonInteractive);
+    }
+    if !terminal && !opts.dry_run {
         return Err(CliError::ApprovalNeedsTerminal);
     }
-    let client = DaemonClient::new(socket);
+    let client = DaemonClient::new(opts.socket.clone());
     let details = client.approval_details(transaction_id).await?;
     // `to_string_pretty` is not a sanitiser: it escapes C0 controls but emits
     // U+202E and U+200B literally. The proposed change is the authoritative
@@ -579,26 +616,58 @@ pub async fn run_approve(
         crate::operator_text::operator_safe(&details.preview.summary),
     );
 
+    if opts.dry_run {
+        if opts.json {
+            log.println(
+                &json!({
+                    "transaction_id": details.transaction_id,
+                    "action_name": details.action_name,
+                    "preview": details.preview,
+                    "dry_run": true,
+                })
+                .to_string(),
+            );
+        } else {
+            // A preview-only render may be bounded: no consent is being taken
+            // on omitted text. --full still shows the complete proposed change.
+            let block = if full {
+                crate::operator_text::operator_safe_block_full(&pretty)
+            } else {
+                crate::operator_text::operator_safe_block(&pretty)
+            };
+            log.println(&format!(
+                "Dry run: approval preview only.\n{context}\nProposed change:\n{}",
+                block.text()
+            ));
+        }
+        return Ok(());
+    }
+
+    let risk = plan_risk_of(details.preview.risk_level);
+    // Explicit receipt issuance always needs the existing human prompt, even
+    // with --yes or unattended consent. Reuse only the policy's hard refusals.
+    let policy = ApprovalPolicy::new(false, opts.max_risk, opts.non_interactive, false, false);
+    if let GateAction::Refuse(error) = gate_action(policy.decide_step(&risk), &risk) {
+        return Err(error);
+    }
+
     // One call produces the text and decides whether it may be shown at all, so
     // there is no way to print an approval view without having asked. An earlier
     // shape printed the block and then returned the refusal, which left the
     // print ungated: deleting the check still compiled and still printed.
     log.print_stderr(&approval_view(&context, &pretty, transaction_id, full)?);
-    let approved = if details.preview.risk_level == RiskLevel::High {
-        prompt_exact(
-            "High-risk action. Type the exact action name to approve",
-            &details.action_name,
-        )
-        .await
-    } else {
-        prompt_confirm(&format!("Approve transaction {}?", details.transaction_id)).await
-    };
+    let approved = confirm(
+        details.preview.risk_level,
+        details.action_name,
+        details.transaction_id,
+    )
+    .await;
     if !approved {
         return Err(CliError::Rejected);
     }
 
     let receipt = client.approve(transaction_id).await?;
-    if json {
+    if opts.json {
         log.println(
             &serde_json::json!({
                 "transaction_id": transaction_id.as_str(),
@@ -612,6 +681,217 @@ pub async fn run_approve(
         log.println(&format!("Approval receipt: {}", receipt.as_str()));
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// approve integration tests
+// ---------------------------------------------------------------------------
+
+#[cfg(all(test, unix))]
+mod approve_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use sysknife_daemon::transport::framing::FramedStream;
+    use tokio::net::UnixListener;
+
+    struct Observation {
+        result: Result<(), CliError>,
+        requests: Vec<String>,
+        prompts: Vec<(RiskLevel, String)>,
+        stdout: String,
+    }
+
+    async fn approve_case(
+        risk: RiskLevel,
+        terminal: bool,
+        accepted: bool,
+        configure: impl FnOnce(&mut RunOpts),
+    ) -> Observation {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("approve.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let recorded = requests.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut framed = FramedStream::new(stream);
+                let raw = framed.recv().await.unwrap();
+                let req: Value = serde_json::from_slice(&raw).unwrap();
+                let kind = req["type"].as_str().unwrap();
+                recorded.lock().unwrap().push(kind.to_string());
+                assert_eq!(req["transaction_id"], "tx-545");
+                let response = match kind {
+                    "approval_details" => json!({
+                        "type": "approval_details_response",
+                        "request_id": req["request_id"],
+                        "transaction_id": "tx-545",
+                        "action_name": "AptInstall",
+                        "preview": {
+                            "summary": "Install vim",
+                            "risk_level": risk,
+                            "current_state": {},
+                            "proposed_change": {"package": "vim"},
+                            "expected_side_effects": [],
+                            "reboot_required": false,
+                            "rollback_available": true,
+                            "warnings": [],
+                            "request_hash": "request-545"
+                        }
+                    }),
+                    "approve" => json!({
+                        "type": "approval_response",
+                        "request_id": req["request_id"],
+                        "transaction_id": "tx-545",
+                        "approval_receipt": "receipt-545"
+                    }),
+                    other => panic!("unexpected request: {other}"),
+                };
+                framed
+                    .send(&serde_json::to_vec(&response).unwrap())
+                    .await
+                    .unwrap();
+            }
+        });
+        let mut opts = RunOpts {
+            socket: SocketTarget::Unix(socket),
+            yes: false,
+            max_risk: None,
+            non_interactive: false,
+            dry_run: false,
+            json: false,
+            step_by_step: false,
+            skip_approval: false,
+        };
+        configure(&mut opts);
+        let output = dir.path().join("stdout.log");
+        let log = Logger::new(Some(&output)).unwrap();
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        let prompted = prompts.clone();
+        let result = approve_with_confirmation(
+            &TransactionId::new("tx-545"),
+            &opts,
+            false,
+            &log,
+            terminal,
+            |risk, action, _| async move {
+                prompted.lock().unwrap().push((risk, action));
+                accepted
+            },
+        )
+        .await;
+        server.abort();
+        let requests = requests.lock().unwrap().clone();
+        let prompts = prompts.lock().unwrap().clone();
+        Observation {
+            result,
+            requests,
+            prompts,
+            stdout: std::fs::read_to_string(output).unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn approve_ceiling_blocks_high_daemon_preview_before_prompt_or_receipt() {
+        let observed = approve_case(RiskLevel::High, true, true, |opts| {
+            opts.max_risk = Some(MaxRisk::Low);
+            opts.yes = true;
+            opts.skip_approval = true;
+        })
+        .await;
+        assert!(matches!(
+            observed.result,
+            Err(CliError::RiskCeilingExceeded {
+                highest: PlanRiskLevel::High,
+                ceiling: MaxRisk::Low
+            })
+        ));
+        assert_eq!(observed.requests, ["approval_details"]);
+        assert!(observed.prompts.is_empty());
+        assert!(!observed.stdout.contains("receipt"));
+    }
+
+    #[tokio::test]
+    async fn approve_dry_run_displays_json_preview_without_terminal_or_receipt() {
+        let observed = approve_case(RiskLevel::High, false, true, |opts| {
+            opts.dry_run = true;
+            opts.non_interactive = true;
+            opts.max_risk = Some(MaxRisk::Low);
+            opts.json = true;
+        })
+        .await;
+        observed.result.unwrap();
+        assert_eq!(observed.requests, ["approval_details"]);
+        assert!(observed.prompts.is_empty());
+        let output: Value = serde_json::from_str(&observed.stdout).unwrap();
+        assert_eq!(output["transaction_id"], "tx-545");
+        assert_eq!(output["preview"]["risk_level"], "high");
+        assert_eq!(output["preview"]["proposed_change"]["package"], "vim");
+        assert!(output.get("approval_receipt").is_none());
+    }
+
+    #[tokio::test]
+    async fn approve_dry_run_with_terminal_never_sends_approve() {
+        let observed = approve_case(RiskLevel::Low, true, true, |opts| opts.dry_run = true).await;
+        observed.result.unwrap();
+        assert_eq!(observed.requests, ["approval_details"]);
+        assert!(observed.prompts.is_empty());
+        assert!(observed.stdout.contains("Install vim"));
+        assert!(!observed.stdout.contains("receipt"));
+    }
+
+    #[tokio::test]
+    async fn approve_non_interactive_cannot_mint_human_receipt_even_with_yes() {
+        for terminal in [true, false] {
+            let observed = approve_case(RiskLevel::Low, terminal, true, |opts| {
+                opts.non_interactive = true;
+                opts.yes = true;
+                opts.skip_approval = true;
+            })
+            .await;
+            assert!(matches!(observed.result, Err(CliError::NonInteractive)));
+            assert!(observed
+                .requests
+                .iter()
+                .all(|kind| kind == "approval_details"));
+            assert!(observed.prompts.is_empty());
+            assert!(!observed.stdout.contains("receipt"));
+        }
+    }
+
+    #[tokio::test]
+    async fn approve_within_ceiling_still_requires_human_confirmation() {
+        for (risk, ceiling) in [
+            (RiskLevel::Low, MaxRisk::Low),
+            (RiskLevel::High, MaxRisk::High),
+        ] {
+            let observed = approve_case(risk, true, true, |opts| {
+                opts.max_risk = Some(ceiling);
+                opts.yes = true;
+                opts.skip_approval = true;
+            })
+            .await;
+            observed.result.unwrap();
+            assert_eq!(observed.requests, ["approval_details", "approve"]);
+            assert_eq!(observed.prompts, [(risk, "AptInstall".to_string())]);
+            assert!(observed.stdout.contains("receipt-545"));
+        }
+    }
+
+    #[tokio::test]
+    async fn approve_rejection_and_missing_terminal_never_send_approve() {
+        let rejected = approve_case(RiskLevel::Low, true, false, |_| {}).await;
+        assert!(matches!(rejected.result, Err(CliError::Rejected)));
+        assert_eq!(rejected.requests, ["approval_details"]);
+        assert!(!rejected.stdout.contains("receipt"));
+        let no_terminal = approve_case(RiskLevel::Low, false, true, |_| {}).await;
+        assert!(matches!(
+            no_terminal.result,
+            Err(CliError::ApprovalNeedsTerminal)
+        ));
+        assert!(no_terminal.requests.is_empty());
+        assert!(no_terminal.prompts.is_empty());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -823,8 +1103,8 @@ pub async fn run_history(
 // RunOpts
 // ---------------------------------------------------------------------------
 
-/// Options derived from global CLI flags; threaded into `run_intent` and
-/// `run_repl` so callers do not have to pass each flag individually.
+/// Options derived from global CLI flags; threaded into `run_intent`,
+/// `run_repl` and `run_approve` so callers do not pass each flag individually.
 pub struct RunOpts {
     pub socket: SocketTarget,
     pub yes: bool,

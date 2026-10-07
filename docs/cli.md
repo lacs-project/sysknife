@@ -133,16 +133,28 @@ sysknife history --status succeeded --limit 5 --since 2026-04-10T00:00:00Z
 ### `sysknife approve`
 
 Issue a one-time receipt for a transaction returned by the MCP
-`sysknife_plan` tool. This command requires an interactive terminal. It first
+`sysknife_plan` tool. Issuing a receipt requires an interactive terminal. It first
 loads and displays the daemon-authoritative action, risk, summary, and proposed
 change so an agent cannot substitute an opaque transaction ID. It mints the
 receipt only after confirmation; high-risk approvals require typing the exact
 action name.
 
+`--max-risk` checks the daemon's preview risk before prompting and refuses any
+transaction above the ceiling. `--non-interactive` refuses receipt issuance,
+including with `--yes` or unattended consent: a receipt records explicit human
+approval. Those auto-approval flags apply to intent execution, not this command.
+
+`--dry-run` loads and displays the preview without prompting or issuing a
+receipt. It works without a terminal, including with `--non-interactive`, and
+can display risks above `--max-risk` because it approves nothing. With `--json`,
+the output contains `transaction_id`, `action_name`, `preview` and `dry_run: true`,
+with no `approval_receipt` field.
+
 ```sh
 sysknife approve 018f2c9d-...
 sysknife --json approve 018f2c9d-...
 sysknife approve 018f2c9d-... --full
+sysknife --dry-run --json approve 018f2c9d-...
 ```
 
 The proposed change is displayed through a bounded renderer: 40 lines, 512
@@ -336,14 +348,29 @@ History is persisted to `~/.local/share/sysknife/history` between sessions.
 
 ## Global flags
 
-All flags apply to every subcommand and to free-form intents.
+Global flags may appear before or after a subcommand. Their behavior depends on
+the command:
+
+- `--yes`, `--step-by-step` and the unattended auto-approval override apply to
+  free-form intents and the REPL. `approve` always requires human confirmation.
+- `--max-risk`, `--non-interactive` and `--dry-run` apply to intents, the REPL
+  and `approve`, as described above. Read-only subcommands perform no approval.
+- `--json` controls structured output for intents, `approve`, `doctor` and
+  `audit verify`; `history` and `audit export` already emit JSON. It has no
+  effect on `audit checkpoint`, completions or `mcp-server`, which use their
+  own output formats.
+- `--timeout` limits the invocation and `--log-to` tees output sent through the
+  CLI logger. `audit checkpoint`, completions and the MCP server write directly
+  to their output.
+- The two-key unattended consent check applies to every subcommand, even when
+  the command performs no auto-approval.
 
 | Flag | Description |
 |---|---|
 | `--yes` | Auto-approve LOW-risk steps.  With `--max-risk medium`, also approves MEDIUM.  HIGH always requires human confirmation. |
-| `--max-risk LEVEL` | Abort if the plan contains any step above this ceiling.  Values: `low`, `medium`, `high`. |
+| `--max-risk LEVEL` | Abort if the plan or approval transaction exceeds this ceiling. Values: `low`, `medium`, `high`. |
 | `--non-interactive` | Fail immediately (`exit 1`) if any step would require interactive approval.  Use in scripts and CI. |
-| `--dry-run` | Print the plan and exit without executing anything. |
+| `--dry-run` | Print the plan or approval preview and exit without executing or issuing a receipt. |
 | `--step-by-step` | Prompt for approval before each individual step instead of once for the whole plan.  Each prompt comes *after* that step's daemon preview is printed. |
 | `--json` | Emit NDJSON to stdout — one JSON object per event (plan, preview, result).  All colour and spinner output is suppressed.  Safe to pipe. |
 | `--timeout SECS` | Hard wall-clock limit for the CLI invocation in seconds. Stops waiting when exceeded; see exit codes below. |
