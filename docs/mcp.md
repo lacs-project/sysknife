@@ -66,6 +66,14 @@ Each `PlanStep`:
 | `reboot_required` | bool | Whether the step needs a reboot to take effect |
 | `rollback_available` | bool | Whether failure can be rolled back automatically |
 
+`params` must be an object containing only keys accepted by that action. Unknown
+or misspelled keys are rejected before approval, including on actions with no
+parameters. For example, `SetKernelArguments` accepts `add` and `remove`;
+`GrubSetKargs` accepts `append` and `delete`. Existing aliases such as `user` for
+`username` on user-scoped actions remain accepted. Planner providers may encode
+an object as a JSON string; scalar, array, and null values are rejected after
+decoding.
+
 ---
 
 ### `sysknife_execute`

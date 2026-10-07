@@ -605,11 +605,210 @@ async fn execute_command_with_progress(
     })
 }
 
+/// Parameter names accepted by each action, including deliberate aliases.
+/// Keep this next to the builder so optional/defaulted parameters cannot mask
+/// misspelled keys. Dispatcher-only actions use the same boundary check.
+fn allowed_action_params(action_name: &str) -> Option<&'static [&'static str]> {
+    Some(match action_name {
+        "GetSystemState"
+        | "CollectDiagnostics"
+        | "GetDeploymentHistory"
+        | "ListDeployments"
+        | "UpdateSystem"
+        | "CleanupDeployments"
+        | "RebootSystem"
+        | "RollbackDeployment"
+        | "GetKernelArguments"
+        | "GetLayeredPackages"
+        | "ResetLayeredPackageOverride"
+        | "GetPendingUpdates"
+        | "ListPackageRepositories"
+        | "ListServices"
+        | "ListTimers"
+        | "ReloadDaemon"
+        | "GetDateTime"
+        | "GetDiskUsage"
+        | "ListProcesses"
+        | "GetLvmReport"
+        | "GetMounts"
+        | "GetSudoGrants"
+        | "RemoveRemoteSyslog"
+        | "GetMemoryInfo"
+        | "GetHostState"
+        | "GetFirewallState"
+        | "GetNetworkStatus"
+        | "GetListeningPorts"
+        | "GetNftablesRuleset"
+        | "GetFirewallBackendState"
+        | "ListUsers"
+        | "ListGroups"
+        | "AptUpdate"
+        | "AptUpgrade"
+        | "AptAutoremove"
+        | "AptListInstalled"
+        | "AptListUpgradable"
+        | "AptHistoryList"
+        | "SnapList"
+        | "GrubGetKargs"
+        | "CheckPendingReboot"
+        | "UfwEnable"
+        | "UfwDisable"
+        | "UfwReset"
+        | "DistroboxList"
+        | "NetplanGetConfig"
+        | "NetplanApply"
+        | "NetplanGenerate"
+        | "ProStatus"
+        | "ProDetach"
+        | "LivepatchStatus"
+        | "MultipassList"
+        | "UbuntuReleaseUpgrade"
+        | "ResolvectlStatus"
+        | "AppArmorStatus"
+        | "CloudInitStatus"
+        | "GetAuditRules"
+        | "GetCertificates"
+        | "RenewCertificates" => &[],
+        "PinDeployment" | "UnpinDeployment" => &["index"],
+        "RebaseSystem" => &["target_ref"],
+        "SetKernelArguments" => &["add", "remove"],
+        "ListFlatpakRemotes"
+        | "ListInstalledFlatpaks"
+        | "ListContainers"
+        | "ListToolboxes"
+        | "DeleteUser"
+        | "LockUserAccount"
+        | "UnlockUserAccount"
+        | "GetAuthorizedKeys"
+        | "UbuntuListFlatpaks" => &["user", "username"],
+        "InstallFlatpak" | "UbuntuInstallFlatpak" => &["app_id", "remote", "user", "username"],
+        "RemoveFlatpak"
+        | "GetFlatpakAppInfo"
+        | "UpdateFlatpak"
+        | "UbuntuRemoveFlatpak"
+        | "UbuntuUpdateFlatpak" => &["app_id", "user", "username"],
+        "SearchFlatpakApps" | "AptSearch" => &["term"],
+        "AddFlatpakRemote" => &["remote", "url", "user", "username"],
+        "RemoveFlatpakRemote" => &["remote", "user", "username"],
+        "CreateContainer" => &["image", "name", "user", "username"],
+        "StartContainer" | "StopContainer" | "RemoveContainer" | "GetContainerInfo"
+        | "RemoveToolbox" => &["name", "user", "username"],
+        "InstallPackages" | "RemovePackages" => &["packages"],
+        "AddLayeredPackage"
+        | "RemoveLayeredPackage"
+        | "RemoveBasePackage"
+        | "GetAptPins"
+        | "AptInstall"
+        | "AptRemove"
+        | "AptPurge"
+        | "AptHold"
+        | "AptUnhold"
+        | "AptShow" => &["package"],
+        "ReplaceLayeredPackage" => &["new", "old"],
+        "AddPackageRepository" => &["repo_id", "repo_url"],
+        "RemovePackageRepository" | "EnablePackageRepository" | "DisablePackageRepository" => {
+            &["repo_id"]
+        }
+        "StartService"
+        | "StopService"
+        | "RestartService"
+        | "MaskService"
+        | "UnmaskService"
+        | "GetServiceLogs"
+        | "GetServiceStatus"
+        | "ReloadService"
+        | "GetServiceResourceLimits" => &["unit"],
+        "SetServiceEnabled" => &["enabled", "unit"],
+        "CreateScheduledJob" => &["command", "name", "schedule"],
+        "SetServiceResourceLimits" => &[
+            "cpu_quota",
+            "memory_high",
+            "memory_max",
+            "tasks_max",
+            "unit",
+        ],
+        "CreateToolbox" => &["image", "name", "release", "user", "username"],
+        "SetHostname" => &["hostname"],
+        "SetTimezone" => &["timezone"],
+        "SetLocale" => &["locale"],
+        "SetNtp" | "ConfigureUnattendedUpgrades" => &["enabled"],
+        "SignalProcess" => &["pid", "signal"],
+        "GetJournalLog" => &[
+            "boot", "grep", "kernel", "lines", "priority", "since", "unit", "until",
+        ],
+        "VacuumJournal" => &["retain_days", "size_mb"],
+        "ExtendLogicalVolume" => &["lv", "size", "vg"],
+        "CreateLogicalVolume" => &["name", "size", "vg"],
+        "CreateLvSnapshot" => &["origin", "size", "snapshot", "vg"],
+        "GetSysctl" | "RemoveAuditRule" => &["key"],
+        "SetSysctl" | "NetplanSet" => &["key", "value"],
+        "AddMount" => &["device", "fstype", "mountpoint", "options"],
+        "RemoveMount" => &["mountpoint"],
+        "AddSwap" => &["file", "size_mb"],
+        "RemoveSwap" => &["file"],
+        "GrantSudoAccess" => &["commands", "name", "nopasswd", "runas", "user"],
+        "RevokeSudoAccess" | "RemoveAptPin" | "RemoveLogRotation" | "AddPpa" | "RemovePpa"
+        | "SnapRemove" | "SnapRefresh" | "SnapHold" | "SnapUnhold" | "SnapInfo" | "SnapRevert"
+        | "SnapClassicInstall" | "DistroboxRemove" => &["name"],
+        "SetAptPin" => &["name", "package", "pin", "priority"],
+        "GetLogrotateStatus" => &["config"],
+        "ConfigureLogRotation" => &["compress", "frequency", "name", "path", "rotate"],
+        "ConfigureRemoteSyslog" => &["host", "port", "protocol"],
+        "GetPasswordAging" => &["user"],
+        "SetPasswordAging" => &["max_days", "min_days", "user", "warn_days"],
+        "SetPasswordPolicy" => &["dcredit", "lcredit", "minlen", "ocredit", "ucredit"],
+        "SetAccountLockout" => &["deny", "fail_interval", "unlock_time"],
+        "ConfigureWifi" => &["password", "ssid"],
+        "SetDnsServers" | "ResolvectlSetDns" => &["interface", "servers"],
+        "ConfigureFirewall" => &["enabled", "service", "zone"],
+        "CreateUser" => &["home", "shell", "user", "username"],
+        "AddUserToGroup" | "RemoveUserFromGroup" => &["group", "user", "username"],
+        "CreateGroup" => &["group", "system"],
+        "DeleteGroup" => &["group"],
+        "AddAuthorizedKey" | "RemoveAuthorizedKey" => &["public_key", "user", "username"],
+        "SetSshdOption" => &["option", "value"],
+        "SnapInstall" => &["auto_update", "channel", "name"],
+        "GrubSetKargs" => &["append", "delete"],
+        "UfwAllow" | "UfwDeny" => &["port_or_service"],
+        "UfwStatus" => &["numbered"],
+        "DistroboxCreate" => &["image", "name"],
+        "UfwDeleteRule" => &["rule_number"],
+        "UfwLimit" => &["target"],
+        "ProAttach" => &["token"],
+        "EnableProService" | "DisableProService" => &["service"],
+        "AppArmorEnforce" | "AppArmorComplain" => &["profile_path"],
+        "Fail2banStatus" => &["jail"],
+        "Fail2banBanIp" | "Fail2banUnbanIp" => &["ip", "jail"],
+        "ConfigureFail2banJail" => &["bantime", "enabled", "findtime", "maxretry", "name"],
+        "AddAuditRule" => &["key", "path", "perms"],
+        "ObtainCertificate" => &["challenge", "domain", "domains", "email"],
+        "ListJobHistory" => &["limit", "status_filter", "action_filter", "since_hours"],
+        _ => return None,
+    })
+}
+
+pub(crate) fn validate_action_params(
+    action_name: &str,
+    params: &Value,
+) -> Result<(), ExecutorError> {
+    let allowed = allowed_action_params(action_name)
+        .ok_or_else(|| ExecutorError::UnknownAction(action_name.to_string()))?;
+    let object = params
+        .as_object()
+        .ok_or(ExecutorError::InvalidParam("params"))?;
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(ExecutorError::InvalidParam("unknown parameter"));
+    }
+    Ok(())
+}
+
 /// Map an action name and JSON params to an [`ActionSpec`].
 ///
 /// Returns [`ExecutorError::UnknownAction`] for unrecognised names and
-/// [`ExecutorError::MissingParam`] when a required param is absent.
+/// [`ExecutorError::MissingParam`] when a required param is absent, or
+/// [`ExecutorError::InvalidParam`] for non-object params or unrecognised keys.
 pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec, ExecutorError> {
+    validate_action_params(action_name, params)?;
     match action_name {
         // ── Deployment: no params ─────────────────────────────────────────
         "GetSystemState" => Ok(deployment::get_system_state()),
@@ -2395,6 +2594,245 @@ mod tests {
     // ── build_action_spec ─────────────────────────────────────────────────
 
     #[test]
+    fn build_spec_rejects_unknown_keys_across_catalogue() {
+        for name in sysknife_types::KNOWN_ACTION_NAMES {
+            if crate::actions::DISPATCHER_INTERNAL_ACTIONS.contains(name) {
+                continue;
+            }
+            assert!(
+                matches!(
+                    build_action_spec(name, &json!({"__unknown_param": 1})),
+                    Err(ExecutorError::InvalidParam(_))
+                ),
+                "{name} must reject unknown keys before reading required params"
+            );
+        }
+    }
+
+    #[test]
+    fn build_spec_rejects_non_object_params_across_catalogue() {
+        for name in sysknife_types::KNOWN_ACTION_NAMES {
+            if crate::actions::DISPATCHER_INTERNAL_ACTIONS.contains(name) {
+                continue;
+            }
+            for params in [json!(null), json!([]), json!(42), json!(true), json!("{}")] {
+                assert!(
+                    matches!(
+                        build_action_spec(name, &params),
+                        Err(ExecutorError::InvalidParam(_))
+                    ),
+                    "{name} must reject non-object params: {params}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn build_spec_rejects_cross_distro_kernel_argument_key() {
+        assert!(matches!(
+            build_action_spec("SetKernelArguments", &json!({"append": ["quiet"]})),
+            Err(ExecutorError::InvalidParam(_))
+        ));
+        assert!(matches!(
+            build_action_spec("UfwEnable", &json!({"x": 1})),
+            Err(ExecutorError::InvalidParam(_))
+        ));
+    }
+
+    #[test]
+    fn build_spec_accepts_catalogue_params_and_username_aliases() {
+        for name in sysknife_types::KNOWN_ACTION_NAMES {
+            if crate::actions::DISPATCHER_INTERNAL_ACTIONS.contains(name) {
+                continue;
+            }
+            // Complete valid examples exercise every parameter, including optional
+            // keys; future required parameters make this catalogue test fail.
+            let params = match *name {
+                "PinDeployment" | "UnpinDeployment" => json!({"index": 0}),
+                "RebaseSystem" => json!({"target_ref": "fedora-stable"}),
+                "SetKernelArguments" => json!({"add": ["quiet"], "remove": ["splash"]}),
+                "ListFlatpakRemotes"
+                | "ListInstalledFlatpaks"
+                | "ListContainers"
+                | "ListToolboxes"
+                | "DeleteUser"
+                | "LockUserAccount"
+                | "UnlockUserAccount"
+                | "GetAuthorizedKeys"
+                | "UbuntuListFlatpaks" => json!({"username": "alice"}),
+                "InstallFlatpak" | "UbuntuInstallFlatpak" => {
+                    json!({"username": "alice", "app_id": "org.mozilla.firefox", "remote": "flathub"})
+                }
+                "RemoveFlatpak"
+                | "GetFlatpakAppInfo"
+                | "UbuntuRemoveFlatpak"
+                | "UpdateFlatpak"
+                | "UbuntuUpdateFlatpak" => {
+                    json!({"username": "alice", "app_id": "org.mozilla.firefox"})
+                }
+                "SearchFlatpakApps" | "AptSearch" => json!({"term": "vim"}),
+                "AddFlatpakRemote" => {
+                    json!({"username": "alice", "remote": "flathub", "url": "https://flathub.org/repo/flathub.flatpakrepo"})
+                }
+                "RemoveFlatpakRemote" => json!({"username": "alice", "remote": "flathub"}),
+                "CreateContainer" => {
+                    json!({"username": "alice", "name": "test", "image": "alpine"})
+                }
+                "StartContainer" | "StopContainer" | "RemoveContainer" | "GetContainerInfo"
+                | "RemoveToolbox" => json!({"username": "alice", "name": "test"}),
+                "InstallPackages" | "RemovePackages" => json!({"packages": ["vim"]}),
+                "AddLayeredPackage"
+                | "RemoveLayeredPackage"
+                | "RemoveBasePackage"
+                | "AptInstall"
+                | "AptRemove"
+                | "AptPurge"
+                | "AptHold"
+                | "AptUnhold"
+                | "AptShow"
+                | "GetAptPins" => json!({"package": "vim"}),
+                "ReplaceLayeredPackage" => json!({"old": "vim", "new": "nano"}),
+                "AddPackageRepository" => {
+                    json!({"repo_id": "test", "repo_url": "https://example.com/repo"})
+                }
+                "RemovePackageRepository"
+                | "EnablePackageRepository"
+                | "DisablePackageRepository" => json!({"repo_id": "test"}),
+                "StartService"
+                | "StopService"
+                | "RestartService"
+                | "MaskService"
+                | "UnmaskService"
+                | "GetServiceLogs"
+                | "GetServiceStatus"
+                | "ReloadService"
+                | "GetServiceResourceLimits" => json!({"unit": "nginx.service"}),
+                "SetServiceEnabled" => json!({"unit": "nginx.service", "enabled": true}),
+                "CreateScheduledJob" => {
+                    json!({"name": "test", "command": "/usr/bin/true", "schedule": "daily"})
+                }
+                "SetServiceResourceLimits" => {
+                    json!({"unit": "nginx.service", "memory_max": "1G", "memory_high": "512M", "cpu_quota": "50%", "tasks_max": "100"})
+                }
+                "CreateToolbox" => {
+                    json!({"username": "alice", "name": "test", "image": "fedora-toolbox", "release": "41"})
+                }
+                "SetHostname" => json!({"hostname": "testhost"}),
+                "SetTimezone" => json!({"timezone": "Europe/London"}),
+                "SetLocale" => json!({"locale": "en_US.UTF-8"}),
+                "SetNtp" | "ConfigureUnattendedUpgrades" => json!({"enabled": true}),
+                "SignalProcess" => json!({"pid": 42, "signal": "TERM"}),
+                "GetJournalLog" => {
+                    json!({"unit": "nginx.service", "priority": "warning", "since": "yesterday", "until": "now", "grep": "error", "lines": 10, "boot": true, "kernel": false})
+                }
+                "VacuumJournal" => json!({"size_mb": 10}),
+                "ExtendLogicalVolume" => json!({"vg": "vg0", "lv": "data", "size": "+1G"}),
+                "CreateLogicalVolume" => json!({"vg": "vg0", "name": "data", "size": "1G"}),
+                "CreateLvSnapshot" => {
+                    json!({"vg": "vg0", "origin": "data", "snapshot": "backup", "size": "1G"})
+                }
+                "GetSysctl" => json!({"key": "net.ipv4.ip_forward"}),
+                "SetSysctl" => json!({"key": "net.ipv4.ip_forward", "value": "1"}),
+                "AddMount" => {
+                    json!({"device": "/dev/sdb1", "mountpoint": "/mnt/data", "fstype": "ext4", "options": "defaults"})
+                }
+                "RemoveMount" => json!({"mountpoint": "/mnt/data"}),
+                "AddSwap" => json!({"file": "/swapfile", "size_mb": 1024}),
+                "RemoveSwap" => json!({"file": "/swapfile"}),
+                "GrantSudoAccess" => {
+                    json!({"name": "test", "user": "alice", "commands": "/usr/bin/uptime", "runas": "root", "nopasswd": true})
+                }
+                "RevokeSudoAccess" | "RemoveAptPin" | "RemoveLogRotation" => {
+                    json!({"name": "test"})
+                }
+                "SetAptPin" => {
+                    json!({"name": "test", "package": "vim", "pin": "version 1.*", "priority": 500})
+                }
+                "GetLogrotateStatus" => json!({"config": "/var/log/app.log"}),
+                "ConfigureLogRotation" => {
+                    json!({"name": "test", "path": "/var/log/app.log", "frequency": "daily", "rotate": 7, "compress": true})
+                }
+                "ConfigureRemoteSyslog" => {
+                    json!({"host": "logs.example.com", "port": 514, "protocol": "tcp"})
+                }
+                "GetPasswordAging" => json!({"user": "alice"}),
+                "SetPasswordAging" => {
+                    json!({"user": "alice", "max_days": 90, "min_days": 1, "warn_days": 7})
+                }
+                "SetPasswordPolicy" => {
+                    json!({"minlen": 12, "dcredit": -1, "ucredit": -1, "lcredit": -1, "ocredit": -1})
+                }
+                "SetAccountLockout" => json!({"deny": 5, "unlock_time": 600, "fail_interval": 900}),
+                "ConfigureWifi" => json!({"ssid": "testwifi", "password": "examplepassword"}),
+                "SetDnsServers" | "ResolvectlSetDns" => {
+                    json!({"interface": "eth0", "servers": ["1.1.1.1"]})
+                }
+                "ConfigureFirewall" => json!({"zone": "public", "service": "ssh", "enabled": true}),
+                "CreateUser" => {
+                    json!({"username": "alice", "shell": "/bin/bash", "home": "/home/alice"})
+                }
+                "AddUserToGroup" | "RemoveUserFromGroup" => {
+                    json!({"username": "alice", "group": "developers"})
+                }
+                "CreateGroup" => json!({"group": "developers", "system": true}),
+                "DeleteGroup" => json!({"group": "developers"}),
+                "AddAuthorizedKey" | "RemoveAuthorizedKey" => {
+                    json!({"username": "alice", "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey alice"})
+                }
+                "SetSshdOption" => json!({"option": "PasswordAuthentication", "value": "no"}),
+                "AddPpa" | "RemovePpa" => json!({"name": "deadsnakes/ppa"}),
+                "SnapInstall" => json!({"name": "test", "channel": "stable", "auto_update": true}),
+                "SnapRemove" | "SnapRefresh" | "SnapHold" | "SnapUnhold" | "SnapInfo"
+                | "SnapRevert" | "SnapClassicInstall" | "DistroboxRemove" => {
+                    json!({"name": "test"})
+                }
+                "GrubSetKargs" => json!({"append": ["quiet"], "delete": ["splash"]}),
+                "UfwAllow" | "UfwDeny" => json!({"port_or_service": "22/tcp"}),
+                "UfwStatus" => json!({"numbered": true}),
+                "DistroboxCreate" => json!({"name": "test", "image": "ubuntu"}),
+                "NetplanSet" => json!({"key": "ethernets.eth0.dhcp4", "value": "true"}),
+                "UfwDeleteRule" => json!({"rule_number": 1}),
+                "UfwLimit" => json!({"target": "ssh"}),
+                "ProAttach" => json!({"token": "exampletoken"}),
+                "EnableProService" | "DisableProService" => json!({"service": "esm-apps"}),
+                "AppArmorEnforce" | "AppArmorComplain" => {
+                    json!({"profile_path": "/etc/apparmor.d/usr.bin.test"})
+                }
+                "Fail2banStatus" => json!({"jail": "sshd"}),
+                "Fail2banBanIp" | "Fail2banUnbanIp" => json!({"jail": "sshd", "ip": "192.0.2.1"}),
+                "ConfigureFail2banJail" => {
+                    json!({"name": "sshd", "enabled": true, "maxretry": 5, "bantime": 600, "findtime": 900})
+                }
+                "AddAuditRule" => json!({"path": "/etc/passwd", "perms": "wa", "key": "identity"}),
+                "RemoveAuditRule" => json!({"key": "identity"}),
+                "ObtainCertificate" => {
+                    json!({"domains": ["example.com"], "domain": "example.com", "email": "admin@example.com", "challenge": "standalone"})
+                }
+                _ => json!({}),
+            };
+            build_action_spec(name, &params)
+                .unwrap_or_else(|err| panic!("valid parameters rejected for {name}: {err}"));
+            if params.get("username").is_some() {
+                let mut aliased = params;
+                let username = aliased.as_object_mut().unwrap().remove("username").unwrap();
+                aliased["user"] = username;
+                build_action_spec(name, &aliased)
+                    .unwrap_or_else(|err| panic!("user alias rejected for {name}: {err}"));
+            }
+        }
+        for params in [json!({"retain_days": 7}), json!({"size_mb": 10})] {
+            build_action_spec("VacuumJournal", &params).unwrap();
+        }
+        build_action_spec(
+            "ObtainCertificate",
+            &json!({"domain": "example.com", "email": "admin@example.com"}),
+        )
+        .unwrap();
+        build_action_spec("SignalProcess", &json!({"pid": "42"})).unwrap();
+        build_action_spec("SetKernelArguments", &json!({"add": null, "remove": null})).unwrap();
+    }
+
+    #[test]
     fn build_spec_no_params_for_get_system_state() {
         let spec = build_action_spec("GetSystemState", &json!({})).unwrap();
         assert_eq!(spec.action_name, "GetSystemState");
@@ -3290,14 +3728,12 @@ mod tests {
             "RemoveAuthorizedKey",
         ] {
             for bad in ["../../etc", "..", "root/../../etc"] {
-                let err = build_action_spec(
-                    action,
-                    &json!({
-                        "username": bad,
-                        "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample u@h",
-                    }),
-                )
-                .unwrap_err();
+                let mut params = json!({"username": bad});
+                if action != "GetAuthorizedKeys" {
+                    params["public_key"] =
+                        json!("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample u@h");
+                }
+                let err = build_action_spec(action, &params).unwrap_err();
                 assert!(
                     matches!(err, ExecutorError::InvalidParam("username")),
                     "{action} must reject username {bad:?}, got {err:?}"

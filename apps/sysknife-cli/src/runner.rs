@@ -3492,6 +3492,34 @@ mod tests {
     }
 
     #[test]
+    fn unknown_optional_keys_are_rejected_before_approval() {
+        for (action, params) in [
+            (
+                "SetKernelArguments",
+                serde_json::json!({"append": ["quiet"]}),
+            ),
+            ("UfwEnable", serde_json::json!({"x": 1})),
+        ] {
+            let plan = Plan::new(
+                "change system".into(),
+                "change system".into(),
+                "explanation".into(),
+                vec![PlanStep::new(
+                    ActionName::parse(action).unwrap(),
+                    "change".into(),
+                    PlanRiskLevel::High,
+                    params,
+                )
+                .unwrap()],
+            )
+            .unwrap();
+            let err = reject_unrunnable_params(&plan)
+                .expect_err("unknown optional parameters must not reach approval");
+            assert!(err.to_string().contains(action), "{err}");
+        }
+    }
+
+    #[test]
     fn every_catalogued_no_param_action_passes_plan_time_validation() {
         // Guard against the validator rejecting the ordinary case: every action
         // the daemon builds from an empty params object must still plan.
