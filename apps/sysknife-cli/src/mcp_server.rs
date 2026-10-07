@@ -280,30 +280,30 @@ pub struct ExecuteInput {
 /// Execution result for a single step.
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct StepResult {
-    /// Action that was executed.
+    /// Action whose execution was attempted.
     pub action_name: String,
-    /// Final status: `"succeeded"`, `"failed"`, `"needs_reboot"`, etc.
+    /// Final status, or `"unknown"` when the final daemon reply was lost.
     pub status: String,
     /// Human-readable summary from the daemon.
     pub summary: String,
     /// Progress lines collected during execution (ANSI stripped).
     pub output: Vec<String>,
-    /// Warnings emitted by the daemon for this step.
+    /// Daemon warnings, or a recovery warning when the outcome is unknown.
     pub warnings: Vec<String>,
-    /// Whether this step requires a reboot to take effect.
+    /// Whether the daemon confirmed this step requires a reboot to take effect.
     pub needs_reboot: bool,
     /// Daemon transaction ID for audit purposes.
     pub transaction_id: String,
     /// Identifier of the rollback the daemon performed after a failure, when
     /// one happened — e.g. the restored file or the previous deployment.
-    /// `null` when the step succeeded or when nothing was rolled back.
+    /// `null` when no rollback was reported, including an unknown outcome.
     pub rollback_ref: Option<String>,
 }
 
 /// Output of `sysknife_execute`.
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ExecuteOutput {
-    /// Results for each executed step, in order.
+    /// Results for each attempted step, in order, including an interrupted step.
     pub steps: Vec<StepResult>,
     /// True if any step requires a reboot to take effect.
     pub needs_reboot: bool,
@@ -1025,15 +1025,37 @@ async fn execute_steps_with_client(
         // Execute and collect progress lines.
         let mut output_lines: Vec<String> = Vec::new();
         let result = client
-            .execute(
+            .execute_with_outcome(
                 &TransactionId::new(step.transaction_id.clone()),
                 &step.action_name,
                 &step.params,
                 &ApprovalReceipt::new(step.approval_receipt.clone()),
                 |line| output_lines.push(line.to_owned()),
             )
-            .await
-            .map_err(|e| format!("execute error for {}: {e}", step.action_name))?;
+            .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(failure) => {
+                let (status, warnings) = if failure.outcome_unknown {
+                    ("unknown", vec![
+                        "The daemon may have applied this action or may still be running it. Check transaction history and host state before retrying; do not automatically replay the plan.".to_string()
+                    ])
+                } else {
+                    ("failed", Vec::new())
+                };
+                results.push(StepResult {
+                    action_name: step.action_name.clone(),
+                    status: status.to_string(),
+                    summary: format!("execute error for {}: {}", step.action_name, failure.error),
+                    output: truncate_output(output_lines),
+                    warnings,
+                    needs_reboot: false,
+                    transaction_id: step.transaction_id,
+                    rollback_ref: None,
+                });
+                break;
+            }
+        };
 
         let needs_reboot = result.needs_reboot;
         if needs_reboot {
@@ -2712,8 +2734,7 @@ mod tests {
             "a forged envelope close reached the caller unneutralised; got: {body:?}"
         );
 
-        // Interlock: the daemon rejects the receipt, so execute MUST error,
-        // never fabricate a success result.
+        // Interlock: a rejected receipt is a failed step, never a success.
         let result = execute_steps_with_client(
             client(),
             vec![StepToExecute {
@@ -2724,16 +2745,187 @@ mod tests {
             }],
         )
         .await;
-        assert!(
-            result.is_err(),
-            "a daemon-rejected receipt must surface as an MCP error, got: {result:?}"
-        );
-        assert!(
-            result.unwrap_err().contains("stale_approval"),
-            "the rejection reason must reach the caller"
-        );
+        let result = result.expect("a rejected step must remain in the result list");
+        assert_eq!(result.steps.len(), 1);
+        assert_eq!(result.steps[0].status, "failed");
+        assert!(result.steps[0].summary.contains("stale_approval"));
+        assert_eq!(result.steps[0].transaction_id, "tx-abc123");
+        assert!(!result.needs_reboot);
 
         server.abort();
+    }
+
+    fn execution_test_steps() -> Vec<StepToExecute> {
+        (1..=3)
+            .map(|n| StepToExecute {
+                transaction_id: format!("tx-{n}"),
+                action_name: "GetDiskUsage".to_string(),
+                params: serde_json::json!({}),
+                approval_receipt: format!("receipt-{n}"),
+            })
+            .collect()
+    }
+
+    async fn assert_partial_execution_after_error(loss: &str) {
+        use sysknife_daemon::transport::framing::FramedStream;
+        use tokio::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("partial.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let is_timeout = loss == "timeout";
+        let is_conflict = loss == "conflict";
+        let loss = loss.to_string();
+        let server =
+            tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut first = FramedStream::new(stream);
+                let request: serde_json::Value =
+                    serde_json::from_slice(&first.recv().await.unwrap()).unwrap();
+                assert_eq!(request["transaction_id"], "tx-1");
+                first
+                    .send(
+                        &serde_json::to_vec(&serde_json::json!({
+                            "type": "job_completed",
+                            "result": {
+                                "transaction_id": "tx-1", "status": "succeeded",
+                                "summary": "first step applied", "warnings": ["first warning"],
+                                "needs_reboot": true, "rollback_ref": null
+                            }
+                        }))
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut second = FramedStream::new(stream);
+                let request: serde_json::Value =
+                    serde_json::from_slice(&second.recv().await.unwrap()).unwrap();
+                assert_eq!(request["transaction_id"], "tx-2");
+                if !matches!(loss.as_str(), "timeout" | "conflict") {
+                    second
+                    .send(&serde_json::to_vec(&serde_json::json!({
+                        "type": "job_progress", "line": "\u{1b}[31mpartial progress\u{1b}[0m"
+                    })).unwrap())
+                    .await
+                    .unwrap();
+                }
+                match loss.as_str() {
+                    "close" => drop(second),
+                    "malformed" => second.send(b"not json").await.unwrap(),
+                    "conflict" => second
+                        .send(
+                            &serde_json::to_vec(&serde_json::json!({
+                                "type": "conflict_response", "request_id": request["request_id"],
+                                "message": "another mutating action holds the package lock",
+                                "retry_after_seconds": null
+                            }))
+                            .unwrap(),
+                        )
+                        .await
+                        .unwrap(),
+                    "timeout" => {
+                        ready_tx.send(()).unwrap();
+                        std::future::pending::<()>().await;
+                    }
+                    _ => unreachable!(),
+                }
+                // Keep listening until the client returns: any third execution is
+                // a regression, even if its response would have been discarded.
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut third = FramedStream::new(stream);
+                let _ = third.recv().await;
+                panic!("execution continued after an unknown outcome");
+            });
+
+        let execution = tokio::spawn(execute_steps_with_client(
+            DaemonClient::new(SocketTarget::Unix(sock)),
+            execution_test_steps(),
+        ));
+        if is_timeout {
+            ready_rx.await.unwrap();
+            tokio::time::pause();
+            tokio::time::advance(std::time::Duration::from_secs(2 * 60 * 60 + 301)).await;
+        }
+        let result = execution
+            .await
+            .unwrap()
+            .expect("transport loss must retain completed and interrupted steps");
+        assert_eq!(result.steps.len(), 2);
+        assert!(result.needs_reboot);
+        assert_eq!(result.steps[0].status, "succeeded");
+        assert_eq!(result.steps[0].summary, "first step applied");
+        assert_eq!(result.steps[0].transaction_id, "tx-1");
+        assert_eq!(result.steps[0].warnings, ["first warning"]);
+        assert!(result.steps[0].needs_reboot);
+        assert_eq!(
+            result.steps[1].status,
+            if is_conflict { "failed" } else { "unknown" }
+        );
+        assert_eq!(result.steps[1].transaction_id, "tx-2");
+        if is_conflict {
+            assert!(result.steps[1].output.is_empty());
+            assert!(result.steps[1]
+                .summary
+                .contains("another mutating action holds the package lock"));
+            assert!(result.steps[1].warnings.is_empty());
+        } else if is_timeout {
+            assert!(result.steps[1].output.is_empty());
+            assert!(result.steps[1].summary.contains("timed out"));
+        } else {
+            assert_eq!(result.steps[1].output, ["partial progress"]);
+        }
+        assert!(result.steps[1]
+            .summary
+            .contains("execute error for GetDiskUsage"));
+        if !is_conflict {
+            assert!(!result.steps[1].warnings.is_empty());
+        }
+        assert!(!result.steps[1].needs_reboot);
+        assert!(result.steps[1].rollback_ref.is_none());
+        assert!(!server.is_finished(), "third step reached the daemon");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn mcp_execute_preserves_partial_results_on_socket_close() {
+        assert_partial_execution_after_error("close").await;
+    }
+
+    #[tokio::test]
+    async fn mcp_execute_preserves_partial_results_on_malformed_frame() {
+        assert_partial_execution_after_error("malformed").await;
+    }
+
+    #[tokio::test]
+    async fn mcp_execute_preserves_partial_results_on_frame_timeout() {
+        assert_partial_execution_after_error("timeout").await;
+    }
+
+    #[tokio::test]
+    async fn mcp_execute_preserves_partial_results_on_resource_conflict() {
+        assert_partial_execution_after_error("conflict").await;
+    }
+
+    #[tokio::test]
+    async fn mcp_execute_reports_connection_failure_as_an_unexecuted_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = execute_steps_with_client(
+            DaemonClient::new(SocketTarget::Unix(dir.path().join("missing.sock"))),
+            execution_test_steps(),
+        )
+        .await
+        .expect("a pre-execution error must remain in the result list");
+        assert_eq!(result.steps.len(), 1);
+        assert_eq!(result.steps[0].status, "failed");
+        assert_eq!(result.steps[0].transaction_id, "tx-1");
+        assert!(result.steps[0]
+            .summary
+            .contains("execute error for GetDiskUsage"));
+        assert!(result.steps[0].output.is_empty());
+        assert!(!result.needs_reboot);
     }
 
     // -----------------------------------------------------------------------

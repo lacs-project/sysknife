@@ -80,27 +80,42 @@ one-time receipt printed by `sysknife approve <transaction-id>`.
 | `steps` | `StepToExecute[]` | Approved steps from `sysknife_plan` |
 
 Each `StepToExecute` contains the original `transaction_id`, `action_name`, and
-`params`, plus an `approval_receipt`. Execution halts on the first failure.
+`params`, plus an `approval_receipt`. Execution halts on the first failed or
+unknown outcome. Results already received remain in the response, followed by
+the interrupted step; subsequent steps are not attempted.
 
 **Output** — `ExecuteOutput`
 
 | Field          | Type           | Description                        |
 |----------------|----------------|------------------------------------|
-| `steps`        | `StepResult[]` | Per-step results                   |
-| `needs_reboot` | bool           | True if any step requires a reboot |
+| `steps`        | `StepResult[]` | Results for attempted steps, in order |
+| `needs_reboot` | bool           | True if any step confirmed a reboot is required |
 
 Each `StepResult`:
 
 | Field            | Type       | Description                              |
 |------------------|------------|------------------------------------------|
-| `action_name`    | string     | Action that was executed                 |
-| `status`         | string     | `"succeeded"`, `"failed"`, etc.          |
+| `action_name`    | string     | Action whose execution was attempted     |
+| `status`         | string     | `"succeeded"`, `"failed"`, `"unknown"`, etc. |
 | `summary`        | string     | Human-readable outcome                   |
 | `output`         | `string[]` | Progress lines (ANSI stripped)           |
-| `warnings`       | `string[]` | Daemon warnings                          |
-| `needs_reboot`   | bool       | Whether this step needs a reboot         |
+| `warnings`       | `string[]` | Daemon warnings or outcome recovery guidance |
+| `needs_reboot`   | bool       | Whether the daemon confirmed a reboot is required |
 | `transaction_id` | string     | Daemon audit transaction ID              |
-| `rollback_ref` | string \| null | What was rolled back after a failure, when anything was; `null` otherwise |
+| `rollback_ref` | string \| null | Reported rollback after a failure; `null` when no rollback was reported |
+
+A connection failure before sending a request or an explicit daemon rejection
+(including a resource conflict) is reported as a `failed` step with the error
+text in `summary`. A send failure,
+closed socket, timeout, or unreadable response leaves the outcome `unknown`:
+the action may already have applied or may still be running. The interrupted
+step retains its transaction ID and any progress received, with a recovery
+warning. Its `needs_reboot: false` and `rollback_ref: null` mean these effects
+were not confirmed, rather than proving that neither occurred.
+
+Inspect transaction history and host state before deciding how to recover an
+unknown outcome. Do not automatically replay the plan: completed steps may
+already have consumed their one-time receipts.
 
 ---
 

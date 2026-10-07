@@ -55,6 +55,29 @@ pub struct ApprovalDetails {
 
 use crate::error::CliError;
 
+/// Execution can lose its final reply after the daemon has accepted the action.
+/// Keep that uncertainty separate from the CLI's unchanged error/exit contract.
+pub(crate) struct ExecuteFailure {
+    pub error: CliError,
+    pub outcome_unknown: bool,
+}
+
+impl ExecuteFailure {
+    fn failed(error: CliError) -> Self {
+        Self {
+            error,
+            outcome_unknown: false,
+        }
+    }
+
+    fn unknown(error: CliError) -> Self {
+        Self {
+            error,
+            outcome_unknown: true,
+        }
+    }
+}
+
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Longest gap tolerated between frames while an action streams.
@@ -855,7 +878,26 @@ impl DaemonClient {
         approval_receipt: &ApprovalReceipt,
         mut on_line: impl FnMut(&str),
     ) -> Result<ResultEnvelope, CliError> {
-        let mut stream = self.connect_async().await?;
+        self.execute_with_outcome(
+            transaction_id,
+            action_name,
+            params,
+            approval_receipt,
+            &mut on_line,
+        )
+        .await
+        .map_err(|failure| failure.error)
+    }
+
+    pub(crate) async fn execute_with_outcome(
+        &self,
+        transaction_id: &TransactionId,
+        action_name: &str,
+        params: &Value,
+        approval_receipt: &ApprovalReceipt,
+        mut on_line: impl FnMut(&str),
+    ) -> Result<ResultEnvelope, ExecuteFailure> {
+        let mut stream = self.connect_async().await.map_err(ExecuteFailure::failed)?;
 
         let req = serde_json::to_vec(&serde_json::json!({
             "type": "execute",
@@ -865,58 +907,75 @@ impl DaemonClient {
             "params": params,
             "approval_receipt": approval_receipt.as_str(),
         }))
-        .map_err(|e| CliError::ConfigOrDaemon(format!("serialize: {e}")))?;
+        .map_err(|e| ExecuteFailure::failed(CliError::ConfigOrDaemon(format!("serialize: {e}"))))?;
 
         tokio::time::timeout(SOCKET_TIMEOUT, stream.write_frame(&req))
             .await
             .map_err(|_| {
-                CliError::ConfigOrDaemon(format!(
+                ExecuteFailure::unknown(CliError::ConfigOrDaemon(format!(
                     "timed out after {}s sending the request to the daemon",
                     SOCKET_TIMEOUT.as_secs()
-                ))
+                )))
             })?
-            .map_err(|e| CliError::ConfigOrDaemon(format!("send: {e}")))?;
+            .map_err(|e| ExecuteFailure::unknown(CliError::ConfigOrDaemon(format!("send: {e}"))))?;
 
         loop {
             let raw = tokio::time::timeout(EXECUTE_FRAME_TIMEOUT, stream.read_frame())
                 .await
-                .map_err(|_| CliError::ExecutionFailed(format!(
+                .map_err(|_| ExecuteFailure::unknown(CliError::ExecutionFailed(format!(
                     "timed out after {}s waiting for the next frame from the daemon; the job may still be running server-side",
                     EXECUTE_FRAME_TIMEOUT.as_secs()
-                )))?
-                .map_err(|e| CliError::ExecutionFailed(format!("recv: {e}")))?;
+                ))))?
+                .map_err(|e| ExecuteFailure::unknown(CliError::ExecutionFailed(format!("recv: {e}"))))?;
 
-            let resp: Value = serde_json::from_slice(&raw)
-                .map_err(|e| CliError::ExecutionFailed(format!("parse: {e}")))?;
+            let resp: Value = serde_json::from_slice(&raw).map_err(|e| {
+                ExecuteFailure::unknown(CliError::ExecutionFailed(format!("parse: {e}")))
+            })?;
 
             match resp["type"].as_str() {
                 Some("job_started") => {}
                 Some("job_progress") => {
                     let line = resp["line"].as_str().ok_or_else(|| {
-                        CliError::ExecutionFailed(
+                        ExecuteFailure::unknown(CliError::ExecutionFailed(
                             "job_progress message missing 'line' string field".into(),
-                        )
+                        ))
                     })?;
                     on_line(&strip_ansi(line));
                 }
                 Some("job_completed") => {
-                    let envelope: ResultEnvelope =
-                        serde_json::from_value(resp["result"].clone())
-                            .map_err(|e| CliError::ExecutionFailed(format!("parse result: {e}")))?;
+                    let envelope: ResultEnvelope = serde_json::from_value(resp["result"].clone())
+                        .map_err(|e| {
+                        ExecuteFailure::unknown(CliError::ExecutionFailed(format!(
+                            "parse result: {e}"
+                        )))
+                    })?;
                     return Ok(envelope);
                 }
                 Some("error_response") => {
-                    return Err(CliError::ExecutionFailed(format!(
+                    return Err(ExecuteFailure::failed(CliError::ExecutionFailed(format!(
                         "{}: {}",
                         resp["category"].as_str().unwrap_or("error"),
                         resp["message"].as_str().unwrap_or("unknown")
-                    )));
+                    ))));
+                }
+                Some("conflict_response") => {
+                    // The daemon refuses resource conflicts before claiming
+                    // the receipt or starting the action. This is a known
+                    // rejection, rather than a lost completion reply.
+                    let message = resp["message"].as_str().ok_or_else(|| {
+                        ExecuteFailure::unknown(CliError::ExecutionFailed(
+                            "conflict_response message missing 'message' string field".into(),
+                        ))
+                    })?;
+                    return Err(ExecuteFailure::failed(CliError::ExecutionFailed(format!(
+                        "conflict: {message}"
+                    ))));
                 }
                 _ => {
-                    return Err(CliError::ExecutionFailed(format!(
+                    return Err(ExecuteFailure::unknown(CliError::ExecutionFailed(format!(
                         "unexpected response type: {:?}",
                         resp["type"]
-                    )));
+                    ))));
                 }
             }
         }
