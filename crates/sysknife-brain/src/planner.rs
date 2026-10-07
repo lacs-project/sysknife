@@ -1627,4 +1627,172 @@ mod tests {
         assert!(qwen, "unparseable value should NOT disable auto-detection");
         assert!(!llama, "unparseable value should NOT force think on");
     }
+
+    // ── The permanent-4xx retry policy, through the real adapter path ─────────
+    //
+    // Issue #475: every adapter mapped `StatusClass::Other` (400/404/413/422, and
+    // 5xx) onto a bare `ProviderError::Request`, and `Request` is retried
+    // unconditionally — so `complete_with_retry` sent the identical bytes three
+    // times. The fix makes the adapters carry the HTTP status into
+    // `ProviderError::Http`, whose arm already held the correct policy. These
+    // tests drive the *real* classifier (`map_rig_error` → `classify_status`) and
+    // the public retry entry point, and count attempts. A hand-built `Http` would
+    // prove nothing — that is the trap `cassette.rs` documents.
+
+    use crate::providers::rig_adapter::map_rig_error;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// A transport that always fails with a given (real, adapter-built) error.
+    struct AlwaysFails {
+        calls: Arc<AtomicUsize>,
+        error: ProviderError,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for AlwaysFails {
+        async fn complete(
+            &self,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _max_tokens: u32,
+        ) -> Result<Completion, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(self.error.clone())
+        }
+    }
+
+    fn planner_always_failing_with(error: ProviderError) -> (LlmPlanner, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let planner = LlmPlanner::new(
+            Box::new(AlwaysFails {
+                calls: Arc::clone(&calls),
+                error,
+            }),
+            Box::new(UnusedState),
+            1,
+        );
+        (planner, calls)
+    }
+
+    /// The 400 the rig adapter actually builds: `classify_status` → `Other` →
+    /// `Http { status: 400, .. }`. Built through the real mapping function, not
+    /// by hand.
+    fn rig_status(status: http::StatusCode, body: &str) -> ProviderError {
+        map_rig_error(rig::completion::CompletionError::from_http_response(
+            status, body,
+        ))
+    }
+
+    #[tokio::test]
+    async fn a_permanent_400_is_attempted_exactly_once() {
+        let (planner, calls) = planner_always_failing_with(rig_status(
+            http::StatusCode::BAD_REQUEST,
+            "model not found",
+        ));
+        let err = planner
+            .complete_with_retry("SYS", &[Message::user_text("hi")], &[])
+            .await
+            .expect_err("the provider always fails");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a permanent 400 must be sent once, not retried: {err}"
+        );
+        assert!(!err.is_retryable(), "…and it is not retryable: {err}");
+    }
+
+    #[tokio::test]
+    async fn a_5xx_is_still_retried() {
+        let (planner, calls) =
+            planner_always_failing_with(rig_status(http::StatusCode::INTERNAL_SERVER_ERROR, "boom"));
+        let err = planner
+            .complete_with_retry("SYS", &[Message::user_text("hi")], &[])
+            .await
+            .expect_err("the provider always fails");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            (PROVIDER_RETRY_LIMIT + 1) as usize,
+            "a 5xx is the provider's fault and must be retried: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_429_is_still_retried() {
+        let (planner, calls) =
+            planner_always_failing_with(rig_status(http::StatusCode::TOO_MANY_REQUESTS, "slow down"));
+        planner
+            .complete_with_retry("SYS", &[Message::user_text("hi")], &[])
+            .await
+            .expect_err("the provider always fails");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            (PROVIDER_RETRY_LIMIT + 1) as usize,
+            "429 means \"later\" and must keep retrying"
+        );
+    }
+
+    /// A 400 that *is* worth retrying: the retry appends a correction, so the
+    /// bytes change. It must reach the provider a second time.
+    #[tokio::test]
+    async fn a_tool_use_failed_400_is_retried_with_a_correction() {
+        struct RejectsOnceThenAnswers {
+            calls: Arc<AtomicUsize>,
+            second: Arc<tokio::sync::Mutex<Vec<Message>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl LlmProvider for RejectsOnceThenAnswers {
+            async fn complete(
+                &self,
+                _system: &str,
+                messages: &[Message],
+                _tools: &[ToolDefinition],
+                _max_tokens: u32,
+            ) -> Result<Completion, ProviderError> {
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Err(rig_status(
+                        http::StatusCode::BAD_REQUEST,
+                        r#"{"error":{"code":"tool_use_failed","message":"attempted to call tool 'json' which was not in request.tools"}}"#,
+                    ));
+                }
+                *self.second.lock().await = messages.to_vec();
+                Ok(Completion {
+                    content: vec![ContentBlock::Text {
+                        text: "recovered".into(),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                })
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let second = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let planner = LlmPlanner::new(
+            Box::new(RejectsOnceThenAnswers {
+                calls: Arc::clone(&calls),
+                second: Arc::clone(&second),
+            }),
+            Box::new(UnusedState),
+            1,
+        );
+        planner
+            .complete_with_retry("SYS", &[Message::user_text("hi")], &[])
+            .await
+            .expect("the second attempt succeeds");
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "a retryable 400 must be re-asked exactly once"
+        );
+        let sent = second.lock().await;
+        assert_eq!(sent.len(), 2, "the retry must carry the correction");
+        let last = format!("{:?}", sent.last().unwrap().content);
+        assert!(
+            last.contains("tool that does not exist"),
+            "the retry must append the correction: {last}"
+        );
+    }
 }

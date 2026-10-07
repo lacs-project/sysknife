@@ -157,30 +157,43 @@ struct Entry {
 struct RecordedRejection {
     kind: String,
     message: String,
+    /// The HTTP status, for a rejection an adapter mapped to
+    /// [`ProviderError::Http`]. `Option` so cassettes written before this field
+    /// stay loadable; a replayed status-less recording keeps the old shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    status: Option<u16>,
 }
 
 impl RecordedRejection {
     fn of(error: &ProviderError) -> Option<Self> {
-        let kind = match error {
-            ProviderError::Request(_) => "request",
-            ProviderError::Parse(_) => "parse",
-            // Nothing else can carry an invalid-tool-call rejection: no adapter
-            // builds `Http`, and `Auth`/`RateLimit`/`CassetteMiss` are excluded
-            // by `is_invalid_tool_call` itself.
+        let (kind, message, status) = match error {
+            ProviderError::Request(m) => ("request", m.clone(), None),
+            ProviderError::Parse(m) => ("parse", m.clone(), None),
+            // A structured 4xx/5xx (`StatusClass::Other`). It can carry an
+            // invalid-tool-call rejection — a Groq 400 does — so it must be
+            // recordable and replay as the same status-bearing variant.
+            ProviderError::Http { status, body } => ("http", body.clone(), Some(*status)),
+            // Nothing else can carry an invalid-tool-call rejection:
+            // `Auth`/`RateLimit`/`CassetteMiss` are excluded by
+            // `is_invalid_tool_call` itself.
             _ => return None,
         };
         Some(Self {
             kind: kind.to_string(),
-            message: match error {
-                ProviderError::Request(m) | ProviderError::Parse(m) => m.clone(),
-                _ => return None,
-            },
+            message,
+            status,
         })
     }
 
     fn to_error(&self) -> ProviderError {
         match self.kind.as_str() {
             "parse" => ProviderError::Parse(self.message.clone()),
+            "http" => ProviderError::Http {
+                // New recordings always carry the status; the fallback only
+                // fires for a cassette written before the field existed.
+                status: self.status.unwrap_or(500),
+                body: self.message.clone(),
+            },
             // "request" and anything a newer writer invents. Falling back to the
             // broader variant keeps an unknown kind replayable and retryable
             // rather than turning it into a silent success.
@@ -1343,16 +1356,19 @@ mod tests {
 
     /// Groq's rejection as it actually reaches us.
     ///
-    /// Not `ProviderError::Http`: no adapter constructs that variant. A 400 is
-    /// classified `StatusClass::Other` and becomes `Request`. Building the test
-    /// double out of `Http` made every assertion below pass against a shape the
-    /// system cannot produce.
+    /// A 400 is classified `StatusClass::Other`, and the adapters now carry it
+    /// into `ProviderError::Http { status: 400, .. }` so the retry loop sees the
+    /// permanent status. This helper must match that real shape: a double built
+    /// out of a bare `Request` — which is what this once was — asserts against a
+    /// shape the adapters no longer produce, and is exactly how the retried-4xx
+    /// defect survived a passing test.
     fn tool_use_failed() -> ProviderError {
-        ProviderError::Request(
-            "{\"error\":{\"message\":\"Failed to call a function. Please adjust your prompt.\",\
-             \"type\":\"invalid_request_error\",\"code\":\"tool_use_failed\"}}"
+        ProviderError::Http {
+            status: 400,
+            body: "{\"error\":{\"message\":\"Failed to call a function. Please adjust your prompt.\",\
+                   \"type\":\"invalid_request_error\",\"code\":\"tool_use_failed\"}}"
                 .into(),
-        )
+        }
     }
 
     /// A provider that rejects the first call the way Groq rejects a tool call
@@ -1384,6 +1400,10 @@ mod tests {
         // recorder wider than it serves a transient failure back for ever.
         let cases = [
             tool_use_failed(),
+            ProviderError::Http {
+                status: 400,
+                body: "attempted to call tool 'json' which was not in request.tools".into(),
+            },
             ProviderError::Request(
                 "attempted to call tool 'json' which was not in request.tools".into(),
             ),
@@ -1427,8 +1447,8 @@ mod tests {
             .await
             .expect_err("the recording says this request was rejected");
         assert!(
-            matches!(replayed, ProviderError::Request(_)),
-            "the variant must survive the round trip, not just the text: {replayed:?}"
+            matches!(replayed, ProviderError::Http { status: 400, .. }),
+            "the variant and its status must survive the round trip, not just the text: {replayed:?}"
         );
         assert!(
             replayed.is_invalid_tool_call(),

@@ -424,7 +424,13 @@ fn map_openai_error(err: async_openai::error::OpenAIError) -> ProviderError {
                     "OpenAI error: {}",
                     msg
                 );
-                ProviderError::Request(msg)
+                // Carry the status the classifier saw into the error the retry
+                // loop inspects. A bare `Request` would be retried
+                // unconditionally, sending the identical bytes three times.
+                ProviderError::Http {
+                    status: api_err.status_code.as_u16(),
+                    body: msg,
+                }
             }
         };
     }
@@ -1018,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn map_openai_error_classifies_other_4xx_as_request_via_real_api_error() {
+    fn map_openai_error_classifies_other_4xx_as_http_via_real_api_error() {
         let err =
             async_openai::error::OpenAIError::ApiError(async_openai::error::ApiErrorResponse {
                 status_code: http::StatusCode::BAD_REQUEST,
@@ -1032,8 +1038,12 @@ mod tests {
             });
         let mapped = map_openai_error(err);
         assert!(
-            matches!(mapped, ProviderError::Request(_)),
-            "expected Request, got {mapped:?}"
+            matches!(mapped, ProviderError::Http { status: 400, .. }),
+            "a permanent 4xx must carry its status into the error, got {mapped:?}"
+        );
+        assert!(
+            !mapped.is_retryable(),
+            "a permanent 4xx must not be retryable, got {mapped:?}"
         );
     }
 
