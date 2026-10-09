@@ -249,8 +249,8 @@ mod unattended_tests {
 
     #[test]
     fn the_override_is_inert_without_yes() {
-        // The flag implies --yes at the CLI layer. If that wiring is ever
-        // dropped, the policy must not auto-approve on the override alone.
+        // --dangerously-skip-approval never implies --yes at the CLI layer.
+        // The override alone must not let the policy auto-approve.
         let p = ApprovalPolicy::new(false, Some(MaxRisk::High), true, false, true);
         assert_eq!(p.effective_auto_ceiling(), None);
         assert_eq!(

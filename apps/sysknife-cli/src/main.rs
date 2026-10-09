@@ -197,3 +197,47 @@ fn build_run_opts(cli: &Cli, socket: crate::client::SocketTarget) -> RunOpts {
             .is_granted(),
     }
 }
+
+
+#[cfg(test)]
+mod dangerously_skip_approval_wiring_tests {
+    use super::*;
+    use crate::approval::ApprovalDecision;
+    use crate::client::SocketTarget;
+    use sysknife_brain::planner::PlanRiskLevel;
+
+    // Regression test for #440. Two things must hold together, or the test
+    // passes for the wrong reason: the flag must actually parse (so renaming
+    // it, or breaking its parsing, turns this red), AND parsing it alone must
+    // not grant any approval. Splitting these into two tests would let one
+    // drift from the other silently.
+    #[test]
+    fn dangerously_skip_approval_alone_does_not_imply_yes_max_risk_or_non_interactive() {
+        let cli = Cli::try_parse_from([
+            "sysknife",
+            "--dangerously-skip-approval",
+            "check disk usage",
+        ])
+        .unwrap();
+
+        assert!(cli.dangerously_skip_approval);
+        assert!(!cli.yes);
+        assert!(cli.max_risk.is_none());
+        assert!(!cli.non_interactive);
+
+        let socket = SocketTarget::Unix("/tmp/sysknife-test.sock".into());
+        let opts = build_run_opts(&cli, socket);
+
+        assert!(!opts.yes);
+        assert!(opts.max_risk.is_none());
+        assert!(!opts.non_interactive);
+        assert!(!opts.skip_approval);
+
+        let policy = opts.approval_policy();
+        assert_eq!(policy.effective_auto_ceiling(), None);
+        assert_eq!(
+            policy.decide_step(&PlanRiskLevel::Low),
+            ApprovalDecision::RequiresPrompt
+        );
+    }
+}
