@@ -74,8 +74,13 @@ def extract(root):
                 comment = re.fullmatch(r"\s*#\s*(\S+(?: \(branch\))?)\s*", suffix)
                 if not comment:
                     raise ValueError(f"missing version comment or ambiguous comment for {action}")
+                claim = comment[1]
+                if claim.endswith(" (branch)"):
+                    branch = claim.removesuffix(" (branch)")
+                    if (action, branch) != ("dtolnay/rust-toolchain", "stable"):
+                        raise ValueError(f"{action} branch marker is not allowed for {branch}")
                 location = f"{path.relative_to(root).as_posix()}:{node.start_mark.line + 1}"
-                rows.append("\t".join((action, sha.lower(), comment[1], location)))
+                rows.append("\t".join((action, sha.lower(), claim, location)))
         except (OSError, UnicodeError, yaml.YAMLError, ValueError, IndexError) as error:
             raise ValueError(f"cannot read workflow {path}: {error}") from error
     if not rows:
