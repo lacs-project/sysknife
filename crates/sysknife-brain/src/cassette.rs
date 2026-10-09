@@ -1365,9 +1365,10 @@ mod tests {
     fn tool_use_failed() -> ProviderError {
         ProviderError::Http {
             status: 400,
-            body: "{\"error\":{\"message\":\"Failed to call a function. Please adjust your prompt.\",\
+            body:
+                "{\"error\":{\"message\":\"Failed to call a function. Please adjust your prompt.\",\
                    \"type\":\"invalid_request_error\",\"code\":\"tool_use_failed\"}}"
-                .into(),
+                    .into(),
         }
     }
 

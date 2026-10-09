@@ -1705,8 +1705,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_5xx_is_still_retried() {
-        let (planner, calls) =
-            planner_always_failing_with(rig_status(http::StatusCode::INTERNAL_SERVER_ERROR, "boom"));
+        let (planner, calls) = planner_always_failing_with(rig_status(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            "boom",
+        ));
         let err = planner
             .complete_with_retry("SYS", &[Message::user_text("hi")], &[])
             .await
@@ -1720,8 +1722,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_429_is_still_retried() {
-        let (planner, calls) =
-            planner_always_failing_with(rig_status(http::StatusCode::TOO_MANY_REQUESTS, "slow down"));
+        let (planner, calls) = planner_always_failing_with(rig_status(
+            http::StatusCode::TOO_MANY_REQUESTS,
+            "slow down",
+        ));
         planner
             .complete_with_retry("SYS", &[Message::user_text("hi")], &[])
             .await
