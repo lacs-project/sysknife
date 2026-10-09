@@ -4801,6 +4801,7 @@ dependencies = [
  "futures",
  "hex",
  "http",
+ "regex",
  "rig-core",
  "serde",
  "serde_json",
