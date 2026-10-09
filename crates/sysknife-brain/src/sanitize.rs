@@ -146,7 +146,13 @@ pub fn sanitize_tool_output_capped(
     raw: &str,
     max_bytes: usize,
 ) -> SanitizedToolOutput {
-    let normalised = normalise_free_text_capped(raw, max_bytes);
+    // Screen complete input before any cap can split a credential/PEM block.
+    // Screen again after stripping invisible carriers so normalization cannot
+    // reveal a credential that was disguised in the original text.
+    let redacted = crate::tool_secrets::redact_tool_secrets(raw);
+    let normalised = normalise_unbounded_text(&redacted);
+    let redacted = crate::tool_secrets::redact_tool_secrets(&normalised);
+    let normalised = truncate_with_marker(&redacted, max_bytes);
     let safe_tool = sanitise_tool_name(tool_name);
 
     SanitizedToolOutput(format!(
@@ -420,6 +426,144 @@ fn truncate_with_marker(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn tool_output_unterminated_quotes_preserve_following_log_lines() {
+        for label in [
+            "password=",
+            "--password",
+            "--password ",
+            "Authorization: Bearer ",
+        ] {
+            for newline in ["\n", "\r\n"] {
+                let later = "Oct 07 sshd[900]: Accepted publickey for root from 203.0.113.9\nOct 07 sudo: root : COMMAND=/bin/sh";
+                let raw = format!("Oct 07 app: {label}{newline}{later}");
+                let output = sanitize_tool_output("query_logs", &raw).into_inner();
+                assert!(
+                    output.contains(later),
+                    "empty value swallowed later logs: {output}"
+                );
+            }
+        }
+        for quote in ['\'', '"'] {
+            for value in ["", "hidden value", "hidden\\"] {
+                for newline in ["\n", "\r\n"] {
+                    let later = "Oct 07 sshd[900]: Accepted publickey for root from 203.0.113.9\nOct 07 sudo: root : COMMAND=/bin/sh";
+                    let raw = format!("Oct 07 app: password={quote}{value}{newline}{later}");
+                    let output = sanitize_tool_output("query_logs", &raw).into_inner();
+                    assert!(
+                        output.contains(later),
+                        "later log facts disappeared: {output}"
+                    );
+                    if !value.is_empty() {
+                        assert!(!output.contains(value), "quoted value leaked: {output}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tool_output_preserves_provider_names_and_key_paths() {
+        let raw = "deb http://sg.archive.ubuntu.com/ubuntu jammy main\nHF_HOME=/root/.cache/huggingface\nnpm_config_cache=/root/.npm\nOct 07 sshd[812]: Unable to load host key: /etc/ssh/ssh_host_rsa_key";
+        let output = sanitize_tool_output("query_logs", raw).into_inner();
+        assert!(output.contains(raw), "host facts disappeared: {output}");
+    }
+
+    #[test]
+    fn tool_output_redacts_spaced_password_options_and_provider_shapes() {
+        for raw in [
+            "mysqldump --password hunter2 mydb",
+            "mysqldump --password 'hunter2' mydb",
+            "client --token hunter2 mydb",
+        ] {
+            let output = sanitize_tool_output("query_processes", raw).into_inner();
+            assert!(
+                !output.contains("hunter2"),
+                "option secret leaked: {output}"
+            );
+            assert!(
+                output.contains("mydb"),
+                "adjacent argument disappeared: {output}"
+            );
+        }
+        for key in [
+            format!("SG.{}.{}", "a".repeat(22), "b".repeat(43)),
+            format!("hf_{}", "a".repeat(34)),
+            format!("npm_{}", "a".repeat(36)),
+        ] {
+            let output =
+                sanitize_tool_output("query_environment", &format!("{key}\nservice healthy"))
+                    .into_inner();
+            assert!(!output.contains(&key), "provider secret leaked: {output}");
+            assert!(output.contains("service healthy"));
+        }
+    }
+
+    #[test]
+    fn tool_output_redacts_credentials_before_normalisation_and_truncation() {
+        // Construct the fake Google shape so the commit credential scanner does
+        // not mistake a full-length source literal for a live provider key.
+        let google = format!("{}{}", "AIza", "SyFixtureGoogleKey01234567890123456");
+        let cases = [
+            ("DB_PASSWORD=correct-horse service healthy", "correct-horse"),
+            ("--api-key='a key with spaces' --port=443", "a key with spaces"),
+            ("{\"client_secret\": \"json-secret\", \"healthy\": true}", "json-secret"),
+            ("Authorization: Bearer bearer-value", "bearer-value"),
+            ("Authorization:\u{1b}[31mBearer\u{1b}[0m colored-value", "colored-value"),
+            ("API\u{200b}_KEY=unicode-value", "unicode-value"),
+            ("sk-proj-FixtureOpenAIKey1234567890", "FixtureOpenAIKey"),
+            ("ghp_FixtureGithubToken1234567890", "FixtureGithubToken"),
+            ("gsk_FixtureGroqKey1234567890", "FixtureGroqKey"),
+            ("xai-FixtureXaiKey1234567890", "FixtureXaiKey"),
+            ("sk-ant-FixtureAnthropicKey1234567890", "FixtureAnthropicKey"),
+            (google.as_str(), "FixtureGoogleKey"),
+            ("AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE"),
+            ("AWS key: AKIAIOSFODNN7EXAMPLE.", "AKIAIOSFODNN7EXAMPLE"),
+            ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmaXh0dXJlIn0.fixtureSignature", "fixtureSignature"),
+            ("-----BEGIN RSA PRIVATE KEY-----\nfixture-private-material\n-----END RSA PRIVATE KEY-----\nservice healthy", "fixture-private-material"),
+            ("-----BEGIN OPENSSH PRIVATE KEY-----\nunterminated-private-material", "unterminated-private-material"),
+            ("-----BEGIN bogus\n-----BEGIN PRIVATE KEY-----\nembedded-private-material\n-----END PRIVATE KEY-----\nservice healthy", "embedded-private-material"),
+        ];
+        for (raw, secret) in cases {
+            let output = super::sanitize_tool_output("query_logs", raw).into_inner();
+            assert!(!output.contains(secret), "secret leaked in {output}");
+            assert!(output.contains("<redacted>"), "no marker in {output}");
+        }
+        let output = super::sanitize_tool_output_capped(
+            "query_logs",
+            &format!("DB_PASSWORD={}\nservice healthy", "secret".repeat(2000)),
+            128,
+        )
+        .into_inner();
+        assert!(!output.contains("secret"));
+        assert!(output.contains("service healthy"));
+        let private = format!(
+            "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\nservice healthy",
+            "private".repeat(2000)
+        );
+        let output = super::sanitize_tool_output_capped("query_logs", &private, 128).into_inner();
+        assert!(!output.contains("private"));
+        assert!(output.contains("service healthy"));
+
+        // Repeated invalid JWT-like segments remain useful data. They must not
+        // prevent screening a subsequent assignment inside the same token.
+        let dotted = format!(
+            "{}DB_PASSWORD=after-dots\nservice healthy",
+            "eyJheaderSegment.".repeat(4096)
+        );
+        let output =
+            super::sanitize_tool_output_capped("query_logs", &dotted, dotted.len()).into_inner();
+        assert!(output.contains("eyJheaderSegment."));
+        assert!(!output.contains("after-dots"));
+        assert!(output.contains("DB_PASSWORD=<redacted>\nservice healthy"));
+    }
+
+    #[test]
+    fn tool_output_preserves_innocuous_system_facts_and_public_keys() {
+        let raw = "password aging: 90 days\n/etc/passwd readable\nTOKEN_COUNT=5\nKEYBOARD=us\nDB_PASSWORD=\nservice healthy\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixturePublicKey user@host\nsk-ssh-ed25519@openssh.com AAAAFixturePublicKey user@host\nsk-ecdsa-sha2-nistp256@openssh.com AAAAFixturePublicKey user@host";
+        let output = super::sanitize_tool_output("query_logs", raw).into_inner();
+        assert!(output.contains(raw));
+    }
     // ------------------------------------------------------------------
     // Envelope shape
     // ------------------------------------------------------------------

@@ -14,3 +14,4 @@ pub mod providers;
 pub mod rate_limit;
 pub mod sanitize;
 pub mod state_client;
+mod tool_secrets;
