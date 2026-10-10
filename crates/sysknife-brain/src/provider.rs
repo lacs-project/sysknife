@@ -159,17 +159,20 @@ pub trait LlmProvider: Send + Sync {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProviderError {
-    /// **No adapter constructs this.** A provider HTTP status is classified by
-    /// `providers::classify_status` into [`Auth`](Self::Auth),
-    /// [`RateLimit`](Self::RateLimit), or — for every other 4xx and 5xx —
-    /// [`Request`](Self::Request). A Groq 400 carrying `tool_use_failed`
-    /// arrives as `Request`, and a 500 does too.
+    /// An adapter carrying a structured HTTP status through to the retry loop.
     ///
-    /// Say so here because a test double built from this variant tests a shape
-    /// the system cannot produce. That is not hypothetical: the cassette's
-    /// rejection recorder was first written to match `Http { status: 400, .. }`
-    /// and passed three new tests while recording nothing at all on a real run.
-    /// Reach for `Request` when doubling a provider failure.
+    /// Every adapter that sees an [`http::StatusCode`] maps it through
+    /// `providers::classify_status`; the `Auth`/`RateLimit` classes become their
+    /// own variants, and `StatusClass::Other` — every 4xx and 5xx that is not
+    /// 401, 403, or 429 — becomes this variant, keeping the status intact.
+    /// [`is_retryable`](Self::is_retryable) then applies the real policy: 5xx and
+    /// 429 deserve a backoff, a permanent 4xx does not.
+    ///
+    /// This is the only *status-bearing* variant, and it is deliberately the one
+    /// the policy was written for. [`Request`](Self::Request) is now reserved for
+    /// transport-level failures that carry no HTTP status (connection reset, DNS
+    /// blip, timeout) — a distinction the retry loop needs and used to lose,
+    /// because every `Other` status was flattened into `Request` and retried.
     #[error("http error {status}: {body}")]
     Http { status: u16, body: String },
 
@@ -216,13 +219,19 @@ impl ProviderError {
             // Truncated or malformed payloads are a transport/serialisation
             // artefact, not a statement about the request.
             ProviderError::Parse(_) => true,
-            // Connection reset, DNS blip, timeout.
+            // A transport-level failure with no HTTP status of its own:
+            // connection reset, DNS blip, timeout. Nothing about the request is
+            // known to be wrong, so re-issuing it is worth a try.
             ProviderError::Request(_) => true,
             // 5xx is the provider's own fault and usually momentary; 429 means
-            // "later", which is exactly what a backoff provides. Every 4xx is a
-            // defect in the request just built, and building it again produces
-            // the same bytes.
-            ProviderError::Http { status, .. } => *status >= 500 || *status == 429,
+            // "later", which is exactly what a backoff provides. Every other 4xx
+            // is a defect in the request just built, and building it again
+            // produces the same bytes — except a tool-use rejection, where the
+            // retry appends a correction and so does send different bytes. That
+            // is the one 4xx worth re-asking about.
+            ProviderError::Http { status, .. } => {
+                *status >= 500 || *status == 429 || self.is_invalid_tool_call()
+            }
             ProviderError::RateLimit(_) => true,
             ProviderError::Auth(_) => false,
             ProviderError::CassetteMiss(_) => false,
@@ -243,9 +252,10 @@ impl ProviderError {
     ///   run that needed a retry could never replay; if it kept a larger one, a
     ///   transient failure would be served back for ever.
     ///
-    /// Matched on the message, not the variant: no adapter constructs
-    /// [`Http`](Self::Http), and Groq's 400 arrives as
-    /// [`Request`](Self::Request) via `StatusClass::Other`. Groq words it
+    /// Matched on the message, not the variant: Groq's 400 arrives as
+    /// [`Http`](Self::Http) via `StatusClass::Other` (a status-less transport
+    /// failure arrives as [`Request`](Self::Request), and a malformed payload as
+    /// [`Parse`](Self::Parse)), so the variant alone cannot identify it. Groq words it
     /// `code: "tool_use_failed"` with a message naming the tool it refused —
     /// `attempted to call tool 'json' which was not in request.tools`. Both
     /// halves are matched because providers word it differently and neither
@@ -298,6 +308,27 @@ mod retryability_tests {
                 "HTTP {status} is a request defect and must not be retried"
             );
         }
+    }
+
+    /// The one 4xx that *is* worth retrying. A tool-use rejection is retried only
+    /// because the retry appends a correction — the bytes change, so the outcome
+    /// can too. Without this arm the correction would never reach the model.
+    #[test]
+    fn a_tool_use_rejection_is_retryable_despite_being_a_4xx() {
+        let rejected = ProviderError::Http {
+            status: 400,
+            body: "{\"error\":{\"code\":\"tool_use_failed\",\
+                   \"message\":\"attempted to call tool 'json' which was not in request.tools\"}}"
+                .into(),
+        };
+        assert!(
+            rejected.is_invalid_tool_call(),
+            "sanity: the body must carry the tool-use markers"
+        );
+        assert!(
+            rejected.is_retryable(),
+            "a 400 the retry changes with a correction must stay retryable"
+        );
     }
 
     #[test]
