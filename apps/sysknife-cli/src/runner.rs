@@ -120,6 +120,7 @@ pub(crate) fn remote_daemon_caveat_from_env() -> Option<String> {
     // daemon's own machine identity (issue #146), which is why
     // `resolve_daemon_socket_caveat` prefers the machine-id comparison and only
     // falls back to this heuristic.
+    #[cfg(target_os = "linux")]
     if matches!(target, SocketTarget::Vsock { .. }) {
         return remote_daemon_caveat(Some((&raw, source)), &target);
     }
