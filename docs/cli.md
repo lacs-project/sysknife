@@ -502,6 +502,7 @@ snapshot beforehand costs less than the alternative.
 | `2` | **Execution failed**, including a daemon preview failure after an earlier plan step executed; also a command-line usage error or the whole-command `--timeout` expired (see below) |
 | `3` | **Planning failed** — LLM error, provider unreachable, the intent could not be turned into a plan, or a daemon preview refusal before any plan step executed |
 | `4` | **Configuration or daemon error** — invalid configuration, or the daemon could not be reached |
+| `5` | **Reboot required** - a step returned `needs_reboot`; remaining steps were not executed and the plan is incomplete. Reboot and deliberately re-run or resume. |
 
 Subcommands with their own semantics (for example `sysknife audit verify`) pass
 through their own exit code.

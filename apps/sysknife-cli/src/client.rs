@@ -1422,6 +1422,105 @@ mod tests {
         assert_eq!(result.transaction_id, "tx-abc123");
     }
 
+    // The real CLI's checked execution boundary, not a status-only simulation:
+    // two framed execute RPCs are served by a daemon double, the second job
+    // completes unsuccessfully, and the third planned action is never sent.
+    #[tokio::test]
+    async fn checked_execution_stops_after_failed_or_rebooting_daemon_result() {
+        use crate::runner::execute_step_checked;
+        use std::time::Duration;
+
+        for (terminal_status, expected_exit) in [("failed", 2), ("needs_reboot", 5)] {
+            let socket_path = temp_socket_path();
+            let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+            let mock = tokio::spawn(async move {
+                let mut actions = Vec::new();
+                for index in 0..2 {
+                    let (mut stream, _) =
+                        tokio::time::timeout(Duration::from_secs(3), listener.accept())
+                            .await
+                            .expect("step request never arrived")
+                            .unwrap();
+                    let raw = read_framed_async(&mut stream).await.unwrap();
+                    let req: Value = serde_json::from_slice(&raw).unwrap();
+                    assert_eq!(req["type"], "execute");
+                    assert_eq!(req["approval_receipt"], "test-receipt");
+                    actions.push(req["action_name"].as_str().unwrap().to_owned());
+                    let status = if index == 0 {
+                        "succeeded"
+                    } else {
+                        terminal_status
+                    };
+                    for msg in [
+                        serde_json::json!({
+                            "type":"job_started",
+                            "request_id":req["request_id"],
+                            "job_id":format!("job-{index}"),
+                            "transaction_id":req["transaction_id"]
+                        }),
+                        serde_json::json!({
+                            "type":"job_completed",
+                            "job_id":format!("job-{index}"),
+                            "result":{
+                                "status":status,
+                                "summary":if index == 0 { "first succeeded" } else { "second stopped" },
+                                "warnings":[],
+                                "job_id":format!("job-{index}"),
+                                "needs_reboot":terminal_status == "needs_reboot" && index == 1,
+                                "rollback_ref":null,
+                                "transaction_id":req["transaction_id"]
+                            }
+                        }),
+                    ] {
+                        write_framed_async(&mut stream, &serde_json::to_vec(&msg).unwrap())
+                            .await
+                            .unwrap();
+                    }
+                }
+                // A faulty loop would send a third execute request to the mock.
+                if let Ok(Ok((_stream, _))) =
+                    tokio::time::timeout(Duration::from_millis(150), listener.accept()).await
+                {
+                    panic!("third planned action was executed after {terminal_status}");
+                }
+                actions
+            });
+
+            let client = DaemonClient::new(socket_path.clone());
+            let mut completed = Vec::new();
+            let mut attempted = 0usize;
+            let mut failure = None;
+            for name in ["GetDiskUsage", "GetMemoryInfo", "GetCpuInfo"] {
+                attempted += 1;
+                let result = execute_step_checked(
+                    &client,
+                    &TransactionId::new(format!("test-tx-{attempted}")),
+                    name,
+                    &serde_json::json!({}),
+                    &ApprovalReceipt::new("test-receipt"),
+                    |_line| {},
+                    |result| completed.push((result.status, result.summary.clone())),
+                )
+                .await;
+                if let Err(err) = result {
+                    failure = Some(err);
+                    break;
+                }
+            }
+            let actions = mock.await.unwrap();
+            tokio::fs::remove_file(&socket_path).await.unwrap();
+            assert_eq!(attempted, 2, "third action must not be attempted");
+            assert_eq!(actions, ["GetDiskUsage", "GetMemoryInfo"]);
+            assert_eq!(completed.len(), 2);
+            assert_eq!(completed[0].0, JobState::Succeeded);
+            assert_eq!(completed[1].1, "second stopped");
+            let err = failure.expect("terminal daemon result must stop execution");
+            assert_eq!(err.exit_code(), expected_exit);
+            assert!(err.to_string().contains("GetMemoryInfo"), "{err}");
+            assert!(err.to_string().contains("second stopped"), "{err}");
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Test 5: connection failures map to the right error types
     // -----------------------------------------------------------------------
