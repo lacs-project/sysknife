@@ -6,12 +6,13 @@
 //!
 //! ## Approval flow
 //!
-//! Without `--step-by-step`: [`ApprovalPolicy::decide_plan`] is called once
-//! for the whole plan.  If a single confirmation is needed the user is asked
-//! once, then all steps execute in sequence.
+//! In both modes, [`ApprovalPolicy::decide_plan`] checks the whole plan before
+//! any execution preview. Risk-ceiling and non-interactive refusals stop the
+//! run before an earlier step can execute.
 //!
-//! With `--step-by-step`: [`ApprovalPolicy::decide_step`] is called before
-//! each step so the user can approve or reject them individually.
+//! Without `--step-by-step`, any plan-level confirmation is asked once. With
+//! `--step-by-step`, only that prompt is skipped; [`ApprovalPolicy::decide_step`]
+//! still gates each step after its preview so the user can decide individually.
 //!
 //! `--dry-run` short-circuits before any execution: the plan is printed and
 //! the function returns `Ok(())`.
@@ -22,7 +23,7 @@ use std::path::PathBuf;
 use clap::CommandFactory;
 use serde_json::{json, Value};
 use sysknife_brain::config::BrainConfig;
-use sysknife_brain::planner::{LlmPlanner, Plan, PlanRiskLevel};
+use sysknife_brain::planner::{AuthorizedPlan, LlmPlanner, Plan, PlanRiskLevel};
 use sysknife_brain::PlanEvent;
 use sysknife_types::{
     DistroHint, RiskLevel, TransactionId, DISTRO_FAMILY_DEBIAN, DISTRO_FAMILY_FEDORA,
@@ -554,15 +555,52 @@ fn approval_view(
 
 pub async fn run_approve(
     transaction_id: &TransactionId,
-    socket: SocketTarget,
-    json: bool,
+    opts: &RunOpts,
     full: bool,
     log: &Logger,
 ) -> Result<(), CliError> {
-    if !std::io::stdin().is_terminal() {
+    approve_with_confirmation(
+        transaction_id,
+        opts,
+        full,
+        log,
+        std::io::stdin().is_terminal(),
+        |risk, action_name, transaction_id| async move {
+            if risk == RiskLevel::High {
+                prompt_exact(
+                    "High-risk action. Type the exact action name to approve",
+                    &action_name,
+                )
+                .await
+            } else {
+                prompt_confirm(&format!("Approve transaction {transaction_id}?")).await
+            }
+        },
+    )
+    .await
+}
+
+async fn approve_with_confirmation<F, Fut>(
+    transaction_id: &TransactionId,
+    opts: &RunOpts,
+    full: bool,
+    log: &Logger,
+    terminal: bool,
+    confirm: F,
+) -> Result<(), CliError>
+where
+    F: FnOnce(RiskLevel, String, TransactionId) -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    // A receipt attests to a human's explicit approval. The auto-approval flags
+    // used when executing intents must never mint one in a script.
+    if opts.non_interactive && !opts.dry_run {
+        return Err(CliError::NonInteractive);
+    }
+    if !terminal && !opts.dry_run {
         return Err(CliError::ApprovalNeedsTerminal);
     }
-    let client = DaemonClient::new(socket);
+    let client = DaemonClient::new(opts.socket.clone());
     let details = client.approval_details(transaction_id).await?;
     // `to_string_pretty` is not a sanitiser: it escapes C0 controls but emits
     // U+202E and U+200B literally. The proposed change is the authoritative
@@ -580,26 +618,58 @@ pub async fn run_approve(
         crate::operator_text::operator_safe(&details.preview.summary),
     );
 
+    if opts.dry_run {
+        if opts.json {
+            log.println(
+                &json!({
+                    "transaction_id": details.transaction_id,
+                    "action_name": details.action_name,
+                    "preview": details.preview,
+                    "dry_run": true,
+                })
+                .to_string(),
+            );
+        } else {
+            // A preview-only render may be bounded: no consent is being taken
+            // on omitted text. --full still shows the complete proposed change.
+            let block = if full {
+                crate::operator_text::operator_safe_block_full(&pretty)
+            } else {
+                crate::operator_text::operator_safe_block(&pretty)
+            };
+            log.println(&format!(
+                "Dry run: approval preview only.\n{context}\nProposed change:\n{}",
+                block.text()
+            ));
+        }
+        return Ok(());
+    }
+
+    let risk = plan_risk_of(details.preview.risk_level);
+    // Explicit receipt issuance always needs the existing human prompt, even
+    // with --yes or unattended consent. Reuse only the policy's hard refusals.
+    let policy = ApprovalPolicy::new(false, opts.max_risk, opts.non_interactive, false, false);
+    if let GateAction::Refuse(error) = gate_action(policy.decide_step(&risk), &risk) {
+        return Err(error);
+    }
+
     // One call produces the text and decides whether it may be shown at all, so
     // there is no way to print an approval view without having asked. An earlier
     // shape printed the block and then returned the refusal, which left the
     // print ungated: deleting the check still compiled and still printed.
     log.print_stderr(&approval_view(&context, &pretty, transaction_id, full)?);
-    let approved = if details.preview.risk_level == RiskLevel::High {
-        prompt_exact(
-            "High-risk action. Type the exact action name to approve",
-            &details.action_name,
-        )
-        .await
-    } else {
-        prompt_confirm(&format!("Approve transaction {}?", details.transaction_id)).await
-    };
+    let approved = confirm(
+        details.preview.risk_level,
+        details.action_name,
+        details.transaction_id,
+    )
+    .await;
     if !approved {
         return Err(CliError::Rejected);
     }
 
     let receipt = client.approve(transaction_id).await?;
-    if json {
+    if opts.json {
         log.println(
             &serde_json::json!({
                 "transaction_id": transaction_id.as_str(),
@@ -613,6 +683,217 @@ pub async fn run_approve(
         log.println(&format!("Approval receipt: {}", receipt.as_str()));
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// approve integration tests
+// ---------------------------------------------------------------------------
+
+#[cfg(all(test, unix))]
+mod approve_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use sysknife_daemon::transport::framing::FramedStream;
+    use tokio::net::UnixListener;
+
+    struct Observation {
+        result: Result<(), CliError>,
+        requests: Vec<String>,
+        prompts: Vec<(RiskLevel, String)>,
+        stdout: String,
+    }
+
+    async fn approve_case(
+        risk: RiskLevel,
+        terminal: bool,
+        accepted: bool,
+        configure: impl FnOnce(&mut RunOpts),
+    ) -> Observation {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("approve.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let recorded = requests.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut framed = FramedStream::new(stream);
+                let raw = framed.recv().await.unwrap();
+                let req: Value = serde_json::from_slice(&raw).unwrap();
+                let kind = req["type"].as_str().unwrap();
+                recorded.lock().unwrap().push(kind.to_string());
+                assert_eq!(req["transaction_id"], "tx-545");
+                let response = match kind {
+                    "approval_details" => json!({
+                        "type": "approval_details_response",
+                        "request_id": req["request_id"],
+                        "transaction_id": "tx-545",
+                        "action_name": "AptInstall",
+                        "preview": {
+                            "summary": "Install vim",
+                            "risk_level": risk,
+                            "current_state": {},
+                            "proposed_change": {"package": "vim"},
+                            "expected_side_effects": [],
+                            "reboot_required": false,
+                            "rollback_available": true,
+                            "warnings": [],
+                            "request_hash": "request-545"
+                        }
+                    }),
+                    "approve" => json!({
+                        "type": "approval_response",
+                        "request_id": req["request_id"],
+                        "transaction_id": "tx-545",
+                        "approval_receipt": "receipt-545"
+                    }),
+                    other => panic!("unexpected request: {other}"),
+                };
+                framed
+                    .send(&serde_json::to_vec(&response).unwrap())
+                    .await
+                    .unwrap();
+            }
+        });
+        let mut opts = RunOpts {
+            socket: SocketTarget::Unix(socket),
+            yes: false,
+            max_risk: None,
+            non_interactive: false,
+            dry_run: false,
+            json: false,
+            step_by_step: false,
+            skip_approval: false,
+        };
+        configure(&mut opts);
+        let output = dir.path().join("stdout.log");
+        let log = Logger::new(Some(&output)).unwrap();
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        let prompted = prompts.clone();
+        let result = approve_with_confirmation(
+            &TransactionId::new("tx-545"),
+            &opts,
+            false,
+            &log,
+            terminal,
+            |risk, action, _| async move {
+                prompted.lock().unwrap().push((risk, action));
+                accepted
+            },
+        )
+        .await;
+        server.abort();
+        let requests = requests.lock().unwrap().clone();
+        let prompts = prompts.lock().unwrap().clone();
+        Observation {
+            result,
+            requests,
+            prompts,
+            stdout: std::fs::read_to_string(output).unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn approve_ceiling_blocks_high_daemon_preview_before_prompt_or_receipt() {
+        let observed = approve_case(RiskLevel::High, true, true, |opts| {
+            opts.max_risk = Some(MaxRisk::Low);
+            opts.yes = true;
+            opts.skip_approval = true;
+        })
+        .await;
+        assert!(matches!(
+            observed.result,
+            Err(CliError::RiskCeilingExceeded {
+                highest: PlanRiskLevel::High,
+                ceiling: MaxRisk::Low
+            })
+        ));
+        assert_eq!(observed.requests, ["approval_details"]);
+        assert!(observed.prompts.is_empty());
+        assert!(!observed.stdout.contains("receipt"));
+    }
+
+    #[tokio::test]
+    async fn approve_dry_run_displays_json_preview_without_terminal_or_receipt() {
+        let observed = approve_case(RiskLevel::High, false, true, |opts| {
+            opts.dry_run = true;
+            opts.non_interactive = true;
+            opts.max_risk = Some(MaxRisk::Low);
+            opts.json = true;
+        })
+        .await;
+        observed.result.unwrap();
+        assert_eq!(observed.requests, ["approval_details"]);
+        assert!(observed.prompts.is_empty());
+        let output: Value = serde_json::from_str(&observed.stdout).unwrap();
+        assert_eq!(output["transaction_id"], "tx-545");
+        assert_eq!(output["preview"]["risk_level"], "high");
+        assert_eq!(output["preview"]["proposed_change"]["package"], "vim");
+        assert!(output.get("approval_receipt").is_none());
+    }
+
+    #[tokio::test]
+    async fn approve_dry_run_with_terminal_never_sends_approve() {
+        let observed = approve_case(RiskLevel::Low, true, true, |opts| opts.dry_run = true).await;
+        observed.result.unwrap();
+        assert_eq!(observed.requests, ["approval_details"]);
+        assert!(observed.prompts.is_empty());
+        assert!(observed.stdout.contains("Install vim"));
+        assert!(!observed.stdout.contains("receipt"));
+    }
+
+    #[tokio::test]
+    async fn approve_non_interactive_cannot_mint_human_receipt_even_with_yes() {
+        for terminal in [true, false] {
+            let observed = approve_case(RiskLevel::Low, terminal, true, |opts| {
+                opts.non_interactive = true;
+                opts.yes = true;
+                opts.skip_approval = true;
+            })
+            .await;
+            assert!(matches!(observed.result, Err(CliError::NonInteractive)));
+            assert!(observed
+                .requests
+                .iter()
+                .all(|kind| kind == "approval_details"));
+            assert!(observed.prompts.is_empty());
+            assert!(!observed.stdout.contains("receipt"));
+        }
+    }
+
+    #[tokio::test]
+    async fn approve_within_ceiling_still_requires_human_confirmation() {
+        for (risk, ceiling) in [
+            (RiskLevel::Low, MaxRisk::Low),
+            (RiskLevel::High, MaxRisk::High),
+        ] {
+            let observed = approve_case(risk, true, true, |opts| {
+                opts.max_risk = Some(ceiling);
+                opts.yes = true;
+                opts.skip_approval = true;
+            })
+            .await;
+            observed.result.unwrap();
+            assert_eq!(observed.requests, ["approval_details", "approve"]);
+            assert_eq!(observed.prompts, [(risk, "AptInstall".to_string())]);
+            assert!(observed.stdout.contains("receipt-545"));
+        }
+    }
+
+    #[tokio::test]
+    async fn approve_rejection_and_missing_terminal_never_send_approve() {
+        let rejected = approve_case(RiskLevel::Low, true, false, |_| {}).await;
+        assert!(matches!(rejected.result, Err(CliError::Rejected)));
+        assert_eq!(rejected.requests, ["approval_details"]);
+        assert!(!rejected.stdout.contains("receipt"));
+        let no_terminal = approve_case(RiskLevel::Low, false, true, |_| {}).await;
+        assert!(matches!(
+            no_terminal.result,
+            Err(CliError::ApprovalNeedsTerminal)
+        ));
+        assert!(no_terminal.requests.is_empty());
+        assert!(no_terminal.prompts.is_empty());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -824,8 +1105,8 @@ pub async fn run_history(
 // RunOpts
 // ---------------------------------------------------------------------------
 
-/// Options derived from global CLI flags; threaded into `run_intent` and
-/// `run_repl` so callers do not have to pass each flag individually.
+/// Options derived from global CLI flags; threaded into `run_intent`,
+/// `run_repl` and `run_approve` so callers do not pass each flag individually.
 pub struct RunOpts {
     pub socket: SocketTarget,
     pub yes: bool,
@@ -1948,6 +2229,28 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     // prevented from reading the LLM's proposed risk.
     let plan = plan.into_authorized(authoritative_plan_risk);
 
+    execute_plan(
+        &plan,
+        opts,
+        log,
+        |msg| async move { prompt_confirm(&msg).await },
+    )
+    .await
+}
+
+/// Run an authorized plan with the same approval and daemon path used by
+/// `run_intent`. Keeping operator input injectable lets refusal ordering and
+/// per-step consent be exercised without a live LLM or terminal.
+async fn execute_plan<F, Fut>(
+    plan: &AuthorizedPlan,
+    opts: &RunOpts,
+    log: &Logger,
+    mut confirm: F,
+) -> Result<(), CliError>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
     // ---- print plan --------------------------------------------------------
 
     if opts.json {
@@ -1969,7 +2272,7 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
             .expect("static JSON"),
         );
     } else {
-        crate::render::print_plan(&plan, log);
+        crate::render::print_plan(plan, log);
     }
 
     if opts.dry_run {
@@ -1979,30 +2282,31 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
         return Ok(());
     }
 
-    // ---- plan-level approval (non-step-by-step) ----------------------------
+    // ---- whole-plan policy preflight --------------------------------------
 
     let policy = opts.approval_policy();
 
-    if !opts.step_by_step {
-        let highest = plan.highest_risk().expect("plan has steps").clone();
-        match gate_action(policy.decide_plan(&plan), &highest) {
-            GateAction::Proceed => {}
-            GateAction::Refuse(err) => return Err(err),
-            GateAction::AskOperator => {
-                let n = plan.steps().len();
-                let msg = if opts.json {
-                    "Execute this plan?".to_owned()
-                } else {
-                    format!(
-                        "  {} step{}, {} risk — execute?",
-                        n,
-                        if n == 1 { "" } else { "s" },
-                        crate::render::risk_colored(&highest),
-                    )
-                };
-                if !prompt_confirm(&msg).await {
-                    return Err(CliError::Rejected);
-                }
+    let highest = plan.highest_risk().expect("plan has steps").clone();
+    match gate_action(policy.decide_plan(plan), &highest) {
+        GateAction::Proceed => {}
+        GateAction::Refuse(err) => return Err(err),
+        // Step-by-step postpones consent until each authoritative preview; it
+        // must not postpone a known refusal until earlier steps have executed.
+        GateAction::AskOperator if opts.step_by_step => {}
+        GateAction::AskOperator => {
+            let n = plan.steps().len();
+            let msg = if opts.json {
+                "Execute this plan?".to_owned()
+            } else {
+                format!(
+                    "  {} step{}, {} risk — execute?",
+                    n,
+                    if n == 1 { "" } else { "s" },
+                    crate::render::risk_colored(&highest),
+                )
+            };
+            if !confirm(msg).await {
+                return Err(CliError::Rejected);
             }
         }
     }
@@ -2012,7 +2316,7 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     let exec_client = DaemonClient::new(opts.socket.clone());
     let start = std::time::Instant::now();
 
-    for step in plan.steps() {
+    for (executed_steps, step) in plan.steps().enumerate() {
         // Preview BEFORE asking. The plan printed above carries planner
         // summaries and risk only; the daemon's preview is what says which
         // package version arrives, which file changes, whether a reboot follows
@@ -2021,7 +2325,24 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
         // been given and execution followed immediately.
         let prepared = exec_client
             .preview_declaring(step.action_name(), step.params(), opts.skip_approval)
-            .await?;
+            .await
+            .map_err(|err| {
+                // Earlier steps have already run. Calling this a planning
+                // failure would hide partial execution from scripts that use
+                // exit 3 to decide whether retrying can repeat a change.
+                if executed_steps == 0 {
+                    err
+                } else {
+                    let reason = match err {
+                        CliError::PlanningFailed(message) => message,
+                        other => other.to_string(),
+                    };
+                    CliError::ExecutionFailed(format!(
+                        "{} preview failed after {executed_steps} executed step(s): {reason}",
+                        step.action_name(),
+                    ))
+                }
+            })?;
         let preview = &prepared.preview;
 
         // The declaration is only worth making if it was recorded. A daemon
@@ -2084,7 +2405,7 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
                             crate::render::risk_colored(step.risk_level()),
                         )
                     };
-                    if !prompt_confirm(&msg).await {
+                    if !confirm(msg).await {
                         return Err(CliError::Rejected);
                     }
                 }
@@ -2384,6 +2705,142 @@ mod approval_view_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    mod intent_preview_failure_tests {
+        use super::*;
+        use std::sync::{Arc, Mutex};
+        use sysknife_brain::action_name::ActionName;
+        use sysknife_brain::planner::PlanStep;
+
+        /// Refuse the selected preview while speaking the real framed daemon
+        /// protocol. Successful previews still require approval and execution;
+        /// the recorded requests prove whether a step actually ran.
+        async fn run_with_preview_refusal(
+            refused_preview: usize,
+            step_by_step: bool,
+        ) -> (CliError, Vec<String>) {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("daemon.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let daemon_events = Arc::clone(&events);
+            let (stop, mut stopped) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                let mut preview_count = 0;
+                loop {
+                    let (mut stream, _) = tokio::select! {
+                        accepted = listener.accept() => accepted.unwrap(),
+                        _ = &mut stopped => break,
+                    };
+                    let len = stream.read_u32_le().await.unwrap() as usize;
+                    let mut body = vec![0; len];
+                    stream.read_exact(&mut body).await.unwrap();
+                    let request: Value = serde_json::from_slice(&body).unwrap();
+                    let kind = request["type"].as_str().unwrap();
+                    daemon_events.lock().unwrap().push(kind.to_owned());
+                    let response = match kind {
+                        "preview" => {
+                            preview_count += 1;
+                            if preview_count == refused_preview {
+                                json!({
+                                    "type": "error_response",
+                                    "message": "mock role denied the preview",
+                                })
+                            } else {
+                                json!({
+                                    "type": "preview_response", "transaction_id": "mock-step",
+                                    "preview": {
+                                        "summary": "mock preview", "risk_level": "low",
+                                        "current_state": {}, "proposed_change": {},
+                                        "expected_side_effects": [], "reboot_required": false,
+                                        "rollback_available": false, "warnings": [],
+                                        "request_hash": "mock-request",
+                                    }
+                                })
+                            }
+                        }
+                        "approve" => json!({
+                            "type": "approval_response", "approval_receipt": "mock-receipt",
+                        }),
+                        "execute" => json!({
+                            "type": "job_completed",
+                            "result": {
+                                "status": "succeeded", "summary": "mock done", "warnings": [],
+                                "job_id": null, "needs_reboot": false, "rollback_ref": null,
+                                "transaction_id": request["transaction_id"],
+                            }
+                        }),
+                        other => panic!("unexpected daemon request {other}"),
+                    };
+                    let bytes = serde_json::to_vec(&response).unwrap();
+                    stream.write_u32_le(bytes.len() as u32).await.unwrap();
+                    stream.write_all(&bytes).await.unwrap();
+                }
+            });
+            let plan = Plan::new(
+                "check disk usage twice".into(),
+                "test plan".into(),
+                "test explanation".into(),
+                (0..2)
+                    .map(|_| {
+                        PlanStep::new(
+                            ActionName::parse("GetDiskUsage").unwrap(),
+                            "check disk usage".into(),
+                            PlanRiskLevel::Low,
+                            json!({}),
+                        )
+                        .unwrap()
+                    })
+                    .collect(),
+            )
+            .unwrap()
+            .into_authorized(authoritative_plan_risk);
+            let opts = RunOpts {
+                socket: SocketTarget::Unix(socket),
+                yes: true,
+                max_risk: None,
+                non_interactive: true,
+                dry_run: false,
+                json: true,
+                step_by_step,
+                skip_approval: false,
+            };
+            let log = Logger::new(None).unwrap();
+            let err = execute_plan(&plan, &opts, &log, |_| async {
+                panic!("low-risk --yes plan must not ask for confirmation");
+            })
+            .await
+            .unwrap_err();
+            stop.send(()).unwrap();
+            task.await.unwrap();
+            let recorded = events.lock().unwrap().clone();
+            (err, recorded)
+        }
+
+        #[tokio::test]
+        async fn preview_refusal_after_execution_exits_2_in_both_modes() {
+            for step_by_step in [false, true] {
+                let (err, requests) = run_with_preview_refusal(2, step_by_step).await;
+                assert_eq!(requests, ["preview", "approve", "execute", "preview"]);
+                assert_eq!(err.exit_code(), 2, "{err}");
+                assert!(matches!(&err, CliError::ExecutionFailed(_)));
+                assert!(err.to_string().contains("mock role denied the preview"));
+            }
+        }
+
+        #[tokio::test]
+        async fn preview_refusal_before_execution_keeps_planning_exit_3_in_both_modes() {
+            for step_by_step in [false, true] {
+                let (err, requests) = run_with_preview_refusal(1, step_by_step).await;
+                assert_eq!(requests, ["preview"]);
+                assert_eq!(err.exit_code(), 3, "{err}");
+                assert!(matches!(&err, CliError::PlanningFailed(_)));
+                assert!(err.to_string().contains("mock role denied the preview"));
+            }
+        }
+    }
 
     #[test]
     fn audit_status_verdict_is_visible_in_text_and_json() {
@@ -3379,6 +3836,286 @@ mod tests {
              consent without seeing the daemon's proposed change"
         );
     }
+    #[cfg(unix)]
+    mod plan_preflight_tests {
+        use super::*;
+        use std::sync::{Arc, Mutex};
+        use sysknife_brain::action_name::ActionName;
+        use sysknife_brain::planner::PlanStep;
+
+        type Events = Arc<Mutex<Vec<String>>>;
+
+        /// Speak the real framed daemon protocol, recording the order in which
+        /// previews, approvals, execution and operator prompts occur. No action
+        /// runs on the host, and no provider or process environment is involved.
+        async fn mock_execution_daemon(
+            socket: &std::path::Path,
+            events: Events,
+        ) -> (
+            tokio::sync::oneshot::Sender<()>,
+            tokio::task::JoinHandle<()>,
+        ) {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::UnixListener::bind(socket).unwrap();
+            let (stop, mut stopped) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                loop {
+                    let (mut stream, _) = tokio::select! {
+                        accepted = listener.accept() => accepted.unwrap(),
+                        _ = &mut stopped => break,
+                    };
+                    let len = stream.read_u32_le().await.unwrap() as usize;
+                    let mut body = vec![0; len];
+                    stream.read_exact(&mut body).await.unwrap();
+                    let request: Value = serde_json::from_slice(&body).unwrap();
+                    let kind = request["type"].as_str().unwrap();
+                    let action = request["action_name"].as_str().unwrap_or("");
+                    events.lock().unwrap().push(format!("{kind}:{action}"));
+                    let response = match kind {
+                        "preview" => json!({
+                            "type": "preview_response", "transaction_id": action,
+                            "preview": {
+                                "summary": "mock preview",
+                                "risk_level": authoritative_plan_risk(action).as_str(),
+                                "current_state": {}, "proposed_change": {},
+                                "expected_side_effects": [], "reboot_required": false,
+                                "rollback_available": false,
+                                "warnings": if request["unattended"] == true {
+                                    vec![sysknife_daemon::dispatcher::UNATTENDED_WARNING]
+                                } else { vec![] },
+                                "request_hash": "mock-request",
+                            }
+                        }),
+                        "approve" => json!({
+                            "type": "approval_response", "approval_receipt": "mock-receipt",
+                        }),
+                        "execute" => json!({
+                            "type": "job_completed",
+                            "result": {
+                                "status": "succeeded", "summary": "mock done", "warnings": [],
+                                "job_id": null, "needs_reboot": false, "rollback_ref": null,
+                                "transaction_id": request["transaction_id"],
+                            }
+                        }),
+                        other => panic!("unexpected daemon request {other}"),
+                    };
+                    let bytes = serde_json::to_vec(&response).unwrap();
+                    stream.write_u32_le(bytes.len() as u32).await.unwrap();
+                    stream.write_all(&bytes).await.unwrap();
+                }
+            });
+            (stop, task)
+        }
+
+        fn plan(actions: &[&str]) -> AuthorizedPlan {
+            Plan::new(
+                "test".into(),
+                "test plan".into(),
+                "test explanation".into(),
+                actions
+                    .iter()
+                    .map(|action| {
+                        PlanStep::new(
+                            ActionName::parse(*action).unwrap(),
+                            (*action).into(),
+                            authoritative_plan_risk(action),
+                            json!({}),
+                        )
+                        .unwrap()
+                    })
+                    .collect(),
+            )
+            .unwrap()
+            .into_authorized(authoritative_plan_risk)
+        }
+
+        fn opts(socket: PathBuf) -> RunOpts {
+            RunOpts {
+                socket: SocketTarget::Unix(socket),
+                yes: true,
+                max_risk: None,
+                non_interactive: false,
+                dry_run: false,
+                json: true,
+                step_by_step: true,
+                skip_approval: false,
+            }
+        }
+
+        async fn run(
+            plan: &AuthorizedPlan,
+            mut opts: RunOpts,
+            answers: &[bool],
+        ) -> (Result<(), CliError>, Vec<String>) {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("daemon.sock");
+            opts.socket = SocketTarget::Unix(socket.clone());
+            let events: Events = Arc::new(Mutex::new(Vec::new()));
+            let (stop, task) = mock_execution_daemon(&socket, Arc::clone(&events)).await;
+            let log = Logger::new(None).unwrap();
+            let mut answers = answers.iter();
+            let result = execute_plan(plan, &opts, &log, |_| {
+                events.lock().unwrap().push("prompt".into());
+                std::future::ready(*answers.next().expect("unexpected operator prompt"))
+            })
+            .await;
+            stop.send(()).unwrap();
+            task.await.unwrap();
+            let recorded = events.lock().unwrap().clone();
+            (result, recorded)
+        }
+
+        #[tokio::test]
+        async fn a_plan_ceiling_refuses_before_any_preview_or_execute_in_both_modes() {
+            let plan = plan(&["GetDiskUsage", "RestartService"]);
+            for step_by_step in [false, true] {
+                for yes in [false, true] {
+                    for skip_approval in [false, true] {
+                        let mut opts = opts(PathBuf::new());
+                        opts.step_by_step = step_by_step;
+                        opts.yes = yes;
+                        opts.skip_approval = skip_approval;
+                        opts.max_risk = Some(MaxRisk::Low);
+                        let (result, events) = run(&plan, opts, &[true]).await;
+                        assert!(
+                            matches!(
+                                result,
+                                Err(CliError::RiskCeilingExceeded {
+                                    highest: PlanRiskLevel::Medium,
+                                    ceiling: MaxRisk::Low,
+                                })
+                            ),
+                            "{result:?}"
+                        );
+                        assert!(
+                            events.is_empty(),
+                            "refusal touched daemon or operator: {events:?}"
+                        );
+                    }
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn non_interactive_refuses_the_whole_plan_before_any_daemon_request() {
+            for step_by_step in [false, true] {
+                for (actions, yes, ceiling) in [
+                    (vec!["GetDiskUsage", "RestartService"], true, None),
+                    (
+                        vec!["GetDiskUsage", "RebootSystem"],
+                        true,
+                        Some(MaxRisk::High),
+                    ),
+                    (vec!["GetDiskUsage"], false, None),
+                ] {
+                    let mut opts = opts(PathBuf::new());
+                    opts.step_by_step = step_by_step;
+                    opts.non_interactive = true;
+                    opts.yes = yes;
+                    opts.max_risk = ceiling;
+                    let (result, events) = run(&plan(&actions), opts, &[]).await;
+                    assert!(
+                        matches!(result, Err(CliError::NonInteractive)),
+                        "{result:?}"
+                    );
+                    assert!(
+                        events.is_empty(),
+                        "refusal touched daemon or operator: {events:?}"
+                    );
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn dry_run_still_displays_a_refused_plan_without_daemon_or_prompts() {
+            for step_by_step in [false, true] {
+                let mut opts = opts(PathBuf::new());
+                opts.step_by_step = step_by_step;
+                opts.dry_run = true;
+                opts.non_interactive = true;
+                opts.max_risk = Some(MaxRisk::Low);
+                let (result, events) =
+                    run(&plan(&["GetDiskUsage", "RebootSystem"]), opts, &[]).await;
+                assert!(result.is_ok(), "{result:?}");
+                assert!(
+                    events.is_empty(),
+                    "dry run touched daemon or operator: {events:?}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn step_by_step_skips_only_the_plan_prompt_and_preserves_step_rejection() {
+            let mut opts = opts(PathBuf::new());
+            opts.yes = false;
+            let (result, events) = run(
+                &plan(&["GetDiskUsage", "RestartService"]),
+                opts,
+                &[true, false],
+            )
+            .await;
+            assert!(matches!(result, Err(CliError::Rejected)), "{result:?}");
+            assert_eq!(
+                events,
+                [
+                    "preview:GetDiskUsage",
+                    "prompt",
+                    "approve:",
+                    "execute:GetDiskUsage",
+                    "preview:RestartService",
+                    "prompt",
+                ]
+            );
+        }
+
+        #[tokio::test]
+        async fn permitted_step_by_step_plan_keeps_auto_approval_and_executes_every_step() {
+            let mut opts = opts(PathBuf::new());
+            opts.non_interactive = true;
+            opts.max_risk = Some(MaxRisk::Medium);
+            let (result, events) = run(&plan(&["GetDiskUsage", "RestartService"]), opts, &[]).await;
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(
+                events,
+                [
+                    "preview:GetDiskUsage",
+                    "approve:",
+                    "execute:GetDiskUsage",
+                    "preview:RestartService",
+                    "approve:",
+                    "execute:RestartService",
+                ]
+            );
+        }
+
+        #[tokio::test]
+        async fn normal_mode_keeps_plan_consent_and_high_risk_preview_confirmation() {
+            let mut opts = opts(PathBuf::new());
+            opts.step_by_step = false;
+            opts.yes = false;
+            let (result, events) = run(
+                &plan(&["GetDiskUsage", "RebootSystem"]),
+                opts,
+                &[true, true],
+            )
+            .await;
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(
+                events,
+                [
+                    "prompt",
+                    "preview:GetDiskUsage",
+                    "approve:",
+                    "execute:GetDiskUsage",
+                    "preview:RebootSystem",
+                    "prompt",
+                    "approve:",
+                    "execute:RebootSystem",
+                ]
+            );
+        }
+    }
+
     use sysknife_brain::action_name::ActionName;
     use sysknife_brain::planner::{AuthorizedPlan, PlanStep};
 

@@ -138,10 +138,10 @@ async fn dispatch(
             transaction_id,
             full,
         }) => {
+            let opts = build_run_opts(cli, socket);
             runner::run_approve(
                 &sysknife_types::TransactionId::new(transaction_id.clone()),
-                socket,
-                cli.json,
+                &opts,
                 *full,
                 log,
             )
