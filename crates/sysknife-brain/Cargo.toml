@@ -41,6 +41,7 @@ tempfile = "3"
 tokio = { workspace = true, features = ["sync"] }
 tracing = "0.1"
 unicode-normalization = "0.1"
+regex = "1"
 
 [dev-dependencies]
 # `test-util` provides the paused clock, so the provider-retry tests assert the

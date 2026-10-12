@@ -74,11 +74,35 @@ The natural-language planner has no secure way to collect or resolve a
 credential after planning. It therefore does not offer Ubuntu Pro attachment,
 and it joins open Wi-Fi networks only: a plan step that carries a Wi-Fi
 password is refused. Do not put a Pro token or Wi-Fi password in an intent:
-the admission check rejects credential phrases before contacting the model.
+the admission check rejects known credential shapes before contacting the model.
 Use the Ubuntu Pro or NetworkManager tools outside SysKnife for those
 operations until a separate credential entry path exists. `ProStatus`, `ProDetach`, `EnableProService`, and
 `DisableProService` remain available through SysKnife because they do not
 take a credential parameter.
+
+The sensitive-data fence matches value-bearing labels (such as
+`password=hunter2`, `API_KEY: value`, or `my password is hunter2`), long
+Bearer tokens, private-key PEM headers, and known API/token prefixes with
+plausible bodies at token boundaries. Security administration requests such
+as "set password aging to 90 days", "who can read /etc/passwd", and
+"my root disk-full alert keeps firing" remain available. The same fence
+checks summary prompts and remembered preferences and withholds matching
+intents from the planning notice.
+
+It also matches "with password" or "using token" followed by a quoted
+value, or a token containing digits or token punctuation, such as
+"with password hunter2". Policy phrases such as "with password aging
+enforcement" remain available.
+
+Assignment labels must end in a credential term: `ANTHROPIC_API_KEY` and
+`AWS_SECRET_ACCESS_KEY` match, while policy/path settings such as
+`PASSWORD_MAX_DAYS=90`, `TOKEN_LIFETIME=3600`, and `API_KEY_FILE=/etc/key`
+are allowed unless their values themselves match a known credential format.
+
+This is a format heuristic: an unlabelled password such as "connect to
+MyNet with hunter2" can pass it. An allowed intent does not prove that it
+contains no secret. Keep credentials out of intents; the fence does not
+provide the separate credential entry path described above.
 
 ---
 

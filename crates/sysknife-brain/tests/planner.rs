@@ -254,22 +254,20 @@ async fn intent_at_max_bytes_is_accepted() {
 }
 
 #[tokio::test]
-async fn intent_containing_api_key_prefix_is_rejected() {
-    // "sk-" prefix matches OpenAI/Anthropic key pattern.
+async fn intent_containing_api_key_shape_is_rejected() {
+    // Assemble a realistic synthetic key without a credential-shaped source literal.
+    let intent = format!("check disk usage sk-proj-{}", "a".repeat(48));
     let planner = make_planner(MockProvider::new([]));
-    let err = planner
-        .plan_intent("check disk usage sk-proj-abc123def456")
-        .await
-        .unwrap_err();
+    let err = planner.plan_intent(&intent).await.unwrap_err();
     assert_eq!(
         err,
         PlanningError::IntentContainsSensitiveData,
-        "intent containing API key prefix must be rejected"
+        "intent containing a realistic API key shape must be rejected"
     );
 }
 
 #[tokio::test]
-async fn intent_containing_password_keyword_is_rejected() {
+async fn intent_containing_password_value_phrase_is_rejected() {
     let planner = make_planner(MockProvider::new([]));
     let err = planner
         .plan_intent("my password is hunter2 please remember it")
@@ -278,7 +276,7 @@ async fn intent_containing_password_keyword_is_rejected() {
     assert_eq!(
         err,
         PlanningError::IntentContainsSensitiveData,
-        "intent containing 'password' must be rejected"
+        "intent containing a password value phrase must be rejected"
     );
 }
 
