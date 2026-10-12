@@ -121,9 +121,9 @@ with work you have not committed or stashed.
 
 Workflow action pins keep an exact tag in the adjacent comment, for example
 `uses: actions/checkout@<40-hex SHA> # v7.0.1`. The tag must resolve to that
-commit, including when it is annotated. Deliberate branch references use
-`# stable (branch)` or `# main (branch)`; the verifier reports those without
-comparing the pin to the moving branch head. Keep existing SHAs when correcting
+commit, including when it is annotated. Only `dtolnay/rust-toolchain` may use
+`# stable (branch)`, and the verifier requires its pinned SHA to be reachable
+from that branch. Other actions and branches cannot use this marker. Keep existing SHAs when correcting
 comments; review action upgrades separately.
 
 Run `bash scripts/verify-action-pins.sh` to check these comments. It needs

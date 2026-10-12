@@ -2128,6 +2128,7 @@ impl LlmProvider for MessageRecordingProvider {
             .flat_map(|m| m.content.iter())
             .filter_map(|b| match b {
                 ContentBlock::Text { text } => Some(text.clone()),
+                ContentBlock::ToolResult { content, .. } => Some(content.clone()),
                 _ => None,
             })
             .collect();
@@ -2137,6 +2138,169 @@ impl LlmProvider for MessageRecordingProvider {
             .unwrap()
             .pop_front()
             .unwrap_or_else(|| Err(ProviderError::Parse("provider exhausted".into())))
+    }
+}
+
+/// Host data must be screened before reaching any provider or remaining in
+/// subsequent planning context, including query failures.
+struct SecretStateClient {
+    fail: bool,
+    actions: Arc<Mutex<Vec<String>>>,
+}
+
+const HOST_SECRETS: &str = "service healthy\nAuthorization: Bearer fixture-bearer-token\nDB_PASSWORD=fixture-db-password\n";
+
+impl StateClient for SecretStateClient {
+    fn curated_state(&self) -> Result<CuratedState, PlanningError> {
+        CuratedState::new(
+            "silverblue",
+            "fedora/41",
+            vec![HOST_SECRETS.into()],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        )
+        .map_err(PlanningError::StateUnavailable)
+    }
+
+    fn current_user(&self) -> Result<String, PlanningError> {
+        if self.fail {
+            Err(PlanningError::StateUnavailable(HOST_SECRETS.into()))
+        } else {
+            Ok(HOST_SECRETS.into())
+        }
+    }
+
+    fn query_action(
+        &self,
+        action: &str,
+        params: &serde_json::Value,
+    ) -> Result<String, PlanningError> {
+        self.actions.lock().unwrap().push(action.into());
+        if action == "GetServiceLogs" {
+            assert_eq!(params["unit"], "fixture.service");
+        }
+        if self.fail {
+            Err(PlanningError::StateUnavailable(HOST_SECRETS.into()))
+        } else {
+            Ok(HOST_SECRETS.into())
+        }
+    }
+}
+
+#[tokio::test]
+async fn host_secrets_are_redacted_from_query_results_and_later_provider_context() {
+    for fail in [false, true] {
+        // Exercise the actual dispatch for every advertised read tool, including
+        // the GetServiceLogs path required by the regression report.
+        let query_names = [
+            "query_ufw_rules",
+            "query_services",
+            "query_firewall",
+            "query_deployments",
+            "query_packages",
+            "query_containers",
+            "query_users",
+            "query_logs",
+            "query_kernel_args",
+            "query_flatpak_remotes",
+            "query_toolboxes",
+            "query_groups",
+            "query_flatpak_info",
+            "query_container_info",
+            "query_package_repos",
+            "query_diagnostics",
+            "query_deployment_history",
+            "query_disk_usage",
+            "query_processes",
+            "query_memory",
+            "query_network",
+            "query_authorized_keys",
+            "query_current_user",
+            "query_job_history",
+        ];
+        let mut calls: Vec<_> = query_names
+            .into_iter()
+            .map(|name| {
+                let input = match name {
+                    "query_logs" => serde_json::json!({"unit": "fixture.service"}),
+                    "query_flatpak_info" => serde_json::json!({"app_id": "org.example.Fixture"}),
+                    "query_container_info" => serde_json::json!({"name": "fixture"}),
+                    "query_authorized_keys" => serde_json::json!({"username": "fixture"}),
+                    _ => serde_json::json!({}),
+                };
+                ContentBlock::ToolUse {
+                    id: name.into(),
+                    call_id: None,
+                    name: name.into(),
+                    input,
+                }
+            })
+            .collect();
+        calls.push(ContentBlock::ToolUse {
+            id: "state".into(),
+            call_id: None,
+            name: "get_system_state".into(),
+            input: serde_json::json!({}),
+        });
+        let (provider, seen) = MessageRecordingProvider::new([
+            Ok(Completion {
+                content: calls,
+                stop_reason: StopReason::ToolUse,
+            }),
+            tool_call(
+                "again",
+                "query_logs",
+                serde_json::json!({"unit": "fixture.service"}),
+            ),
+            propose_plan("Inspect system", &[("GetSystemState", "Read state", "low")]),
+        ]);
+        let actions = Arc::new(Mutex::new(Vec::new()));
+        let planner = LlmPlanner::new(
+            Box::new(provider),
+            Box::new(SecretStateClient {
+                fail,
+                actions: actions.clone(),
+            }),
+            3,
+        );
+        planner
+            .plan_intent("diagnose a service problem")
+            .await
+            .unwrap();
+        let actions = actions.lock().unwrap();
+        assert_eq!(actions.len(), query_names.len()); // current_user is local; logs run twice.
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|action| *action == "GetServiceLogs")
+                .count(),
+            2
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        assert_eq!(
+            seen[1]
+                .iter()
+                .filter(|result| result.contains("<redacted>"))
+                .count(),
+            query_names.len() + 1
+        );
+        for context in &seen[1..] {
+            let text = context.join("\n");
+            assert!(
+                !text.contains("fixture-bearer-token"),
+                "bearer leaked: {text}"
+            );
+            assert!(
+                !text.contains("fixture-db-password"),
+                "password leaked: {text}"
+            );
+            assert!(text.contains("<redacted>"));
+            assert!(text.contains("service healthy"));
+        }
     }
 }
 

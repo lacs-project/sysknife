@@ -40,7 +40,7 @@ if ! patterns_text="$(read_array PATTERNS)" ||
 fi
 mapfile -t scanner_patterns <<< "$patterns_text"
 mapfile -t scanner_allowlist <<< "$allowlist_text"
-declare -A scanner_providers=() case_providers=()
+declare -A scanner_providers=() case_providers=() case_keys=()
 for entry in "${scanner_patterns[@]}"; do
     scanner_providers["${entry%%:*}"]=1
 done
@@ -52,8 +52,21 @@ make_key() { printf '%s%s' "$1" "$(head -c "$2" < /dev/zero | tr '\0' 'A')"; }
 declare -a POSITIVES=(
     "Groq|$(make_key 'gsk_' 52)"
     "OpenAI|$(make_key 'sk-' 48)"
+    "OpenAI|$(make_key 'sk-svcacct-' 48)"
+    "OpenAI|$(make_key 'sk-None-' 48)"
+    "OpenAI|$(make_key 'sk-svcacct-' 20)-$(make_key '' 19)_"
+    "OpenAI|$(make_key 'sk-' 20)_$(make_key '' 19)"
     "OpenAI project|$(make_key 'sk-proj-' 64)"
     "Anthropic|$(make_key 'sk-ant-' 95)"
+    "DeepSeek|$(make_key 'sk-' 32)"
+    "DeepSeek|DEEPSEEK_API_KEY=\"$(make_key 'sk-' 32)\""
+    "DeepSeek|\"DEEPSEEK_API_KEY\": \"$(make_key 'sk-' 32)\""
+    "DeepSeek|/$(make_key 'sk-' 32)"
+    "Mistral|MISTRAL_API_KEY = \"$(make_key '' 32)\""
+    "Mistral|'MISTRAL_API_KEY': '$(make_key '' 32)'"
+    "Mistral|\"MISTRAL_API_KEY\": \"$(make_key '' 32)\""
+    "Mistral|export MISTRAL_API_KEY=$(make_key '' 32)"
+    "xAI|$(make_key 'xai-' 70)"
     "GitHub PAT|$(make_key 'ghp_' 36)"
     "GitHub fine-grained PAT|$(make_key 'github_pat_' 82)"
     "Google API key|$(make_key 'AIza' 35)"
@@ -65,12 +78,21 @@ for entry in "${POSITIVES[@]}"; do
     provider="${entry%%|*}"
     key="${entry#*|}"
     case_providers["$provider"]=1
-    printf 'API_KEY = "%s"\n' "$key" > "$tmp/leak.txt"
+    if [ -z "${case_keys[$provider]+present}" ]; then
+        case_keys["$provider"]="$key"
+    fi
+    printf '%s\n' "$key" > "$tmp/leak.txt"
     if out="$("$CHECK" "$tmp/leak.txt" 2>&1)"; then
         echo "FAIL: the '$provider' credential (${#key} chars) was NOT caught"
         fail=1
     elif ! grep -qF "SECRET: $provider key in " <<< "$out"; then
         echo "FAIL: the '$provider' case was caught, but not under its own provider name"
+        fail=1
+    fi
+    sensitive="$key"
+    if [ "$provider" = Mistral ]; then sensitive="$(make_key '' 32)"; fi
+    if grep -qF "$sensitive" <<< "$out"; then
+        echo "FAIL: the '$provider' finding echoed the credential"
         fail=1
     fi
 done
@@ -89,6 +111,87 @@ for provider in "${!case_providers[@]}"; do
     fi
 done
 
+# The setup inventory is the authority for which providers need protection.
+# Keep the mapping explicit: Gemini uses Google's key format, while Ollama is
+# local and deliberately has no credential. A new provider must add a fixture
+# and a scanner rule instead of silently falling outside this test's scope.
+declare -A setup_cases=(
+    [openai]='OpenAI' [anthropic]='Anthropic' [gemini]='Google API key'
+    [groq]='Groq' [deepseek]='DeepSeek' [mistral]='Mistral' [xai]='xAI'
+)
+check_setup_coverage() {
+    local inventory="$1" rows provider key_var label key out missed=0
+    if ! rows="$(node - "$inventory" <<'JS'
+const { PROVIDERS, API_KEY_VARS } = require(process.argv[2]);
+if (!Array.isArray(PROVIDERS) || !PROVIDERS.length) {
+  throw new Error('empty or invalid setup inventory');
+}
+for (const provider of PROVIDERS) {
+  if (!Object.hasOwn(API_KEY_VARS, provider) ||
+      !(API_KEY_VARS[provider] === null ||
+        (typeof API_KEY_VARS[provider] === 'string' && API_KEY_VARS[provider]))) {
+    throw new Error(`missing credential declaration for ${provider}`);
+  }
+  console.log(`${provider}|${API_KEY_VARS[provider] ?? ''}`);
+}
+JS
+)"; then
+        echo "FAIL: could not read the setup provider inventory"
+        return 1
+    fi
+    while IFS='|' read -r provider key_var; do
+        if [ "$provider" = ollama ] && [ -z "$key_var" ]; then
+            continue
+        fi
+        label="${setup_cases[$provider]:-}"
+        if [ -z "$key_var" ] || [ -z "$label" ] ||
+            [ -z "${case_providers[$label]+present}" ] ||
+            [ -z "${scanner_providers[$label]+present}" ]; then
+            echo "FAIL: setup provider '$provider' has no credential pattern and positive fixture"
+            missed=1
+            continue
+        fi
+        key="${case_keys[$label]}"
+        if [ "$provider" = mistral ]; then key="$(make_key '' 32)"; fi
+        printf '%s = "%s"\n' "$key_var" "$key" > "$tmp/setup-key.txt"
+        if out="$("$CHECK" "$tmp/setup-key.txt" 2>&1)"; then
+            echo "FAIL: setup provider '$provider' credential assignment was not caught"
+            missed=1
+        elif ! grep -qF "SECRET: $label key in " <<< "$out"; then
+            echo "FAIL: setup provider '$provider' was not caught by its own pattern"
+            missed=1
+        fi
+    done <<< "$rows"
+    return "$missed"
+}
+if ! check_setup_coverage "$ROOT/packages/setup/providers.js"; then fail=1; fi
+
+# Prove that inventory growth and a formerly keyless provider gaining a key
+# both fail the coverage guard, without changing the production inventory.
+cp "$ROOT/packages/setup/providers.js" "$tmp/new-provider.js"
+cat >> "$tmp/new-provider.js" <<'JS'
+module.exports.PROVIDERS.push('future_provider');
+module.exports.API_KEY_VARS.future_provider = 'FUTURE_API_KEY';
+JS
+if check_setup_coverage "$tmp/new-provider.js" > "$tmp/drift.out" 2>&1; then
+    echo "FAIL: adding a setup provider did not fail the coverage guard"
+    fail=1
+elif ! grep -qF "setup provider 'future_provider'" "$tmp/drift.out"; then
+    echo "FAIL: inventory mutation did not fail for the new provider"
+    fail=1
+fi
+cp "$ROOT/packages/setup/providers.js" "$tmp/keyed-ollama.js"
+cat >> "$tmp/keyed-ollama.js" <<'JS'
+module.exports.API_KEY_VARS.ollama = 'OLLAMA_API_KEY';
+JS
+if check_setup_coverage "$tmp/keyed-ollama.js" > "$tmp/keyless.out" 2>&1; then
+    echo "FAIL: a provider gaining a key did not fail the coverage guard"
+    fail=1
+elif ! grep -qF "setup provider 'ollama'" "$tmp/keyless.out"; then
+    echo "FAIL: keyless mutation did not fail for Ollama"
+    fail=1
+fi
+
 # --- 2. The repo's own fixtures must NOT be caught --------------------------
 declare -a NEGATIVES=(
     'sk-ssh-ed25519'                  # SSH algorithm name, not a secret
@@ -99,6 +202,24 @@ declare -a NEGATIVES=(
     'ghp_abc123secrettoken'
     'sk-receipt-deadbeef'
     'AKIAIOSFODNN7EXAMPLE'            # AWS published example — allowlisted
+    "$(make_key 'sk-' 31)"           # Below DeepSeek's exact hexadecimal length
+    "sk-$(make_key '' 31)Z"          # 32 characters, but not a DeepSeek hex body
+    "$(make_key 'sk-' 32)Z"          # Do not match a 32-hex prefix of a longer token
+    "disk-$(make_key '' 32)"         # An identifier containing sk- is not a key
+    "task-$(make_key '' 32)"
+    "prefixsk-$(make_key '' 32)"
+    "task-$(make_key '' 48)"         # OpenAI-length identifiers need a left boundary
+    'Run the task-runner-for-the-scheduled-maintenance-window job nightly.'
+    'risk-assessment-for-the-quarterly-kernel-upgrade-plan-v2'
+    "$(make_key 'xai-' 69)"          # Below xAI's body length
+    "$(make_key '' 32)"              # Arbitrary identifiers need assignment context
+    "MISTRAL_API_KEY=$(make_key '' 31)"
+    "MISTRAL_API_KEY=$(make_key '' 33)"
+    "OTHER_API_KEY=$(make_key '' 32)"
+    "NOT_MISTRAL_API_KEY=$(make_key '' 32)"
+    "XMISTRAL_API_KEY=$(make_key '' 32)"
+    "MISTRAL_API_KEY_EXTRA=$(make_key '' 32)"
+    "MISTRAL_API_KEYX=$(make_key '' 32)"
 )
 for fixture in "${NEGATIVES[@]}"; do
     printf 'value = "%s"\n' "$fixture" > "$tmp/fixture.txt"

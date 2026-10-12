@@ -1350,6 +1350,11 @@ pub enum StatusOutcome {
     Agrees { rows_checked: u64 },
     /// At least one row disagrees. `detail` names the transactions.
     Disagrees { detail: String },
+    /// The check failed to read statuses, or historical writes have no signed
+    /// status event. An approval
+    /// revocation alone does not prove cancellation, so do not invent a
+    /// matching outcome or report that absence as proven tampering.
+    CannotVerify { detail: String },
 }
 
 /// Exit code for the status cross-check, on the same scale as
@@ -1359,6 +1364,7 @@ pub fn status_outcome_to_exit_code(outcome: &StatusOutcome) -> i32 {
     match outcome {
         StatusOutcome::Agrees { .. } => 0,
         StatusOutcome::Disagrees { .. } => 1,
+        StatusOutcome::CannotVerify { .. } => 2,
     }
 }
 
@@ -1664,7 +1670,7 @@ impl AttributionCensus {
 }
 
 impl AuditVerification {
-    /// Worst result across all three checks.
+    /// Worst result across all available checks.
     ///
     /// A detected tamper (`1`) outranks an inability to check (`2`): if the
     /// chain is provably broken, reporting "could not verify" because some

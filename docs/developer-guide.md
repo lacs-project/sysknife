@@ -275,6 +275,16 @@ and the workspace test baseline. `scripts/test_baseline.sh` runs
 `cargo nextest run --workspace --locked` and checks the measured test count.
 Run `bash .githooks/pre-commit` to invoke the same gate manually.
 
+The secret screen recognizes the credential formats of every key-bearing
+provider in the setup wizard, including OpenAI service-account and `None`
+keys, DeepSeek's hexadecimal keys, and xAI keys. Mistral's keys have no
+distinctive prefix, so the screen requires a `MISTRAL_API_KEY` assignment
+(shell or JSON syntax) instead of rejecting arbitrary identifiers. It is a
+format screen: encoded credentials or prefixless values without that named
+assignment can still escape detection. `tests/release/no-secrets.test.sh`
+checks each setup provider and rejects inventory additions without coverage;
+Ollama is explicitly exempt while it requires no API key.
+
 Vitest is not part of this pre-commit hook; it runs in CI.
 `.pre-commit-config.yaml` is an unused remnant of the earlier framework setup,
 not the active Git hook configuration.

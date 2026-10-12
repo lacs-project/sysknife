@@ -399,6 +399,26 @@ pub struct DoctorReport {
 // sysknife_audit_verify — output types
 // ---------------------------------------------------------------------------
 
+/// The SQLite execution-status cross-check, matching the CLI JSON encoding.
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum StatusCheckReport {
+    Agrees { rows_checked: u64 },
+    Disagrees { detail: String },
+    CannotVerify { detail: String },
+}
+
+impl From<sysknife_daemon::audit_chain::StatusOutcome> for StatusCheckReport {
+    fn from(outcome: sysknife_daemon::audit_chain::StatusOutcome) -> Self {
+        use sysknife_daemon::audit_chain::StatusOutcome;
+        match outcome {
+            StatusOutcome::Agrees { rows_checked } => Self::Agrees { rows_checked },
+            StatusOutcome::Disagrees { detail } => Self::Disagrees { detail },
+            StatusOutcome::CannotVerify { detail } => Self::CannotVerify { detail },
+        }
+    }
+}
+
 /// Output of `sysknife_audit_verify`. Carries the same headline verdict and
 /// `audit_anchor` cross-check as `sysknife audit verify --json`, plus the MCP
 /// surface's flattened chain, approval, binding, attribution, and host fields.
@@ -420,7 +440,8 @@ pub struct AuditVerifyReport {
     pub expected: Option<String>,
     /// The hex Ed25519 signature actually stored for the first broken row.
     pub actual: Option<String>,
-    /// Human-readable explanation. Only set when `status == "cannot_verify"`.
+    /// Why the transaction chain could not be verified. Preserved even when
+    /// another check proves a break and sets the headline to `"broken"`.
     pub reason: Option<String>,
     /// Number of approval events (grant / consume / revoke) checked in the
     /// second chain.
@@ -433,6 +454,11 @@ pub struct AuditVerifyReport {
     /// event tip committed by a transaction row is still present in the event
     /// chain.
     pub binding_status: String,
+    /// Whether live execution statuses agree with their signed events.
+    /// `null` when the check did not run (including Postgres); an inconclusive
+    /// SQLite check includes its reason and contributes to the headline verdict.
+    #[serde(default)]
+    pub status_check: Option<StatusCheckReport>,
     /// Backend label: a filesystem path for SQLite, the literal `"postgres"`
     /// for Postgres deployments.
     pub backend: String,
@@ -1424,6 +1450,7 @@ fn outcome_to_report(
     // because it is the one checkpoints anchor.
     let overall = combined_verification_exit_code(&verification, anchor);
     let audit_anchor = audit_anchor_json(anchor);
+    let status_check = verification.status.map(StatusCheckReport::from);
     let mut report = match verification.chain {
         VerifyOutcome::Intact { rows_checked } => AuditVerifyReport {
             status: "intact".to_string(),
@@ -1438,6 +1465,7 @@ fn outcome_to_report(
             events_checked,
             approval_events_status,
             binding_status,
+            status_check,
             chain_status: chain_status.clone(),
             rows_censused: attribution.map(|c| c.rows()),
             attributed_rows: attribution.map(|c| c.named()),
@@ -1466,6 +1494,7 @@ fn outcome_to_report(
             events_checked,
             approval_events_status,
             binding_status,
+            status_check,
             chain_status: chain_status.clone(),
             rows_censused: attribution.map(|c| c.rows()),
             attributed_rows: attribution.map(|c| c.named()),
@@ -1481,6 +1510,7 @@ fn outcome_to_report(
             r.events_checked = events_checked;
             r.approval_events_status = approval_events_status;
             r.binding_status = binding_status;
+            r.status_check = status_check;
             // Rows can be read and censused and still fail to verify: one row
             // from a newer encoding, or a key_id mismatch after key rotation, is
             // enough. Dropping the census here republished the very defect this
@@ -1497,10 +1527,9 @@ fn outcome_to_report(
     };
 
     // `status` is the headline an MCP client is most likely to read alone, so
-    // it must reflect the worst of the three checks, not just the first.
-    if report.status == "intact" {
-        report.status = status_word(overall).to_string();
-    }
+    // it must reflect the combined verdict even when the chain itself could not
+    // be verified: a proven break elsewhere still outranks that uncertainty.
+    report.status = status_word(overall).to_string();
     report
 }
 
@@ -1531,6 +1560,7 @@ fn cannot_verify_report(backend: String, reason: String) -> AuditVerifyReport {
         events_checked: 0,
         approval_events_status: "cannot_verify".to_string(),
         binding_status: binding_outcome_label(&BindingOutcome::NotChecked).to_string(),
+        status_check: None,
         // The chain verdict for a report built before any row was read. Callers
         // that reach this constructor overwrite it when they know better.
         chain_status: "cannot_verify".to_string(),
@@ -1573,6 +1603,69 @@ pub async fn run_mcp_server() -> Result<(), CliError> {
 mod boundary_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn audit_status_verdict_is_exposed_to_mcp_clients() {
+        use sysknife_daemon::audit_chain::{
+            AuditVerification, BindingOutcome, StatusOutcome, VerifyOutcome,
+        };
+        for (status, headline) in [
+            (Some(StatusOutcome::Agrees { rows_checked: 1 }), "intact"),
+            (
+                Some(StatusOutcome::Disagrees {
+                    detail: "transaction example has rewritten status".into(),
+                }),
+                "broken",
+            ),
+            (
+                Some(StatusOutcome::CannotVerify {
+                    detail: "historical example has no status evidence".into(),
+                }),
+                "cannot_verify",
+            ),
+            (None, "intact"),
+        ] {
+            for chain in [
+                VerifyOutcome::Intact { rows_checked: 1 },
+                VerifyOutcome::CannotVerify {
+                    reason: "unsupported row encoding".into(),
+                },
+            ] {
+                let chain_status = outcome_label(&chain);
+                let expected_headline = if chain_status == "cannot_verify" && headline != "broken" {
+                    "cannot_verify"
+                } else {
+                    headline
+                };
+                let verification = AuditVerification {
+                    chain: chain.clone(),
+                    events: VerifyOutcome::Intact { rows_checked: 1 },
+                    binding: BindingOutcome::Consistent {
+                        bindings_checked: 0,
+                    },
+                    attribution: None,
+                    status: status.clone(),
+                };
+                let report =
+                    serde_json::to_value(outcome_to_report(verification, "test.db".into(), None))
+                        .unwrap();
+                assert_eq!(report["status"], expected_headline);
+                assert_eq!(report["chain_status"], chain_status);
+                if chain_status == "cannot_verify" {
+                    assert_eq!(report["reason"], "unsupported row encoding");
+                }
+                assert_eq!(
+                    report["status_check"],
+                    serde_json::to_value(&status).unwrap()
+                );
+            }
+        }
+        let schema = serde_json::to_value(schemars::schema_for!(AuditVerifyReport)).unwrap();
+        assert!(schema["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("status_check"));
+    }
 
     /// Invisible carrier, ANSI, zero-width, BiDi, and a forged envelope close.
     /// The TAG block renders as nothing at all in every mainstream client and

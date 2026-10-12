@@ -1438,6 +1438,11 @@ impl LlmPlanner {
                         }
                     }
 
+                    // Local feedback/preferences can reflect free text too.
+                    // Screen every result before retaining it in provider context.
+                    for result in &mut tool_results {
+                        result.content = crate::tool_secrets::redact_tool_secrets(&result.content);
+                    }
                     messages.push(Message::tool_results(tool_results));
                 }
             }

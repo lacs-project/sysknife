@@ -38,12 +38,17 @@ ALLOWED_EXAMPLES=(
 # AWS secret access keys have no distinctive prefix; no pattern covers their
 # generic base64 format, so the matching secret example needs no exemption.
 
-# provider:regex. Bodies are sized to the real format so fixtures fall short.
+# provider:regex (POSIX ERE). Bodies are sized to the real format so fixtures
+# fall short. Mistral has no distinctive prefix: only its named key assignment
+# is recognized, rather than every unrelated 32-character identifier.
 PATTERNS=(
     "Groq:gsk_[A-Za-z0-9]{40,}"
-    "OpenAI:sk-[A-Za-z0-9]{40,}"
+    "OpenAI:(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{40,}"
     "OpenAI project:sk-proj-[A-Za-z0-9_-]{40,}"
     "Anthropic:sk-ant-[A-Za-z0-9_-]{40,}"
+    "DeepSeek:(^|[^A-Za-z0-9_-])sk-[A-Fa-f0-9]{32}([^A-Za-z0-9_-]|$)"
+    "Mistral:(^|[^A-Za-z0-9_])MISTRAL_API_KEY[\"']?[[:space:]]*[=:][[:space:]]*[\"']?[A-Za-z0-9]{32}([^A-Za-z0-9_-]|$)"
+    "xAI:xai-[A-Za-z0-9]{70,}"
     "GitHub PAT:ghp_[A-Za-z0-9]{36,}"
     "GitHub fine-grained PAT:github_pat_[A-Za-z0-9_]{60,}"
     "AWS access key:AKIA[0-9A-Z]{16}"
