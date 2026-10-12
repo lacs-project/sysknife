@@ -34,8 +34,9 @@ def bash(code, root=ROOT):
 
 class LocalGates(unittest.TestCase):
     def test_action_pin_verifier_failure_is_a_hard_gate(self):
-        code = functions('record', 'run_step', 'run_hygiene_group') + '''
-RESULTS=(); hard_failures=0
+        code = functions('record', 'mark_required_skip', 'record_missing_ci_tool',
+                         'run_step', 'run_hygiene_group') + '''
+RESULTS=(); hard_failures=0; required_skips=(); allow_missing_tools=true
 have() { return 1; }
 python3() { :; }
 npm() { :; }
@@ -59,6 +60,9 @@ printf '%s\\n' "${RESULTS[@]}"
         code += '''
 have() { return 1; }
 record() { :; }
+record_missing_ci_tool() { :; }
+privileged_ci_shell_tests() { :; }
+is_root() { return 0; }
 run_step() { shift; if [[ "${1:-}" == bash && "${2:-}" == *.test.sh ]]; then printf '%s\\n' "${2#"$repo_root/"}"; fi; }
 run_hygiene_group
 '''
@@ -78,7 +82,10 @@ run_hygiene_group
 
     def test_new_file_is_discovered_and_empty_directory_fails(self):
         code = functions('record', 'run_shell_tests') + '''
-RESULTS=(); hard_failures=0
+RESULTS=(); hard_failures=0; required_skips=()
+privileged_ci_shell_tests() { :; }
+is_root() { return 0; }
+mark_required_skip() { :; }
 run_step() { printf '%s\\n' "$*"; }
 run_shell_tests
 printf 'failures=%s\\n' "$hard_failures"
@@ -113,6 +120,78 @@ print_summary
         self.assertNotIn('ci-local: PASS', summary)
         explicit = bash(code.replace('run_postgres=true', 'run_postgres=false'))
         self.assertIn('INCOMPLETE', explicit.stdout)
+
+    def test_missing_nextest_makes_validation_incomplete_without_opt_out(self):
+        code = functions('record', 'mark_required_skip', 'record_missing_ci_tool',
+                         'run_rust_group', 'print_summary', 'validation_succeeded') + '''
+RESULTS=(); hard_failures=0; required_skips=(); mode=fast
+allow_missing_tools=false
+have() { return 1; }
+run_step() { :; }
+run_rust_group
+print_summary
+validation_succeeded
+'''
+        result = bash(code)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('missing-tool:cargo-nextest', result.stdout)
+        self.assertIn('ci-local: INCOMPLETE', result.stdout)
+        self.assertNotIn('ci-local: PASS', result.stdout)
+
+        opted_out = bash(code.replace('allow_missing_tools=false',
+                                      'allow_missing_tools=true'))
+        self.assertEqual(opted_out.returncode, 0, opted_out.stderr)
+        self.assertIn('ci-local: PASS', opted_out.stdout)
+        self.assertNotIn('missing-tool:cargo-nextest', opted_out.stdout)
+
+    def test_non_root_privileged_shell_test_makes_validation_incomplete(self):
+        code = functions('record', 'mark_required_skip', 'is_root',
+                         'privileged_ci_shell_tests', 'run_shell_tests',
+                         'print_summary', 'validation_succeeded') + '''
+RESULTS=(); hard_failures=0; required_skips=(); mode=full
+allow_missing_tools=false
+is_root() { return 1; }
+privileged_ci_shell_tests() { printf 'tests/release/root-only.test.sh\\n'; }
+run_step() { :; }
+run_shell_tests
+print_summary
+validation_succeeded
+'''
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'tests/release').mkdir(parents=True)
+            (root / 'tests/e2e').mkdir(parents=True)
+            (root / 'tests/release/root-only.test.sh').touch()
+            result = bash(code, root)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('root-required:tests/release/root-only.test.sh',
+                      result.stdout)
+        self.assertIn('ci-local: INCOMPLETE', result.stdout)
+        self.assertNotIn('ci-local: PASS', result.stdout)
+
+    def test_privileged_discovery_failure_is_a_hard_gate(self):
+        code = functions('record', 'run_shell_tests',
+                         'print_summary', 'validation_succeeded') + '''
+RESULTS=(); hard_failures=0; required_skips=(); mode=full
+privileged_ci_shell_tests() { return 1; }
+is_root() { return 0; }
+run_step() { :; }
+run_shell_tests
+print_summary
+validation_succeeded
+'''
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'tests/release').mkdir(parents=True)
+            (root / 'tests/e2e').mkdir(parents=True)
+            (root / 'tests/release/reachable.test.sh').touch()
+            result = bash(code, root)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('hygiene: could not derive privileged CI shell tests',
+                      result.stdout)
+        self.assertNotIn('ci-local: PASS', result.stdout)
 
     def test_podman_precedes_docker(self):
         code = functions('record', 'run_postgres_contract_group') + '''

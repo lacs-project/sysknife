@@ -20,10 +20,11 @@ readonly POSTGRES_HEALTH_INTERVAL_SECS=1
 
 mode="full"
 run_postgres=true
+allow_missing_tools=false
 
 usage() {
     cat <<'EOF'
-Usage: scripts/ci-local.sh [--fast] [--no-postgres] [--install-hooks] [--help]
+Usage: scripts/ci-local.sh [--fast] [--no-postgres] [--allow-missing-tools] [--install-hooks] [--help]
 
 Mirror the runnable jobs from .github/workflows/ci.yml locally so failures
 are caught before pushing (and before spending GitHub Actions minutes).
@@ -32,6 +33,9 @@ are caught before pushing (and before spending GitHub Actions minutes).
                     same subset the pre-push hook runs)
   --no-postgres    Skip the required postgres-contract job even when a
                     container runtime or SYSKNIFE_TEST_POSTGRES_URL is present
+  --allow-missing-tools
+                   Allow CI-required helper tools to be absent without making
+                   the local result incomplete; skipped tools are still listed
   --install-hooks  Set git core.hooksPath to .githooks (enables the pre-push
                     gate: scripts/ci-local.sh --fast) and exit -- does not
                     run any checks
@@ -49,6 +53,7 @@ while (($# > 0)); do
     case "$1" in
         --fast) mode="fast" ;;
         --no-postgres) run_postgres=false ;;
+        --allow-missing-tools) allow_missing_tools=true ;;
         --install-hooks)
             git -C "$repo_root" config core.hooksPath .githooks
             printf 'ci-local: git core.hooksPath set to .githooks (pre-push gate enabled)\n'
@@ -79,6 +84,30 @@ hard_failures=0
 required_skips=()
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+mark_required_skip() {
+    local reason="$1" existing
+    for existing in "${required_skips[@]}"; do
+        [[ "$existing" == "$reason" ]] && return 0
+    done
+    required_skips+=("$reason")
+}
+
+record_missing_ci_tool() {
+    local tool="$1" label="$2"
+    record WARN "$label"
+    if [[ "$allow_missing_tools" != true ]]; then
+        mark_required_skip "missing-tool:${tool}"
+    fi
+}
+
+is_root() {
+    [[ "$(id -u)" -eq 0 ]]
+}
+
+privileged_ci_shell_tests() {
+    bash "$repo_root/scripts/check_test_reachability.sh" --list-privileged
+}
 
 # Record one outcome. status is one of PASS / FAIL / WARN / SKIP; only FAIL
 # counts toward the exit code.
@@ -156,7 +185,7 @@ run_rust_group() {
         run_step 'rust: cargo nextest run --workspace --locked (+ test baseline)' \
             bash "$repo_root/scripts/test_baseline.sh"
     else
-        record WARN 'rust: cargo nextest run -- SKIPPED (cargo-nextest not found; install: cargo install cargo-nextest --locked)'
+        record_missing_ci_tool cargo-nextest 'rust: cargo nextest run -- SKIPPED (cargo-nextest not found; install: cargo install cargo-nextest --locked)'
     fi
 }
 
@@ -278,14 +307,27 @@ hygiene_shellcheck() (
 
 run_shell_tests() {
     # No deliberate exclusions: every release/e2e *.test.sh is a local fixture
-    # or guard, not a live VM story. Keep any future exclusion here with its
-    # reason and an explicit SKIP outcome rather than maintaining a second list.
-    local test count=0
+    # or guard, not a live VM story. Privileged workflow invocations are derived
+    # from the same YAML parser used by check_test_reachability.sh.
+    local test relative_path count=0 privileged_tests=""
+
+    if ! privileged_tests="$(privileged_ci_shell_tests)"; then
+        record FAIL 'hygiene: could not derive privileged CI shell tests'
+        privileged_tests=""
+    fi
+
     for test in "$repo_root"/tests/release/*.test.sh "$repo_root"/tests/e2e/*.test.sh; do
         [[ -f "$test" ]] || continue
         count=$((count + 1))
-        run_step "hygiene: ${test#"$repo_root/"}" bash "$test"
+        relative_path="${test#"$repo_root/"}"
+        run_step "hygiene: ${relative_path}" bash "$test"
+
+        if ! is_root && grep -Fxq -- "$relative_path" <<< "$privileged_tests"; then
+            record SKIP "hygiene: ${relative_path} privileged assertions -- SKIPPED (local user is not root)"
+            mark_required_skip "root-required:${relative_path}"
+        fi
     done
+
     if ((count == 0)); then
         record FAIL 'hygiene: no release/e2e shell tests discovered'
     fi
@@ -304,25 +346,25 @@ run_hygiene_group() {
     if have markdownlint-cli2; then
         run_step 'hygiene: markdownlint-cli2' hygiene_markdownlint
     else
-        record WARN 'hygiene: markdownlint-cli2 -- SKIPPED (not found; install: npm install --global markdownlint-cli2)'
+        record_missing_ci_tool markdownlint-cli2 'hygiene: markdownlint-cli2 -- SKIPPED (not found; install: npm install --global markdownlint-cli2)'
     fi
 
     if have markdown-link-check; then
         run_step 'hygiene: markdown-link-check' hygiene_markdown_link_check
     else
-        record WARN 'hygiene: markdown-link-check -- SKIPPED (not found; install: npm install --global markdown-link-check)'
+        record_missing_ci_tool markdown-link-check 'hygiene: markdown-link-check -- SKIPPED (not found; install: npm install --global markdown-link-check)'
     fi
 
     if have yamllint; then
         run_step 'hygiene: yamllint' hygiene_yamllint
     else
-        record WARN 'hygiene: yamllint -- SKIPPED (not found; install: pip install yamllint)'
+        record_missing_ci_tool yamllint 'hygiene: yamllint -- SKIPPED (not found; install: pip install yamllint)'
     fi
 
     if have shellcheck; then
         run_step 'hygiene: shellcheck (tests/e2e tests/release scripts assets/demo)' hygiene_shellcheck
     else
-        record WARN 'hygiene: shellcheck -- SKIPPED (not found; install: sudo apt-get install shellcheck)'
+        record_missing_ci_tool shellcheck 'hygiene: shellcheck -- SKIPPED (not found; install: sudo apt-get install shellcheck)'
     fi
 }
 
@@ -343,7 +385,7 @@ run_security_group() {
         # the tool contributors run to find out whether CI will pass.
         run_step 'security: cargo audit' cargo audit
     else
-        record WARN 'security: cargo audit -- SKIPPED (cargo-audit not found; install: cargo install cargo-audit --locked)'
+        record_missing_ci_tool cargo-audit 'security: cargo audit -- SKIPPED (cargo-audit not found; install: cargo install cargo-audit --locked)'
     fi
 }
 
@@ -452,12 +494,28 @@ fi
 
 if ((${#required_skips[@]} > 0)); then
     printf 'WARNING: REQUIRED CI check(s) did not run: %s\n' "${required_skips[*]}"
-    printf 'To run postgres-contract, set SYSKNIFE_TEST_POSTGRES_URL or install podman, then rerun without --no-postgres.\n'
+    for r in "${required_skips[@]}"; do
+        case "$r" in
+            postgres-contract)
+                printf 'To run postgres-contract, set SYSKNIFE_TEST_POSTGRES_URL or install podman, then rerun without --no-postgres.\n'
+                ;;
+            missing-tool:*)
+                printf 'Install %s, or rerun with --allow-missing-tools only when you intentionally accept that CI gap.\n' "${r#missing-tool:}"
+                ;;
+            root-required:*)
+                printf 'CI runs %s with root privileges; this local run did not exercise that privileged assertion.\n' "${r#root-required:}"
+                ;;
+        esac
+    done
     printf 'ci-local: INCOMPLETE (required checks skipped)\n'
 elif ((hard_failures == 0)); then
     printf 'ci-local: PASS\n'
 fi
 }
 
+validation_succeeded() {
+    ((hard_failures == 0 && ${#required_skips[@]} == 0))
+}
+
 print_summary
-((hard_failures == 0))
+validation_succeeded

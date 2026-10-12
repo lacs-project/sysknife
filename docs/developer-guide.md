@@ -40,9 +40,10 @@ checks `main` requires:
 | Podman or Docker | the live `postgres-contract` job | `sudo apt-get install -y podman` |
 | Tauri system deps | building the paused GUI app | [tauri.app/start/prerequisites](https://tauri.app/start/prerequisites/) |
 
-> **Install `cargo-nextest` before you trust a green run.** `scripts/ci-local.sh`
-> reports `WARN ... SKIPPED` rather than failing when it is missing, so the whole
-> Rust test step silently does not run and the summary still ends `ci-local: PASS`.
+> **Install `cargo-nextest` before you trust a green run.** If it is missing,
+> `scripts/ci-local.sh` now reports the Rust test step as skipped, finishes
+> **INCOMPLETE**, and exits non-zero. `--allow-missing-tools` is an explicit
+> opt-out for cases where you intentionally accept that local CI gap.
 
 This project uses **npm**. `apps/sysknife-shell` carries a `package-lock.json`
 and CI runs `npm ci` against it. There is no pnpm or yarn lockfile in the tree.
@@ -113,9 +114,11 @@ scripts/ci-local.sh          # everything it can run here
 scripts/ci-local.sh --fast   # what the pre-push hook runs
 ```
 
-Read its summary rather than its exit code. A tool it cannot find becomes a
-`WARN ... SKIPPED` line and the run still ends `ci-local: PASS`, so an absent
-`cargo-nextest` means the Rust suite never ran at all.
+The exit code and summary now agree. If a CI-required helper such as
+`cargo-nextest` is missing, the skipped check is named, the run ends
+`ci-local: INCOMPLETE`, and the command exits non-zero. Use
+`--allow-missing-tools` only when you intentionally want those missing-tool
+skips to remain advisory.
 
 ### Use `cargo nextest`, not `cargo test`
 
@@ -272,6 +275,16 @@ and the workspace test baseline. `scripts/test_baseline.sh` runs
 `cargo nextest run --workspace --locked` and checks the measured test count.
 Run `bash .githooks/pre-commit` to invoke the same gate manually.
 
+The secret screen recognizes the credential formats of every key-bearing
+provider in the setup wizard, including OpenAI service-account and `None`
+keys, DeepSeek's hexadecimal keys, and xAI keys. Mistral's keys have no
+distinctive prefix, so the screen requires a `MISTRAL_API_KEY` assignment
+(shell or JSON syntax) instead of rejecting arbitrary identifiers. It is a
+format screen: encoded credentials or prefixless values without that named
+assignment can still escape detection. `tests/release/no-secrets.test.sh`
+checks each setup provider and rejects inventory additions without coverage;
+Ollama is explicitly exempt while it requires no API key.
+
 Vitest is not part of this pre-commit hook; it runs in CI.
 `.pre-commit-config.yaml` is an unused remnant of the earlier framework setup,
 not the active Git hook configuration.
@@ -397,22 +410,34 @@ scripts/ci-local.sh --fast
 
 # Skip the postgres-contract job even if a container runtime is available
 scripts/ci-local.sh --no-postgres
+
+# Explicitly accept missing helper tools as advisory warnings
+scripts/ci-local.sh --allow-missing-tools
 ```
 
-The hygiene group discovers every `tests/release/*.test.sh` and
-`tests/e2e/*.test.sh`; there are no deliberate exclusions. A missing Postgres
-runtime/URL or `--no-postgres` produces a final **INCOMPLETE** warning naming
-the required gate. Set `SYSKNIFE_TEST_POSTGRES_URL` or install Podman and rerun
-without `--no-postgres` to satisfy it. Skips do not change the exit code; actual
-check failures still exit nonzero.
+`make check` runs the same fast subset, including the workspace test baseline
+and Clippy with all features and all targets. It does not run the full hygiene,
+security or PostgreSQL groups; use the full command above before submitting.
 
-It detects which tools are installed first: `cargo` and `node` are required
-(missing either is a hard failure with an install link); an optional linter
-that's missing (`cargo-nextest`, `cargo-audit`, `markdownlint-cli2`,
-`markdown-link-check`, `yamllint`, `shellcheck`) just prints a warning with
-an install hint and skips that one check. Every check still runs even after
-an earlier one fails — a PASS/FAIL/WARN/SKIP summary prints at the end, and
-the script exits non-zero only if something in the summary actually failed.
+The hygiene group discovers every `tests/release/*.test.sh` and
+`tests/e2e/*.test.sh`; there are no deliberate exclusions. It also reads the
+workflow invocations and identifies tests that CI runs under `sudo`. If the
+local run is not root, those privileged assertions are named as required skips
+instead of being allowed to hide behind an exit-zero test result.
+
+A missing Postgres runtime/URL, `--no-postgres`, a missing CI-required helper,
+or an unexercised root-only test produces **INCOMPLETE** and a non-zero exit.
+Set `SYSKNIFE_TEST_POSTGRES_URL` or install Podman for the Postgres contract.
+`--allow-missing-tools` is an explicit opt-out only for missing helper tools;
+it does not waive Postgres or root-required checks.
+
+Tool detection still happens up front: `cargo` and `node` are hard prerequisites.
+Missing `cargo-nextest`, `cargo-audit`, `markdownlint-cli2`,
+`markdown-link-check`, `yamllint`, or `shellcheck` is reported with an install
+hint and counts as a required skip unless explicitly opted out. Checks continue
+after an earlier failure so the final PASS/FAIL/WARN/SKIP summary shows the
+whole board. The command exits non-zero for either hard failures or required
+checks that did not run.
 
 ### Pre-push hook
 

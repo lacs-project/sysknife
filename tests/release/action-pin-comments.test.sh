@@ -15,6 +15,16 @@ case "$2" in
   repos/github/codeql-action/git/ref/tags/v4.37.9) echo 'tag cccccccccccccccccccccccccccccccccccccccc' ;;
   repos/github/codeql-action/git/tags/cccccccccccccccccccccccccccccccccccccccc) echo 'tag dddddddddddddddddddddddddddddddddddddddd' ;;
   repos/github/codeql-action/git/tags/dddddddddddddddddddddddddddddddddddddddd) echo 'commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
+  repos/dtolnay/rust-toolchain/compare/stable...aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)
+    if [[ "${PIN_BRANCH_ERROR:-0}" = 1 ]]; then
+      echo 'HTTP 404 or API unavailable (branch fixture)' >&2; exit 1
+    fi
+    printf '%s\n' "${PIN_BRANCH_STATUS-behind}" ;;
+  # These forbidden markers would pass reachability if the allowlist vanished.
+  repos/actions/checkout/compare/main...aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|\
+  repos/dtolnay/rust-toolchain/compare/nightly...aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|\
+  repos/dtolnay/rust-toolchain/subpath/compare/stable...aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)
+    echo behind ;;
   *) echo 'HTTP 404 or API unavailable (fixture)' >&2; exit 1 ;;
 esac
 STUB
@@ -41,12 +51,31 @@ check || { cat "$tmp/out"; exit 1; }
 grep -q 'checked 5 pins' "$tmp/out"
 grep -q 'repos/github/codeql-action/git/tags/dddd' "$PIN_API_LOG"
 [[ "$(grep -c 'repos/actions/checkout/git/ref/tags/v1.2.3' "$PIN_API_LOG")" = 1 ]]
-! grep -q 'rust-toolchain' "$PIN_API_LOG"
 cp "$workflow" "$tmp/good"
 expect_failure() {
     if check; then echo 'checker unexpectedly passed'; cat "$tmp/out"; exit 1; fi
     grep -q "$1" "$tmp/out" || { cat "$tmp/out"; exit 1; }
 }
+# A branch marker is not an escape from verifying arbitrary action SHAs.
+sed 's/# v1.2.3/# main (branch)/g' "$tmp/good" > "$workflow"
+expect_failure 'actions/checkout.*not allowed'
+sed 's/# stable (branch)/# nightly (branch)/' "$tmp/good" > "$workflow"
+expect_failure 'rust-toolchain.*not allowed'
+sed 's#dtolnay/rust-toolchain@#dtolnay/rust-toolchain/subpath@#' "$tmp/good" > "$workflow"
+expect_failure 'rust-toolchain/subpath.*not allowed'
+cp "$tmp/good" "$workflow"
+check || { cat "$tmp/out"; exit 1; }
+grep -q 'repos/dtolnay/rust-toolchain/compare/stable...aaaa' "$PIN_API_LOG"
+export PIN_BRANCH_STATUS=identical
+check || { cat "$tmp/out"; exit 1; }
+for PIN_BRANCH_STATUS in ahead diverged unexpected ''; do
+    export PIN_BRANCH_STATUS
+    expect_failure 'rust-toolchain.*not reachable'
+done
+export PIN_BRANCH_STATUS=behind PIN_BRANCH_ERROR=1
+expect_failure 'rust-toolchain.*cannot verify'
+unset PIN_BRANCH_ERROR PIN_BRANCH_STATUS
+
 sed 's/# v1.2.3/# v9.9.9/g' "$tmp/good" > "$workflow"
 expect_failure 'FAIL.*actions/checkout.*pinned'
 cp "$tmp/good" "$workflow"

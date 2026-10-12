@@ -44,7 +44,8 @@ step, because Ed25519 already commits to the message.
 The mutable `status` column (queued → running → succeeded/failed/rolled
 back) is **not** part of the signed content. The chain protects the
 *authorization decision* captured at insert time, not the live execution
-state — a scope decision, not an oversight (see [Limits](#limits-and-honest-scope)).
+state. Execution status is protected separately by signed status events and
+the SQLite status cross-check described below.
 ```
 
 ```admonish info title="Three row encodings coexist"
@@ -153,7 +154,7 @@ The machine-readable side publishes `rows_censused` so the gap is measurable:
 compare it with `rows_checked`, which the CLI `--json` nests under `chain` and the
 `sysknife_audit_verify` tool reports as a sibling field. Read the chain's own
 verdict, not the top-level `status`, when deciding whether the counts are
-findings: `status` is the worst of three checks, so a broken approval-event chain
+findings: `status` combines the available checks, so a broken approval-event chain
 turns it `broken` while the transaction chain and its attribution are intact. The
 MCP report carries `chain_status` for exactly that reason.
 
@@ -265,9 +266,9 @@ makes verification re-encode it without the principal, so the stored
 signature no longer verifies.
 
 Status events (`status_queued` … `status_rolled_back`) stay on the legacy
-encoding by design: they are written from spawned execution tasks with no
-caller in scope, and signing an account the code cannot see would be a
-signed guess. Historical approval-event rows are never backfilled for the
+encoding by design: execution tasks can write them without a caller in scope.
+The approval lifecycle events carry caller attribution separately. Historical
+approval-event rows are never backfilled for the
 same reason as the transaction chain — writing a principal into a row that
 was signed without one changes the message the signature covers and reports
 the chain as Broken.
@@ -284,6 +285,31 @@ reports the binding check alongside the two chain walks.
 The residual exposure is the same bounded tail every append-only log has:
 events appended after the most recent transaction row are not yet bound by
 anything, until the next row is written.
+
+### Execution-status verification on SQLite
+
+Claiming an approved job records `status_running`; canceling or sweeping an
+expired queued job records `status_canceled`. Each status event commits in the
+same SQLite transaction as the status and approval changes. Terminal updates
+also record their status events. A failed event write rolls back the transition.
+
+The verifier compares each live status with its newest signed status event.
+CLI text reports the result explicitly; CLI JSON and `sysknife_audit_verify`
+include `status_check`, with `state: "agrees"`, `"disagrees"`, or
+`"cannot_verify"`. A disagreement includes transaction IDs and the conflicting
+status values and fails verification with exit `1`.
+
+Historical claims, cancellations and sweeps may have no status event. Only
+`running` and `canceled` statuses without an event report `cannot_verify`, explain
+which records lack evidence, and produce exit `2` unless another check proves a
+break. Terminal statuses always required signed events: an unsigned `succeeded`,
+`failed`, `rolled_back` or `needs_reboot` is a disagreement and produces exit `1`.
+Historical statuses are never
+backfilled or accepted as intact: revoking approval can leave a job queued, and
+consuming approval cannot establish its eventual outcome. A queued row with a
+chained consumption event is a provable contradiction and remains broken.
+Signed status contradictions also remain broken when other rows lack evidence.
+When the status check did not run, including on Postgres, `status_check` is `null`.
 
 ## Signed checkpoints: closing the truncation gap
 
@@ -484,10 +510,11 @@ leaves a self-consistent remainder. The binding is what catches it.
 
 Exit codes matter for automation: `0` intact, `1` broken (a real tamper was
 detected), `2` cannot verify (missing key file, unreadable database, wrong
-key generation loaded, or an empty unanchored transaction log). The 1-vs-2
+key generation loaded, an unproven historical status, or an empty unanchored
+transaction log). The 1-vs-2
 split is deliberate — a CI job that only checks for a nonzero exit code must
 not silently treat "I couldn't check"
-the same as "I checked and it's fine." When the three checks disagree, the
+the same as "I checked and it's fine." When the checks disagree, the
 worst wins, and `1` outranks `2`: if anything is provably broken, saying
 "could not verify" would understate what is known.
 
@@ -512,10 +539,12 @@ it does and does not prove:
   can forge *future* entries indistinguishably from real ones. Signed
   checkpoints bound the damage to "after the compromise," since prior
   anchored tips remain unreproducible from a rewritten chain.
-- **`status` is out of scope by design.** The chain protects the decision
-  recorded at insert time (what was previewed, at what risk level, with
-  what warnings), not later execution-status transitions. "Chain verifies"
-  does not mean "the action's final status is trustworthy."
+- **Row signatures alone do not prove `status`.** They protect the decision
+  recorded at insert time. Signed status events protect later transitions, and
+  SQLite verification compares those events with the live column. Historical
+  running or canceled rows without status evidence are inconclusive; unsigned
+  terminal outcomes are broken. Postgres has no status
+  cross-check. Read `status_check` alongside the chain verdict.
 - **Truncation needs an external sink to be detectable at all.** Without a
   checkpoint anchored off-host, deleting the tail of the chain is invisible
   to `sysknife audit verify` by construction. The same applies to approval

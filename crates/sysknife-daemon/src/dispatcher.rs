@@ -2000,6 +2000,9 @@ async fn handle_query_action(
     // store rather than executing a system command. Handle it here to
     // avoid routing through the ActionSpec/executor path.
     if action_name == "ListJobHistory" {
+        if let Err(e) = crate::executor::validate_action_params(action_name, params) {
+            return send_error(framed, request_id, "validation_failure", e.to_string()).await;
+        }
         let limit = match params.get("limit") {
             Some(v) => match v.as_u64() {
                 Some(n) => n as u32,

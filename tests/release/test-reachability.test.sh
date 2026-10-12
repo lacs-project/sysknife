@@ -115,6 +115,34 @@ for prefix in 'sudo' 'sudo -n'; do
     bash "$fixture/scripts/check_test_reachability.sh" >/dev/null
 done
 
+# Privileged discovery is fail-closed: zero matches is not a clean result.
+cp "$fixture/base-ci.yml" "$fixture/.github/workflows/ci.yml"
+if bash "$fixture/scripts/check_test_reachability.sh" --list-privileged >/dev/null 2>&1; then
+    printf 'test-reachability test: empty privileged discovery unexpectedly passed\n' >&2
+    exit 1
+fi
+
+# Two privileged workflow steps must produce two exact detections.
+touch "$fixture/tests/release/privileged-two.test.sh"
+cp "$fixture/base-ci.yml" "$fixture/.github/workflows/ci.yml"
+printf '%s\n' \
+    '      - run: sudo -n bash tests/release/not-executed.test.sh' \
+    '      - run: sudo bash tests/release/privileged-two.test.sh' \
+    >> "$fixture/.github/workflows/ci.yml"
+privileged="$(bash "$fixture/scripts/check_test_reachability.sh" --list-privileged)"
+[[ "$(grep -c '^tests/' <<< "$privileged")" -eq 2 ]] || {
+    printf 'test-reachability test: expected two privileged detections: %s\n' "$privileged" >&2
+    exit 1
+}
+grep -Fxq 'tests/release/not-executed.test.sh' <<< "$privileged"
+grep -Fxq 'tests/release/privileged-two.test.sh' <<< "$privileged"
+if grep -Fxq 'tests/release/reachable.test.sh' <<< "$privileged"; then
+    printf 'test-reachability test: unprivileged invocation was classified as privileged\n' >&2
+    exit 1
+fi
+bash "$fixture/scripts/check_test_reachability.sh" >/dev/null
+rm "$fixture/tests/release/privileged-two.test.sh"
+
 # A block scalar with one command is supported, but a multi-line script is not.
 cp "$fixture/base-ci.yml" "$fixture/.github/workflows/ci.yml"
 cat >> "$fixture/.github/workflows/ci.yml" <<'EOF'

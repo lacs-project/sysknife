@@ -109,10 +109,6 @@ daemon-install: daemon-install-preflight build
 	# polkit rules.
 	install -Dm 644 packaging/50-sysknife.rules $(POLKIT)/50-sysknife.rules
 
-	# sudoers fragment (visudo validates before install).
-	visudo -cf packaging/sysknife-sudoers
-	install -Dm 440 packaging/sysknife-sudoers $(SUDOERS)/sysknife
-
 	# Privileged helper scripts — root-owned, not writable by sysknife.
 	# Every helper the daemon calls must be here; `cargo nextest run -p
 	# sysknife-daemon --test helper_install_coverage` derives the required set
@@ -132,6 +128,11 @@ daemon-install: daemon-install-preflight build
 	install -Dm 755 packaging/sysknife-sudoers-edit $(HELPERS)/sudoers-edit
 	install -Dm 755 packaging/sysknife-sysctl-edit $(HELPERS)/sysctl-edit
 	install -Dm 755 packaging/sysknife-unattended-upgrades-edit $(HELPERS)/unattended-upgrades-edit
+
+	# Install grants last: a failed helper install must not activate new grants
+	# pointing at absent or stale helpers. Validate the fragment before install.
+	visudo -cf packaging/sysknife-sudoers
+	install -Dm 440 packaging/sysknife-sudoers $(SUDOERS)/sysknife
 
 ## ── Uninstall ────────────────────────────────────────────────────────────────
 
@@ -171,5 +172,4 @@ daemon-uninstall:
 ## ── Dev checks ───────────────────────────────────────────────────────────────
 
 check:
-	cargo nextest run --workspace --locked
-	cargo clippy --workspace --locked -- -D warnings
+	bash scripts/ci-local.sh --fast

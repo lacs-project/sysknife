@@ -2,6 +2,16 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+mode="check"
+if [[ "${1:-}" == "--list-privileged" ]]; then
+    mode="list-privileged"
+    shift
+fi
+if (($# > 0)); then
+    printf 'test-reachability: unknown argument: %s\n' "$1" >&2
+    exit 2
+fi
+
 gate_files=(
     "$repo_root/.github/workflows/ci.yml"
     "$repo_root/.github/workflows/e2e.yml"
@@ -10,7 +20,7 @@ gate_files=(
 
 # PyYAML is installed by the existing yamllint prerequisite. Parse actual run
 # fields so strings in action inputs, comments, and heredocs cannot count.
-invoked_tests="$(python3 - "${gate_files[@]}" <<'PYTHON'
+invoked_tests="$(python3 - "$mode" "${gate_files[@]}" <<'PYTHON'
 import re
 import sys
 
@@ -19,8 +29,9 @@ try:
 except ImportError:
     sys.exit("test-reachability: PyYAML is required; install yamllint with python3 -m pip install yamllint==1.38.0")
 
-command = re.compile(r"(?:sudo(?:[ \t]+-n)?[ \t]+)?bash[ \t]+(tests/(?:release|e2e)/[A-Za-z0-9_.-]+\.test\.sh)(?:[ \t]+#.*)?[ \t]*")
-for path in sys.argv[1:]:
+mode = sys.argv[1]
+command = re.compile(r"(?:(sudo(?:[ \t]+-n)?)[ \t]+)?bash[ \t]+(tests/(?:release|e2e)/[A-Za-z0-9_.-]+\.test\.sh)(?:[ \t]+#.*)?[ \t]*")
+for path in sys.argv[2:]:
     try:
         with open(path, encoding="utf-8") as stream:
             workflow = yaml.safe_load(stream)
@@ -31,12 +42,21 @@ for path in sys.argv[1:]:
                 run = step.get("run")
                 if isinstance(run, str):
                     match = command.fullmatch(run.strip())
-                    if match:
-                        print(match.group(1))
+                    if match and (mode != "list-privileged" or match.group(1)):
+                        print(match.group(2))
     except (OSError, yaml.YAMLError, AttributeError, TypeError) as error:
         sys.exit(f"test-reachability: cannot read workflow {path}: {error}")
 PYTHON
 )"
+
+if [[ "$mode" == "list-privileged" ]]; then
+    if [[ -z "$invoked_tests" ]]; then
+        printf 'test-reachability: no privileged release/E2E test invocations discovered\n' >&2
+        exit 1
+    fi
+    printf '%s\n' "$invoked_tests" | sort -u
+    exit 0
+fi
 
 check_suite() {
     local suite="$1"

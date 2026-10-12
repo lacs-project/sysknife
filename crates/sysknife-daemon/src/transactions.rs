@@ -578,8 +578,10 @@ impl TransactionStore {
         Ok(())
     }
 
-    /// Report any transaction whose `status` column disagrees with the newest
-    /// status event chained for it, or `None` when every row agrees.
+    /// Compare live statuses with their newest chained status events. Signed
+    /// contradictions are broken; historical Running or Canceled statuses
+    /// without proof are inconclusive. Terminal states always had signed events,
+    /// so an unsigned terminal state remains a contradiction.
     ///
     /// `ChainContent` deliberately does not sign `status`: the chain protects
     /// the authorisation decision captured at insert, not the live execution
@@ -597,27 +599,44 @@ impl TransactionStore {
                  SELECT e.kind FROM audit_events e \
                  WHERE e.transaction_id = t.transaction_id AND e.kind LIKE 'status_%' \
                  ORDER BY e.seq DESC LIMIT 1 \
+             ), EXISTS ( \
+                 SELECT 1 FROM audit_events e \
+                 WHERE e.transaction_id = t.transaction_id AND e.kind = 'approval_consumed' \
              ) FROM transactions t",
         )?;
         let mut disagreements = Vec::new();
+        let mut unproven = Vec::new();
         let mut checked: u64 = 0;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
+                row.get::<_, bool>(3)?,
             ))
         })?;
         for row in rows {
-            let (id, status_json, newest) = row?;
+            let (id, status_json, newest, consumed) = row?;
             checked += 1;
             let state: JobState = deserialize_field(&status_json)?;
-            // A row that never moved off Queued has no status event, and that
-            // is not a disagreement: `record` chains the row itself.
+            // Pre-fix claims and cancellations did not chain a status event.
+            // Their exact current outcome cannot be inferred from approval
+            // lifecycle events: revocation also legitimately leaves Queued,
+            // and consumption says nothing about eventual completion.
             let Some(newest) = newest else {
-                if state != JobState::Queued {
+                if state == JobState::Queued && consumed {
                     disagreements.push(format!(
-                        "{id}: status is {state:?} and no status event was ever chained"
+                        "{id}: status is Queued but a chained approval_consumed event proves it left Queued"
+                    ));
+                } else if matches!(state, JobState::Running | JobState::Canceled) {
+                    unproven.push(format!(
+                        "{id}: status is {state:?} and no status event was ever chained; \
+                         historical writes cannot establish the execution outcome"
+                    ));
+                } else if state != JobState::Queued {
+                    disagreements.push(format!(
+                        "{id}: status is {state:?} but no status event was ever chained; \
+                         terminal outcomes require a signed status event"
                     ));
                 }
                 continue;
@@ -630,13 +649,17 @@ impl TransactionStore {
                 ));
             }
         }
-        Ok(if disagreements.is_empty() {
-            audit_chain::StatusOutcome::Agrees {
-                rows_checked: checked,
-            }
-        } else {
+        Ok(if !disagreements.is_empty() {
             audit_chain::StatusOutcome::Disagrees {
                 detail: disagreements.join("; "),
+            }
+        } else if !unproven.is_empty() {
+            audit_chain::StatusOutcome::CannotVerify {
+                detail: unproven.join("; "),
+            }
+        } else {
+            audit_chain::StatusOutcome::Agrees {
+                rows_checked: checked,
             }
         })
     }
@@ -830,6 +853,14 @@ impl TransactionStore {
                     caller_principal: &executor.as_signed_str(),
                 },
             )?;
+            Self::append_event(
+                &tx,
+                key,
+                AuditEventKind::StatusRunning,
+                transaction_id,
+                "",
+                EventIdentity::LegacyV1,
+            )?;
         }
         tx.commit()?;
         Ok(rows_affected > 0)
@@ -888,6 +919,14 @@ impl TransactionStore {
                     &transaction_id,
                     &CallerPrincipal::Unattributed.as_signed_str(),
                 )?;
+                Self::append_event(
+                    &tx,
+                    key,
+                    AuditEventKind::StatusCanceled,
+                    &transaction_id,
+                    "",
+                    EventIdentity::LegacyV1,
+                )?;
                 canceled += rows_affected;
             }
         }
@@ -933,6 +972,14 @@ impl TransactionStore {
                 key,
                 transaction_id,
                 &canceller.as_signed_str(),
+            )?;
+            Self::append_event(
+                &tx,
+                key,
+                AuditEventKind::StatusCanceled,
+                transaction_id,
+                "",
+                EventIdentity::LegacyV1,
             )?;
         }
         tx.commit()?;
@@ -1866,13 +1913,14 @@ mod tests {
             vec![
                 "approval_granted",
                 "approval_consumed",
+                "status_running",
                 "approval_granted",
                 "approval_revoked",
             ]
         );
         assert_eq!(
             store.verify_event_chain(&key).unwrap(),
-            VerifyOutcome::Intact { rows_checked: 4 }
+            VerifyOutcome::Intact { rows_checked: 5 }
         );
     }
 
@@ -1901,7 +1949,7 @@ mod tests {
             .unwrap());
 
         let events = store.fetch_event_rows().unwrap();
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 3);
         let granted = events
             .iter()
             .find(|e| e.kind == "approval_granted")
@@ -1929,12 +1977,10 @@ mod tests {
             "a grant and a consume by different accounts must be distinguishable"
         );
 
-        // The persisted rows still verify as a chain, and a status event (if
-        // any were appended) stays on the legacy encoding — covered by the
-        // unit tests; here we assert the approval rows themselves are intact.
+        // The approval rows and the running status event verify as a mixed chain.
         assert_eq!(
             store.verify_event_chain(&key).unwrap(),
-            VerifyOutcome::Intact { rows_checked: 2 }
+            VerifyOutcome::Intact { rows_checked: 3 }
         );
     }
 
@@ -1971,11 +2017,279 @@ mod tests {
             status.caller_principal, None,
             "a status event names no account"
         );
-        // grant + consume (V2) + status (legacy) all verify as one chain.
+        // grant + consume (V2) + running + terminal status (legacy) verify together.
         assert_eq!(
             store.verify_event_chain(&key).unwrap(),
+            VerifyOutcome::Intact { rows_checked: 4 }
+        );
+    }
+
+    #[test]
+    fn audit_status_event_failure_rolls_back_the_entire_transition() {
+        for operation in ["claim", "cancel", "sweep"] {
+            let dir = tempdir().unwrap();
+            let store = test_store(dir.path().join("tx.db"));
+            let tx = store.record(queued_transaction()).unwrap();
+            let receipt = store
+                .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
+                .unwrap()
+                .unwrap();
+            let digest = audit_chain::approval_receipt_digest(&receipt);
+            let conn = store.connection().unwrap();
+            if operation == "sweep" {
+                conn.execute(
+                    "UPDATE transactions SET created_at = datetime('now', '-20 minutes')",
+                    [],
+                )
+                .unwrap();
+            }
+            conn.execute_batch("CREATE TRIGGER reject_status_event BEFORE INSERT ON audit_events WHEN NEW.kind LIKE 'status_%' BEGIN SELECT RAISE(ABORT, 'injected event failure'); END;").unwrap();
+            let result = match operation {
+                "claim" => store.claim_approved_for_execution(
+                    &tx.transaction_id,
+                    &digest,
+                    CallerPrincipal::Uid(1000),
+                ),
+                "cancel" => store.cancel_queued(&tx.transaction_id, CallerPrincipal::Uid(1000)),
+                _ => store.cleanup_stale_queued().map(|count| count > 0),
+            };
+            assert!(
+                result.is_err(),
+                "{operation} must fail when its event cannot be written"
+            );
+            assert_eq!(
+                store.get(&tx.transaction_id).unwrap().unwrap().status,
+                JobState::Queued
+            );
+            let unconsumed: i64 = conn.query_row("SELECT COUNT(*) FROM transaction_approvals WHERE transaction_id = ?1 AND consumed_at IS NULL", params![tx.transaction_id], |row| row.get(0)).unwrap();
+            assert_eq!(
+                unconsumed, 1,
+                "{operation} must roll back approval changes too"
+            );
+            assert_eq!(store.fetch_event_rows().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn audit_status_legacy_consumption_cannot_be_rewritten_as_queued() {
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let tx = store.record(queued_transaction()).unwrap();
+        let receipt = store
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
+            .unwrap()
+            .unwrap();
+        let digest = audit_chain::approval_receipt_digest(&receipt);
+        store
+            .claim_approved_for_execution(&tx.transaction_id, &digest, CallerPrincipal::Uid(1000))
+            .unwrap();
+        let conn = store.connection().unwrap();
+        // Reproduce a pre-fix claim (grant + consume, no status event).
+        conn.execute("DELETE FROM audit_events WHERE kind LIKE 'status_%'", [])
+            .unwrap();
+        let outcome = store.status_matches_chain().unwrap();
+        assert_eq!(
+            serde_json::to_value(&outcome).unwrap()["state"],
+            "cannot_verify"
+        );
+        conn.execute(
+            "UPDATE transactions SET status = ?1 WHERE transaction_id = ?2",
+            params![
+                serialize_field(&JobState::Queued).unwrap(),
+                tx.transaction_id
+            ],
+        )
+        .unwrap();
+        assert!(matches!(
+            store.status_matches_chain().unwrap(),
+            audit_chain::StatusOutcome::Disagrees { .. }
+        ));
+    }
+
+    #[test]
+    fn audit_status_tracks_an_in_flight_claim() {
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let tx = store.record(queued_transaction()).unwrap();
+        let receipt = store
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
+            .unwrap()
+            .unwrap();
+        let digest = audit_chain::approval_receipt_digest(&receipt);
+        assert!(store
+            .claim_approved_for_execution(&tx.transaction_id, &digest, CallerPrincipal::Uid(1000))
+            .unwrap());
+        assert_eq!(
+            store.status_matches_chain().unwrap(),
+            audit_chain::StatusOutcome::Agrees { rows_checked: 1 }
+        );
+        assert_eq!(
+            store.fetch_event_rows().unwrap().last().unwrap().kind,
+            "status_running"
+        );
+        assert_eq!(
+            store
+                .verify_event_chain(&AuditKey::from_bytes(vec![0x42; 32]))
+                .unwrap(),
             VerifyOutcome::Intact { rows_checked: 3 }
         );
+    }
+
+    #[test]
+    fn audit_status_tracks_cancellation_with_and_without_approval() {
+        for approved in [false, true] {
+            let dir = tempdir().unwrap();
+            let store = test_store(dir.path().join("tx.db"));
+            let tx = store.record(queued_transaction()).unwrap();
+            if approved {
+                store
+                    .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
+                    .unwrap();
+            }
+            assert!(store
+                .cancel_queued(&tx.transaction_id, CallerPrincipal::Uid(1000))
+                .unwrap());
+            assert_eq!(
+                store.status_matches_chain().unwrap(),
+                audit_chain::StatusOutcome::Agrees { rows_checked: 1 }
+            );
+            assert_eq!(
+                store.fetch_event_rows().unwrap().last().unwrap().kind,
+                "status_canceled"
+            );
+            assert!(matches!(
+                store
+                    .verify_event_chain(&AuditKey::from_bytes(vec![0x42; 32]))
+                    .unwrap(),
+                VerifyOutcome::Intact { .. }
+            ));
+            let count = store.fetch_event_rows().unwrap().len();
+            assert!(!store
+                .cancel_queued(&tx.transaction_id, CallerPrincipal::Uid(1000))
+                .unwrap());
+            assert_eq!(store.fetch_event_rows().unwrap().len(), count);
+        }
+    }
+
+    #[test]
+    fn audit_status_tracks_stale_sweep_with_and_without_approval() {
+        for approved in [false, true] {
+            let dir = tempdir().unwrap();
+            let store = test_store(dir.path().join("tx.db"));
+            let tx = store.record(queued_transaction()).unwrap();
+            if approved {
+                store
+                    .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
+                    .unwrap();
+            }
+            store.connection().unwrap().execute(
+                "UPDATE transactions SET created_at = datetime('now', '-20 minutes') WHERE transaction_id = ?1",
+                params![tx.transaction_id],
+            ).unwrap();
+            assert_eq!(store.cleanup_stale_queued().unwrap(), 1);
+            assert_eq!(
+                store.status_matches_chain().unwrap(),
+                audit_chain::StatusOutcome::Agrees { rows_checked: 1 }
+            );
+            assert_eq!(
+                store.fetch_event_rows().unwrap().last().unwrap().kind,
+                "status_canceled"
+            );
+            let count = store.fetch_event_rows().unwrap().len();
+            assert_eq!(store.cleanup_stale_queued().unwrap(), 0);
+            assert_eq!(store.fetch_event_rows().unwrap().len(), count);
+        }
+    }
+
+    #[test]
+    fn audit_status_only_historical_claims_and_cancellations_are_inconclusive() {
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let tx = store.record(queued_transaction()).unwrap();
+        // Historical cancel/sweep writes had no status event. An approval
+        // revocation is not proof of cancellation: it can also leave Queued.
+        store
+            .approve_transaction(&tx.transaction_id, CallerPrincipal::Uid(1000))
+            .unwrap();
+        store
+            .revoke_unconsumed_approval(&tx.transaction_id, CallerPrincipal::Uid(1000))
+            .unwrap();
+        assert_eq!(
+            store.status_matches_chain().unwrap(),
+            audit_chain::StatusOutcome::Agrees { rows_checked: 1 }
+        );
+        for state in [
+            JobState::Canceled,
+            JobState::Running,
+            JobState::Succeeded,
+            JobState::Failed,
+            JobState::RolledBack,
+            JobState::NeedsReboot,
+        ] {
+            store
+                .connection()
+                .unwrap()
+                .execute(
+                    "UPDATE transactions SET status = ?1 WHERE transaction_id = ?2",
+                    params![serialize_field(&state).unwrap(), tx.transaction_id],
+                )
+                .unwrap();
+            let outcome = store.status_matches_chain().unwrap();
+            let historical = matches!(state, JobState::Running | JobState::Canceled);
+            assert_eq!(
+                serde_json::to_value(&outcome).unwrap()["state"],
+                if historical {
+                    "cannot_verify"
+                } else {
+                    "disagrees"
+                },
+                "unsigned state {state:?}"
+            );
+            assert_eq!(
+                audit_chain::status_outcome_to_exit_code(&outcome),
+                if historical { 2 } else { 1 },
+                "unsigned state {state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn audit_status_new_event_contradictions_remain_broken() {
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let tx = store.record(queued_transaction()).unwrap();
+        store
+            .cancel_queued(&tx.transaction_id, CallerPrincipal::Uid(1000))
+            .unwrap();
+        store
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE transactions SET status = ?1 WHERE transaction_id = ?2",
+                params![
+                    serialize_field(&JobState::Queued).unwrap(),
+                    tx.transaction_id
+                ],
+            )
+            .unwrap();
+        // Missing historical evidence must not downgrade a signed contradiction
+        // on a different row from broken to inconclusive.
+        let legacy = store.record(queued_transaction()).unwrap();
+        store
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE transactions SET status = ?1 WHERE transaction_id = ?2",
+                params![
+                    serialize_field(&JobState::Canceled).unwrap(),
+                    legacy.transaction_id
+                ],
+            )
+            .unwrap();
+        assert!(matches!(
+            store.status_matches_chain().unwrap(),
+            audit_chain::StatusOutcome::Disagrees { .. }
+        ));
     }
 
     #[test]
@@ -2853,7 +3167,11 @@ mod tests {
             "a missing transaction is not cancelable"
         );
         assert!(
-            store.fetch_event_rows().unwrap().is_empty(),
+            store
+                .fetch_event_rows()
+                .unwrap()
+                .iter()
+                .all(|event| event.kind == "status_canceled"),
             "canceling an unapproved transaction must not append an approval event"
         );
     }
@@ -2893,7 +3211,7 @@ mod tests {
                 .iter()
                 .map(|event| event.kind.as_str())
                 .collect::<Vec<_>>(),
-            vec!["approval_granted", "approval_revoked"]
+            vec!["approval_granted", "approval_revoked", "status_canceled"]
         );
     }
 
@@ -3185,8 +3503,11 @@ mod tests {
                 "approval_granted",
                 "approval_granted",
                 "approval_revoked",
+                "status_canceled",
                 "approval_revoked",
-                "approval_revoked"
+                "status_canceled",
+                "approval_revoked",
+                "status_canceled"
             ]
         );
     }

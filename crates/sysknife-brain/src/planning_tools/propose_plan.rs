@@ -643,6 +643,7 @@ pub fn propose_plan_tool_def(hint: Option<&sysknife_types::DistroHint>) -> ToolD
 /// - `steps` is a non-empty array
 /// - each step has a valid `action_name` (from [`KNOWN_ACTIONS`])
 /// - each step has a valid `risk_level` ("low", "medium", "high")
+/// - each step's `params` normalises to an object
 /// - derives `approval_required` from risk level
 pub fn parse_proposed_plan(intent: &str, input: &serde_json::Value) -> Result<Plan, PlanningError> {
     let summary = input
@@ -737,6 +738,11 @@ pub fn parse_proposed_plan(intent: &str, input: &serde_json::Value) -> Result<Pl
             Some(v) => v.clone(),
             None => serde_json::Value::Object(serde_json::Map::new()),
         };
+        if !params.is_object() {
+            return Err(PlanningError::InvalidPlanOutput(format!(
+                "step {i}: 'params' must be an object"
+            )));
+        }
 
         // Checked on the normalised object, so a strict-mode provider's
         // string-encoded params cannot carry a credential past the fence.
@@ -881,6 +887,29 @@ mod tests {
         let plan = parse_proposed_plan("intent", &valid_input("low")).unwrap();
         assert_eq!(plan.steps().len(), 1);
         assert!(!plan.steps()[0].approval_required());
+    }
+
+    #[test]
+    fn params_must_normalise_to_an_object() {
+        for params in [
+            serde_json::json!(null),
+            serde_json::json!([]),
+            serde_json::json!(42),
+            serde_json::json!(true),
+            serde_json::json!("null"),
+            serde_json::json!("[]"),
+            serde_json::json!("42"),
+            serde_json::json!("true"),
+            serde_json::json!("\"word\""),
+        ] {
+            let mut input = valid_input("low");
+            input["steps"][0]["params"] = params.clone();
+            let err = parse_proposed_plan("intent", &input).unwrap_err();
+            assert!(
+                err.to_string().contains("'params' must be an object"),
+                "{params}: {err}"
+            );
+        }
     }
 
     #[test]

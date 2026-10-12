@@ -1318,10 +1318,13 @@ pub(crate) async fn verify_sqlite(
     };
     // The status cross-check needs the live `status` column, which the pure
     // verify_all functions never see, so it is set here where the store is
-    // open. A read failure leaves it `None`: the other three checks still have
-    // something to say, and claiming agreement nobody looked for would be the
-    // exact failure this check was added to catch.
-    verification.status = store.status_matches_chain().ok();
+    // open. Preserve read failures as an inconclusive verdict: silently dropping
+    // a failed check would let the other checks report an overall intact log.
+    verification.status = Some(store.status_matches_chain().unwrap_or_else(|error| {
+        sysknife_daemon::audit_chain::StatusOutcome::CannotVerify {
+            detail: format!("status cross-check failed: {error}"),
+        }
+    }));
     verification
 }
 
@@ -1521,7 +1524,7 @@ fn emit_verification(
     backend_label: &str,
     anchor: Option<&CheckpointOutcome>,
 ) {
-    use sysknife_daemon::audit_chain::{BindingOutcome, VerifyOutcome};
+    use sysknife_daemon::audit_chain::{BindingOutcome, StatusOutcome, VerifyOutcome};
 
     let census = verification.attribution;
 
@@ -1544,6 +1547,7 @@ fn emit_verification(
             "rows_unattested": census.map(|c| c.unattested()),
             "rows_naming_no_account": census.map(|c| c.unnamed()),
             "binding": binding_json(&verification.binding),
+            "status_check": verification.status,
         });
         log.println(
             &serde_json::to_string_pretty(&payload)
@@ -1648,6 +1652,21 @@ fn emit_verification(
                  were deleted from the end of the chain"
             ));
         }
+    }
+
+    match &verification.status {
+        Some(StatusOutcome::Agrees { rows_checked }) => {
+            log.println(&format!(
+                "OK: {rows_checked} row status(es) match the audit trail"
+            ));
+        }
+        Some(StatusOutcome::Disagrees { detail }) => {
+            log.println(&format!("BROKEN status: {detail}"));
+        }
+        Some(StatusOutcome::CannotVerify { detail }) => {
+            log.println(&format!("CANNOT VERIFY status: {detail}"));
+        }
+        None => log.println("CANNOT VERIFY status: status cross-check was not run"),
     }
 }
 
@@ -2364,6 +2383,70 @@ mod approval_view_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_status_verdict_is_visible_in_text_and_json() {
+        use sysknife_daemon::audit_chain::{BindingOutcome, StatusOutcome, VerifyOutcome};
+        for (status, headline, line) in [
+            (
+                Some(StatusOutcome::Agrees { rows_checked: 1 }),
+                "intact",
+                "OK: 1 row status(es) match the audit trail",
+            ),
+            (
+                Some(StatusOutcome::Disagrees {
+                    detail: "transaction example has rewritten status".into(),
+                }),
+                "broken",
+                "BROKEN status: transaction example has rewritten status",
+            ),
+            (
+                Some(StatusOutcome::CannotVerify {
+                    detail: "historical example has no status evidence".into(),
+                }),
+                "cannot_verify",
+                "CANNOT VERIFY status: historical example has no status evidence",
+            ),
+            (
+                None,
+                "intact",
+                "CANNOT VERIFY status: status cross-check was not run",
+            ),
+        ] {
+            for json in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("verify.log");
+                let log = Logger::new(Some(&path)).unwrap();
+                let verification = AuditVerification {
+                    chain: VerifyOutcome::Intact { rows_checked: 1 },
+                    events: VerifyOutcome::Intact { rows_checked: 1 },
+                    binding: BindingOutcome::Consistent {
+                        bindings_checked: 0,
+                    },
+                    attribution: None,
+                    status: status.clone(),
+                };
+                emit_verification(
+                    &AuditVerifyArgs { json, pubkey: None },
+                    &log,
+                    &verification,
+                    "test.db",
+                    None,
+                );
+                let text = std::fs::read_to_string(path).unwrap();
+                if json {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    assert_eq!(value["status"], headline);
+                    assert_eq!(
+                        value["status_check"],
+                        serde_json::to_value(&status).unwrap()
+                    );
+                } else {
+                    assert!(text.contains(line), "{text}");
+                }
+            }
+        }
+    }
 
     // -----------------------------------------------------------------------
     // What the verifier says about attribution
@@ -3489,6 +3572,34 @@ mod tests {
         let err = reject_unrunnable_params(&plan)
             .expect_err("AptInstall without a package is unrunnable");
         assert!(err.to_string().contains("AptInstall"));
+    }
+
+    #[test]
+    fn unknown_optional_keys_are_rejected_before_approval() {
+        for (action, params) in [
+            (
+                "SetKernelArguments",
+                serde_json::json!({"append": ["quiet"]}),
+            ),
+            ("UfwEnable", serde_json::json!({"x": 1})),
+        ] {
+            let plan = Plan::new(
+                "change system".into(),
+                "change system".into(),
+                "explanation".into(),
+                vec![PlanStep::new(
+                    ActionName::parse(action).unwrap(),
+                    "change".into(),
+                    PlanRiskLevel::High,
+                    params,
+                )
+                .unwrap()],
+            )
+            .unwrap();
+            let err = reject_unrunnable_params(&plan)
+                .expect_err("unknown optional parameters must not reach approval");
+            assert!(err.to_string().contains(action), "{err}");
+        }
     }
 
     #[test]

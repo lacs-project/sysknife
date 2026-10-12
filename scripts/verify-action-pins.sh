@@ -24,8 +24,8 @@
 # SOFTWARE.
 #
 # Preserve SHA pins; verify the tag named by each comment, peeling tag objects.
-# `# stable (branch)` is a deliberate moving reference, reported without a
-# comparison to today's branch head. Use exact release tags for other comments.
+# Only dtolnay/rust-toolchain may use `# stable (branch)`. Its pin must be
+# reachable from stable; all other references must match exact release tags.
 # Requires authenticated gh, Python 3 and PyYAML (provided by yamllint).
 set -uo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,6 +36,7 @@ python3 "$script_dir/action-pin-comments.py" "$root" > "$rows" || exit 1
 fail=0
 count=0
 declare -A resolved
+declare -A branch_status
 
 deref() {  # $1 repository, $2 tag -> commit (including nested annotated tags)
     local obj type sha depth=0
@@ -58,7 +59,28 @@ deref() {  # $1 repository, $2 tag -> commit (including nested annotated tags)
 while IFS=$'\t' read -r action sha claim location; do
     count=$((count + 1))
     if [[ "$claim" == *' (branch)' ]]; then
-        printf '  BRANCH %-46s tracks %s by design (%s)\n' "$action" "${claim% (branch)}" "$location"
+        branch="${claim% (branch)}"
+        key="$action@$branch:$sha"
+        if [[ -z "${branch_status[$key]+present}" ]]; then
+            # The pinned commit is the comparison head: identical/behind means
+            # it is the current branch tip or one of the branch's ancestors.
+            if status="$(gh api "repos/$action/compare/$branch...$sha" --jq '.status')"; then
+                branch_status[$key]="$status"
+            else
+                branch_status[$key]='ERROR'
+            fi
+        fi
+        status="${branch_status[$key]}"
+        case "$status" in
+            identical|behind)
+                printf '  BRANCH %-46s %s is reachable from %s (%s)\n' "$action" "${sha:0:8}" "$branch" "$location" ;;
+            ERROR)
+                printf '  ERROR %-46s cannot verify branch %s reachability (%s)\n' "$action" "$branch" "$location"
+                fail=1 ;;
+            *)
+                printf '  FAIL %-46s pinned %s is not reachable from %s (%s; status=%s)\n' "$action" "${sha:0:8}" "$branch" "$location" "$status"
+                fail=1 ;;
+        esac
         continue
     fi
     # Action subpaths (e.g. codeql-action/analyze) share the repository's tags.

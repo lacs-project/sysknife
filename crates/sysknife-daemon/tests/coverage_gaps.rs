@@ -203,7 +203,12 @@ async fn list_job_history_returns_recorded_transactions() {
     let resp = query_action(
         &mut framed,
         "ListJobHistory",
-        json!({ "limit": 10 }),
+        json!({
+            "limit": 10,
+            "status_filter": "queued",
+            "action_filter": "UpdateSystem",
+            "since_hours": 24
+        }),
         "history-req",
     )
     .await;
@@ -244,6 +249,27 @@ async fn list_job_history_rejects_non_integer_limit() {
         resp["category"], "validation_failure",
         "expected validation_failure category, got: {resp}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_job_history_rejects_unknown_keys_and_non_object_params() {
+    let dir = tempdir().unwrap();
+    let state = test_state(&dir);
+    let mut framed = spawn_handler_with_role(state, CallerRole::Observer).await;
+    for (i, params) in [json!({"limti": 10}), json!(null), json!([]), json!(1)]
+        .into_iter()
+        .enumerate()
+    {
+        let resp = query_action(
+            &mut framed,
+            "ListJobHistory",
+            params,
+            &format!("bad-history-params-{i}"),
+        )
+        .await;
+        assert_eq!(resp["type"], "error_response", "{resp}");
+        assert_eq!(resp["category"], "validation_failure", "{resp}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
