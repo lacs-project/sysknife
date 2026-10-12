@@ -48,7 +48,7 @@ sysknife-daemon = { path = "../../crates/sysknife-daemon", version = "0.25.0", f
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "test-util"] }
 sqlx-core = { version = "0.9", default-features = false, features = [
     "_rt-tokio",
     "_tls-rustls-ring-webpki",

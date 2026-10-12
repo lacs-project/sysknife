@@ -55,6 +55,29 @@ pub struct ApprovalDetails {
 
 use crate::error::CliError;
 
+/// Execution can lose its final reply after the daemon has accepted the action.
+/// Keep that uncertainty separate from the CLI's unchanged error/exit contract.
+pub(crate) struct ExecuteFailure {
+    pub error: CliError,
+    pub outcome_unknown: bool,
+}
+
+impl ExecuteFailure {
+    fn failed(error: CliError) -> Self {
+        Self {
+            error,
+            outcome_unknown: false,
+        }
+    }
+
+    fn unknown(error: CliError) -> Self {
+        Self {
+            error,
+            outcome_unknown: true,
+        }
+    }
+}
+
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Longest gap tolerated between frames while an action streams.
@@ -855,7 +878,26 @@ impl DaemonClient {
         approval_receipt: &ApprovalReceipt,
         mut on_line: impl FnMut(&str),
     ) -> Result<ResultEnvelope, CliError> {
-        let mut stream = self.connect_async().await?;
+        self.execute_with_outcome(
+            transaction_id,
+            action_name,
+            params,
+            approval_receipt,
+            &mut on_line,
+        )
+        .await
+        .map_err(|failure| failure.error)
+    }
+
+    pub(crate) async fn execute_with_outcome(
+        &self,
+        transaction_id: &TransactionId,
+        action_name: &str,
+        params: &Value,
+        approval_receipt: &ApprovalReceipt,
+        mut on_line: impl FnMut(&str),
+    ) -> Result<ResultEnvelope, ExecuteFailure> {
+        let mut stream = self.connect_async().await.map_err(ExecuteFailure::failed)?;
 
         let req = serde_json::to_vec(&serde_json::json!({
             "type": "execute",
@@ -865,58 +907,75 @@ impl DaemonClient {
             "params": params,
             "approval_receipt": approval_receipt.as_str(),
         }))
-        .map_err(|e| CliError::ConfigOrDaemon(format!("serialize: {e}")))?;
+        .map_err(|e| ExecuteFailure::failed(CliError::ConfigOrDaemon(format!("serialize: {e}"))))?;
 
         tokio::time::timeout(SOCKET_TIMEOUT, stream.write_frame(&req))
             .await
             .map_err(|_| {
-                CliError::ConfigOrDaemon(format!(
+                ExecuteFailure::unknown(CliError::ConfigOrDaemon(format!(
                     "timed out after {}s sending the request to the daemon",
                     SOCKET_TIMEOUT.as_secs()
-                ))
+                )))
             })?
-            .map_err(|e| CliError::ConfigOrDaemon(format!("send: {e}")))?;
+            .map_err(|e| ExecuteFailure::unknown(CliError::ConfigOrDaemon(format!("send: {e}"))))?;
 
         loop {
             let raw = tokio::time::timeout(EXECUTE_FRAME_TIMEOUT, stream.read_frame())
                 .await
-                .map_err(|_| CliError::ExecutionFailed(format!(
+                .map_err(|_| ExecuteFailure::unknown(CliError::ExecutionFailed(format!(
                     "timed out after {}s waiting for the next frame from the daemon; the job may still be running server-side",
                     EXECUTE_FRAME_TIMEOUT.as_secs()
-                )))?
-                .map_err(|e| CliError::ExecutionFailed(format!("recv: {e}")))?;
+                ))))?
+                .map_err(|e| ExecuteFailure::unknown(CliError::ExecutionFailed(format!("recv: {e}"))))?;
 
-            let resp: Value = serde_json::from_slice(&raw)
-                .map_err(|e| CliError::ExecutionFailed(format!("parse: {e}")))?;
+            let resp: Value = serde_json::from_slice(&raw).map_err(|e| {
+                ExecuteFailure::unknown(CliError::ExecutionFailed(format!("parse: {e}")))
+            })?;
 
             match resp["type"].as_str() {
                 Some("job_started") => {}
                 Some("job_progress") => {
                     let line = resp["line"].as_str().ok_or_else(|| {
-                        CliError::ExecutionFailed(
+                        ExecuteFailure::unknown(CliError::ExecutionFailed(
                             "job_progress message missing 'line' string field".into(),
-                        )
+                        ))
                     })?;
                     on_line(&strip_ansi(line));
                 }
                 Some("job_completed") => {
-                    let envelope: ResultEnvelope =
-                        serde_json::from_value(resp["result"].clone())
-                            .map_err(|e| CliError::ExecutionFailed(format!("parse result: {e}")))?;
+                    let envelope: ResultEnvelope = serde_json::from_value(resp["result"].clone())
+                        .map_err(|e| {
+                        ExecuteFailure::unknown(CliError::ExecutionFailed(format!(
+                            "parse result: {e}"
+                        )))
+                    })?;
                     return Ok(envelope);
                 }
                 Some("error_response") => {
-                    return Err(CliError::ExecutionFailed(format!(
+                    return Err(ExecuteFailure::failed(CliError::ExecutionFailed(format!(
                         "{}: {}",
                         resp["category"].as_str().unwrap_or("error"),
                         resp["message"].as_str().unwrap_or("unknown")
-                    )));
+                    ))));
+                }
+                Some("conflict_response") => {
+                    // The daemon refuses resource conflicts before claiming
+                    // the receipt or starting the action. This is a known
+                    // rejection, rather than a lost completion reply.
+                    let message = resp["message"].as_str().ok_or_else(|| {
+                        ExecuteFailure::unknown(CliError::ExecutionFailed(
+                            "conflict_response message missing 'message' string field".into(),
+                        ))
+                    })?;
+                    return Err(ExecuteFailure::failed(CliError::ExecutionFailed(format!(
+                        "conflict: {message}"
+                    ))));
                 }
                 _ => {
-                    return Err(CliError::ExecutionFailed(format!(
+                    return Err(ExecuteFailure::unknown(CliError::ExecutionFailed(format!(
                         "unexpected response type: {:?}",
                         resp["type"]
-                    )));
+                    ))));
                 }
             }
         }
@@ -1361,6 +1420,105 @@ mod tests {
         assert_eq!(result.summary, "Disk stats collected");
         assert!(!result.needs_reboot);
         assert_eq!(result.transaction_id, "tx-abc123");
+    }
+
+    // The real CLI's checked execution boundary, not a status-only simulation:
+    // two framed execute RPCs are served by a daemon double, the second job
+    // completes unsuccessfully, and the third planned action is never sent.
+    #[tokio::test]
+    async fn checked_execution_stops_after_failed_or_rebooting_daemon_result() {
+        use crate::runner::execute_step_checked;
+        use std::time::Duration;
+
+        for (terminal_status, expected_exit) in [("failed", 2), ("needs_reboot", 5)] {
+            let socket_path = temp_socket_path();
+            let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+            let mock = tokio::spawn(async move {
+                let mut actions = Vec::new();
+                for index in 0..2 {
+                    let (mut stream, _) =
+                        tokio::time::timeout(Duration::from_secs(3), listener.accept())
+                            .await
+                            .expect("step request never arrived")
+                            .unwrap();
+                    let raw = read_framed_async(&mut stream).await.unwrap();
+                    let req: Value = serde_json::from_slice(&raw).unwrap();
+                    assert_eq!(req["type"], "execute");
+                    assert_eq!(req["approval_receipt"], "test-receipt");
+                    actions.push(req["action_name"].as_str().unwrap().to_owned());
+                    let status = if index == 0 {
+                        "succeeded"
+                    } else {
+                        terminal_status
+                    };
+                    for msg in [
+                        serde_json::json!({
+                            "type":"job_started",
+                            "request_id":req["request_id"],
+                            "job_id":format!("job-{index}"),
+                            "transaction_id":req["transaction_id"]
+                        }),
+                        serde_json::json!({
+                            "type":"job_completed",
+                            "job_id":format!("job-{index}"),
+                            "result":{
+                                "status":status,
+                                "summary":if index == 0 { "first succeeded" } else { "second stopped" },
+                                "warnings":[],
+                                "job_id":format!("job-{index}"),
+                                "needs_reboot":terminal_status == "needs_reboot" && index == 1,
+                                "rollback_ref":null,
+                                "transaction_id":req["transaction_id"]
+                            }
+                        }),
+                    ] {
+                        write_framed_async(&mut stream, &serde_json::to_vec(&msg).unwrap())
+                            .await
+                            .unwrap();
+                    }
+                }
+                // A faulty loop would send a third execute request to the mock.
+                if let Ok(Ok((_stream, _))) =
+                    tokio::time::timeout(Duration::from_millis(150), listener.accept()).await
+                {
+                    panic!("third planned action was executed after {terminal_status}");
+                }
+                actions
+            });
+
+            let client = DaemonClient::new(socket_path.clone());
+            let mut completed = Vec::new();
+            let mut attempted = 0usize;
+            let mut failure = None;
+            for name in ["GetDiskUsage", "GetMemoryInfo", "GetCpuInfo"] {
+                attempted += 1;
+                let result = execute_step_checked(
+                    &client,
+                    &TransactionId::new(format!("test-tx-{attempted}")),
+                    name,
+                    &serde_json::json!({}),
+                    &ApprovalReceipt::new("test-receipt"),
+                    |_line| {},
+                    |result| completed.push((result.status, result.summary.clone())),
+                )
+                .await;
+                if let Err(err) = result {
+                    failure = Some(err);
+                    break;
+                }
+            }
+            let actions = mock.await.unwrap();
+            tokio::fs::remove_file(&socket_path).await.unwrap();
+            assert_eq!(attempted, 2, "third action must not be attempted");
+            assert_eq!(actions, ["GetDiskUsage", "GetMemoryInfo"]);
+            assert_eq!(completed.len(), 2);
+            assert_eq!(completed[0].0, JobState::Succeeded);
+            assert_eq!(completed[1].1, "second stopped");
+            let err = failure.expect("terminal daemon result must stop execution");
+            assert_eq!(err.exit_code(), expected_exit);
+            assert!(err.to_string().contains("GetMemoryInfo"), "{err}");
+            assert!(err.to_string().contains("second stopped"), "{err}");
+        }
     }
 
     // -----------------------------------------------------------------------

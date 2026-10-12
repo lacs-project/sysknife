@@ -397,7 +397,7 @@ const FORBIDDEN_MSG: &str = "provider refused the request (HTTP 403) — this is
      a blocked IP or region, or an account without access to that model; the provider's reason \
      is in the log line above";
 
-fn map_rig_error(err: rig::completion::CompletionError) -> ProviderError {
+pub(crate) fn map_rig_error(err: rig::completion::CompletionError) -> ProviderError {
     let msg = sanitize_error_msg(&err.to_string());
     // "Rig" is the name of a dependency, which means nothing to a user
     // reading their terminal; say whose request failed instead.
@@ -412,7 +412,13 @@ fn map_rig_error(err: rig::completion::CompletionError) -> ProviderError {
             super::StatusClass::Auth => ProviderError::Auth(AUTH_FAILURE_MSG.to_string()),
             super::StatusClass::Forbidden => ProviderError::Auth(FORBIDDEN_MSG.to_string()),
             super::StatusClass::RateLimit => ProviderError::RateLimit(msg),
-            super::StatusClass::Other => ProviderError::Request(msg),
+            // Carry the status into the error the retry loop inspects. Mapping
+            // `Other` to a bare `Request` is what made every permanent 4xx
+            // retryable: `Request` is retried unconditionally.
+            super::StatusClass::Other => ProviderError::Http {
+                status: status.as_u16(),
+                body: msg,
+            },
         };
     }
 
@@ -724,15 +730,19 @@ mod tests {
     }
 
     #[test]
-    fn map_rig_error_classifies_other_4xx_as_request() {
+    fn map_rig_error_classifies_other_4xx_as_http() {
         let err = rig::completion::CompletionError::from_http_response(
             http::StatusCode::BAD_REQUEST,
             "bad request",
         );
         let mapped = map_rig_error(err);
         assert!(
-            matches!(mapped, ProviderError::Request(_)),
-            "expected Request, got {mapped:?}"
+            matches!(mapped, ProviderError::Http { status: 400, .. }),
+            "expected Http{{status: 400}}, got {mapped:?}"
+        );
+        assert!(
+            !mapped.is_retryable(),
+            "a permanent 4xx must not be retryable, got {mapped:?}"
         );
     }
 
