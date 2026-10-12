@@ -14,6 +14,11 @@ pub enum CliError {
     #[error("operation timed out after {0}s")]
     TimedOut(u64),
 
+    /// The daemon requested a reboot. The run is not failed, but it is not
+    /// complete; continuing with later dependent steps would be unsafe.
+    #[error("execution paused: {0}")]
+    NeedsReboot(String),
+
     #[error("planning failed: {0}")]
     PlanningFailed(String),
 
@@ -118,6 +123,7 @@ impl CliError {
             Self::ExecutionFailed(_) | Self::TimedOut(_) => 2,
             Self::PlanningFailed(_) => 3,
             Self::ConfigOrDaemon(_) => 4,
+            Self::NeedsReboot(_) => 5,
             Self::Exit(code) => *code,
         }
     }
