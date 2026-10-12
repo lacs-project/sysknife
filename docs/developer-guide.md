@@ -337,8 +337,12 @@ Manage preferences through natural language:
 - "Remember that I always prefer vim-enhanced over vim"
 - "Forget my vim preference"
 
-Or edit `~/.config/sysknife/prefs.md` directly. Maximum 10 KB; SysKnife
-rejects passwords, API keys, and tokens automatically.
+Or edit `~/.config/sysknife/prefs.md` directly. Maximum 10 KB. The planner's
+`remember` tool rejects known credential formats and value-bearing secret
+labels through `prefs::contains_sensitive`; ordinary words such as
+"password aging" and "token rotation" are allowed. This heuristic also gates
+intents and summary prompts. It cannot detect every unlabelled or unknown
+secret, and direct file edits do not run it. Keep secrets out of preferences.
 
 ## Transaction History
 

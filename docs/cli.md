@@ -74,11 +74,35 @@ The natural-language planner has no secure way to collect or resolve a
 credential after planning. It therefore does not offer Ubuntu Pro attachment,
 and it joins open Wi-Fi networks only: a plan step that carries a Wi-Fi
 password is refused. Do not put a Pro token or Wi-Fi password in an intent:
-the admission check rejects credential phrases before contacting the model.
+the admission check rejects known credential shapes before contacting the model.
 Use the Ubuntu Pro or NetworkManager tools outside SysKnife for those
 operations until a separate credential entry path exists. `ProStatus`, `ProDetach`, `EnableProService`, and
 `DisableProService` remain available through SysKnife because they do not
 take a credential parameter.
+
+The sensitive-data fence matches value-bearing labels (such as
+`password=hunter2`, `API_KEY: value`, or `my password is hunter2`), long
+Bearer tokens, private-key PEM headers, and known API/token prefixes with
+plausible bodies at token boundaries. Security administration requests such
+as "set password aging to 90 days", "who can read /etc/passwd", and
+"my root disk-full alert keeps firing" remain available. The same fence
+checks summary prompts and remembered preferences and withholds matching
+intents from the planning notice.
+
+It also matches "with password" or "using token" followed by a quoted
+value, or a token containing digits or token punctuation, such as
+"with password hunter2". Policy phrases such as "with password aging
+enforcement" remain available.
+
+Assignment labels must end in a credential term: `ANTHROPIC_API_KEY` and
+`AWS_SECRET_ACCESS_KEY` match, while policy/path settings such as
+`PASSWORD_MAX_DAYS=90`, `TOKEN_LIFETIME=3600`, and `API_KEY_FILE=/etc/key`
+are allowed unless their values themselves match a known credential format.
+
+This is a format heuristic: an unlabelled password such as "connect to
+MyNet with hunter2" can pass it. An allowed intent does not prove that it
+contains no secret. Keep credentials out of intents; the fence does not
+provide the separate credential entry path described above.
 
 ---
 
@@ -133,16 +157,28 @@ sysknife history --status succeeded --limit 5 --since 2026-04-10T00:00:00Z
 ### `sysknife approve`
 
 Issue a one-time receipt for a transaction returned by the MCP
-`sysknife_plan` tool. This command requires an interactive terminal. It first
+`sysknife_plan` tool. Issuing a receipt requires an interactive terminal. It first
 loads and displays the daemon-authoritative action, risk, summary, and proposed
 change so an agent cannot substitute an opaque transaction ID. It mints the
 receipt only after confirmation; high-risk approvals require typing the exact
 action name.
 
+`--max-risk` checks the daemon's preview risk before prompting and refuses any
+transaction above the ceiling. `--non-interactive` refuses receipt issuance,
+including with `--yes` or unattended consent: a receipt records explicit human
+approval. Those auto-approval flags apply to intent execution, not this command.
+
+`--dry-run` loads and displays the preview without prompting or issuing a
+receipt. It works without a terminal, including with `--non-interactive`, and
+can display risks above `--max-risk` because it approves nothing. With `--json`,
+the output contains `transaction_id`, `action_name`, `preview` and `dry_run: true`,
+with no `approval_receipt` field.
+
 ```sh
 sysknife approve 018f2c9d-...
 sysknife --json approve 018f2c9d-...
 sysknife approve 018f2c9d-... --full
+sysknife --dry-run --json approve 018f2c9d-...
 ```
 
 The proposed change is displayed through a bounded renderer: 40 lines, 512
@@ -336,15 +372,30 @@ History is persisted to `~/.local/share/sysknife/history` between sessions.
 
 ## Global flags
 
-All flags apply to every subcommand and to free-form intents.
+Global flags may appear before or after a subcommand. Their behavior depends on
+the command:
+
+- `--yes`, `--step-by-step` and the unattended auto-approval override apply to
+  free-form intents and the REPL. `approve` always requires human confirmation.
+- `--max-risk`, `--non-interactive` and `--dry-run` apply to intents, the REPL
+  and `approve`, as described above. Read-only subcommands perform no approval.
+- `--json` controls structured output for intents, `approve`, `doctor` and
+  `audit verify`; `history` and `audit export` already emit JSON. It has no
+  effect on `audit checkpoint`, completions or `mcp-server`, which use their
+  own output formats.
+- `--timeout` limits the invocation and `--log-to` tees output sent through the
+  CLI logger. `audit checkpoint`, completions and the MCP server write directly
+  to their output.
+- The two-key unattended consent check applies to every subcommand, even when
+  the command performs no auto-approval.
 
 | Flag | Description |
 |---|---|
 | `--yes` | Auto-approve LOW-risk steps.  With `--max-risk medium`, also approves MEDIUM.  HIGH always requires human confirmation. |
-| `--max-risk LEVEL` | Abort if the plan contains any step above this ceiling.  Values: `low`, `medium`, `high`. |
+| `--max-risk LEVEL` | Abort if the plan or approval transaction exceeds this ceiling. Values: `low`, `medium`, `high`. |
 | `--non-interactive` | Fail immediately (`exit 1`) if any step would require interactive approval.  Use in scripts and CI. |
-| `--dry-run` | Print the plan and exit without executing anything. |
-| `--step-by-step` | Prompt for approval before each individual step instead of once for the whole plan.  Each prompt comes *after* that step's daemon preview is printed. |
+| `--dry-run` | Print the plan or approval preview and exit without executing or issuing a receipt. |
+| `--step-by-step` | Prompt for approval before each individual step instead of once for the whole plan. Each prompt comes *after* that step's daemon preview is printed. The whole-plan risk ceiling and non-interactive checks still run before any execution preview. |
 | `--json` | Emit NDJSON to stdout — one JSON object per event (plan, preview, result).  All colour and spinner output is suppressed.  Safe to pipe. |
 | `--timeout SECS` | Hard wall-clock limit for the CLI invocation in seconds. Stops waiting when exceeded; see exit codes below. |
 | `--log-to FILE` | Tee stdout to FILE in addition to the terminal. Appends if the file exists; stderr diagnostics are not captured. |
@@ -448,9 +499,10 @@ snapshot beforehand costs less than the alternative.
 |---|---|
 | `0` | Success |
 | `1` | Plan or step **refused** — you rejected it, it exceeded the configured risk ceiling, approval was required but the session is non-interactive, or the planner declined the request outright (distinct from a planning failure, which is `3`) |
-| `2` | **Execution failed**, a command-line usage error, or the whole-command `--timeout` expired (see below) |
-| `3` | **Planning failed** — LLM error, provider unreachable, or the intent could not be turned into a plan |
+| `2` | **Execution failed**, including a daemon preview failure after an earlier plan step executed; also a command-line usage error or the whole-command `--timeout` expired (see below) |
+| `3` | **Planning failed** — LLM error, provider unreachable, the intent could not be turned into a plan, or a daemon preview refusal before any plan step executed |
 | `4` | **Configuration or daemon error** — invalid configuration, or the daemon could not be reached |
+| `5` | **Reboot required** - a step returned `needs_reboot`; remaining steps were not executed and the plan is incomplete. Reboot and deliberately re-run or resume. |
 
 Subcommands with their own semantics (for example `sysknife audit verify`) pass
 through their own exit code.

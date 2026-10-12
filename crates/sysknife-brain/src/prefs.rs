@@ -8,52 +8,48 @@
 
 use std::io;
 use std::path::Path;
+use std::sync::OnceLock;
 
 /// Maximum size of the preferences file in bytes. Prevents runaway growth
 /// from a misbehaving LLM that calls `remember` in a loop. 10 KB is roughly
 /// 200 preferences — well beyond any practical use.
 pub const PREFS_MAX_BYTES: u64 = 10_240;
 
-/// Substrings that indicate sensitive data. If any of these appear
-/// (case-insensitive) in a preference, it is rejected.
+/// Value-bearing labels, rather than bare security vocabulary. Assignments
+/// accept qualified names ending in a credential term, such as
+/// ANTHROPIC_API_KEY and AWS_SECRET_ACCESS_KEY, but not policy settings such
+/// as PASSWORD_MAX_DAYS. Natural language forms keep explicit passwords and
+/// labelled opaque tokens fenced.
 const SENSITIVE_PATTERNS: &[&str] = &[
-    "password",
-    "passwd",
-    "secret",
-    "api_key",
-    "apikey",
-    "private_key",
-    "token",
-    "credential",
-    "-----begin",
-    "bearer ", // OAuth2 Bearer tokens ("Bearer eyJ...")
-    "akia",    // AWS Access Key ID prefix
+    r#"(?i)(?:^|[^A-Za-z0-9_])(?:[a-z0-9]+_)*(?:password|passwd|secret|api_?key|access_key|private_key|token|credential)["']?\s*[:=]\s*\S"#,
+    r"(?i)(?:^|[^A-Za-z0-9_])(?:password|passwd)\s+is\s+\S",
+    r#"(?i)(?:^|[^A-Za-z0-9_])(?:with|using|use)\s+(?:password|passwd|token|secret|credential)\s+(?:"[^"]+"|'[^']+'|\S*[^\p{L}\s]\S*)"#,
+    r"(?i)(?:^|[^A-Za-z0-9_])(?:[a-z0-9]+_)*(?:token|secret|credential)\s+(?:(?:is|to)\s+)?[a-z0-9_+/-]{16,}(?:$|[^\p{L}\p{N}_-])",
+    r"(?i)(?:^|[^\p{L}\p{N}_-])bearer\s+\S{20,}",
+    r"(?i)-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY(?: BLOCK)?-----",
 ];
 
-/// String prefixes that indicate well-known secret formats (API keys, access tokens, PATs).
-/// All entries are lowercase; matched against the lowercased input so casing variants
-/// (e.g. "SK-" or "GHP_") are caught.
+/// Known credential formats, each with a plausible body length. Prefixes must
+/// start a token: letters, numbers, underscores and hyphens cannot precede
+/// them, so `disk-...` and `task-sk-...` do not become API keys. Punctuation
+/// such as quotes, parentheses and assignment delimiters may surround keys.
 const SENSITIVE_PREFIXES: &[&str] = &[
-    "sk-",         // OpenAI (also matches Anthropic's sk-ant-... prefix)
-    "ghp_",        // GitHub personal access token
-    "github_pat_", // GitHub fine-grained PAT
-    "gho_",        // GitHub OAuth token
-    "xoxb-",       // Slack bot token
-    "xoxp-",       // Slack user token
-    "sg.",         // SendGrid API key
-    "key_live_",   // Stripe live key
-    "key_test_",   // Stripe test key
-    "eyj",         // JWT (base64url header starts with eyJ — case-folded to eyj)
-    "hvs.",        // HashiCorp Vault service token (v1.10+)
-    "hvb.",        // HashiCorp Vault batch token
+    r"sk-[a-z0-9_-]{20,}", // OpenAI and Anthropic's sk-ant-... keys
+    r"(?:ghp_|gho_|github_pat_)[a-z0-9_]{36,}",
+    r"xox[bp]-[0-9]{8,}-[0-9]{8,}-(?:[0-9]{8,}-)?[a-z0-9]{20,}",
+    r"sg\.[a-z0-9_-]{16,}\.[a-z0-9_-]{20,}",
+    r"key_(?:live|test)_[a-z0-9]{20,}",
+    r"eyj[a-z0-9_-]{10,}\.[a-z0-9_-]+\.[a-z0-9_-]+", // JWT
+    r"hv[sb]\.[a-z0-9_-]{16,}",                      // Vault service and batch tokens
     // NOTE: "s." (the Vault pre-1.10 legacy token prefix) is intentionally
     // omitted. It collides with extremely common English phrases such as
     // "show services.", "list users." or "from my services.io account",
     // producing false-positive blocks every time a user mentions a service
     // in their preferences. Vault deployments still using the legacy format
     // can opt into a stricter filter via env in the future if anyone asks.
-    "npm_",  // npm access token
-    "pypi-", // PyPI API token
+    r"npm_[a-z0-9]{36,}",
+    r"pypi-[a-z0-9_-]{20,}",
+    r"akia[a-z0-9]{16}", // AWS Access Key ID
 ];
 
 /// Async wrapper for [`read_prefs`] that runs the file read on the blocking
@@ -213,13 +209,21 @@ pub fn remove_pref(path: &Path, fact: &str) -> Result<bool, io::Error> {
 /// through undetected. Treat a `false` result as "no known secret shape
 /// found", never as "definitely no secret".
 pub fn contains_sensitive(fact: &str) -> bool {
-    let lower = fact.to_lowercase();
-    if SENSITIVE_PATTERNS.iter().any(|p| lower.contains(p)) {
-        return true;
-    }
-    // Check prefixes against the lowercased string so casing variants are caught
-    // (e.g. "SK-" and "GHP_" as well as lowercase forms).
-    SENSITIVE_PREFIXES.iter().any(|p| lower.contains(p))
+    static MATCHER: OnceLock<regex::RegexSet> = OnceLock::new();
+    MATCHER
+        .get_or_init(|| {
+            let prefixes = SENSITIVE_PREFIXES.iter().map(|pattern| {
+                format!(r"(?i)(?:^|[^\p{{L}}\p{{N}}_-])(?:{pattern})(?:$|[^\p{{L}}\p{{N}}_-])")
+            });
+            regex::RegexSet::new(
+                SENSITIVE_PATTERNS
+                    .iter()
+                    .map(|pattern| (*pattern).to_owned())
+                    .chain(prefixes),
+            )
+            .expect("static sensitive-data patterns must compile")
+        })
+        .is_match(fact)
 }
 
 /// The intent as it may be written somewhere that outlives the terminal.
@@ -474,8 +478,14 @@ mod tests {
 
     #[test]
     fn contains_sensitive_detects_key_prefixes() {
-        assert!(contains_sensitive("use key sk-ant-abc123 for anthropic"));
-        assert!(contains_sensitive("github token ghp_abcdef1234567890"));
+        assert!(contains_sensitive(concat!(
+            "use key sk-ant-",
+            "abcdefghijklmnopqrstuvwxyz0123456789 for anthropic"
+        )));
+        assert!(contains_sensitive(concat!(
+            "github token ghp_",
+            "abcdefghijklmnopqrstuvwxyz0123456789"
+        )));
     }
 
     #[test]
@@ -485,6 +495,140 @@ mod tests {
         assert!(!contains_sensitive(
             "skip large downloads on metered connections"
         ));
+    }
+
+    #[test]
+    fn contains_sensitive_allows_security_administration_requests() {
+        for intent in [
+            "my root disk-full alert keeps firing",
+            "who can read /etc/passwd",
+            "set password aging to 90 days",
+            "set password to expire in 90 days",
+            "password to expire",
+            "configure password quality and fail lock",
+            "configure token lifetime",
+            "configure Wi-Fi with password policy enabled",
+            "connect with password aging enforcement",
+            "authenticate using token authentication",
+            "check whether token rotation is enabled",
+            "show secret storage permissions",
+            "inspect the tokenizer and task-runner",
+            "explain the API_KEY environment variable",
+            "list credential helpers",
+            "show the private_key file permissions",
+            "PASSWORD_MAX_DAYS=90",
+            "PASSWORD_MIN_LENGTH=12",
+            "TOKEN_LIFETIME=3600",
+            "API_KEY_FILE=/etc/key",
+        ] {
+            assert!(
+                !contains_sensitive(intent),
+                "ordinary intent refused: {intent}"
+            );
+            assert_eq!(loggable_intent(intent), intent);
+        }
+    }
+
+    #[test]
+    fn contains_sensitive_requires_token_boundaries_and_realistic_bodies() {
+        for text in [
+            concat!("disk-", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!("task-", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!("risk-", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!("prefixsk-", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!("task-sk-", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!("任务sk-", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!("xghp_", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!("my_npm_", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            "inspect sk-, ghp_, sg., npm_, pypi- and eyj prefixes",
+            "sk-short ghp_short npm_short hvs.short key_live_short",
+            concat!("sk-", "abcdefghijklmnopqrs"),
+            "Bearer short",
+            "public key: -----BEGIN PUBLIC KEY-----",
+        ] {
+            assert!(!contains_sensitive(text), "non-credential refused: {text}");
+        }
+    }
+
+    #[test]
+    fn contains_sensitive_detects_value_bearing_labels_and_assignments() {
+        for text in [
+            "PASSWORD = hunter2",
+            "passwd: hunter2",
+            "secret='hunter2'",
+            "api_key: abc123",
+            "APIKEY=abc123",
+            r#"{"api_key": "abc123"}"#,
+            "ANTHROPIC_API_KEY=sk-abc123",
+            "AWS_SECRET_ACCESS_KEY=abc123",
+            "AWS_ACCESS_KEY=abc123",
+            "access_key: abc123",
+            "private_key: abc123",
+            "credential = abc123",
+            "my password is hunter2",
+            "run mysqldump --password=hunter2 mydb",
+            "run curl with --token=abc123def",
+            "connect with password P@ssw0rd",
+            "use password hunter2 for the backup user",
+            "attach this machine to Ubuntu Pro using token test-only-value",
+            "connect to Wi-Fi with password test-only-value",
+            "connect using passwd hunter2",
+            r#"connect using password "correcthorse""#,
+            r#"connect using password "correct horse""#,
+            "connect with secret 'correcthorse'",
+            "connect using credential test-only-value",
+            concat!("set VAULT_TOKEN to ", "aBcDeFgHiJkLmNoP"),
+            concat!("attach using token ", "C1aBcDeF0123456789"),
+            concat!("Bearer ", "aBcDeFgHiJkLmNoPqRsT"),
+            "-----BEGIN OPENSSH PRIVATE KEY-----",
+            "-----BEGIN RSA PRIVATE KEY-----",
+            "-----BEGIN PRIVATE KEY-----",
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+        ] {
+            assert!(contains_sensitive(text), "credential label missed: {text}");
+            assert!(loggable_intent(text).contains("withheld"));
+        }
+    }
+
+    #[test]
+    fn contains_sensitive_detects_unlabelled_keys_at_punctuation_boundaries() {
+        // Assemble realistic synthetic keys without storing scanner-shaped
+        // credential literals in the source tree.
+        for key in [
+            concat!("sk-", "abcdefghijklmnopqrst"),
+            concat!("sk-", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!("github_pat_", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!("ghp_", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!("gho_", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!("xoxb-", "1234567890-1234567890-abcdefghijklmnopqrstuvwxyz"),
+            concat!(
+                "xoxp-",
+                "1234567890-1234567890-1234567890-abcdefghijklmnopqrstuvwxyz"
+            ),
+            concat!(
+                "SG.",
+                "abcdefghijklmnopqrstuv.",
+                "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+            ),
+            concat!("key_live_", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!("key_test_", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!("hvs.", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!("hvb.", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!("npm_", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            concat!(
+                "pypi-",
+                "AgEIcHlwaS5vcmcAAabcdefghijklmnopqrstuvwxyz0123456789"
+            ),
+        ] {
+            for intent in [
+                key.to_owned(),
+                format!("value=\"{key}\""),
+                format!("({key}),"),
+            ] {
+                assert!(contains_sensitive(&intent), "credential missed: {intent}");
+                assert!(loggable_intent(&intent).contains("withheld"));
+            }
+        }
     }
 
     #[test]
@@ -554,23 +698,45 @@ mod tests {
     #[test]
     fn contains_sensitive_detects_uppercase_prefix_variants() {
         // Uppercase casing must be caught (was previously missed due to case-sensitive check).
-        assert!(contains_sensitive("SK-ant-abc123 is my key"));
-        assert!(contains_sensitive("GHP_abcdef1234 github token"));
+        assert!(contains_sensitive(concat!(
+            "SK-ant-",
+            "abcdefghijklmnopqrstuvwxyz0123456789 is my key"
+        )));
+        assert!(contains_sensitive(concat!(
+            "GHP_",
+            "abcdefghijklmnopqrstuvwxyz0123456789 github token"
+        )));
     }
 
     #[test]
     fn contains_sensitive_detects_new_patterns() {
-        assert!(contains_sensitive("Bearer eyJhbGciOiJSUzI1NiJ9"));
-        assert!(contains_sensitive("AKIAIOSFODNN7EXAMPLE"));
-        assert!(contains_sensitive("SG.abcdef1234567890"));
-        assert!(contains_sensitive("key_live_abc123xyz"));
-        assert!(contains_sensitive("key_test_abc123xyz"));
+        assert!(contains_sensitive(concat!(
+            "Bearer eyJ",
+            "hbGciOiJSUzI1NiJ9"
+        )));
+        assert!(contains_sensitive(concat!("AKIA", "IOSFODNN7EXAMPLE")));
+        assert!(contains_sensitive(concat!(
+            "SG.",
+            "abcdefghijklmnopqrstuv.",
+            "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+        )));
+        assert!(contains_sensitive(concat!(
+            "key_live_",
+            "abcdefghijklmnopqrstuvwxyz"
+        )));
+        assert!(contains_sensitive(concat!(
+            "key_test_",
+            "abcdefghijklmnopqrstuvwxyz"
+        )));
     }
 
     #[test]
     fn contains_sensitive_prefix_case_insensitive() {
         // sk- in uppercase should be detected.
-        assert!(contains_sensitive("use SK-abc123 for anthropic"));
+        assert!(contains_sensitive(concat!(
+            "use SK-",
+            "abcdefghijklmnopqrstuvwxyz0123456789 for anthropic"
+        )));
         // Legitimate prefs that happen to contain short matching substrings should not match.
         assert!(!contains_sensitive("prefer skg over skb"));
     }
@@ -578,23 +744,41 @@ mod tests {
     #[test]
     fn contains_sensitive_detects_jwt_tokens() {
         // JWT header is base64url({"alg":"HS256",...}) = eyJ...
-        assert!(contains_sensitive(
-            "authenticate with eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyIn0.sig"
-        ));
+        assert!(contains_sensitive(concat!(
+            "authenticate with eyJ",
+            "hbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.",
+            "eyJ",
+            "zdWIiOiJ1c2VyIn0.sig"
+        )));
         // Case-insensitive: EYJ also matches
-        assert!(contains_sensitive("token EYJhbGciOiJIUzI1NiJ9.payload.sig"));
+        assert!(contains_sensitive(concat!(
+            "token EYJ",
+            "hbGciOiJIUzI1NiJ9.payload.sig"
+        )));
     }
 
     #[test]
     fn contains_sensitive_detects_vault_tokens() {
-        assert!(contains_sensitive("set VAULT_TOKEN to hvs.AAAAAQIc8Bj7Kk"));
-        assert!(contains_sensitive("batch token hvb.AAAAAQIc8"));
+        assert!(contains_sensitive(concat!(
+            "set VAULT_TOKEN to hvs.",
+            "AAAAAQIc8Bj7Kk1234567890"
+        )));
+        assert!(contains_sensitive(concat!(
+            "batch token hvb.",
+            "AAAAAQIc81234567890"
+        )));
     }
 
     #[test]
     fn contains_sensitive_detects_npm_and_pypi_tokens() {
-        assert!(contains_sensitive("npm login with npm_abc123xyz"));
-        assert!(contains_sensitive("publish with pypi-AgEIcHlwaS5vcmcAA"));
+        assert!(contains_sensitive(concat!(
+            "npm login with npm_",
+            "abcdefghijklmnopqrstuvwxyz0123456789"
+        )));
+        assert!(contains_sensitive(concat!(
+            "publish with pypi-",
+            "AgEIcHlwaS5vcmcAAabcdefghijklmnop"
+        )));
     }
 
     #[test]
@@ -603,7 +787,10 @@ mod tests {
         // the fence is about to refuse, that line is the one thing that puts the
         // credential on disk — `sysknife … 2>run.log` and every story harness
         // redirect stderr to a file.
-        let leaky = "attach this machine to Ubuntu Pro using token C1aBcDeF0123456789";
+        let leaky = concat!(
+            "attach this machine to Ubuntu Pro using token ",
+            "C1aBcDeF0123456789"
+        );
         let shown = loggable_intent(leaky);
         assert!(
             !shown.contains("C1aBcDeF0123456789"),
