@@ -85,7 +85,7 @@ jobs:
           shellcheck --severity=warning "${files[@]}"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (branch)
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f  # stable (branch)
         with:
           toolchain: stable
 
@@ -116,7 +116,7 @@ jobs:
             libayatana-appindicator3-dev librsvg2-dev
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # stable (branch)
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f  # stable (branch)
         with:
           toolchain: stable
 
@@ -206,7 +206,7 @@ jobs:
 
       - name: Upload story logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: e2e-story-logs
           path: tests/e2e/logs/
