@@ -158,6 +158,9 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   protoc-bin-vendored 3.3.0 ([#600](https://github.com/lacs-project/sysknife/pull/600)),
   seven GitHub Actions ([#599](https://github.com/lacs-project/sysknife/pull/599)),
   the npm minor and patch group ([#597](https://github.com/lacs-project/sysknife/pull/597)),
+  vitest and @vitest/coverage-v8 5.0.3 for the paused desktop shell, moved
+  together because the coverage plugin pins the exact vitest version
+  ([#605](https://github.com/lacs-project/sysknife/pull/605)),
   and the Debian and Rust container base digests
   ([#595](https://github.com/lacs-project/sysknife/pull/595),
   [#596](https://github.com/lacs-project/sysknife/pull/596)).
