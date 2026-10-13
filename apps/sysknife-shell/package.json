@@ -10,7 +10,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.12.2",
+    "@tauri-apps/api": "^2.12.3",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
   },
