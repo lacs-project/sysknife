@@ -121,7 +121,7 @@ enum CredentialArgvSpec {
 /// Replace the credential argv element(s) with `<REDACTED>`.
 ///
 /// Strategy (ME2 fix):
-/// 1. **Positional redaction** — if `credential_argv_position` returns a spec
+/// 1. **Positional redaction** — if `credential_argv_spec` returns a spec
 ///    for this action, redact that exact index and return immediately. This
 ///    prevents the value-match pass from also clobbering structural argv
 ///    elements that happen to share the same text as the credential (e.g.

@@ -28,6 +28,7 @@
 - [VM + Daemon Setup](vm-daemon-setup.md)
 - [Audit Storage and Recovery](storage-cloud.md)
 - [Ubuntu Action Reference](ubuntu-action-reference.md)
+- [Firewall Observations](firewall-observations.md)
 
 # Security
 

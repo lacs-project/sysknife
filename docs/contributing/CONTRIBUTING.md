@@ -23,7 +23,7 @@ rather answer questions than lose a contributor to a misunderstanding.
 ## Before You Start
 
 1. Read the [architecture overview](../architecture.md) to understand
-   the four-crate structure and the trust boundary.
+   the crate structure and the trust boundary.
 2. Read the [developer guide](../developer-guide.md) for prerequisites
    and build instructions.
 3. Read the [testing guide](testing.md) for which tests to run and when.
@@ -68,7 +68,7 @@ npm test --prefix apps/sysknife-shell && npm exec --prefix apps/sysknife-shell -
 ```
 
 See [docs/developer-guide.md](../developer-guide.md) for the full
-list of prerequisites (Rust, a C toolchain, Node.js 22, cargo-nextest,
+list of prerequisites (Rust, a C toolchain, Node.js 22.22.2+ or 24, cargo-nextest,
 and the hygiene tools).
 
 ## Filing Issues
@@ -157,8 +157,9 @@ One paragraph on what and why. Reference the issue: Closes #N.
 Title format: `type(scope): short description` — for example:
 `feat(daemon): add apt install action`.
 
-Add the `e2e` label if your change touches the brain, daemon IPC,
-or the action catalogue — this triggers the CI smoke test.
+If your change touches the brain, daemon IPC, or the action catalogue, say so
+in the PR; a maintainer can dispatch the `e2e` workflow's container smoke test,
+which runs on manual dispatch only.
 
 ### 5. Review
 

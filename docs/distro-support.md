@@ -18,8 +18,10 @@ Two separate things get called "support", and conflating them is what produced
 the bug this section now documents:
 
 - **Eligibility** — will the daemon act on this host at all? That is
-  `DistroId::is_supported()` in `crates/sysknife-core/src/distro.rs`, and the
-  daemon refuses every *mutating* action when it is false. It is true for all
+  `DistroId::is_supported()` in `crates/sysknife-core/src/distro.rs`. When it
+  is false, or the distro cannot be detected, the daemon refuses every mutating
+  action and every hard-fenced (`FEDORA_ONLY` / `DEBIAN_ONLY` / `UBUNTU_ONLY`)
+  action, reads included. Only portable Observer reads are exempt. It is true for all
   Ubuntu releases from 20.04 up, Fedora Atomic 41 and later, and Debian stable
   releases with a known version of 12 or later.
 - **Validation tier** — has the full story suite been run on that release?
@@ -46,6 +48,7 @@ tracked separately in [#239](https://github.com/lacs-project/sysknife/issues/239
 | **Validated** | The documented full story suite passed on a real VM. |
 | **Smoke-tested** | Bootstrap and basic daemon/tooling checks passed; full action parity was not exercised. |
 | **Current validation required** | An action backend exists, but the current distro release still needs its launch-gate VM run. |
+| **Blocked** | An action backend exists, but a known defect stops installation on the release; the linked issue tracks it. |
 | **Experimental** | Detection or partial code exists, but production support is not claimed. |
 | **Planned** | No complete action backend exists. |
 
@@ -73,9 +76,9 @@ install: cannot create directory '/usr/lib/sysknife': Read-only file system
 ```
 
 `HELPERS` defaults to `/usr/lib/sysknife`, and rpm-ostree mounts `/usr`
-read-only. The twelve privileged helper scripts have nowhere to go, and the path
-is not a free choice: twelve daemon constants and twelve `NOPASSWD` sudoers
-grants name it. [#301](https://github.com/lacs-project/sysknife/issues/301)
+read-only. The fifteen privileged helper scripts have nowhere to go, and the
+path is not a free choice: the daemon names it, and so do the `NOPASSWD`
+sudoers grants for fourteen of them (`firewall-state` runs without sudo). [#301](https://github.com/lacs-project/sysknife/issues/301)
 carries the options and
 [discussion #307](https://github.com/lacs-project/sysknife/discussions/307) is
 where the shape is being argued.
@@ -83,8 +86,8 @@ where the shape is being argued.
 `make install` no longer discovers this halfway. `daemon-install-preflight`
 checks every directory in `INSTALL_DIRS` before the first write and refuses the
 whole install, naming the directories at fault. Before that, the run had already
-written the daemon binary, the systemd unit, the polkit rules and all twelve
-sudo grants, leaving live grants for helper scripts that did not exist.
+written the daemon binary, the systemd unit, the polkit rules and the sudoers
+grants, leaving live grants for helper scripts that did not exist.
 
 Everything above the install still holds: detection, the rpm-ostree action
 family and the atomic story family are implemented and covered by the workspace

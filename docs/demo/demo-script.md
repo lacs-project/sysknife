@@ -8,8 +8,9 @@ Silverblue hardware.
 - Fedora Silverblue installation (VM or bare metal)
 - SysKnife built and installed (`make build && sudo make install`)
 - `sysknife-daemon` running (`sudo systemctl start sysknife-daemon`)
-- Ollama running with `llama3.2:3b` pulled (default CPU-friendly model;
-  `qwen3:8b` is only recommended if you have GPU passthrough — see
+- Ollama running with a tool-capable model pulled. `qwen3:8b` is the default
+  and wants GPU passthrough; on a CPU-only VM pull `llama3.2:3b`, the CPU
+  fallback, and set `SYSKNIFE_LLM_MODEL=llama3.2:3b` (see
   [HACKING.md §8](../../HACKING.md))
 - Terminal recorder: [asciinema](https://asciinema.org/) for the
   terminal session, or OBS/SimpleScreenRecorder for the Tauri window
@@ -122,4 +123,5 @@ recorded with timestamps.
 4. Place GIF at `assets/demo/demo.gif` (see `assets/demo/README.md` for the
    VHS tape + `gifsicle` optimization step used to regenerate it)
 5. Reference it from the docs (`docs/cli.md`, `docs/introduction.md`); the
-   README hero is the MCP flow at `assets/demo/mcp-flow.gif`
+   README hero is the Ubuntu MCP flow at `assets/demo/ubuntu-flow.gif`, and
+   `assets/demo/mcp-flow.gif` is the secondary Fedora Atomic recording

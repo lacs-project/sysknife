@@ -362,7 +362,7 @@ intent and planned + executed in sequence.
 | Ctrl+R | Reverse incremental history search |
 | Ctrl+A / Ctrl+E | Jump to line start / end |
 | Ctrl+W | Delete word before cursor |
-| Ctrl+C | Cancel current line (does not exit) |
+| Ctrl+C | Exit the REPL (same as Ctrl+D; history is saved) |
 | Ctrl+D | Exit the REPL |
 | `exit` / `quit` | Exit the REPL |
 

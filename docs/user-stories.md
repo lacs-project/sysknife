@@ -37,15 +37,16 @@ system.
    `state.planner.plan_intent(intent)`.
 
 4. **LLM planning loop** (`crates/sysknife-brain/src/planner.rs` — `plan_intent()`)
-   Turn 0: LLM receives system prompt (189-action catalogue, risk rules) +
+   Turn 0: LLM receives system prompt (192-action catalogue, risk rules) +
    user message. LLM calls `get_system_state`.
 
 5. **State injection** (`crates/sysknife-brain/src/planner.rs` — `plan_intent()`)
    `state_client.curated_state()` → daemon IPC → `collect_state()`
    (`crates/sysknife-daemon/src/state_collector.rs` — `collect_state()`) runs `hostname`,
-   `rpm-ostree status`, `systemctl list-units`, `flatpak list`,
-   `toolbox list`. Returns JSON with host, deployment, services,
-   flatpaks, toolboxes.
+   `rpm-ostree status` (once, for both the deployment and the layered
+   packages), `systemctl list-units`, `flatpak list`, `toolbox list`,
+   `podman ps` and `getent passwd`. Returns JSON with host, deployment,
+   services, flatpaks, toolboxes, layered packages, containers and users.
 
 6. **LLM proposes plan** — calls `propose_plan` with:
    ```json
@@ -88,11 +89,10 @@ system.
 14. **Completion** → `sysknife:job-completed` with `succeeded` or
     `needs_reboot`. Transaction persisted to SQLite.
 
-**Gap identified:** The LLM sees `flatpaks` and `services` but not
-the list of already-layered packages (`GetLayeredPackages` output).
-It could propose installing a package that is already layered. The
-LLM would need to call `get_system_state` and receive layered
-package info to avoid this.
+~~**Gap identified:** The LLM sees `flatpaks` and `services` but not
+the list of already-layered packages.~~ Resolved: the curated state now
+carries `layered_packages`, and the planner can also call
+`query_packages` before proposing `AddLayeredPackage`.
 
 ---
 
@@ -111,7 +111,7 @@ package info to avoid this.
    ```json
    {"steps": [
      {"action_name": "RebaseSystem", "risk_level": "high",
-      "params": {"ref": "fedora:fedora/42/x86_64/silverblue"}},
+      "params": {"target_ref": "fedora:fedora/42/x86_64/silverblue"}},
      {"action_name": "RebootSystem", "risk_level": "high",
       "params": {}}
    ]}
@@ -155,7 +155,7 @@ execution.
    ```json
    {"steps": [
      {"action_name": "ListServices", "risk_level": "low", "params": {}},
-     {"action_name": "SearchFlatpakApps", "risk_level": "low", "params": {}}
+     {"action_name": "SearchFlatpakApps", "risk_level": "low", "params": {"term": "firefox"}}
    ]}
    ```
 
@@ -228,11 +228,11 @@ shell session.
      {"action_name": "GetFirewallState", "risk_level": "low",
       "params": {}},
      {"action_name": "ConfigureFirewall", "risk_level": "high",
-      "params": {"action": "add_service", "service": "ssh"}}
+      "params": {"zone": "public", "service": "ssh", "enabled": true}}
    ]}
    ```
 
-3. Problem: the LLM can only add/remove services one at a time.
+3. Problem: `ConfigureFirewall` enables or disables one service per step.
    "Block everything else" requires knowledge of what is currently
    allowed, then removing each service. The LLM cannot see the
    output of step 1 (`GetFirewallState`) before proposing step 2 —
@@ -338,15 +338,13 @@ injection (e.g., `ci-runner; rm -rf /`).
 4. Daemon runs `rpm-ostree rollback`. If this succeeds, proceeds
    to `RebootSystem` (`systemctl reboot`).
 
-5. If `RollbackDeployment` fails, the automatic rollback mechanism
-   (`executor.rs` `rollback_spec_for`) tries to roll back the
-   rollback — which in this case means `rpm-ostree rollback` again,
-   returning to the current state. The job transitions to
-   `RolledBack` state.
+5. If `RollbackDeployment` fails, nothing rolls it back:
+   `rollback_spec_for` (`executor.rs`) deliberately returns `None` for
+   `RollbackDeployment`, to prevent rollback recursion. The job ends
+   `Failed`.
 
-**What works well:** The rollback-of-rollback semantic is correct
-for deployment actions since `rpm-ostree rollback` is its own
-inverse.
+**What works well:** `RollbackDeployment` is itself the recovery
+action, so it never chains an automatic rollback of its own.
 
 ---
 
@@ -402,7 +400,7 @@ single-shot planning model prevents this.
    Anthropic.
 
 4. **Step 2:** Wizard shows config.toml content to copy. For
-   Ollama: reminds user to `ollama pull llama3.2`.
+   Ollama: reminds the user to pull the chosen model.
 
 5. **Step 3:** "Restart the shell to apply."
 
@@ -411,11 +409,12 @@ single-shot planning model prevents this.
    (no `ANTHROPIC_API_KEY` → fallback to Ollama provider).
 
 7. `LlmPlanner::from_config()` (`crates/sysknife-brain/src/planner.rs`)
-   constructs `OllamaProvider` with `http://localhost:11434` and
-   model `llama3.2`.
+   builds the Ollama provider (through `RigCompletionAdapter`) against
+   `http://localhost:11434`, with the configured model or, when none is
+   set, `qwen3:8b` (`DEFAULT_OLLAMA_MODEL`).
 
-8. User can now type intents. Header shows
-   "via ollama / llama3.2".
+8. User can now type intents. Header shows the provider and model,
+   for example "via ollama/qwen3:8b".
 
 **What works well:** Zero-API-key path with Ollama is a strong
 onboarding story for privacy-conscious sysadmins.
@@ -431,11 +430,11 @@ setup as complete.
 
 | # | Gap | Impact | Severity |
 |---|-----|--------|----------|
-| 1 | CuratedState lacks layered package list | LLM may propose installing already-layered packages | Medium |
+| 1 | ~~CuratedState lacks layered package list~~ | Resolved: `layered_packages` is in the curated state | — |
 | 2 | No tool to query available ostree refs | Rebase plans can reference non-existent refs | Medium |
-| 3 | No feedback loop — LLM cannot see command output | Cannot do iterative "check then act" workflows | High |
+| 3 | Execution output never reaches the LLM | Read-only `query_*` tools feed results back during planning, but a plan cannot react to what its own steps print | Medium |
 | 4 | ~~EnterToolbox is not interactive-TTY-aware~~ | Resolved: action removed from catalogue | — |
 | 5 | Single-shot planning — all steps proposed at once | Cannot adapt plan based on intermediate results | High |
 | 6 | Raw stdout in timeline, no LLM summarization | Read-only queries produce unformatted output | Low |
 | 7 | SetupWizard does not verify Ollama reachability | User completes setup but gets connection errors | Low |
-| 8 | System prompt says "Fedora Silverblue" only | Misleading once multi-distro ships | Low |
+| 8 | ~~System prompt says "Fedora Silverblue" only~~ | Resolved: the prompt dispatches per distro (ADR 0004) | — |

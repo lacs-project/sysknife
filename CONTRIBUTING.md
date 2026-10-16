@@ -147,7 +147,7 @@ gate invokes these fixtures too, so install both before running it locally:
 git checkout -b feat/<short-name>
 # … implement …
 cargo nextest run --workspace --locked
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
 ```
 
@@ -300,9 +300,8 @@ Bodies should explain *why*. The diff already says what.
 - One PR per logical change. Big multi-concern PRs get split.
 - Add or update tests for any behaviour change.
 - Update docs alongside the code, not in a follow-up.
-- Title in Conventional Commits style. The
-  [`semantic-pull-request`](https://github.com/amannn/action-semantic-pull-request)
-  CI check enforces this.
+- Title in Conventional Commits style (`fix(cli): …`, `docs: …`). No CI check
+  enforces it; the squash merge uses the title as the commit subject.
 - Sign off your commits if your employer asks for DCO; we don't require
   it but we accept it.
 

@@ -65,10 +65,12 @@ codebase. On the daemon side (`sysknife-daemon`), each action is backed by an
 As of this writing the catalogue defines **192 actions** across families such
 as Deployment, Services, Package Layering, Flatpak, Containers, Toolbox,
 Network, Identity, SSH Keys, Package Repositories, apt/snap/ufw/netplan/grub
-(Debian-family), and rpm-ostree/AppArmor/cloud-init/Pro (Fedora-family). Each
-family is also fenced by distro: `crates/sysknife-core/src/action_family.rs`
-is the single source of truth for which actions are Debian-only versus
-Fedora-only, and that list is shared — not duplicated — across the brain's
+and AppArmor/cloud-init (Debian-family), Ubuntu Pro (Ubuntu-only), and
+rpm-ostree and dnf repositories (Fedora-family). Each family is also fenced by
+distro: `crates/sysknife-core/src/action_family.rs` is the single source of
+truth for which actions are Fedora-only, Debian-only or Ubuntu-only (plus the
+`NON_CANONICAL_ON_*` lists of portable actions a distro's planner does not
+offer), and those lists are shared — not duplicated — across the brain's
 prompt construction, the CLI's routing guard, and the daemon's execution
 fence, specifically so the three can never silently drift apart.
 

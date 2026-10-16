@@ -76,3 +76,8 @@ pure addition — a new `ProviderConfig` variant and a `require_api_key`-backed
 confirming the extensibility this ADR designed for. The original Decision
 and Alternatives Considered sections above are left as written for historical
 context; this amendment records the outcome.
+
+The `AnthropicProvider` and `OllamaProvider` types named above no longer
+exist. `LlmPlanner` now builds every provider through one of two adapters in
+`crates/sysknife-brain/src/providers/`: `AsyncOpenAiAdapter` for `openai`, and
+`RigCompletionAdapter` (backed by the `rig` crate) for the other seven.

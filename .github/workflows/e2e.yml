@@ -8,7 +8,7 @@
 #
 # 2. `container-smoke`: developer guidance only — NOT a CI gate. Runs
 #    on workflow_dispatch only. Boots Ollama and the daemon directly in
-#    the runner, pulls llama3.2:3b, and runs the 14 read-only user stories.
+#    the runner, pulls llama3.2:3b, and runs the curated read-only user stories.
 #    User stories test LLM planning behavior against a probabilistic system;
 #    they are development guidance, not merge criteria.
 #
@@ -187,7 +187,7 @@ jobs:
           sudo mkdir -p /var/lib/sysknife-e2e
           sudo touch /var/lib/sysknife-e2e/ready
 
-      - name: Run read-only stories (1-7)
+      - name: Run read-only stories (curated read-only set)
         env:
           SYSKNIFE_LISTEN_URI: unix:///run/sysknife/daemon.sock
           SYSKNIFE_LLM_PROVIDER: ollama

@@ -5,7 +5,7 @@
 #   1. Builds sysknife-daemon and sysknife (release mode).
 #   2. Starts sysknife-daemon in the background on /tmp/sysknife-daemon.sock if it is
 #      not already running there.
-#   3. Runs the requested stories (default: 1-7, the read-only ones).
+#   3. Runs the requested stories (default: the curated read-only set).
 #   4. Stops the daemon if this script started it.
 #
 # Stories 1-7 validate plan structure only — they check that the LLM proposes

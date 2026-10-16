@@ -186,8 +186,9 @@ report. Running the build filled it in.
 `sysknife mcp-server` is the **unprivileged** half of the system. It plans,
 previews, renders, and forwards. It cannot change anything. Every mutation
 travels over a unix socket to `sysknife-daemon`, which holds the sudoers, polkit
-and helper policy that `sudo make install` owns, and the socket itself is
-`0750 sysknife:sysknife` at `/run/sysknife/daemon.sock`. That split is the
+and helper policy that `sudo make install` owns. The socket is
+`/run/sysknife/daemon.sock`, mode `0660`, inside the `0750 sysknife:sysknife`
+directory `/run/sysknife`. That split is the
 product: it is why an agent cannot hand a shell string to root, and why every
 executed action lands in the signed chain. See
 [Architecture & Trust Boundaries](architecture.md).
@@ -202,8 +203,8 @@ So the split is between **describing** and **doing**:
    `sysknife_execute`, `sysknife_history` and `sysknife_doctor` all reach
    `sysknife-daemon` over a unix socket at `/run/sysknife/daemon.sock`; the
    generated direct queries use the same socket and daemon authorization fence.
-   The socket is
-   (`0750 sysknife:sysknife`), which holds the sudoers, polkit and helper policy
+   The socket sits in the `0750 sysknife:sysknife` directory `/run/sysknife`,
+   and the daemon behind it holds the sudoers, polkit and helper policy
    `sudo make install` owns. In a container there is nothing listening, so
    `doctor` reports the socket absent and the rest return errors. That is the
    trust boundary doing its job, not a packaging defect. See

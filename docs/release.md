@@ -209,8 +209,10 @@ npm pack --dry-run
 ```
 
 Trusted publishing requires the npm package's publisher configuration to
-match the GitHub repository and workflow exactly. Keep `id-token: write`
-scoped to the npm job.
+match the GitHub repository and workflow exactly. Grant `id-token: write` per
+job, never at the workflow level. Three jobs hold it today: `build` (build
+provenance attestations), `publish-npm` (trusted publishing) and
+`publish-registry` (MCP Registry OIDC).
 
 ### crates.io
 
@@ -241,4 +243,6 @@ sha256sum --check sha256sums-linux-x86_64.txt
 
 Also perform a clean install, `sysknife doctor`, one preview/approve/execute
 cycle, and uninstall on the supported OS image before announcing the release.
-Keep the release private or draft until these checks pass.
+The workflow creates the GitHub release as public, not as a draft, after npm
+and crates.io have already published, so these checks gate the announcement,
+not the publication.

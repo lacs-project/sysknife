@@ -223,7 +223,7 @@ Implement in this order, smallest-first to build momentum:
 3. `AptHistoryList` — 5 lines, read-only, closes audit/review workflow gap
 4. `GrubGetKargs` — 5 lines, read-only, needed before `GrubSetKargs` can be safely tested
 5. `SnapRevert` — 3 lines, closes the snap revision rollback gap
-6. `SnapClassicInstall` — 2 lines, fixes the known D3 divergence in `ubuntu-action-reference.md`
+6. `SnapClassicInstall` — 2 lines, adds classic confinement, which `SnapInstall` does not expose (since implemented)
 7. `AddPpa` / `RemovePpa` — implement together; check for `software-properties-common` at runtime
 8. `GrubSetKargs` — medium effort; needs a file-edit abstraction and a `update-grub` call; implement after `GrubGetKargs` is validated on a real VM
 9. `AptRollback` — medium effort; runtime check for `apt-rollback` package; implement last in tier

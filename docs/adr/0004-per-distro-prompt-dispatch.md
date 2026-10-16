@@ -68,9 +68,10 @@ which reads `/etc/os-release` at startup. If detection fails, `distro_hint` is
 - Prompt size decreases by roughly 20–25% for Fedora hosts and 15–20% for
   Debian hosts compared to the pre-dispatch single-prompt.
 - The generic fallback deliberately omits all distro-specific actions. A host
-  with an unrecognised `/etc/os-release` gets cross-distro-only planning until
-  the user adds a manual `distro_hint` override in
-  `~/.config/sysknife/config.toml`.
+  with an unrecognised `/etc/os-release` gets cross-distro-only planning.
+  (This ADR originally promised a manual `distro_hint` override in
+  `~/.config/sysknife/config.toml`. That key was never implemented: the hint
+  always comes from `sysknife_core::distro::detect()`.)
 
 ## References
 

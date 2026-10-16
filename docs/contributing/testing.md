@@ -12,7 +12,7 @@ validation before a release.
 | Unit tests (TypeScript) | React components, reducers, IPC shims | <5s | Every commit, every CI run |
 | Integration (Rust) | Daemon IPC, safety fence, policy | <10s | Every commit, every CI run |
 | **Dev stories (local, no VM)** | LLM plan structure for read-only stories; runs on any Linux host | 1-3 min | After brain/prompt changes |
-| CI smoke (container) | Daemon + Ollama + read-only stories in a Linux runner | 5-10 min | Opt-in (PR label `e2e` or manual trigger) |
+| CI smoke (container) | Daemon + Ollama + read-only stories in a Linux runner | 5-10 min | Opt-in (manual `workflow_dispatch` only) |
 | E2E Atomic VM | **Real Silverblue** in QEMU/KVM, full stack, all 54 stories | 15-30 min first boot; 2-3 min subsequent | Local / pre-release |
 | **E2E Ubuntu VM** | **Ubuntu 24.04** cloud image, full story suite (pass rate in `tests/evidence/story-runs/`) | ~15 min first boot; ~2 min subsequent | After Ubuntu action changes |
 | Manual QA | Real Silverblue/Kinoite hardware, destructive actions, GUI | 30-60 min | Before releases + demo video |
@@ -26,7 +26,7 @@ These run on every CI build and must pass before merge:
 ```sh
 # Rust
 cargo fmt --all --check
-cargo clippy --workspace --all-features --locked -- -D warnings
+cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
 cargo nextest run --workspace --locked
 
 # TypeScript / React
@@ -38,7 +38,8 @@ npm exec -- tsc --noEmit
 
 ## Running stories on your dev machine (no VM required)
 
-`tests/e2e/dev-stories.sh` runs the 7 read-only user stories directly on
+`tests/e2e/dev-stories.sh` runs the curated read-only story set (stories
+1-7, 11-17, 21, 22, 25, 26, 29, 32, 38, 41 and 46-49) directly on
 your workstation. It builds the daemon and test CLI, starts the daemon on
 `/tmp/sysknife-daemon.sock`, runs the stories, and then stops the daemon.
 
@@ -47,17 +48,18 @@ names, risk levels, parameters). It does **not** execute the actions — it
 tests plan structure only. This works on any Linux host because the story
 scripts check the JSON plan output, not the results of `df`, `ps`, etc.
 
-**LLM provider:** the harness mirrors the product's `BrainConfig::from_env`,
-which auto-detects exactly two providers:
+**LLM provider:** the product's `BrainConfig::from_env` auto-detects exactly
+two providers:
 
 | Condition | Provider | Default model |
 |---|---|---|
 | `ANTHROPIC_API_KEY` set and non-blank | `anthropic` | `claude-sonnet-4-6` |
 | otherwise | `ollama` | `qwen3:8b` (must be pulled; CPU-only is impractical — use `SYSKNIFE_LLM_MODEL=llama3.2:3b` on CPU) |
 
-The other six providers are supported but never auto-detected: setting the key
-alone does nothing, because `from_env` only consults `ANTHROPIC_API_KEY`. Each
-needs `SYSKNIFE_LLM_PROVIDER` **and** its key:
+The other six providers are supported but the product never auto-detects them:
+setting the key alone does nothing for `sysknife`, because `from_env` only
+consults `ANTHROPIC_API_KEY`. Each needs `SYSKNIFE_LLM_PROVIDER` **and** its
+key:
 
 | `SYSKNIFE_LLM_PROVIDER` | Key | Default model |
 |---|---|---|
@@ -73,6 +75,12 @@ is how a run with only `GROQ_API_KEY` exported silently fell through to the
 uninstalled Ollama fallback and failed all fifty stories with an error naming the
 wrong provider. `tests/e2e/provider-parity.test.sh` now derives the provider list
 and the default models from `config.rs` and fails when this table drifts again.
+
+The story harnesses go further than the product. When `SYSKNIFE_LLM_PROVIDER`
+is unset, `dev-stories.sh` and `run-stories.sh` export it from the first of the
+seven keys they find, so in a story run a key alone does pick its provider.
+The order differs: `dev-stories.sh` tries Anthropic first, `run-stories.sh`
+tries OpenAI first.
 
 Override the model with `SYSKNIFE_LLM_MODEL` (leave it *unset* rather than empty:
 an empty value wins over the per-provider default).
@@ -121,12 +129,11 @@ For full story 8 and 10 coverage, use the VM path.
 
 The smoke test boots Ollama and the daemon directly in a GitHub Actions
 runner (no VM, no real atomic desktop), pulls a small tool-capable model
-(`llama3.2:3b`), and runs the 7 read-only user stories.
+(`llama3.2:3b`), and runs `tests/e2e/run-stories.sh` with no arguments, which
+is the same curated read-only set.
 
-**Triggers:**
-
-1. Label a PR with `e2e` — the workflow runs automatically
-2. Manual dispatch via Actions → **e2e** → Run workflow
+**Trigger:** manual dispatch only, via Actions → **e2e** → Run workflow. No PR
+label starts it.
 
 Results appear as the `container-smoke` job. Story logs are uploaded as
 build artifacts.
@@ -135,7 +142,7 @@ build artifacts.
 
 - Daemon startup, IPC framing, policy enforcement
 - Brain ↔ Ollama integration, tool-use loop, safety fence
-- All 7 read-only query tools and read-only action stories (1–7)
+- The read-only query tools and the curated read-only stories
 
 **What it does NOT cover** (that's the VM path below):
 
@@ -372,11 +379,11 @@ Per-story logs are written to `tests/e2e/logs/story-N.log`.
 ## Before opening a PR
 
 1. `cargo nextest run --workspace && npm test --prefix apps/sysknife-shell` — required, fast
-2. `cargo clippy --workspace --all-features --locked -- -D warnings`
+2. `cargo clippy --workspace --all-features --all-targets --locked -- -D warnings`
 3. `cargo fmt --all --check`
 4. For changes to the brain, daemon, IPC, or action catalogue:
    - Run the VM tests locally (`atomic-vm.sh` flow)
-   - Add the `e2e` label to trigger the CI smoke test on your PR
+   - Optionally run the CI smoke test by dispatching the `e2e` workflow
 
 ## Before a release
 

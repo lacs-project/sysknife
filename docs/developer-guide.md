@@ -5,7 +5,7 @@ environment and covers everything you need to contribute confidently.
 
 ## Read First
 
-- [Architecture overview](architecture.md) — understand the four-crate
+- [Architecture overview](architecture.md) — understand the crate
   structure and the trust boundary before writing code
 - [ADR 0001: System boundaries](adr/0001-system-boundaries.md)
 - [ADR 0002: Brain provider layer](adr/0002-brain-provider-layer.md)
@@ -19,7 +19,7 @@ environment and covers everything you need to contribute confidently.
 |---|---|---|
 | Rust stable | latest stable | [rustup.rs](https://rustup.rs) |
 | A C compiler and linker | — | `sudo apt-get install -y build-essential` |
-| Node.js | 22+ | [nodejs.org](https://nodejs.org) or your distro |
+| Node.js | 22.22.2+ or 24 (CI uses 24) | [nodejs.org](https://nodejs.org) or your distro. `npx sysknife-setup` runs on any 22+; the frontend's test stack (jsdom 30) asks for 22.22.2+ |
 | `cargo-nextest` | latest | `cargo install cargo-nextest --locked` |
 
 **Required to reproduce the `docs-and-hygiene` job**, which is one of the five
@@ -30,6 +30,8 @@ checks `main` requires:
 | ShellCheck | distro | `sudo apt-get install -y shellcheck` |
 | Python | 3.10+ | usually already present |
 | PyYAML | 6.x | `python3 -m pip install PyYAML` (installed explicitly in CI) |
+| `yamllint` | 1.38.0 | `python3 -m pip install yamllint==1.38.0` |
+| `cargo-audit` | latest | `cargo install cargo-audit --locked` (the `security-audit` job) |
 | `markdownlint-cli2` | 0.23.2 | `npm install --global markdownlint-cli2@0.23.2` |
 | `markdown-link-check` | 3.15.0 | `npm install --global markdown-link-check@3.15.0` |
 
@@ -83,9 +85,14 @@ build stops at `error: linker cc not found`. `cmake` is not required.
 # Build all Rust crates (fast, no linking of the Tauri app)
 cargo build --workspace
 
-# Build the Tauri app (includes the GUI)
-npm run tauri --prefix apps/sysknife-shell -- build
+# Build the Tauri app (includes the GUI; development is paused)
+cargo install tauri-cli --locked   # once: the Tauri CLI is not a project dependency
+cd apps/sysknife-shell && cargo tauri build
 ```
+
+`tauri.conf.json` runs `pnpm build` (and `pnpm dev` for `cargo tauri dev`)
+before compiling, so pnpm has to be on your `PATH` for these two commands even
+though the rest of the repository uses npm.
 
 ## Running Tests
 
@@ -158,7 +165,7 @@ published ports reset the connection, in which case use podman.
 
 ### The hygiene guards
 
-`docs-and-hygiene` runs about two dozen host-side scripts under `tests/release/`
+`docs-and-hygiene` runs about four dozen host-side scripts under `tests/release/`
 and `scripts/`. They are plain shell and Python, they need no build, and each
 one runs on its own in well under a second:
 
@@ -214,7 +221,7 @@ cargo run -p sysknife-daemon
 
 ```sh
 cd apps/sysknife-shell
-npm run tauri --prefix apps/sysknife-shell -- dev
+cargo tauri dev
 ```
 
 The shell opens as a desktop window. Type an intent and the daemon
@@ -222,7 +229,7 @@ responds. The LLM is auto-detected from your environment.
 
 ## Running the E2E Stories on Your Dev Machine
 
-`tests/e2e/dev-stories.sh` runs the 7 read-only user stories without
+`tests/e2e/dev-stories.sh` runs the curated read-only story set (the `STORIES` default in the script) without
 a VM. It validates that the LLM proposes the correct typed plan — it
 does not execute the actions against your host.
 
@@ -363,15 +370,22 @@ crates/
   sysknife-daemon/    Privileged executor, 191 actions with an `ActionSpec`,
                       IPC, rollback, SQLite
   sysknife-proto/     Protobuf definitions (future use)
+  sysknife-daemon-test/  TAP integration harness for the daemon IPC layer (VM only)
 apps/
-  sysknife-shell/     Tauri + React GUI
+  sysknife-cli/       The `sysknife` binary: CLI, REPL, MCP server
+  sysknife-shell/     Tauri + React GUI (development paused)
 tests/
   e2e/
     dev-stories.sh  Run E2E stories on any Linux host (uses sysknife --dry-run --json)
-    atomic-vm.sh  Manage a Silverblue QEMU/KVM VM for full E2E
+    run-stories.sh  The story runner the VMs and the container smoke test use
+    atomic-vm.sh    Manage a Silverblue QEMU/KVM VM for full E2E
+    ubuntu-vm.sh    Manage the Ubuntu LTS VMs for full E2E
+    stories/        One script per user story
+  release/          Host-side gate scripts run by docs-and-hygiene
+  evidence/         Test-count baseline, story-run evidence, macOS survey
 docs/
   adr/            Architectural decision records
-  contributing/   Testing guide
+  contributing/   Contributor, testing and Ubuntu VM guides
 ```
 
 ## CI
@@ -381,7 +395,7 @@ CI runs on every pull request and push to `main`.
 | Check | Command |
 |---|---|
 | Rust formatting | `cargo fmt --all --check` |
-| Clippy (warnings as errors) | `cargo clippy --workspace --all-features --locked -- -D warnings` |
+| Clippy (warnings as errors) | `cargo clippy --workspace --all-features --all-targets --locked -- -D warnings` |
 | Rust tests | `cargo nextest run --workspace --locked` |
 | TypeScript type check | `npx tsc --noEmit` (in `apps/sysknife-shell`) |
 | Frontend tests | `npm test --prefix apps/sysknife-shell` |
@@ -393,7 +407,7 @@ Run the Rust checks locally before pushing:
 
 ```sh
 cargo fmt --all --check
-cargo clippy --workspace --all-features --locked -- -D warnings
+cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
 cargo nextest run --workspace --locked
 ```
 
