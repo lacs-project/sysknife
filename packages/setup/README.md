@@ -40,6 +40,9 @@ for that client.
 | `.claude/hookify.sysknife-schema-fetch.local.md` | Deferred-schema reminder |
 | `.claude/hookify.sysknife-bash-guard.local.md` | VM query guard |
 
+On rerun, existing hookify rules are left intact and reported as skipped. Edit
+them manually if you want to update them to the packaged defaults.
+
 ### Cursor
 
 | File | Purpose |

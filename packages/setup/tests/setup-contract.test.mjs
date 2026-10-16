@@ -69,6 +69,33 @@ test('MCP configs are merged, not overwritten (preserves other servers)', () => 
   assert.doesNotMatch(source, /const cursorMcp = \{ mcpServers \}/);
 });
 
+test('rerunning setup preserves existing hookify guards and reports what it did', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-setup-hookify-'));
+  const rulesDir = path.join(cwd, '.claude');
+  const approvalPath = path.join(rulesDir, 'hookify.require-sysknife-approval.local.md');
+  const schemaPath = path.join(rulesDir, 'hookify.sysknife-schema-fetch.local.md');
+  const bashPath = path.join(rulesDir, 'hookify.sysknife-bash-guard.local.md');
+
+  try {
+    fs.mkdirSync(rulesDir);
+    fs.writeFileSync(approvalPath, 'project-specific approval guard\n');
+    fs.writeFileSync(schemaPath, 'project-specific schema reminder\n');
+
+    const result = runWizard({ cwd });
+    const output = `${result.stdout}${result.stderr}`;
+
+    assert.equal(result.status, 3, output);
+    assert.equal(fs.readFileSync(approvalPath, 'utf8'), 'project-specific approval guard\n');
+    assert.equal(fs.readFileSync(schemaPath, 'utf8'), 'project-specific schema reminder\n');
+    assert.match(output, /Skipped \.claude\/hookify\.require-sysknife-approval\.local\.md.*already exists/);
+    assert.match(output, /Skipped \.claude\/hookify\.sysknife-schema-fetch\.local\.md.*already exists/);
+    assert.match(output, /Created \.claude\/hookify\.sysknife-bash-guard\.local\.md/);
+    assert.ok(fs.readFileSync(bashPath, 'utf8').length > 0);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('all selected MCP configs are validated before any integration file is written', () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-setup-preflight-'));
   const claudePath = path.join(cwd, '.mcp.json');

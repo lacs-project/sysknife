@@ -779,8 +779,13 @@ async function main() {
 
     for (const { file, content } of rules) {
       const hookPath = path.join('.claude', file);
-      fs.writeFileSync(hookPath, content);
-      ok(`Created ${hookPath}`);
+      try {
+        fs.writeFileSync(hookPath, content, { flag: 'wx' });
+        ok(`Created ${hookPath}`);
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        warn(`Skipped ${hookPath} (already exists; edit manually to update)`);
+      }
     }
   }
 
