@@ -56,12 +56,20 @@ declare -a POSITIVES=(
     "OpenAI|$(make_key 'sk-None-' 48)"
     "OpenAI|$(make_key 'sk-svcacct-' 20)-$(make_key '' 19)_"
     "OpenAI|$(make_key 'sk-' 20)_$(make_key '' 19)"
+    "OpenAI|Authorization: Bearer%20$(make_key 'sk-' 48)"
+    "OpenAI|log: \\n$(make_key 'sk-' 48)"
+    "OpenAI|log: \\r$(make_key 'sk-' 48)"
+    "OpenAI|log: \\t$(make_key 'sk-' 48)"
     "OpenAI project|$(make_key 'sk-proj-' 64)"
     "Anthropic|$(make_key 'sk-ant-' 95)"
     "DeepSeek|$(make_key 'sk-' 32)"
     "DeepSeek|DEEPSEEK_API_KEY=\"$(make_key 'sk-' 32)\""
     "DeepSeek|\"DEEPSEEK_API_KEY\": \"$(make_key 'sk-' 32)\""
     "DeepSeek|/$(make_key 'sk-' 32)"
+    "DeepSeek|Authorization: Bearer%20$(make_key 'sk-' 32)"
+    "DeepSeek|log: \\n$(make_key 'sk-' 32)"
+    "DeepSeek|log: \\r$(make_key 'sk-' 32)"
+    "DeepSeek|log: \\t$(make_key 'sk-' 32)"
     "Mistral|MISTRAL_API_KEY = \"$(make_key '' 32)\""
     "Mistral|'MISTRAL_API_KEY': '$(make_key '' 32)'"
     "Mistral|\"MISTRAL_API_KEY\": \"$(make_key '' 32)\""
@@ -205,6 +213,7 @@ declare -a NEGATIVES=(
     "$(make_key 'sk-' 31)"           # Below DeepSeek's exact hexadecimal length
     "sk-$(make_key '' 31)Z"          # 32 characters, but not a DeepSeek hex body
     "$(make_key 'sk-' 32)Z"          # Do not match a 32-hex prefix of a longer token
+    "$(make_key 'sk-' 33)"           # Above DeepSeek's length, below OpenAI's
     "disk-$(make_key '' 32)"         # An identifier containing sk- is not a key
     "task-$(make_key '' 32)"
     "prefixsk-$(make_key '' 32)"
@@ -341,6 +350,30 @@ else
     echo "FAIL: --staged rejected an honest empty staged set"
     fail=1
 fi
+
+# --- 5b. Modified files must be screened from the index, not the worktree ---
+printf 'k = "%s"\n' "$leak" >> "$staged_repo/README.md"
+git -C "$staged_repo" add README.md
+if modified_output="$(cd "$staged_repo" && "$CHECK" --staged 2>&1)"; then
+    echo "FAIL: --staged accepted a credential added to an already tracked file"
+    fail=1
+elif ! grep -Fq 'staged README.md' <<< "$modified_output"; then
+    echo "FAIL: --staged did not name the modified file it rejected"
+    fail=1
+fi
+printf 'clean\n' > "$staged_repo/README.md"
+if (cd "$staged_repo" && "$CHECK" --staged > /dev/null 2>&1); then
+    echo "FAIL: --staged read the cleaned working tree, not the staged credential"
+    fail=1
+fi
+printf 'clean, edited\n' > "$staged_repo/README.md"
+git -C "$staged_repo" add README.md
+printf 'k = "%s"\n' "$leak" >> "$staged_repo/README.md"
+if ! (cd "$staged_repo" && "$CHECK" --staged > /dev/null 2>&1); then
+    echo "FAIL: --staged rejected an unstaged working-tree edit the commit would not record"
+    fail=1
+fi
+git -C "$staged_repo" checkout -q HEAD -- README.md
 
 # --- 6. A staged blob read failure must not masquerade as a finding ----------
 fake_oid='1111111111111111111111111111111111111111'
