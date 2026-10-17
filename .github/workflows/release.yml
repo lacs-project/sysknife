@@ -262,10 +262,17 @@ jobs:
           VERSION: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
         run: |
-          gh release create "$VERSION" \
-            --repo "$REPO" \
-            --title "$VERSION" \
-            --generate-notes
+          if release_output="$(gh release view "$VERSION" --repo "$REPO" 2>&1)"; then
+            echo "Release $VERSION already exists; skipping creation"
+          elif [[ "$release_output" == *'release not found'* ]]; then
+            gh release create "$VERSION" \
+              --repo "$REPO" \
+              --title "$VERSION" \
+              --generate-notes
+          else
+            printf '::error::Failed to check release %s: %s\n' "$VERSION" "$release_output" >&2
+            exit 1
+          fi
 
       - name: Upload release assets
         # `dist/sysknife-*-linux-x86_64` matches BOTH `sysknife-v…-x86_64`

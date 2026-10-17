@@ -67,6 +67,9 @@ jobs:
       - name: Check the release waits for crates.io to index each crate
         run: bash tests/release/crates-index-poll.test.sh
 
+      - name: Check GitHub release creation is safe to re-run
+        run: bash tests/release/release-create-rerun.test.sh
+
       - name: Test internal dependency pin coverage
         run: bash tests/release/release-version-pins.test.sh
 
