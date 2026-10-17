@@ -165,8 +165,8 @@ pub enum ProviderError {
     /// `providers::classify_status`; the `Auth`/`RateLimit` classes become their
     /// own variants, and `StatusClass::Other` — every 4xx and 5xx that is not
     /// 401, 403, or 429 — becomes this variant, keeping the status intact.
-    /// [`is_retryable`](Self::is_retryable) then applies the real policy: 5xx and
-    /// 429 deserve a backoff, a permanent 4xx does not.
+    /// [`is_retryable`](Self::is_retryable) then applies the real policy: 5xx,
+    /// 429, and 408 deserve a backoff; a permanent 4xx does not.
     ///
     /// This is the only *status-bearing* variant, and it is deliberately the one
     /// the policy was written for. [`Request`](Self::Request) is now reserved for
@@ -226,11 +226,19 @@ impl ProviderError {
             // 5xx is the provider's own fault and usually momentary; 429 means
             // "later", which is exactly what a backoff provides. Every other 4xx
             // is a defect in the request just built, and building it again
-            // produces the same bytes — except a tool-use rejection, where the
-            // retry appends a correction and so does send different bytes. That
-            // is the one 4xx worth re-asking about.
+            // produces the same bytes — except two cases.
+            //
+            // A tool-use rejection is one: the retry appends a correction, so it
+            // does send different bytes, and without this arm the correction
+            // would never reach the model.
+            //
+            // 408 Request Timeout is the other, and it is not a statement about
+            // the request at all — the server gave up *reading* it before the
+            // body arrived. The bytes were fine; the read did not win its race
+            // with the clock. Re-sending the identical request is the whole fix,
+            // so it retries even though it is a 4xx.
             ProviderError::Http { status, .. } => {
-                *status >= 500 || *status == 429 || self.is_invalid_tool_call()
+                *status >= 500 || *status == 429 || *status == 408 || self.is_invalid_tool_call()
             }
             ProviderError::RateLimit(_) => true,
             ProviderError::Auth(_) => false,
@@ -328,6 +336,23 @@ mod retryability_tests {
         assert!(
             rejected.is_retryable(),
             "a 400 the retry changes with a correction must stay retryable"
+        );
+    }
+
+    /// The other 4xx worth retrying, and for a different reason than a tool-use
+    /// rejection. A 408 Request Timeout says the *server* did not receive the
+    /// whole request in time — nothing about the bytes we sent is known to be
+    /// wrong, so re-sending the identical request is the right move rather than a
+    /// request defect.
+    #[test]
+    fn a_request_timeout_is_retryable_despite_being_a_4xx() {
+        assert!(
+            ProviderError::Http {
+                status: 408,
+                body: "request timed out".into()
+            }
+            .is_retryable(),
+            "408 means the server timed out reading the request, not that our request was wrong"
         );
     }
 

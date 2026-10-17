@@ -1742,6 +1742,75 @@ mod tests {
         );
     }
 
+    /// A 408 Request Timeout is the second 4xx worth retrying, and for a
+    /// different reason than the tool-use 400: the status says the *server* did
+    /// not see the whole request in time, so nothing about the bytes we built is
+    /// known to be wrong. The identical request is re-sent, unchanged, and must
+    /// reach the provider a second time.
+    ///
+    /// The stub times out on the first attempt and answers on the second, so the
+    /// request count is exactly two — "a 408 goes out twice", not "a 408 goes out
+    /// until the retry budget is spent".
+    #[tokio::test]
+    async fn a_408_request_timeout_goes_out_twice() {
+        struct TimesOutOnceThenAnswers {
+            calls: Arc<AtomicUsize>,
+            second: Arc<tokio::sync::Mutex<Vec<Message>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl LlmProvider for TimesOutOnceThenAnswers {
+            async fn complete(
+                &self,
+                _system: &str,
+                messages: &[Message],
+                _tools: &[ToolDefinition],
+                _max_tokens: u32,
+            ) -> Result<Completion, ProviderError> {
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Err(rig_status(
+                        http::StatusCode::REQUEST_TIMEOUT,
+                        "request timed out",
+                    ));
+                }
+                *self.second.lock().await = messages.to_vec();
+                Ok(Completion {
+                    content: vec![ContentBlock::Text {
+                        text: "recovered".into(),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                })
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let second = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let planner = LlmPlanner::new(
+            Box::new(TimesOutOnceThenAnswers {
+                calls: Arc::clone(&calls),
+                second: Arc::clone(&second),
+            }),
+            Box::new(UnusedState),
+            1,
+        );
+        planner
+            .complete_with_retry("SYS", &[Message::user_text("hi")], &[])
+            .await
+            .expect("the second attempt succeeds");
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "a 408 must be re-sent exactly once, so it goes out twice"
+        );
+        let sent = second.lock().await;
+        assert_eq!(
+            sent.len(),
+            1,
+            "a 408 retry re-sends the request unchanged — no correction is appended"
+        );
+    }
+
     /// A 400 that *is* worth retrying: the retry appends a correction, so the
     /// bytes change. It must reach the provider a second time.
     #[tokio::test]
