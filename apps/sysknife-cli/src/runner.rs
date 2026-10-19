@@ -3964,11 +3964,16 @@ mod tests {
         async fn mock_execution_daemon(
             socket: &std::path::Path,
             events: Events,
+            execution_statuses: &[(&str, &str)],
         ) -> (
             tokio::sync::oneshot::Sender<()>,
             tokio::task::JoinHandle<()>,
         ) {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let statuses: std::collections::HashMap<String, String> = execution_statuses
+                .iter()
+                .map(|(action, status)| (action.to_string(), status.to_string()))
+                .collect();
             let listener = tokio::net::UnixListener::bind(socket).unwrap();
             let (stop, mut stopped) = tokio::sync::oneshot::channel();
             let task = tokio::spawn(async move {
@@ -4002,14 +4007,21 @@ mod tests {
                         "approve" => json!({
                             "type": "approval_response", "approval_receipt": "mock-receipt",
                         }),
-                        "execute" => json!({
-                            "type": "job_completed",
-                            "result": {
-                                "status": "succeeded", "summary": "mock done", "warnings": [],
-                                "job_id": null, "needs_reboot": false, "rollback_ref": null,
-                                "transaction_id": request["transaction_id"],
-                            }
-                        }),
+                        "execute" => {
+                            let status = statuses
+                                .get(action)
+                                .map(String::as_str)
+                                .unwrap_or("succeeded");
+                            json!({
+                                "type": "job_completed",
+                                "result": {
+                                    "status": status, "summary": "mock done", "warnings": [],
+                                    "job_id": null, "needs_reboot": status == "needs_reboot",
+                                    "rollback_ref": null,
+                                    "transaction_id": request["transaction_id"],
+                                }
+                            })
+                        }
                         other => panic!("unexpected daemon request {other}"),
                     };
                     let bytes = serde_json::to_vec(&response).unwrap();
@@ -4055,16 +4067,18 @@ mod tests {
             }
         }
 
-        async fn run(
+        async fn run_with_statuses(
             plan: &AuthorizedPlan,
             mut opts: RunOpts,
             answers: &[bool],
+            execution_statuses: &[(&str, &str)],
         ) -> (Result<(), CliError>, Vec<String>) {
             let dir = tempfile::tempdir().unwrap();
             let socket = dir.path().join("daemon.sock");
             opts.socket = SocketTarget::Unix(socket.clone());
             let events: Events = Arc::new(Mutex::new(Vec::new()));
-            let (stop, task) = mock_execution_daemon(&socket, Arc::clone(&events)).await;
+            let (stop, task) =
+                mock_execution_daemon(&socket, Arc::clone(&events), execution_statuses).await;
             let log = Logger::new(None).unwrap();
             let mut answers = answers.iter();
             let result = execute_plan(plan, &opts, &log, |_| {
@@ -4076,6 +4090,47 @@ mod tests {
             task.await.unwrap();
             let recorded = events.lock().unwrap().clone();
             (result, recorded)
+        }
+
+        async fn run(
+            plan: &AuthorizedPlan,
+            opts: RunOpts,
+            answers: &[bool],
+        ) -> (Result<(), CliError>, Vec<String>) {
+            run_with_statuses(plan, opts, answers, &[]).await
+        }
+
+        /// #602: exercise the actual execute_plan loop, not a duplicate loop
+        /// in a test. Removing its `exec_result?` must make this test fail.
+        #[tokio::test]
+        async fn execute_plan_halts_after_failed_or_rebooting_second_step() {
+            let three_steps = plan(&["GetDiskUsage", "GetMemoryInfo", "RestartService"]);
+
+            for (status, expected_exit) in [("failed", 2), ("needs_reboot", 5)] {
+                let mut options = opts(PathBuf::new());
+                options.non_interactive = true;
+                options.max_risk = Some(MaxRisk::Medium);
+
+                let (result, events) =
+                    run_with_statuses(&three_steps, options, &[], &[("GetMemoryInfo", status)])
+                        .await;
+
+                let err = result.expect_err("daemon failure/reboot must stop the plan");
+                assert_eq!(err.exit_code(), expected_exit, "{status}: {err}");
+                assert!(err.to_string().contains("GetMemoryInfo"), "{status}: {err}");
+                assert_eq!(
+                    events,
+                    [
+                        "preview:GetDiskUsage",
+                        "approve:",
+                        "execute:GetDiskUsage",
+                        "preview:GetMemoryInfo",
+                        "approve:",
+                        "execute:GetMemoryInfo",
+                    ],
+                    "{status}: a third step must never be previewed or executed"
+                );
+            }
         }
 
         #[tokio::test]

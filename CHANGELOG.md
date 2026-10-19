@@ -14,6 +14,14 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Security
 
+- **rustls moves to 0.23.46.** ([#616](https://github.com/lacs-project/sysknife/pull/616))
+  RUSTSEC-2026-0346 to 0349 reached the brain through reqwest, which carries
+  provider calls, and the daemon through sqlx's Postgres TLS. The worst of the
+  four is `Debug` output that printed TLS session secrets. The others are a
+  key-exchange downgrade hint, a pre-authentication Brotli allocation that is
+  off by default, and early data sent after an ECH rejection. The patch release
+  changes no API.
+
 - **Read tools stop forwarding credentials to the LLM provider.**
   ([#573](https://github.com/lacs-project/sysknife/pull/573)) A journal line
   carrying a password assignment or a `Bearer` token reached the provider in a
