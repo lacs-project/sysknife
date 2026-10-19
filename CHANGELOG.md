@@ -14,7 +14,7 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Security
 
-- **rustls moves to 0.23.46.** ([#PRNUM](https://github.com/lacs-project/sysknife/pull/PRNUM))
+- **rustls moves to 0.23.46.** ([#616](https://github.com/lacs-project/sysknife/pull/616))
   RUSTSEC-2026-0346 to 0349 reached the brain through reqwest, which carries
   provider calls, and the daemon through sqlx's Postgres TLS. The worst of the
   four is `Debug` output that printed TLS session secrets. The others are a
