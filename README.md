@@ -206,9 +206,10 @@ npx sysknife-setup --no-binary --daemon-mode=skip
 Whichever way you installed, there is one command for it.
 
 ```sh
-# Removes the user service, the binaries in ~/.local/bin, and the Claude Code
-# MCP + agent config in the current directory. A Cursor or Codex install also
-# wrote .cursor/ and ~/.codex/config.toml, and those are left in place (#526).
+# Removes the user service, the binaries in ~/.local/bin, and the SysKnife
+# entries in the MCP and agent config it wrote: Claude Code's in the current
+# directory, .cursor/mcp.json and .cursor/rules/sysknife.mdc, the sysknife block
+# in ~/.codex/config.toml, and the SysKnife block in AGENTS.md.
 npx sysknife-setup --uninstall
 
 # See exactly what that would touch, without touching it.
@@ -233,13 +234,14 @@ privilege boundary is worse than none:
 sudo make uninstall
 ```
 
-All three Ubuntu LTS releases record a live-VM run of the 79-story Ubuntu
-suite, and each run has a replay twin that reproduces it: 22.04, 24.04 and 26.04
+All three Ubuntu LTS releases record a live-VM run of 79 stories from the Ubuntu
+suite (which has since grown to 96), and each run has a replay twin that reproduces it: 22.04, 24.04 and 26.04
 all at 79/79, every twin serving every call with zero misses. The runs are in
 `tests/evidence/story-runs/`. The suite grew from 50 when every Debian-only
 action got a story, `GetHostState` first.
-Fedora Atomic is the rpm-ostree target; record a current Silverblue 44 VM run
-before treating a release as current-validated. Plain Fedora Workstation and
+Fedora Atomic is the rpm-ostree target; `make install` does not complete on
+rpm-ostree yet ([#301](https://github.com/lacs-project/sysknife/issues/301)), and
+a release needs a current Silverblue 44 VM run before it counts as validated. Plain Fedora Workstation and
 Server remain experimental until the `dnf` action family ships. See the
 [`distro support matrix`](docs/distro-support.md) for evidence and scope.
 </details>

@@ -14,6 +14,14 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Security
 
+- **rustls moves to 0.23.46.** ([#616](https://github.com/lacs-project/sysknife/pull/616))
+  RUSTSEC-2026-0346 to 0349 reached the brain through reqwest, which carries
+  provider calls, and the daemon through sqlx's Postgres TLS. The worst of the
+  four is `Debug` output that printed TLS session secrets. The others are a
+  key-exchange downgrade hint, a pre-authentication Brotli allocation that is
+  off by default, and early data sent after an ECH rejection. The patch release
+  changes no API.
+
 - **Read tools stop forwarding credentials to the LLM provider.**
   ([#573](https://github.com/lacs-project/sysknife/pull/573)) A journal line
   carrying a password assignment or a `Bearer` token reached the provider in a
@@ -81,6 +89,13 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   ([#603](https://github.com/lacs-project/sysknife/pull/603)) No SysKnife build
   compiles quinn-proto: the crate appears in `Cargo.lock` only. `cargo audit`
   reads the lockfile, so I bumped it to clear the five advisories.
+- **event-listener 5.4.2 (RUSTSEC-2026-0221).**
+  ([#609](https://github.com/lacs-project/sysknife/pull/609)) The 5.4.1
+  `StackSlot` let a `!Send` tag set with `Event::with_tag` cross threads, a data
+  race in safe code. Unlike the other accepted `cargo audit` warnings, this one
+  reached the daemon and the CLI, through `sqlx-core`. `cargo audit` reports it
+  as an unsound warning rather than a vulnerability, so CI stayed green; nothing
+  in SysKnife sets a tag. The lockfile moves to 5.4.2, which carries the fix.
 
 ### Fixed
 
@@ -178,6 +193,31 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   excludes a package that no longer exists (closes
   [#411](https://github.com/lacs-project/sysknife/issues/411)). Thanks to
   [@yuee3](https://github.com/yuee3).
+- **The docs match the code again.**
+  ([#609](https://github.com/lacs-project/sysknife/pull/609)) A review of
+  every maintained page against the source found drift in 30 files. The ones a
+  reader would act on:
+  - `docs/vm-daemon-setup.md` put the vsock token in the login user's home,
+    where the daemon never reads it, and never switched the daemon to vsock.
+    The token belongs at `/var/lib/sysknife/.config/sysknife/token`, and a
+    drop-in sets `SYSKNIFE_LISTEN_URI=vsock://:9734`.
+  - The same page said `make install` handles rpm-ostree on its own. It refuses
+    until you pass the `/etc` overrides, and still cannot finish (#301).
+  - `docs/mcp.md` said execution halts on a failed or unknown step. It halts on
+    anything but `succeeded`, `needs_reboot` included.
+  - `SECURITY.md` described the intent secret screen as matching bare words such
+    as "password", and the role table as a hand-written match. Both changed in
+    0.25.0: the screen looks for a value, and the role comes from the action's
+    risk tier.
+  - `docs/automatic-rollback.md` called signed status transitions future work.
+    They shipped, and `audit verify` checks them on SQLite.
+  - `docs/security/audit-advisories.md` listed 20 accepted advisories.
+    Two remain; RustSec withdrew the gtk-rs ones and the rest left the lockfile.
+  - The introduction and quickstart said the daemon runs as root. It runs as the
+    `sysknife` system user with scoped sudo and polkit grants.
+  - Contributor docs gave clippy without `--all-targets`, a `npm run tauri`
+    script that does not exist, a CI check for PR titles that does not run, and
+    an `e2e` PR label that triggers nothing.
 
 ## [0.25.0] — 2026-10-01
 

@@ -71,8 +71,9 @@ build (measured 6m56s on Ubuntu 24.04, 11m43s on 22.04).
 
 > **ℹ️ Fedora / Silverblue**
 >
-> Ubuntu 24.04 is validated by the live-VM story suite. Ubuntu 22.04 and
-> 26.04 have smoke-test coverage. Fedora Atomic uses the rpm-ostree action
+> Ubuntu 22.04, 24.04 and 26.04 are each validated by a committed live-VM
+> story run (79/79) with a replay twin; other Ubuntu releases from 20.04 up are
+> eligible without a per-release run. Fedora Atomic uses the rpm-ostree action
 > family and requires a current Silverblue 44 validation run for each release.
 > Plain Fedora remains experimental. See [distro support](distro-support.md).
 
@@ -118,7 +119,8 @@ sysknife "what packages do I have installed as layers?"
 >
 > `--dry-run` works anywhere and is a great way to test the planner without
 > installing the daemon. Full execution requires `sysknife-daemon` running
-> as root (enabled in Step 1).
+> (enabled in Step 1). It runs as the unprivileged `sysknife` system user and
+> reaches root only through the scoped sudo and polkit grants it installs.
 
 That's it. The planner proposes a typed plan, you approve, the daemon executes.
 

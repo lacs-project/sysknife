@@ -43,8 +43,19 @@ systemd. You can verify the socket exists:
 ls -la /run/sysknife/daemon.sock
 ```
 
-> **Silverblue / Kinoite (rpm-ostree hosts):** `make install` uses the correct
-> rpm-ostree override flags automatically. No extra steps needed.
+> **Silverblue / Kinoite (rpm-ostree hosts):** `/usr` is read-only there, and
+> `make install` refuses before writing anything unless you point the system
+> directories at `/etc`:
+>
+> ```sh
+> sudo make install SYSUSERS=/etc/sysusers.d TMPFILES=/etc/tmpfiles.d \
+>     SYSTEMD=/etc/systemd/system POLKIT=/etc/polkit-1/rules.d
+> ```
+>
+> The privileged helpers still install under `/usr/lib/sysknife`, so the
+> install does not complete on rpm-ostree yet; see
+> [Distro Support](distro-support.md) and
+> [#301](https://github.com/lacs-project/sysknife/issues/301).
 
 ---
 
@@ -270,23 +281,32 @@ The role granted to a token-authenticated connection comes from a separate
 env var, `SYSKNIFE_TOKEN_ROLE` (default `Dev` if unset), read by the daemon
 process — not from the file contents.
 
-The default token path is `~/.config/sysknife/token` (the daemon's XDG config
-directory, next to `prefs.md`; respects `$XDG_CONFIG_HOME` if set), not
-`/etc/sysknife/token`.
+The daemon reads its token from `$XDG_CONFIG_HOME/sysknife/token`, falling
+back to `~/.config/sysknife/token`, next to `prefs.md`, in the home of the
+account the **daemon** runs as. The packaged unit runs as the `sysknife` system
+user, whose home is `/var/lib/sysknife`, so the file is
+`/var/lib/sysknife/.config/sysknife/token`, owned by `sysknife`, mode `0600`.
+A token in your own login's home is never read. The daemon rejects a token
+file that group or other can read.
+
+The packaged unit also listens on the Unix socket only. Switch it to vsock with
+a drop-in; the Unix socket then goes away, so the SSH tunnel stops working on
+that daemon.
 
 ```sh
 # On the host — generate a token
 openssl rand -hex 32
 # e.g.: a3f8c2d1e4b7a0f9...
 
-# On the guest — write the token to the daemon's token file
-mkdir -p ~/.config/sysknife
-echo "a3f8c2d1e4b7a0f9..." > ~/.config/sysknife/token
-chmod 600 ~/.config/sysknife/token
+# On the guest — write the token to the daemon account's token file
+sudo install -d -o sysknife -g sysknife -m 0700 /var/lib/sysknife/.config/sysknife
+echo "a3f8c2d1e4b7a0f9..." | sudo install -o sysknife -g sysknife -m 0600 \
+    /dev/stdin /var/lib/sysknife/.config/sysknife/token
 
-# Grant Admin to token-authenticated vsock connections (default is Dev)
+# Listen on vsock, and optionally raise the token's role (default is Dev)
 sudo systemctl edit sysknife-daemon
 # Add under [Service]:
+#   Environment="SYSKNIFE_LISTEN_URI=vsock://:9734"
 #   Environment=SYSKNIFE_TOKEN_ROLE=admin
 
 # Restart the daemon to pick up the token and role
@@ -296,7 +316,7 @@ sudo systemctl restart sysknife-daemon
 The token file contains just the raw token, with no role prefix:
 
 ```text
-# ~/.config/sysknife/token
+# /var/lib/sysknife/.config/sysknife/token
 <paste-token-here>
 ```
 
@@ -366,7 +386,7 @@ Set `SYSKNIFE_TOKEN` in the `env` block of `.mcp.json` (see above).
 ### "authentication failed" on vsock
 
 The token on the host (`SYSKNIFE_TOKEN` in `.mcp.json`) does not match the
-contents of `~/.config/sysknife/token` on the guest. Verify both match
+contents of `/var/lib/sysknife/.config/sysknife/token` on the guest. Verify both match
 exactly (the file should hold just the raw token, no `role:` prefix).
 
 ### SSH tunnel drops when the terminal closes
@@ -391,6 +411,6 @@ restart the VM.
   processes from connecting. Keep it out of version control — add `.mcp.json`
   to `.gitignore`.
 - **Socket file permissions:** the daemon socket at `/run/sysknife/daemon.sock`
-  is owned by `root:sysknife` with mode `0660` — only members of the
+  is owned by `sysknife:sysknife` with mode `0660` — only members of the
   `sysknife` group can connect locally. The SSH tunnel and vsock bypass this
   by terminating at the daemon's authenticated IPC layer.

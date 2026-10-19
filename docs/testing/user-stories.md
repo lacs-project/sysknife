@@ -6,7 +6,8 @@ COSMIC Atomic). Run inside a QEMU/KVM VM via `tests/e2e/atomic-vm.sh`, or on
 real hardware.
 
 These twenty are a readable subset, not the suite: the atomic family is 54
-stories and the Ubuntu family a further 99, all in `tests/e2e/stories/`. The
+stories and the Ubuntu family a further 99 (79 of them in the recorded
+live-VM runs), all in `tests/e2e/stories/`. The
 harness runs the family; this file explains twenty of them in prose.
 
 Each story has:
@@ -17,6 +18,12 @@ Each story has:
 - **Automated** — whether the `run-stories.sh` harness exercises it
 - **Pass criteria** — concrete conditions for success
 - **Cleanup** — how to revert any system changes
+
+`run-stories.sh` checks plan structure only: action names, step counts, risk
+levels and parameters in the `--dry-run --json` output. Pass criteria about
+execution output, timing or on-host effects (a `/dev/` line in `df` output, a
+key landing in `authorized_keys`) are what to look for when you run a story by
+hand against a real VM; no script asserts them.
 
 The **automated** stories (1–7, 11–17) are also covered by the container-based
 CI smoke test (see `.github/workflows/e2e.yml`). The **semi-automated** stories
@@ -237,7 +244,8 @@ CI smoke test (see `.github/workflows/e2e.yml`). The **semi-automated** stories
 - Goes directly to `propose_plan` — explicit key and username in the intent,
   no decision needed
 - Proposes `AddAuthorizedKey` with `{username: "lacsdev", public_key: "ssh-ed25519 ..."}`
-- Plan marked `approvalRequired: true`, risk `medium`
+- Plan marked `approvalRequired: true`, risk `high` (an SSH key is an
+  access-control change, the same class as `AddUserToGroup`)
 - The public_key param must NOT be truncated or modified
 
 **Automated:** only with `SYSKNIFE_ALLOW_DESTRUCTIVE=1`
@@ -254,23 +262,26 @@ CI smoke test (see `.github/workflows/e2e.yml`). The **semi-automated** stories
 
 ---
 
-## Story 11: Deployment status + kernel arguments
+## Story 11: Post-update diagnostic, four actions
 
-**Persona:** Developer curious about the booted OSTree commit and boot configuration.
+**Persona:** User whose system misbehaves after an rpm-ostree update.
 
-**Intent:** `"show me the current deployment status and what kernel arguments are set"`
+**Intent:** `"My system has been acting weird since yesterday's rpm-ostree
+update — show me the full deployment history, what packages I've layered on
+top of the base, whether any systemd services are currently in a failed state,
+and how much disk space is left"`
 
 **Expected LLM behavior:**
-- Goes directly to `propose_plan` — two independent read-only requests, no
-  decision needed
-- Proposes a 2-step plan: `ListDeployments` + `GetKernelArguments` (either order)
-- Both steps Low risk, no approval required
+- Resists the diagnostic framing: no `get_system_state` or `query_*` call
+- Goes straight to `propose_plan` with four read-only actions
 
 **Automated:** yes (read-only)
 
 **Pass criteria:**
-- Plan has exactly 2 steps, both risk `low`
-- Steps contain `ListDeployments` and `GetKernelArguments`
+- Plan contains a deployment action (`ListDeployments` or
+  `GetDeploymentHistory`), `GetLayeredPackages` (or `AptListInstalled` on an
+  apt host), `ListServices` and `GetDiskUsage`
+- Every step is risk `low`
 
 **Cleanup:** none
 
@@ -298,20 +309,21 @@ CI smoke test (see `.github/workflows/e2e.yml`). The **semi-automated** stories
 
 ## Story 13: Service logs for a named service
 
-**Persona:** Admin debugging a network issue by reading firewall service logs.
+**Persona:** Admin checking why SSH logins fail.
 
-**Intent:** `"show me the logs for the firewalld service"`
+**Intent:** `"show me the logs for the sshd service"` (sshd exists on both
+Fedora and Ubuntu, so the story is distro-agnostic)
 
 **Expected LLM behavior:**
 - Goes directly to `propose_plan` — direct read request with an explicit service name
-- Proposes `GetServiceLogs` with `params.unit = "firewalld"` (or `"firewalld.service"`)
+- Proposes `GetServiceLogs` with `params.unit` naming the SSH unit
 - Does NOT call `query_services` or any other query tool first
 
 **Automated:** yes (read-only)
 
 **Pass criteria:**
 - Plan has 1 step, `GetServiceLogs`
-- `params.unit` is `"firewalld"` or `"firewalld.service"`
+- `params.unit` is `"sshd"`, `"sshd.service"`, `"ssh"` or `"ssh.service"`
 - Risk `low`
 
 **Cleanup:** none
@@ -483,7 +495,7 @@ by the manual QA checklist (see `demo-script.md`):
 - **RebaseSystem** — full OS upgrade (requires real network, 20+ min)
 - **RebootSystem** — actual reboot (breaks VM test flow)
 - **Tauri GUI rendering** — the shell's React UI (requires display server;
-  covered by `pnpm test` at component level)
+  covered by `npm test` at component level)
 - **Reconnect banner on daemon crash** — covered by unit tests
 
 ## Running the stories
@@ -512,14 +524,17 @@ installation prerequisites, Windows instructions, and troubleshooting.
 
 ### In CI
 
-See `.github/workflows/e2e.yml`. Triggered manually via `workflow_dispatch` or
-on PRs labeled `e2e`.
+See `.github/workflows/e2e.yml`. Its `scripts-lint` job runs on pushes and
+pull requests that touch the paths it lints. The `container-smoke` job, which
+runs the stories, starts only on a manual `workflow_dispatch`; no PR label
+triggers it.
 
 ### Prompt engineering observations
 
-The system prompt in `crates/sysknife-brain/src/prompt.rs` contains three worked
-examples (A, B, and C). These are **load-bearing** — removing them causes 4 of 7
-read-only stories to fail with GPT-4o.
+The system prompt in `crates/sysknife-brain/src/prompt.rs` now contains six
+worked examples, A through F. They are **load-bearing**: in the measurement
+below, taken when the prompt had three (A, B and C), removing them caused 4 of
+7 read-only stories to fail with GPT-4o.
 
 The original Example A ("check disk usage") was removed — it was a strict
 subset of the prose rule and the current Example A, and added no measurable

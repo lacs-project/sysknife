@@ -23,14 +23,16 @@ plan, approve it, and the daemon executes it step by step with live output and
 automatic rollback on failure.
 
 ```sh
-$ sysknife "install neovim and make sure it starts on login"
+$ sysknife "install nginx and make sure it starts on boot"
 
-Plan  (2 steps)
-──────────────────────────────────────────────────────────
- 1  AddLayeredPackage  neovim             risk: high
- 2  SetServiceEnabled  neovim.service     risk: medium
-──────────────────────────────────────────────────────────
-Approve? [y/N]
+  Install nginx and enable it at boot
+  ──────────────────────────────────────────────────
+  1  AptInstall                        medium  approval required
+     Install the nginx package
+  2  SetServiceEnabled                 medium  approval required
+     Enable nginx.service at boot
+
+  2 steps, medium risk — execute? [y/N]
 ```
 
 The AI cannot run a shell command. It can only propose typed actions. The daemon
@@ -57,8 +59,8 @@ SysKnife gives you:
 
 ```
 ┌─────────────────┐   plan    ┌──────────────────┐  approve  ┌─────────────────┐
-│  sysknife-brain │ ────────► │  sysknife-shell  │ ────────► │ sysknife-daemon │
-│  (unprivileged) │           │  (approval gate) │           │  (root, locked) │
+│  sysknife-brain │ ────────► │ sysknife approve │ ────────► │ sysknife-daemon │
+│  (unprivileged) │           │  (approval gate) │           │ (scoped grants) │
 └─────────────────┘           └──────────────────┘           └─────────────────┘
    LLM + tools                   you review here               executes + audits
 ```
@@ -66,8 +68,8 @@ SysKnife gives you:
 | Component | Privilege | Job |
 |---|---|---|
 | **brain** | none | Talks to the LLM, proposes a typed plan |
-| **shell** | user | Shows you the plan, collects your approval |
-| **daemon** | root | Executes approved actions, writes the audit log |
+| **approval gate** | user | Shows you the plan, collects your approval: `sysknife approve` in a terminal (the paused Tauri shell is a second implementation) |
+| **daemon** | `sysknife` system user, with scoped sudo and polkit grants | Executes approved actions, writes the audit log |
 
 The brain proposes but **cannot touch the system**. The daemon executes but
 **cannot be reached without an approved plan**.

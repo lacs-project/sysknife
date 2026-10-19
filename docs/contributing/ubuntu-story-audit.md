@@ -1,5 +1,14 @@
 # Ubuntu story audit (2026-04-25)
 
+> Historical snapshot. The remediation this audit proposed has since been
+> applied: the Fedora-only stories it lists accept the Ubuntu action (story 4
+> takes `GetFirewallState` or `UfwStatus`, story 46 takes
+> `AptListUpgradable`), and the distro-gated ones carry a
+> `SYSKNIFE_DISTRO_FAMILY` skip guard. The counts below describe the suite on
+> that date. For the current suite run `bash tests/e2e/run-stories.sh
+> --metadata` (54 atomic stories, ids 1-54, and 96 Ubuntu stories, ids
+> 55-150).
+
 ## Summary
 
 - Total stories audited: 116 (104 plan-structure + 12 exec)

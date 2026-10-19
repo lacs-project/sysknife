@@ -88,9 +88,11 @@ one-time receipt printed by `sysknife approve <transaction-id>`.
 | `steps` | `StepToExecute[]` | Approved steps from `sysknife_plan` |
 
 Each `StepToExecute` contains the original `transaction_id`, `action_name`, and
-`params`, plus an `approval_receipt`. Execution halts on the first failed or
-unknown outcome. Results already received remain in the response, followed by
-the interrupted step; subsequent steps are not attempted.
+`params`, plus an `approval_receipt`. Execution halts on the first step whose
+status is anything other than `succeeded`: `failed`, `unknown`, `rolled_back`,
+`canceled`, and `needs_reboot` all stop the plan. Results already received
+remain in the response, followed by the interrupted step; subsequent steps are
+not attempted.
 
 **Output** — `ExecuteOutput`
 
@@ -104,7 +106,7 @@ Each `StepResult`:
 | Field            | Type       | Description                              |
 |------------------|------------|------------------------------------------|
 | `action_name`    | string     | Action whose execution was attempted     |
-| `status`         | string     | `"succeeded"`, `"failed"`, `"unknown"`, etc. |
+| `status`         | string     | `"succeeded"`, `"failed"`, `"unknown"`, `"rolled_back"`, `"canceled"`, `"needs_reboot"` |
 | `summary`        | string     | Human-readable outcome                   |
 | `output`         | `string[]` | Progress lines (ANSI stripped)           |
 | `warnings`       | `string[]` | Daemon warnings or outcome recovery guidance |

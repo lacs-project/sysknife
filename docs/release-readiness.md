@@ -10,7 +10,7 @@ security review.
 Run these on the exact candidate commit and retain the CI links:
 
 - [ ] `cargo fmt --all --check`
-- [ ] `cargo clippy --workspace --all-features --locked -- -D warnings`
+- [ ] `cargo clippy --workspace --all-features --all-targets --locked -- -D warnings`
 - [ ] `cargo nextest run --workspace --locked`
 - [ ] frontend typecheck, 72 tests, production build, and production npm audit
 - [ ] live PostgreSQL migration and store contract
@@ -27,7 +27,7 @@ Run these on the exact candidate commit and retain the CI links:
       without its replay does not count: it publishes a rate nothing has
       reproduced, and `tests/release/cassette-replay-parity.test.sh` fails.
 - [ ] Fedora Silverblue 44 full atomic VM suite passes before the README badge
-      is promoted from **current validation required**.
+      is promoted from **eligible, unvalidated**.
 - [ ] Clean install, preview, terminal approval, execution, audit verification,
       upgrade, rollback/uninstall, and reinstall are exercised with no
       undocumented manual repair.

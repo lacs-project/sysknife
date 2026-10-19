@@ -12,24 +12,21 @@ artefacts.
 
 Tracked in the v0.4.0 milestone. Ubuntu is the primary target today (20.04 and
 later) because that is where the users are; Fedora Atomic 41+ is eligible and its
-rpm-ostree action families work, it just needs a fresh validation run. See
+rpm-ostree action families work, but `make install` cannot finish on a read-only
+`/usr` yet ([#301](https://github.com/lacs-project/sysknife/issues/301)). See
 [docs/distro-support.md](docs/distro-support.md).
 
-- record a current Fedora Silverblue 44 full VM run
+- install on rpm-ostree hosts (#301), then record a current Fedora Silverblue
+  44 full VM run
 - dnf action family (Fedora Workstation non-atomic)
 - pacman action family (Arch/Manjaro)
 
 ## Phase 9: Launch
 
 - record a demo video on real hardware with rollback visible (#32)
-- extend MCP server with direct read-only tools — expose all 63 Observer-level
-  actions (`get_disk_usage`, `list_services`, `get_authorized_keys`, …) as
-  individual MCP tools so Claude Desktop can read live system state in-context;
-  mutating actions remain plan-only to preserve the approval gate
 - Telegram interface (`sysknife-bot`) — approve plans from your phone via
   inline buttons; the viral mechanic
 
 ## Phase 10: Ecosystem
 
-- `sysknife audit export --json` — shareable execution history
 - web dashboard for teams and fleet management

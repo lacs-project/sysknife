@@ -151,7 +151,8 @@ For maintainers — the canonical types are:
   `StoragePoolSection`
 - `crates/sysknife-brain/src/config.rs` — `BrainConfig`, `ProviderConfig`
 - `crates/sysknife-core/src/lib.rs` — `default_listen_uri`,
-  `default_database_path`, `prefs_path`
+  `default_database_path`
+- `crates/sysknife-core/src/config.rs` — `prefs_path`
 
 Adding a new config knob: add the field to `LacsConfig`, surface the env
 var in `apply_defaults_to_env`, and update this document. A test in

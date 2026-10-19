@@ -164,9 +164,13 @@ Sources consulted:
 
 - **Canonical (with hold)**: `sudo sh -c "snap install --channel=<ch> <name> && snap refresh --hold <name>"`
 - **Canonical (auto-update allowed)**: `sudo snap install --channel=<ch> <name>`
-- **SysKnife argv (auto_update=false)**: `["sudo", "sh", "-c", "snap install --channel=<ch> <name> && snap refresh --hold <name>"]`
-- **SysKnife argv (auto_update=true)**: `["sudo", "snap", "install", "--channel=<ch>", "<name>"]`
-- **Status**: ✅ matches
+- **SysKnife argv (auto_update=false, the default)**: `["sudo", "/usr/lib/sysknife/action-steps", "snap-install-hold", "<name>", "<ch>"]`.
+  The helper runs `snap install --channel=<ch> <name>` and then
+  `snap refresh --hold <name>`, and does not hold a failed install. `<ch>`
+  defaults to `stable`.
+- **SysKnife argv (auto_update=true)**: `["sudo", "snap", "install", "--channel=<ch>", "<name>"]`;
+  with no `channel` param, `--channel` is omitted.
+- **Status**: ✅ matches (the hold path runs the canonical pair through the helper)
 - **Notes**: `--channel` format is `<track>/<risk>` (e.g., `latest/stable`, `beta`).
   Default channel when none specified by SysKnife: `stable` (passed as `--channel=stable`).
   The hold-after-install pattern is correct: `snap refresh --hold <name>` pins the snap
@@ -299,12 +303,13 @@ Sources consulted:
 ### UfwStatus — Show firewall status
 
 - **Canonical**: `sudo ufw status verbose`
-- **SysKnife argv**: `["sudo", "ufw", "status", "verbose"]`
+- **SysKnife argv**: `["sudo", "ufw", "status", "verbose"]`; with the optional
+  bool param `numbered: true`, `["sudo", "ufw", "status", "numbered"]`
 - **Status**: ✅ matches
 - **Notes**: `verbose` adds default policies (incoming/outgoing/routed) to the
   output. Without `verbose`, `ufw status` shows only active rules and
-  the Enabled/Disabled state. `status numbered` adds rule numbers, which is
-  how a user finds the `rule_number` argument for `UfwDeleteRule`.
+  the Enabled/Disabled state. `numbered: true` adds rule numbers, which is
+  how the planner finds the `rule_number` argument for `UfwDeleteRule`.
 - **Output format**: Plain text, columns: `To  Action  From` with directional
   qualifiers (`ALLOW`, `ALLOW IN`, `ALLOW OUT`). No JSON output available.
 - **sudo required**: Yes — ufw reads privileged iptables state.

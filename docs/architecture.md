@@ -11,8 +11,9 @@ between planning, presentation, and execution.
 | `crates/sysknife-types/` | `sysknife-types` | Shared domain types |
 | `crates/sysknife-core/` | `sysknife-core` | Config file loading, constants |
 | `crates/sysknife-daemon/` | `sysknife-daemon` | Privileged executor |
+| `crates/sysknife-daemon-test/` | `sysknife-daemon-test` | TAP integration harness for the daemon IPC layer, run in the test VM; not published or installed |
 | `crates/sysknife-proto/` | `sysknife-proto` | Protobuf definitions (future use) |
-| `apps/sysknife-shell/` | `sysknife-shell` | Tauri + React GUI |
+| `apps/sysknife-shell/` | `sysknife-shell` | Tauri + React GUI (development paused) |
 | `apps/sysknife-cli/` | `sysknife` | Production CLI — also used headlessly by E2E stories (`--dry-run --json`) |
 
 ### sysknife-brain
@@ -132,12 +133,13 @@ running anything.
 
 ## Request Flow
 
-1. A user enters intent in the shell.
+1. A user enters intent in the CLI, or an MCP client calls `sysknife_plan`.
 2. The brain proposes a typed plan.
-3. The shell sends each mutating step to the daemon for preview.
+3. The client sends each mutating step to the daemon for preview.
 4. The daemon persists an immutable preview and returns its transaction ID,
    risk level, side effects, reboot requirement, and rollback availability.
-5. The shell shows the preview and captures approval.
+5. The approval gate shows the preview and captures approval: `sysknife
+   approve` in a terminal, or the paused Tauri shell.
    High-risk steps require the user to type the action name explicitly.
 6. The daemon issues a deterministic, domain-separated Ed25519 receipt and
    stores its SHA-256 commitment inside the signed transaction row.
@@ -146,7 +148,7 @@ running anything.
    receipt, then runs the action.
 9. During execution, the daemon streams live stdout output line-by-line
    as `JobProgress` frames.
-10. The shell displays each line as it arrives.
+10. The client displays each line as it arrives.
 11. On failure, if `rollback_available` is true, the daemon runs the
     rollback action automatically and reports the result.
 12. The transaction is persisted to the configured SQLite or PostgreSQL store
@@ -154,8 +156,13 @@ running anything.
 
 ## IPC Protocol
 
-The shell and daemon communicate over a Unix domain socket
-(`$XDG_RUNTIME_DIR/sysknife/daemon.sock` by default, overridable via `SYSKNIFE_LISTEN_URI`).
+Clients (the CLI, the MCP server, and the paused shell) reach the daemon over
+a Unix domain socket or, between a host and a guest VM, over virtio-vsock. The
+packaged unit sets `SYSKNIFE_LISTEN_URI=unix:///run/sysknife/daemon.sock`.
+With the variable unset, the daemon falls back to
+`$XDG_RUNTIME_DIR/sysknife/daemon.sock`, then `/tmp/sysknife-<uid>.sock`, for
+development runs. A Unix peer is identified by its kernel-attested uid
+(`SO_PEERCRED`); a vsock peer authenticates with a pre-shared token.
 
 The framing is a 4-byte little-endian `u32` length prefix followed by
 a UTF-8 JSON body. Each message carries a `"type"` discriminant so
