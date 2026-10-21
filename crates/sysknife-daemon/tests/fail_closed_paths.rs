@@ -110,11 +110,16 @@ async fn approve_denies_when_the_audit_store_cannot_persist() {
     // without the audit key, which is the shape of a real disk/permission
     // failure — and exactly what the `Err(e)` arm is supposed to catch.
     let read_only = TransactionStore::open_read_only(&db_path).unwrap();
+    let audit_key = sysknife_daemon::audit_chain::AuditKey::load_or_generate(
+        &sysknife_daemon::audit_chain::resolve_audit_key_path(&db_path),
+    )
+    .unwrap();
     let state = DaemonState::open_with_audit(
         DaemonConfig::new(ListenTarget::Unix(dir.path().join("b.sock")), &db_path),
         sysknife_daemon::policy::PolicyTable::empty(),
         None,
         Arc::new(SqliteStore::new(read_only)),
+        &audit_key,
     );
     let mut framed = spawn_handler(state, Arc::new(PanicExecutor), CallerRole::Admin).await;
 

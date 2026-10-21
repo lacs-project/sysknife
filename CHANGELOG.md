@@ -12,6 +12,26 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Security
+
+- **`request_hash` is now keyed: an audit export is no longer an offline
+  cracking target.** ([#268](https://github.com/lacs-project/sysknife/issues/268))
+  The column every signed chain row carries was a single unsalted SHA-256 over
+  the action name and the *unredacted* parameters, and `sysknife audit export`
+  serialises it. For a low-entropy, partly-public parameter set — `ConfigureWifi`,
+  where the SSID broadcasts and only the passphrase is unknown — any holder of
+  an export could brute-force the preimage on a GPU. The hash is now an
+  HMAC-SHA256 under a key derived (HKDF, domain-separated) from the audit key,
+  which never leaves the host; the preview/execute binding is unchanged. New
+  rows are written under `chain_version = 4`, so an auditor can tell which
+  scheme each row's hash uses. Rows written by earlier releases keep their
+  original hashes — rewriting them would break their signatures — so the fix
+  is forward-only and legacy rows in an export remain crackable;
+  `docs/the-audit-chain.md` now says so plainly.
+  After upgrading, re-preview anything still pending: a preview stored by an
+  older release carries the old unsalted hash, so its execute fails closed
+  with `stale_approval` rather than running.
+
 ## [0.26.1] — 2026-10-24
 
 ### Security

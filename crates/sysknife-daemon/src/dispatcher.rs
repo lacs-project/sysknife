@@ -182,6 +182,7 @@ fn redact_argv(action_name: &str, params: &Value, args: &[String]) -> Vec<String
 }
 
 use crate::{
+    audit_chain::RequestHashKey,
     auth::{highest_role_from_groups, CallerAttribution},
     executor::{build_action_spec, rollback_spec_for, ActionExecutor},
     preview::preview_action,
@@ -1003,25 +1004,22 @@ fn validate_action_platform(state: &DaemonState, action_name: &str) -> Result<()
 // Request hash
 // ---------------------------------------------------------------------------
 
-/// Compute `SHA-256(action_name || "\x00" || canonical_json(params))`,
-/// hex-encoded.
+/// Compute `HMAC-SHA256(key, action_name || "\x00" || canonical_json(params))`,
+/// hex-encoded, where `key` is derived from the audit key (#268).
 ///
 /// Canonical JSON serialises object keys in sorted order (recursively),
 /// ensuring identical logical params always produce the same hash regardless
 /// of insertion order.
-pub fn compute_request_hash(action_name: &str, params: &Value) -> String {
+///
+/// This was a bare SHA-256 until `chain_version = 4`. The column is signed
+/// into every audit row and exported verbatim, and the preimage is the
+/// *unredacted* request, so an unsalted hash let any holder of an export
+/// brute-force low-entropy parameters offline. Keying it with material that
+/// never leaves the host removes that attack while keeping the
+/// preview/execute binding this function exists for.
+pub fn compute_request_hash(key: &RequestHashKey, action_name: &str, params: &Value) -> String {
     let canonical = canonical_json(params);
-    let mut hasher = Sha256::new();
-    hasher.update(action_name.as_bytes());
-    hasher.update(b"\x00");
-    hasher.update(canonical.as_bytes());
-    let bytes = hasher.finalize();
-    bytes.iter().fold(String::with_capacity(64), |mut s, b| {
-        use std::fmt::Write;
-        // Writing to String via fmt::Write is infallible.
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    key.request_hash(action_name, &canonical)
 }
 
 /// Key under which a previewed `AptAutoremove` records the exact set of packages
@@ -2320,7 +2318,7 @@ async fn handle_preview(
         return send_error(framed, request_id, "unsupported_platform", message).await;
     }
 
-    let request_hash = compute_request_hash(action_name, params);
+    let request_hash = compute_request_hash(&state.request_hash_key, action_name, params);
 
     // Snapshot current state for the preview. collect_state uses
     // std::process::Command (blocking), so offload to the blocking thread pool.
@@ -2727,7 +2725,7 @@ async fn handle_execute(
         return send_error(framed, request_id, "unsupported_platform", message).await;
     }
 
-    let submitted_hash = compute_request_hash(action_name, params);
+    let submitted_hash = compute_request_hash(&state.request_hash_key, action_name, params);
     let prior_tx = match state.audit.get(transaction_id).await {
         Ok(tx) => tx,
         Err(e) => {
@@ -4677,11 +4675,18 @@ mod tests {
         let overrides =
             std::collections::HashMap::from([("ListJobHistory".to_string(), "high".to_string())]);
         let policy = crate::policy::PolicyTable::from_overrides(&overrides).unwrap();
+        // Same key file `test_state` loaded: the derived HMAC key must match
+        // the one behind `real.audit` so hashes compare equal.
+        let audit_key = crate::audit_chain::AuditKey::load_or_generate(
+            &crate::audit_chain::resolve_audit_key_path(&dir.path().join("sysknife-test.db")),
+        )
+        .unwrap();
         let state = crate::state::DaemonState::open_with_audit(
             real.config.clone(),
             policy,
             None,
             real.audit.clone(),
+            &audit_key,
         );
 
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
@@ -5210,14 +5215,67 @@ mod tests {
         );
     }
 
+    /// The live path must be *keyed*, not merely deterministic. The tests
+    /// above check that the same request hashes the same way and that object
+    /// keys sort; a bare `sha256(action || \0 || canonical)` satisfies both,
+    /// so a refactor that drops the key would reopen #268 with this suite
+    /// green. This drives a real preview over the socket and pins the
+    /// response hash to the HMAC under `state.request_hash_key` — revert
+    /// `compute_request_hash` to the old body and it fails.
+    #[tokio::test]
+    async fn preview_request_hash_is_keyed_not_a_bare_sha256() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let key = state.request_hash_key.clone();
+
+        let resps = exchange(
+            state,
+            CallerRole::Observer,
+            vec![json!({
+                "type": "preview",
+                "request_id": "r1",
+                "action_name": "GetMemoryInfo",
+                "params": {}
+            })],
+            1,
+        )
+        .await;
+
+        assert_eq!(resps[0]["type"], "preview_response", "{:?}", resps[0]);
+        let hash = resps[0]["preview"]["request_hash"].as_str().unwrap();
+
+        // Exactly what the dispatcher must have computed: HMAC under the
+        // state's derived key over the canonical framing.
+        let expected = key.request_hash("GetMemoryInfo", &canonical_json(&json!({})));
+        assert_eq!(
+            hash, expected,
+            "the live preview hash must be the HMAC under the daemon's \
+             request_hash_key"
+        );
+
+        // And not what it was before chain_version 4.
+        let mut hasher = Sha256::new();
+        hasher.update(b"GetMemoryInfo");
+        hasher.update(b"\x00");
+        hasher.update(canonical_json(&json!({})).as_bytes());
+        let unsalted = hex::encode(hasher.finalize());
+        assert_ne!(
+            hash, unsalted,
+            "the live path returned the unsalted SHA-256; #268 is open again"
+        );
+    }
+
     #[tokio::test]
     async fn preview_hash_is_deterministic() {
         // The same action + params must always produce the same hash.
+        let key = crate::audit_chain::AuditKey::from_bytes(vec![0x42; 32]).request_hash_key();
         let hash1 = compute_request_hash(
+            &key,
             "InstallFlatpak",
             &json!({"app_id": "org.gnome.Builder", "remote": "flathub"}),
         );
         let hash2 = compute_request_hash(
+            &key,
             "InstallFlatpak",
             &json!({"remote": "flathub", "app_id": "org.gnome.Builder"}),
         );
@@ -5229,10 +5287,17 @@ mod tests {
         // Objects nested inside arrays must also have sorted keys so that
         // {"packages": [{"b": 1, "a": 2}]} and {"packages": [{"a": 2, "b": 1}]}
         // produce the same hash.
-        let hash1 =
-            compute_request_hash("InstallPackages", &json!({"packages": [{"b": 1, "a": 2}]}));
-        let hash2 =
-            compute_request_hash("InstallPackages", &json!({"packages": [{"a": 2, "b": 1}]}));
+        let key = crate::audit_chain::AuditKey::from_bytes(vec![0x42; 32]).request_hash_key();
+        let hash1 = compute_request_hash(
+            &key,
+            "InstallPackages",
+            &json!({"packages": [{"b": 1, "a": 2}]}),
+        );
+        let hash2 = compute_request_hash(
+            &key,
+            "InstallPackages",
+            &json!({"packages": [{"a": 2, "b": 1}]}),
+        );
         assert_eq!(hash1, hash2, "nested object keys in arrays must be sorted");
     }
 
@@ -5240,8 +5305,9 @@ mod tests {
     fn canonical_json_preserves_array_element_order() {
         // Array element order is semantically significant ("install a then b"
         // is different from "install b then a"), so it must be preserved.
-        let hash1 = compute_request_hash("Op", &json!({"items": ["a", "b"]}));
-        let hash2 = compute_request_hash("Op", &json!({"items": ["b", "a"]}));
+        let key = crate::audit_chain::AuditKey::from_bytes(vec![0x42; 32]).request_hash_key();
+        let hash1 = compute_request_hash(&key, "Op", &json!({"items": ["a", "b"]}));
+        let hash2 = compute_request_hash(&key, "Op", &json!({"items": ["b", "a"]}));
         assert_ne!(hash1, hash2, "array element order must be preserved");
     }
 
@@ -6087,11 +6153,16 @@ mod tests {
         let faulty: std::sync::Arc<dyn AuditStore> =
             std::sync::Arc::new(UpdateStatusFails(real.audit.clone()));
         let cfg = real.config.clone();
+        let audit_key = crate::audit_chain::AuditKey::load_or_generate(
+            &crate::audit_chain::resolve_audit_key_path(&dir.path().join("sysknife-test.db")),
+        )
+        .unwrap();
         let state = crate::state::DaemonState::open_with_audit(
             cfg,
             crate::policy::PolicyTable::empty(),
             None,
             faulty,
+            &audit_key,
         );
 
         let (client, server) = tokio::net::UnixStream::pair().unwrap();

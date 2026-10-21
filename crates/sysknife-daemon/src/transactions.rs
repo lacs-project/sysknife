@@ -1377,7 +1377,7 @@ impl TransactionStore {
         // Build the identity once and derive the stored version from it, so the
         // chain_version column is provably the version whose message was signed.
         // A constant here let the two drift the moment a new encoding landed.
-        let identity = ChainIdentity::V3 {
+        let identity = ChainIdentity::V4 {
             caller_role,
             event_tip: &event_tip,
             caller_principal: &caller_principal,
