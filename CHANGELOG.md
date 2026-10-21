@@ -14,6 +14,14 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Security
 
+- **The provider TLS path stops trusting distrusted emSign certificates.**
+  ([#PRNUM](https://github.com/lacs-project/sysknife/pull/PRNUM))
+  RUSTSEC-2026-0381 to 0383: webpki-roots and webpki-root-certs 1.0.7 still
+  bundled the emSign roots, and rustls-webpki 0.103.15 accepted chains through
+  a small set of distrusted intermediates. All three reach the brain through
+  reqwest, which carries every provider call. The lockfile moves to
+  rustls-webpki 0.103.16 and the 1.0.10 root lists; no API changes.
+
 - **rustls moves to 0.23.46.** ([#616](https://github.com/lacs-project/sysknife/pull/616))
   RUSTSEC-2026-0346 to 0349 reached the brain through reqwest, which carries
   provider calls, and the daemon through sqlx's Postgres TLS. The worst of the
