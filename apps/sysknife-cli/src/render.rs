@@ -175,6 +175,13 @@ pub fn print_output_line(line: &str, log: &Logger) {
 /// Print the step result icon and summary via `log`.
 pub fn print_step_done(result: &ResultEnvelope, log: &Logger) {
     let (icon, label) = match result.status {
+        JobState::Queued => ("○".to_string(), "queued"),
+        JobState::Running => (
+            "●"
+                .if_supports_color(Stream::Stdout, |t| t.cyan())
+                .to_string(),
+            "running",
+        ),
         JobState::Succeeded => (
             "✓"
                 .if_supports_color(Stream::Stdout, |t| t.green())
@@ -187,23 +194,35 @@ pub fn print_step_done(result: &ResultEnvelope, log: &Logger) {
                 .to_string(),
             "failed",
         ),
+        JobState::Canceled => (
+            "⊘"
+                .if_supports_color(Stream::Stdout, |t| t.yellow())
+                .to_string(),
+            "canceled",
+        ),
+        JobState::RolledBack => (
+            "↩"
+                .if_supports_color(Stream::Stdout, |t| t.cyan())
+                .to_string(),
+            "rolled back",
+        ),
         JobState::NeedsReboot => (
             "↺"
                 .if_supports_color(Stream::Stdout, |t| t.yellow())
                 .to_string(),
             "needs reboot",
         ),
-        _ => (
-            "⚠"
-                .if_supports_color(Stream::Stdout, |t| t.yellow())
-                .to_string(),
-            "unknown",
-        ),
     };
     log.println(&format!(
         "  {icon}  {} — {label}",
         operator_safe(&result.summary)
     ));
+    if let Some(rollback_ref) = &result.rollback_ref {
+        log.println(&format!(
+            "    rolled back with: {}",
+            operator_safe(rollback_ref)
+        ));
+    }
     if result.needs_reboot {
         log.println(&format!(
             "    {} reboot required",
@@ -367,6 +386,72 @@ pub fn print_doctor_fail(socket: &str, error: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn result_with_status(status: JobState) -> ResultEnvelope {
+        ResultEnvelope {
+            status,
+            summary: "test action".to_owned(),
+            warnings: Vec::new(),
+            job_id: None,
+            needs_reboot: false,
+            rollback_ref: None,
+            transaction_id: "test-transaction".to_owned(),
+        }
+    }
+
+    fn render_step_done_to_string(result: &ResultEnvelope) -> String {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("step.log");
+        let log = Logger::new(Some(&path)).expect("logger");
+        print_step_done(result, &log);
+        std::fs::read_to_string(&path).expect("logger tee")
+    }
+
+    #[test]
+    fn print_step_done_renders_every_job_state_explicitly() {
+        let states = [
+            (JobState::Queued, "queued"),
+            (JobState::Running, "running"),
+            (JobState::Succeeded, "succeeded"),
+            (JobState::Failed, "failed"),
+            (JobState::Canceled, "canceled"),
+            (JobState::RolledBack, "rolled back"),
+            (JobState::NeedsReboot, "needs reboot"),
+        ];
+
+        for (status, label) in states {
+            let rendered = render_step_done_to_string(&result_with_status(status));
+            assert!(
+                rendered.contains(&format!("— {label}")),
+                "{status:?} must render as {label:?}; got: {rendered:?}"
+            );
+            assert!(
+                !rendered.contains("unknown"),
+                "{status:?} must never render as unknown; got: {rendered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn print_step_done_displays_rollback_reference_without_warning_icon() {
+        let mut result = result_with_status(JobState::RolledBack);
+        result.rollback_ref = Some("rpm-ostree rollback".to_owned());
+
+        let rendered = render_step_done_to_string(&result);
+
+        assert!(
+            rendered.contains("rolled back with: rpm-ostree rollback"),
+            "rollback output must identify the recovery action; got: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("unknown"),
+            "a successful rollback must not be rendered as unknown; got: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains('⚠'),
+            "a successful rollback must not use the warning icon; got: {rendered:?}"
+        );
+    }
 
     #[test]
     fn risk_colored_low_renders_low_with_a_dot_marker() {

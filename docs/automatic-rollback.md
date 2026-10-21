@@ -128,8 +128,10 @@ every other job result:
   (`forward_status_change_event`) so `RolledBack` is visible to external
   monitoring, not just the local database.
 - The `JobResult` returned to the client includes `rollback_ref` (currently
-  the literal string `"rpm-ostree rollback"`) so the caller — CLI, MCP tool,
-  or GUI — can show what was reverted.
+  the literal string `"rpm-ostree rollback"`) so the caller can show what was
+  reverted. The CLI renders a distinct `rolled back` status and prints
+  `rolled back with: rpm-ostree rollback`; MCP and GUI callers can use the
+  structured field directly.
 
 One nuance worth knowing: the Ed25519 hash chain in
 `crates/sysknife-daemon/src/audit_chain.rs` signs the **immutable fields**
