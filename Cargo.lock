@@ -4864,6 +4864,8 @@ dependencies = [
  "chrono",
  "ed25519-dalek",
  "hex",
+ "hkdf",
+ "hmac",
  "libc",
  "rusqlite",
  "serde",

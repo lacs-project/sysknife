@@ -1118,7 +1118,7 @@ async fn insert_transaction(
 
     // As in the SQLite path: derive the stored version from the identity that was
     // signed, so the column cannot disagree with the message.
-    let identity = ChainIdentity::V3 {
+    let identity = ChainIdentity::V4 {
         caller_role,
         event_tip: &event_tip,
         caller_principal: &caller_principal,

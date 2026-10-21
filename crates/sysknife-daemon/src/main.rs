@@ -88,9 +88,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Cloud SQL, Azure Flexible, Supabase, Neon, or self-hosted) — strongly
     // recommended when audit history must survive host loss.
     let state = match build_postgres_audit(lacs_config.storage.as_ref()).await {
-        Ok(Some(audit)) => {
+        Ok(Some((audit, audit_key))) => {
             eprintln!("[sysknife-daemon] storage: using Postgres backend (URL hidden)");
-            DaemonState::open_with_audit(config, policy, forwarder, audit)
+            DaemonState::open_with_audit(config, policy, forwarder, audit, &audit_key)
         }
         Ok(None) => {
             eprintln!(
@@ -456,7 +456,13 @@ fn build_forwarder(
 /// `docs/storage-cloud.md` for provider guidance and compatibility limits.
 async fn build_postgres_audit(
     storage: Option<&sysknife_core::config::StorageSection>,
-) -> Result<Option<std::sync::Arc<dyn sysknife_daemon::store::AuditStore>>, std::io::Error> {
+) -> Result<
+    Option<(
+        std::sync::Arc<dyn sysknife_daemon::store::AuditStore>,
+        sysknife_daemon::audit_chain::AuditKey,
+    )>,
+    std::io::Error,
+> {
     use sysknife_daemon::audit_chain;
     use sysknife_daemon::store::postgres::PostgresConfig;
     use sysknife_daemon::store::PostgresStore;
@@ -501,10 +507,12 @@ async fn build_postgres_audit(
     let key = audit_chain::AuditKey::load_or_generate(&key_path)
         .map_err(|e| std::io::Error::other(format!("audit key load failed: {e}")))?;
 
-    let store = PostgresStore::connect(&cfg, std::sync::Arc::new(key))
+    let store = PostgresStore::connect(&cfg, std::sync::Arc::new(key.clone()))
         .await
         .map_err(|e| std::io::Error::other(format!("postgres connect failed: {e}")))?;
-    Ok(Some(std::sync::Arc::new(store)))
+    // The key comes back so `DaemonState` can derive the `request_hash` HMAC
+    // key from the same material the chain signatures use (#268).
+    Ok(Some((std::sync::Arc::new(store), key)))
 }
 
 #[cfg(test)]

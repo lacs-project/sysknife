@@ -2005,7 +2005,7 @@ mod tests {
                 approval_id: None,
                 warnings_json: "[]",
                 created_at: "2026-09-22T00:00:00Z",
-                identity: ChainIdentity::V3 {
+                identity: ChainIdentity::V4 {
                     caller_role: "dev",
                     event_tip: "",
                     caller_principal: "uid:1000",
