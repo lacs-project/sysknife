@@ -387,7 +387,33 @@ jobs:
           - Close this issue once both are done.
           EOF
 
-          gh issue create --repo "$REPO" \
-            --title "Post-release manual steps for ${VERSION}" \
-            --body-file body.md \
-            --assignee "$ACTOR"
+          # A failed later job can rerun this step for the same tag. Keep that
+          # tag's issue, but close older checklists that point at stale artifacts.
+          checklist_prefix="Post-release manual steps for "
+          checklist_title="${checklist_prefix}${VERSION}"
+          open_checklists="$(gh issue list --repo "$REPO" --state open \
+            --search 'in:title "Post-release manual steps for"' \
+            --limit 100 --json number,title \
+            --jq '.[] | [.number, .title] | @tsv')"
+          current_issue=""
+          while IFS=$'\t' read -r number title; do
+            [[ -n "$number" ]] || continue
+            [[ "$title" == "$checklist_prefix"* ]] || continue
+            if [[ "$title" == "$checklist_title" ]]; then
+              current_issue="$number"
+              continue
+            fi
+            gh issue close "$number" --repo "$REPO" \
+              --comment "Superseded by ${VERSION}."
+          done <<< "$open_checklists"
+
+          if [[ -z "$current_issue" ]]; then
+            gh issue create --repo "$REPO" \
+              --title "$checklist_title" \
+              --body-file body.md \
+              --assignee "$ACTOR" \
+              --label documentation \
+              --label maintainer-only
+          else
+            echo "Checklist for ${VERSION} already exists as #${current_issue}; skipping creation"
+          fi
