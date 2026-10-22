@@ -9,8 +9,7 @@
 //!
 //! The exchange here is the one every client performs on connect —
 //! `initialize`, the `notifications/initialized` acknowledgement, then
-//! `tools/list`. It needs no daemon: the tool catalogue is registered
-//! statically by `#[tool_router]`.
+//! `tools/list`. With no daemon, discovery falls back to the local distro.
 
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Write};
@@ -51,9 +50,7 @@ impl McpChild {
         let mut command = Command::new(env!("CARGO_BIN_EXE_sysknife"));
         command
             .arg("mcp-server")
-            // Point at a socket that cannot exist. `tools/list` never touches
-            // the daemon, and this makes sure the test is not quietly relying
-            // on a real one being up on the developer's machine.
+            // Exercise startup fallback without relying on a developer's daemon.
             .env("SYSKNIFE_SOCKET", "/nonexistent/sysknife-mcp-test.sock")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -112,6 +109,71 @@ impl Drop for McpChild {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn tools_list_uses_the_daemons_distro_and_falls_back_for_old_daemons() {
+    use std::io::Read;
+    use std::os::unix::net::UnixListener;
+    use sysknife_core::distro::DistroId;
+
+    for distro in [
+        Some(DistroId::Ubuntu {
+            major: 24,
+            minor: 4,
+        }),
+        Some(DistroId::Fedora { version: 41 }),
+        None,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("daemon.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let remote = distro.clone();
+        let daemon = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut size = [0; 4];
+            stream.read_exact(&mut size).unwrap();
+            let mut bytes = vec![0; u32::from_le_bytes(size) as usize];
+            stream.read_exact(&mut bytes).unwrap();
+            let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(request["type"], "query_state");
+            let mut state = serde_json::json!({"host_name": "remote", "deployment": ""});
+            if let Some(distro) = remote {
+                state["host_distro"] = serde_json::to_value(distro).unwrap();
+            }
+            let response = serde_json::to_vec(&serde_json::json!({
+                "type": "state_response", "request_id": request["request_id"], "state": state
+            }))
+            .unwrap();
+            stream
+                .write_all(&(response.len() as u32).to_le_bytes())
+                .unwrap();
+            stream.write_all(&response).unwrap();
+        });
+        let mut server = McpChild::spawn_with_env(&[("SYSKNIFE_SOCKET", socket.as_os_str())]);
+        server.send(
+            &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "remote-distro-test", "version": "0"}}}),
+        );
+        assert!(server.recv_response().get("error").is_none());
+        server.send(&serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+        server.send(
+            &serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+        );
+        let response = server.recv_response();
+        let tools = response["result"]["tools"].as_array().unwrap();
+        let has_ufw = tools
+            .iter()
+            .any(|tool| tool["name"] == "sysknife_ufw_status");
+        let effective = distro.or_else(|| sysknife_core::distro::detect().ok());
+        let expected = effective.as_ref().is_some_and(|d| {
+            d.family() == sysknife_core::distro::DistroFamily::Debian && d.is_supported()
+        });
+        assert_eq!(has_ufw, expected, "{effective:?}: {response}");
+        assert!(tools.iter().any(|tool| tool["name"] == "sysknife_plan"));
+        daemon.join().unwrap();
     }
 }
 
@@ -222,6 +284,57 @@ fn the_mcp_server_completes_a_real_initialize_and_tools_list_over_stdio() {
             );
         }
     }
+}
+
+#[test]
+fn doctor_remembers_that_tools_were_registered_before_the_daemon_started() {
+    use std::io::Read;
+    use std::os::unix::net::UnixListener;
+
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("late-daemon.sock");
+    let mut server = McpChild::spawn_with_env(&[("SYSKNIFE_SOCKET", socket.as_os_str())]);
+    server.send(
+        &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "fallback-test", "version": "0"}}}),
+    );
+    assert!(server.recv_response().get("error").is_none());
+    // Discovery is complete. Bring the daemon up before doctor runs.
+    let listener = UnixListener::bind(&socket).unwrap();
+    let daemon = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut size = [0; 4];
+        stream.read_exact(&mut size).unwrap();
+        let mut bytes = vec![0; u32::from_le_bytes(size) as usize];
+        stream.read_exact(&mut bytes).unwrap();
+        let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let response = serde_json::to_vec(&serde_json::json!({
+            "type": "state_response", "request_id": request["request_id"],
+            "state": {"host_name": "late-host", "deployment": "",
+                "host_distro": {"Ubuntu": {"major": 24, "minor": 4}}}
+        }))
+        .unwrap();
+        stream
+            .write_all(&(response.len() as u32).to_le_bytes())
+            .unwrap();
+        stream.write_all(&response).unwrap();
+    });
+    server.send(&serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    server.send(
+        &serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "sysknife_doctor", "arguments": {}}}),
+    );
+    let response = server.recv_response();
+    assert!(response.get("error").is_none(), "{response}");
+    assert!(
+        response
+            .to_string()
+            .contains("local distro fallback at startup"),
+        "{response}"
+    );
+    assert!(response.to_string().contains("Ubuntu 24.04"), "{response}");
+    daemon.join().unwrap();
 }
 
 /// `resources/read` must answer with a finished read, never with an

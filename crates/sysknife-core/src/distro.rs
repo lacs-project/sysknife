@@ -132,7 +132,7 @@ pub struct OsRelease {
 }
 
 /// Typed distro identity derived from [`OsRelease`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DistroId {
     /// Plain Fedora (Workstation, Server, …).
     Fedora { version: u32 },

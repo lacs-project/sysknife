@@ -381,8 +381,11 @@ pub struct DoctorReport {
     /// Configured brain model identifier.
     pub brain_model: String,
     /// Detected Linux distribution, e.g. `"Ubuntu 24.04"` or `"Fedora 41"`.
-    /// Set to `"unknown (<reason>)"` when `/etc/os-release` cannot be read.
+    /// Set to `"unknown"` when neither daemon nor local detection supplies it.
     pub distro: String,
+    /// Whether the distro came from the daemon or the compatibility fallback.
+    #[serde(default)]
+    pub distro_source: String,
     /// Resolved audit DB path. For Postgres deployments, the literal string
     /// `"postgres"` instead of a filesystem path.
     pub audit_db_path: String,
@@ -537,6 +540,7 @@ pub struct AuditVerifyReport {
 #[derive(Debug, Clone)]
 pub struct SysknifeMcpServer {
     tool_router: ToolRouter<Self>,
+    discovery_used_local_fallback: bool,
 }
 
 /// Observer-callable actions that are proven read-only and may therefore be
@@ -616,13 +620,19 @@ const MCP_READ_ONLY_ACTIONS: &[&str] = &[
 
 impl SysknifeMcpServer {
     fn new() -> Self {
-        let distro = sysknife_core::distro::detect().ok();
-        Self::for_distro(distro.as_ref())
+        let target = DaemonClient::new(resolve_socket_target()).target_distro();
+        if let Some(warning) = target.warning() {
+            eprintln!("sysknife: {warning}");
+        }
+        let mut server = Self::for_distro(target.distro.as_ref());
+        server.discovery_used_local_fallback = target.source != "daemon";
+        server
     }
 
     fn for_distro(distro: Option<&DistroId>) -> Self {
         Self {
             tool_router: Self::tool_router() + direct_read_only_tool_router(distro),
+            discovery_used_local_fallback: false,
         }
     }
 }
@@ -834,8 +844,12 @@ impl SysknifeMcpServer {
         description = "Diagnose SysKnife: pings the daemon, reports the configured brain provider/model, the audit DB path, and a quick audit-chain status (intact/broken/unknown). Read-only and safe to call without prior sysknife_plan."
     )]
     async fn sysknife_doctor(&self) -> Result<Json<DoctorReport>, ErrorData> {
+        let mut report = doctor_inner().await;
+        if self.discovery_used_local_fallback {
+            report.warnings.push("MCP tools were registered using the local distro fallback at startup; restart this MCP server after the daemon is ready to refresh its tool list.".into());
+        }
         Ok(Json(
-            sanitised(doctor_inner().await).map_err(|e| ErrorData::internal_error(e, None))?,
+            sanitised(report).map_err(|e| ErrorData::internal_error(e, None))?,
         ))
     }
 
@@ -952,9 +966,7 @@ async fn plan_intent_inner(intent: &str) -> Result<serde_json::Value, String> {
 
     let state_client = DaemonClient::new(resolve_socket_target());
 
-    // Detect the running distro and pass a hint to the planner so it picks
-    // the right action family up front.  Failure is non-fatal.
-    let distro = sysknife_core::distro::detect().ok();
+    let distro = state_client.target_distro().distro;
 
     let mut planner = LlmPlanner::from_config(config, Box::new(state_client))
         .map_err(|e| format!("planner init error: {e}"))?;
@@ -1236,29 +1248,25 @@ async fn doctor_at_socket(socket: SocketTarget) -> DoctorReport {
     // back into SYSKNIFE_SOCKET. Must match what `sysknife doctor` prints.
     let socket_label = socket.label();
 
-    // Detect the running distro — non-fatal if /etc/os-release is absent.
-    let distro = match sysknife_core::distro::detect() {
-        Ok(d) => d.to_string(),
-        Err(e) => {
-            let label = format!("unknown ({})", e);
-            warnings.push(format!("distro detection failed: {e}"));
-            label
-        }
-    };
-
     // Daemon connectivity — `curated_state` is sync, so spawn_blocking.
     let client = DaemonClient::new(socket);
-    let daemon_reachable = match tokio::task::spawn_blocking(move || client.curated_state()).await {
-        Ok(Ok(_)) => true,
-        Ok(Err(e)) => {
-            warnings.push(format!("daemon unreachable: {e}"));
-            false
-        }
-        Err(e) => {
-            warnings.push(format!("daemon ping join error: {e}"));
-            false
-        }
-    };
+    let (daemon_reachable, remote_distro) =
+        match tokio::task::spawn_blocking(move || client.state_with_distro()).await {
+            Ok(Ok((_, distro))) => (true, distro),
+            Ok(Err(e)) => {
+                warnings.push(format!("daemon unreachable: {e}"));
+                (false, None)
+            }
+            Err(e) => {
+                warnings.push(format!("daemon ping join error: {e}"));
+                (false, None)
+            }
+        };
+    let target = crate::client::TargetDistro::resolve(remote_distro);
+    let distro = target.label();
+    if let Some(warning) = target.warning() {
+        warnings.push(warning.into());
+    }
 
     // Brain provider/model — fall back to placeholders if config is missing
     // (e.g. operator hasn't run `sysknife-setup` yet).
@@ -1293,6 +1301,7 @@ async fn doctor_at_socket(socket: SocketTarget) -> DoctorReport {
         brain_provider,
         brain_model,
         distro,
+        distro_source: target.source.into(),
         audit_db_path,
         audit_chain_status,
         warnings,
@@ -1817,6 +1826,7 @@ mod boundary_tests {
             brain_provider: "anthropic".to_string(),
             brain_model: "claude-sonnet-4-6".to_string(),
             distro: "Ubuntu 24.04".to_string(),
+            distro_source: "daemon".to_string(),
             audit_db_path: "/var/lib/sysknife/daemon.sqlite".to_string(),
             audit_chain_status: "intact".to_string(),
             warnings: vec!["a warning".to_string()],

@@ -1000,20 +1000,27 @@ pub async fn run_doctor(
     let socket_label = socket.label();
     let client = DaemonClient::new(socket);
 
-    // Detect the running distro once; failure is non-fatal for doctor.
-    let distro_label = match sysknife_core::distro::detect() {
-        Ok(d) => d.to_string(),
-        Err(e) => format!("unknown ({})", e),
-    };
-
     // `curated_state` is a blocking sync call; use spawn_blocking so the
     // multi-threaded runtime is not blocked on one thread indefinitely.
-    let state_result = tokio::task::spawn_blocking(move || client.curated_state())
+    let state_result = tokio::task::spawn_blocking(move || client.state_with_distro())
         .await
         .map_err(|e| CliError::ConfigOrDaemon(format!("join: {e}")))?;
 
+    let target = crate::client::TargetDistro::resolve(
+        state_result
+            .as_ref()
+            .ok()
+            .and_then(|(_, distro)| distro.clone()),
+    );
+    let distro_label = target.label();
+    if !json_out {
+        log.print_stderr(&format!("distro source: {}", target.source));
+        if let Some(warning) = target.warning() {
+            log.print_stderr(&format!("warning: {warning}"));
+        }
+    }
     match state_result {
-        Ok(state) => {
+        Ok((state, _)) => {
             if json_out {
                 let out = json!({
                     "ok": true,
@@ -1022,6 +1029,8 @@ pub async fn run_doctor(
                     "provider": config.provider_name(),
                     "model": config.model_name(),
                     "distro": distro_label,
+                    "distro_source": target.source,
+                    "warnings": target.warning().into_iter().collect::<Vec<_>>(),
                 });
                 log.println(&serde_json::to_string(&out).expect("static JSON"));
             } else {
@@ -1039,7 +1048,9 @@ pub async fn run_doctor(
         Err(e) => {
             if json_out {
                 // Scripts need to know which socket failed, not just that one did.
-                let out = json!({ "ok": false, "socket": socket_label, "error": e.to_string() });
+                let out = json!({ "ok": false, "socket": socket_label, "error": e.to_string(),
+                    "distro": distro_label, "distro_source": target.source,
+                    "warnings": target.warning().into_iter().collect::<Vec<_>>() });
                 log.println(&serde_json::to_string(&out).expect("static JSON"));
             } else {
                 crate::render::print_doctor_fail(&socket_label, &e.to_string());
@@ -2086,10 +2097,9 @@ fn gate_action(decision: ApprovalDecision, highest: &PlanRiskLevel) -> GateActio
 pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<(), CliError> {
     let config = BrainConfig::from_env().map_err(|e| CliError::ConfigOrDaemon(e.to_string()))?;
 
-    // Detect the running distro once at intent startup.
-    // Failure is non-fatal: routing checks are skipped when detection fails
-    // (the daemon will produce its own error at execution time).
-    let distro = sysknife_core::distro::detect().ok();
+    // The daemon may be remote: plan and route against its distribution.
+    let plan_client = DaemonClient::new(opts.socket.clone());
+    let distro = plan_client.target_distro().distro;
 
     // Captured before `config` is moved into the planner below.
     let provider_label = config.provider_name().to_string();
@@ -2100,8 +2110,6 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     if let Some(notice) = config.provider_guess_notice() {
         eprintln!("! {notice}");
     }
-
-    let plan_client = DaemonClient::new(opts.socket.clone());
 
     // Layer 3: planning event channel — planner emits PlanEvent as it works;
     // the CLI subscribes and updates the spinner message in real time.

@@ -37,6 +37,7 @@ use std::time::Duration;
 use serde_json::Value;
 use sysknife_brain::planner::PlanningError;
 use sysknife_brain::state_client::{CuratedState, StateClient};
+use sysknife_core::distro::DistroId;
 use sysknife_types::MAX_MESSAGE_BYTES;
 use sysknife_types::{ApprovalReceipt, PreviewEnvelope, ResultEnvelope, TransactionId};
 
@@ -79,6 +80,44 @@ impl ExecuteFailure {
 }
 
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Distribution used for planning and tool discovery, with diagnostic provenance.
+pub(crate) struct TargetDistro {
+    pub distro: Option<DistroId>,
+    pub source: &'static str,
+}
+
+impl TargetDistro {
+    pub(crate) fn resolve(remote: Option<DistroId>) -> Self {
+        Self::resolve_with(remote, || sysknife_core::distro::detect().ok())
+    }
+
+    fn resolve_with(remote: Option<DistroId>, local: impl FnOnce() -> Option<DistroId>) -> Self {
+        match remote {
+            Some(distro) => Self {
+                distro: Some(distro),
+                source: "daemon",
+            },
+            None => Self {
+                distro: local(),
+                source: "local fallback",
+            },
+        }
+    }
+
+    pub(crate) fn label(&self) -> String {
+        self.distro
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "unknown".into())
+    }
+
+    pub(crate) fn warning(&self) -> Option<&'static str> {
+        (self.source != "daemon").then_some(
+            "daemon distro unavailable; using local fallback. The daemon may be unreachable or too old to report its distro. Restart the MCP server after the daemon is ready to refresh its tool list."
+        )
+    }
+}
 
 /// Longest gap tolerated between frames while an action streams.
 ///
@@ -443,6 +482,21 @@ impl DaemonClient {
     // ------------------------------------------------------------------
 
     fn curated_state_inner(&self) -> Result<CuratedState, PlanningError> {
+        self.state_with_distro().map(|(state, _)| state)
+    }
+
+    pub(crate) fn target_distro(&self) -> TargetDistro {
+        self.target_distro_with(|| sysknife_core::distro::detect().ok())
+    }
+
+    fn target_distro_with(&self, local: impl FnOnce() -> Option<DistroId>) -> TargetDistro {
+        TargetDistro::resolve_with(self.state_with_distro().ok().and_then(|(_, d)| d), local)
+    }
+
+    /// One QueryState exchange supplies both connectivity and target identity.
+    pub(crate) fn state_with_distro(
+        &self,
+    ) -> Result<(CuratedState, Option<DistroId>), PlanningError> {
         let mut stream = self.connect_sync()?;
 
         let req = serde_json::to_vec(&serde_json::json!({
@@ -471,7 +525,7 @@ impl DaemonClient {
                     .as_str()
                     .ok_or_else(|| PlanningError::StateUnavailable("missing host_name".into()))?;
                 let deployment = s["deployment"].as_str().unwrap_or("");
-                CuratedState::new(
+                let state = CuratedState::new(
                     host,
                     deployment,
                     string_array("services", &s["services"])?,
@@ -481,7 +535,13 @@ impl DaemonClient {
                     string_array("containers", &s["containers"])?,
                     string_array("users", &s["users"])?,
                 )
-                .map_err(PlanningError::StateUnavailable)
+                .map_err(PlanningError::StateUnavailable)?;
+                // Missing/null fields are normal for old daemons. Unknown future
+                // variants also use the compatibility fallback.
+                let distro = s
+                    .get("host_distro")
+                    .and_then(|d| serde_json::from_value(d.clone()).ok());
+                Ok((state, distro))
             }
             Some("error_response") => Err(PlanningError::StateUnavailable(format!(
                 "daemon error: {}",
@@ -1081,6 +1141,62 @@ mod tests {
             "request_id": request_id,
             "state": state
         })
+    }
+
+    #[test]
+    fn remote_distro_overrides_local_and_old_daemons_fall_back() {
+        use sysknife_core::distro::DistroId;
+        for remote in [
+            Some(DistroId::Ubuntu {
+                major: 24,
+                minor: 4,
+            }),
+            None,
+        ] {
+            let socket_path = temp_socket_path();
+            let reported = remote.clone();
+            let handle = serve_sync(&socket_path, move |mut stream| {
+                let req: Value =
+                    serde_json::from_slice(&read_framed(&mut stream).unwrap()).unwrap();
+                assert_eq!(req["type"], "query_state");
+                let mut resp = state_response_with(None, &req["request_id"]);
+                if let Some(distro) = reported {
+                    resp["state"]["host_distro"] = serde_json::to_value(distro).unwrap();
+                }
+                write_framed(&mut stream, &serde_json::to_vec(&resp).unwrap()).unwrap();
+            });
+            let local = DistroId::FedoraSilverblue { version: 41 };
+            let resolved =
+                DaemonClient::new(socket_path.clone()).target_distro_with(|| Some(local.clone()));
+            assert_eq!(resolved.distro, remote.clone().or(Some(local)));
+            assert_eq!(
+                resolved.source,
+                if remote.is_some() {
+                    "daemon"
+                } else {
+                    "local fallback"
+                }
+            );
+            let hint = resolved
+                .distro
+                .as_ref()
+                .map(crate::runner::distro_id_to_hint);
+            let prompt = sysknife_brain::prompt::build_system_prompt(None, hint.as_ref());
+            assert_eq!(
+                prompt.contains("AptInstall"),
+                remote.is_some(),
+                "an Ubuntu daemon must produce the Debian prompt even with a Fedora local detector"
+            );
+            handle.join().unwrap();
+            std::fs::remove_file(socket_path).unwrap();
+        }
+        let resolved = DaemonClient::new(temp_socket_path())
+            .target_distro_with(|| Some(DistroId::FedoraSilverblue { version: 41 }));
+        assert_eq!(resolved.source, "local fallback");
+        assert_eq!(
+            resolved.distro,
+            Some(DistroId::FedoraSilverblue { version: 41 })
+        );
     }
 
     #[test]

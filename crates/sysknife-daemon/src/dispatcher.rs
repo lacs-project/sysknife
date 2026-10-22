@@ -1492,7 +1492,13 @@ async fn dispatch_loop<S>(
 
         let result = match &request {
             DaemonRequest::QueryState { request_id } => {
-                handle_query_state(framed, Arc::clone(&runner), request_id).await
+                handle_query_state(
+                    framed,
+                    Arc::clone(&runner),
+                    state.host_distro.clone(),
+                    request_id,
+                )
+                .await
             }
             DaemonRequest::Preview {
                 request_id,
@@ -1781,6 +1787,7 @@ async fn handle_approval_details(
 async fn handle_query_state(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     runner: Arc<dyn CommandRunner + Send + Sync>,
+    host_distro: Option<sysknife_core::distro::DistroId>,
     request_id: &str,
 ) -> Result<(), HandlerError> {
     // collect_state uses std::process::Command (blocking). Offload to the
@@ -1788,12 +1795,13 @@ async fn handle_query_state(
     let join_result = tokio::task::spawn_blocking(move || collect_state(&*runner))
         .await
         .map_err(|e| HandlerError::Internal(format!("collect_state task failed: {e}")))?;
-    let collected = match join_result {
+    let mut collected = match join_result {
         Ok(s) => s,
         Err(e) => {
             return send_error(framed, request_id, "state_collection_failed", e.to_string()).await;
         }
     };
+    collected.host_distro = host_distro;
     send_response(
         framed,
         &DaemonResponse::StateResponse {
@@ -4987,7 +4995,12 @@ mod tests {
     #[tokio::test]
     async fn query_state_returns_state_response() {
         let dir = tempdir().unwrap();
-        let state = test_state(&dir);
+        let mut state = test_state(&dir);
+        let distro = sysknife_core::distro::DistroId::Ubuntu {
+            major: 24,
+            minor: 4,
+        };
+        state.host_distro = Some(distro.clone());
 
         let resps = exchange(
             state,
@@ -5000,6 +5013,10 @@ mod tests {
         assert_eq!(resps[0]["type"], "state_response");
         assert_eq!(resps[0]["request_id"], "r1");
         assert_eq!(resps[0]["state"]["host_name"], "testhost");
+        assert_eq!(
+            resps[0]["state"]["host_distro"],
+            json!({"Ubuntu": {"major": 24, "minor": 4}})
+        );
     }
 
     // ------------------------------------------------------------------

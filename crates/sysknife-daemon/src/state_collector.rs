@@ -7,6 +7,10 @@ use std::io;
 /// the JSON representation without depending on this crate.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CollectedState {
+    /// Daemon host identity, filled from the same cached detection used by the
+    /// platform fence. Absent on older daemons or when detection failed.
+    #[serde(default)]
+    pub host_distro: Option<sysknife_core::distro::DistroId>,
     pub host_name: String,
     pub deployment: String,
     pub services: Vec<String>,
@@ -169,6 +173,7 @@ pub fn collect_state(runner: &dyn CommandRunner) -> Result<CollectedState, Colle
     );
 
     Ok(CollectedState {
+        host_distro: None,
         host_name,
         deployment,
         services,
@@ -498,6 +503,10 @@ mod tests {
     #[test]
     fn collected_state_round_trips_through_json() {
         let state = CollectedState {
+            host_distro: Some(sysknife_core::distro::DistroId::Ubuntu {
+                major: 24,
+                minor: 4,
+            }),
             host_name: "lab".to_string(),
             deployment: "{}".to_string(),
             services: vec!["sshd.service".to_string()],
@@ -512,6 +521,10 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
         let restored: CollectedState = serde_json::from_str(&json).unwrap();
         assert_eq!(state, restored);
+        let mut old = serde_json::to_value(&state).unwrap();
+        old.as_object_mut().unwrap().remove("host_distro");
+        let old: CollectedState = serde_json::from_value(old).unwrap();
+        assert_eq!(old.host_distro, None);
     }
 
     #[test]
