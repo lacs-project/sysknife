@@ -146,6 +146,12 @@ the rehearsal failed with `cannot update the lock file`. The script never edits
 a lockfile as text; `cargo` regenerates it and the script refuses if any
 package outside the workspace moved.
 
+The bump prepares manifest, JSON, lockfile and changelog changes in a temporary
+copy, then installs them only after every step succeeds. A failed lock refresh
+leaves the original release tree untouched. The consistency check also verifies
+each workspace package in `Cargo.lock` and the latest release heading in
+`CHANGELOG.md`; an already-current version is accepted only when those agree.
+
 The version check requires every internal path dependency to carry an inline
 `version` matching the workspace release. Removing that field is an error even
 when all remaining visible pins match.

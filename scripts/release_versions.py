@@ -8,16 +8,21 @@ file is invisible to both, which is what
 `tests/release/version-sites.test.sh` exists to catch.
 
 Subcommands:
-  values          every declared version value, one per line, for the checker
+  check [version] validates every declared release version, lockfile member and changelog heading
+  values          every declared version value, one per line
   sites           every file the registry accounts for, one per line
   bump <version>  write <version> everywhere, refusing on anything unexpected
 """
 from __future__ import annotations
 
 import json
+import os
 import re
+import runpy
+import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -67,6 +72,15 @@ def package_version(cfg: dict, rel: str) -> str:
     return m.group(1)
 
 
+def package_name(cfg: dict, rel: str) -> str:
+    text = (ROOT / rel).read_text()
+    package = re.search(r'^\[package\]\s*(.*?)(?=^\[|\Z)', text, re.M | re.S)
+    name = package and re.search(r'^name\s*=\s*"([^"]+)"', package.group(1), re.M)
+    if not name:
+        die(f"{rel}: no [package] name")
+    return name.group(1)
+
+
 def internal_pins(cfg: dict, rel: str) -> list[tuple[str, str]]:
     """Every `sysknife-x = { path = .., version = ".." }` pin in one manifest.
 
@@ -100,9 +114,54 @@ def all_values(cfg: dict) -> list[tuple[str, str]]:
         for path in site["paths"]:
             found.append((f"{rel} {'.'.join(str(p) for p in path)}",
                           resolve(doc, path, rel)))
+    members = {package_name(cfg, rel): package_version(cfg, rel)
+               for rel in cfg["cargo_manifests"]}
+    for rel in cfg["generated_lockfiles"]:
+        text = (ROOT / rel).read_text()
+        lock_members: dict[str, str] = {}
+        for block in re.finditer(r'^\[\[package\]\]\s*\n(.*?)(?=^\[\[package\]\]\s*$|\Z)',
+                                 text, re.M | re.S):
+            body = block.group(1)
+            name = re.search(r'^name\s*=\s*"([^"]+)"$', body, re.M)
+            version = re.search(r'^version\s*=\s*"([^"]+)"$', body, re.M)
+            source = re.search(r'^source\s*=', body, re.M)
+            if name and version and not source and name.group(1) in members:
+                lock_members[name.group(1)] = version.group(1)
+        for name, expected in members.items():
+            actual = lock_members.get(name)
+            if actual is None:
+                die(f"{rel}: workspace package {name} has no lockfile entry")
+            found.append((f"{rel} workspace member {name}", actual))
+    found.append((f"{cfg['changelog']} latest release heading",
+                  changelog_version(cfg)))
     if not found:
         die("no version sites resolved; refusing to report success over nothing")
     return found
+
+
+def changelog_version(cfg: dict) -> str:
+    rel = cfg["changelog"]
+    text = (ROOT / rel).read_text()
+    head = cfg["unreleased_heading"]
+    if text.count(head) != 1:
+        die(f"{rel}: expected exactly one {head!r}")
+    body = text.split(head, 1)[1]
+    match = re.search(r'^## \[([0-9]+\.[0-9]+\.[0-9]+)\]', body, re.M)
+    if not match:
+        die(f"{rel}: no release heading follows {head}")
+    return match.group(1)
+
+
+def validated_values(cfg: dict, expected: str | None = None) -> tuple[list[tuple[str, str]], str]:
+    found = all_values(cfg)
+    baseline = found[0][1]
+    disagree = [(where, value) for where, value in found if value != baseline]
+    if disagree:
+        details = "; ".join(f"{where} holds {value}" for where, value in disagree)
+        die(f"release versions are inconsistent: expected {baseline}; {details}")
+    if expected and baseline != expected:
+        die(f"Release tag version {expected} does not match package version {baseline}")
+    return found, baseline
 
 
 def leaves(doc, prefix=()):
@@ -122,6 +181,14 @@ def cmd_values(cfg: dict) -> None:
         print(value)
 
 
+def cmd_check(cfg: dict, expected: str | None) -> None:
+    _, version = validated_values(cfg, expected)
+    pin_count = sum(len(internal_pins(cfg, rel)) for rel in cfg["cargo_manifests"])
+    if pin_count == 0:
+        die("no internal dependency pins found; the registry's manifests are stale")
+    print(f"All release versions match {version} ({pin_count} internal dependency pins checked).")
+
+
 def cmd_pincount(cfg: dict) -> None:
     n = sum(len(internal_pins(cfg, rel)) for rel in cfg["cargo_manifests"])
     if n == 0:
@@ -133,8 +200,52 @@ def cmd_sites(cfg: dict) -> None:
     seen = list(cfg["cargo_manifests"])
     seen += [s["file"] for s in cfg["json_sites"]]
     seen += list(cfg["generated_lockfiles"])
+    seen.append(cfg["changelog"])
     for rel in seen:
         print(rel)
+
+
+def release_files(cfg: dict) -> list[str]:
+    files = list(cfg["cargo_manifests"])
+    files += [site["file"] for site in cfg["json_sites"]]
+    files += list(cfg["generated_lockfiles"])
+    files.append(cfg["changelog"])
+    return list(dict.fromkeys(files))
+
+
+def ignore_generated(_directory: str, names: list[str]) -> set[str]:
+    generated = {".git", "__pycache__", ".venv", "dist", "node_modules", "target"}
+    return generated.intersection(names)
+
+
+def install_staged_files(cfg: dict, staged_root: Path, temp_root: Path) -> None:
+    files = release_files(cfg)
+    backups = temp_root / "originals"
+    for rel in files:
+        source = staged_root / rel
+        destination = ROOT / rel
+        if not source.is_file() or not destination.is_file():
+            die(f"{rel}: staged release file or destination is missing")
+        backup = backups / rel
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(destination, backup)
+
+    replaced: list[str] = []
+    try:
+        for rel in files:
+            os.replace(staged_root / rel, ROOT / rel)
+            replaced.append(rel)
+    except OSError as error:
+        restore_errors = []
+        for rel in reversed(replaced):
+            try:
+                os.replace(backups / rel, ROOT / rel)
+            except OSError as restore_error:
+                restore_errors.append(f"{rel}: {restore_error}")
+        if restore_errors:
+            die(f"could not install staged release files ({error}); rollback failed: "
+                + "; ".join(restore_errors))
+        die(f"could not install staged release files; original files were restored: {error}")
 
 
 def cmd_bump(cfg: dict, target: str, when: str | None) -> None:
@@ -142,10 +253,26 @@ def cmd_bump(cfg: dict, target: str, when: str | None) -> None:
         die(f"{target} is not MAJOR.MINOR.PATCH; release.yml's tag pattern "
             "takes no prerelease suffix, and a pushed tag cannot be moved")
 
-    current = package_version(cfg, cfg["cargo_manifests"][0])
+    _, current = validated_values(cfg)
     if current == target:
         print(f"already at {target}; nothing to write")
         return
+
+    try:
+        with tempfile.TemporaryDirectory(prefix=".release-version-bump-", dir=ROOT.parent) as temp:
+            temp_root = Path(temp)
+            staged_root = temp_root / ROOT.name
+            shutil.copytree(ROOT, staged_root, symlinks=True, ignore=ignore_generated)
+            staged = runpy.run_path(str(staged_root / "scripts" / "release_versions.py"))
+            staged_cfg = staged["load_config"]()
+            staged["cmd_bump_in_place"](staged_cfg, target, when)
+            install_staged_files(cfg, staged_root, temp_root)
+    except (OSError, shutil.Error) as error:
+        die(f"could not prepare staged release version files: {error}")
+
+
+def cmd_bump_in_place(cfg: dict, target: str, when: str | None) -> None:
+    current = package_version(cfg, cfg["cargo_manifests"][0])
     print(f"{current} -> {target}")
     prefix = cfg["internal_dep_prefix"]
     written = 0
@@ -234,9 +361,7 @@ def cmd_bump(cfg: dict, target: str, when: str | None) -> None:
     ch.write_text(text.replace(head, f"{head}\n\n## [{target}]{sep}{stamp}", 1))
     print(f"  {cfg['changelog']}: rolled to [{target}]{sep}{stamp}")
 
-    disagree = [(w, v) for w, v in all_values(cfg) if v != target]
-    if disagree:
-        die(f"after writing, these still disagree: {disagree}")
+    validated_values(cfg, target)
     print(f"{written} version field(s) written")
 
 
@@ -248,6 +373,9 @@ def main() -> None:
     cmd = argv[0]
     if cmd == "values":
         cmd_values(cfg)
+    elif cmd == "check":
+        expected = argv[1].lstrip("v") if len(argv) > 1 else None
+        cmd_check(cfg, expected)
     elif cmd == "pincount":
         cmd_pincount(cfg)
     elif cmd == "sites":
