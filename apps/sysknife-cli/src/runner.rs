@@ -1354,7 +1354,7 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
 /// local chain detectable.
 pub async fn run_audit_checkpoint(
     args: crate::cli::AuditCheckpointArgs,
-    _log: &Logger,
+    log: &Logger,
 ) -> Result<(), CliError> {
     use sysknife_daemon::audit_chain::{
         checkpoint_outcome_to_exit_code, outcome_to_exit_code, AuditKey,
@@ -1379,10 +1379,14 @@ pub async fn run_audit_checkpoint(
         }
     };
 
-    let db_path = sysknife_core::default_database_path();
+    let resolved_store = sysknife_core::resolve_audit_store();
+    if let Some(note) = resolved_store.note() {
+        log.print_stderr(&format!("note: {note}"));
+    }
+    let db_path = resolved_store.path();
 
     // Load the private signing key (same location rules as `verify`).
-    let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(&db_path);
+    let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(db_path);
     require_exists(&key_path, "audit key")?;
     let key = AuditKey::load_or_generate(&key_path).map_err(|e| {
         eprintln!("audit key load failed: {e}");
@@ -1390,8 +1394,8 @@ pub async fn run_audit_checkpoint(
     })?;
 
     // Read the current chain tip from the local sqlite store.
-    require_exists(&db_path, "audit database")?;
-    let store = TransactionStore::open_read_only(&db_path).map_err(|e| {
+    require_exists(db_path, "audit database")?;
+    let store = TransactionStore::open_read_only(db_path).map_err(|e| {
         eprintln!("opening audit database failed: {e}");
         CliError::Exit(2)
     })?;

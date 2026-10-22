@@ -388,6 +388,15 @@ fn audit_verify_over_stdio_checks_the_configured_anchor() {
         "sysknife_audit_verify did not look for the configured anchor: {report}"
     );
     assert_eq!(
+        report["backend"],
+        db_path.display().to_string(),
+        "the MCP verifier must report the database it actually read: {report}"
+    );
+    assert!(
+        report["audit_store_note"].is_null(),
+        "an explicit store choice should not carry a fallback note: {report}"
+    );
+    assert_eq!(
         report["status"], "cannot_verify",
         "an unreadable configured anchor must make the verdict inconclusive: {report}"
     );
