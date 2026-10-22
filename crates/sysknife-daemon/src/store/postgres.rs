@@ -43,7 +43,7 @@ use crate::audit_watermark::emit_chain_tip_watermark;
 use crate::auth::CallerPrincipal;
 use crate::store::AuditStore;
 use crate::transactions::{
-    NewTransaction, RecordedPreviewedTransaction, TransactionStoreError,
+    HistorySince, NewTransaction, RecordedPreviewedTransaction, TransactionStoreError,
     APPROVAL_RECEIPT_TTL_MINUTES,
 };
 
@@ -833,7 +833,7 @@ impl AuditStore for PostgresStore {
         limit: u32,
         status_filter: Option<&str>,
         action_filter: Option<&str>,
-        since_hours: Option<u32>,
+        since: Option<HistorySince>,
     ) -> Result<Vec<TransactionRecord>, TransactionStoreError> {
         let limit = limit.min(100) as i64;
 
@@ -860,11 +860,20 @@ impl AuditStore for PostgresStore {
             sql.push_str(&format!(" AND action_name = ${idx}"));
             idx += 1;
         }
-        if since_hours.is_some() {
-            sql.push_str(&format!(
-                " AND created_at::timestamptz > now() - (${idx} || ' hours')::INTERVAL"
-            ));
-            idx += 1;
+        match since {
+            Some(HistorySince::Hours(_)) => {
+                sql.push_str(&format!(
+                    " AND created_at::timestamptz > now() - (${idx} || ' hours')::INTERVAL"
+                ));
+                idx += 1;
+            }
+            Some(HistorySince::Cutoff(_)) => {
+                sql.push_str(&format!(
+                    " AND created_at::timestamptz >= ${idx}::timestamptz"
+                ));
+                idx += 1;
+            }
+            None => {}
         }
         sql.push_str(&format!(" ORDER BY seq DESC LIMIT ${idx}"));
 
@@ -875,8 +884,10 @@ impl AuditStore for PostgresStore {
         if let Some(a) = action_filter {
             q = q.bind(a);
         }
-        if let Some(h) = since_hours {
-            q = q.bind(h.to_string());
+        match since {
+            Some(HistorySince::Hours(h)) => q = q.bind(h.to_string()),
+            Some(HistorySince::Cutoff(at)) => q = q.bind(HistorySince::cutoff_rfc3339(&at)),
+            None => {}
         }
         q = q.bind(limit);
 
@@ -889,7 +900,7 @@ impl AuditStore for PostgresStore {
         limit: u32,
         status_filter: Option<&str>,
         action_filter: Option<&str>,
-        since_hours: Option<u32>,
+        since: Option<HistorySince>,
     ) -> Result<Vec<crate::transactions::JobHistoryEntry>, TransactionStoreError> {
         // Parallels list_transactions but selects created_at and returns the
         // structured JobHistoryEntry DTO. Same filter/validation semantics.
@@ -914,11 +925,20 @@ impl AuditStore for PostgresStore {
             sql.push_str(&format!(" AND action_name = ${idx}"));
             idx += 1;
         }
-        if since_hours.is_some() {
-            sql.push_str(&format!(
-                " AND created_at::timestamptz > now() - (${idx} || ' hours')::INTERVAL"
-            ));
-            idx += 1;
+        match since {
+            Some(HistorySince::Hours(_)) => {
+                sql.push_str(&format!(
+                    " AND created_at::timestamptz > now() - (${idx} || ' hours')::INTERVAL"
+                ));
+                idx += 1;
+            }
+            Some(HistorySince::Cutoff(_)) => {
+                sql.push_str(&format!(
+                    " AND created_at::timestamptz >= ${idx}::timestamptz"
+                ));
+                idx += 1;
+            }
+            None => {}
         }
         sql.push_str(&format!(" ORDER BY seq DESC LIMIT ${idx}"));
 
@@ -929,8 +949,10 @@ impl AuditStore for PostgresStore {
         if let Some(a) = action_filter {
             q = q.bind(a);
         }
-        if let Some(h) = since_hours {
-            q = q.bind(h.to_string());
+        match since {
+            Some(HistorySince::Hours(h)) => q = q.bind(h.to_string()),
+            Some(HistorySince::Cutoff(at)) => q = q.bind(HistorySince::cutoff_rfc3339(&at)),
+            None => {}
         }
         q = q.bind(limit);
 

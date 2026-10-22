@@ -572,7 +572,7 @@ impl DaemonClient {
         limit: Option<u32>,
         status_filter: Option<&str>,
         action_filter: Option<&str>,
-        since_hours: Option<u32>,
+        since: Option<&str>,
     ) -> Result<Vec<sysknife_daemon::transactions::JobHistoryEntry>, PlanningError> {
         let mut stream = self.connect_sync()?;
 
@@ -582,7 +582,7 @@ impl DaemonClient {
             "limit": limit,
             "status_filter": status_filter,
             "action_filter": action_filter,
-            "since_hours": since_hours,
+            "since": since,
         }))
         .map_err(|e| PlanningError::StateUnavailable(format!("serialize: {e}")))?;
 

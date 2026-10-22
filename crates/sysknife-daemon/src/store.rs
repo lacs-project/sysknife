@@ -182,7 +182,7 @@ pub trait AuditStore: Send + Sync + std::fmt::Debug {
         limit: u32,
         status_filter: Option<&str>,
         action_filter: Option<&str>,
-        since_hours: Option<u32>,
+        since: Option<crate::transactions::HistorySince>,
     ) -> Result<Vec<TransactionRecord>, TransactionStoreError>;
 
     /// Structured history rows (with `created_at` and typed `risk_level`) for
@@ -192,7 +192,7 @@ pub trait AuditStore: Send + Sync + std::fmt::Debug {
         limit: u32,
         status_filter: Option<&str>,
         action_filter: Option<&str>,
-        since_hours: Option<u32>,
+        since: Option<crate::transactions::HistorySince>,
     ) -> Result<Vec<crate::transactions::JobHistoryEntry>, TransactionStoreError>;
 
     async fn fetch_chain_row(
@@ -378,13 +378,13 @@ impl AuditStore for SqliteStore {
         limit: u32,
         status_filter: Option<&str>,
         action_filter: Option<&str>,
-        since_hours: Option<u32>,
+        since: Option<crate::transactions::HistorySince>,
     ) -> Result<Vec<TransactionRecord>, TransactionStoreError> {
         let inner = Arc::clone(&self.inner);
         let status = status_filter.map(str::to_string);
         let action = action_filter.map(str::to_string);
         blocking(move || {
-            inner.list_transactions(limit, status.as_deref(), action.as_deref(), since_hours)
+            inner.list_transactions(limit, status.as_deref(), action.as_deref(), since)
         })
         .await
     }
@@ -394,15 +394,13 @@ impl AuditStore for SqliteStore {
         limit: u32,
         status_filter: Option<&str>,
         action_filter: Option<&str>,
-        since_hours: Option<u32>,
+        since: Option<crate::transactions::HistorySince>,
     ) -> Result<Vec<crate::transactions::JobHistoryEntry>, TransactionStoreError> {
         let inner = Arc::clone(&self.inner);
         let status = status_filter.map(str::to_string);
         let action = action_filter.map(str::to_string);
-        blocking(move || {
-            inner.list_history(limit, status.as_deref(), action.as_deref(), since_hours)
-        })
-        .await
+        blocking(move || inner.list_history(limit, status.as_deref(), action.as_deref(), since))
+            .await
     }
 
     async fn fetch_chain_row(

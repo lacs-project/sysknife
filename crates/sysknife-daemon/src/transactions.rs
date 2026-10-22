@@ -41,6 +41,29 @@ pub struct JobHistoryEntry {
     pub created_at: String,
 }
 
+/// Lower bound on `created_at` for the history queries.
+///
+/// The planner's `query_job_history` tool speaks in whole hours, while the
+/// CLI's `--since <datetime>` names an exact instant. Rounding that instant to
+/// hours lost anything newer than the remainder (a cutoff 30 minutes ago became
+/// zero hours and matched nothing), so the exact cutoff travels as its own
+/// variant instead of being squeezed into an hour count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistorySince {
+    /// Rows created within the last N hours, measured from the store's clock.
+    Hours(u32),
+    /// Rows created at or after this instant.
+    Cutoff(chrono::DateTime<chrono::Utc>),
+}
+
+impl HistorySince {
+    /// The cutoff rendered as an RFC 3339 UTC timestamp with millisecond
+    /// precision, the same shape `created_at` is written in.
+    pub fn cutoff_rfc3339(at: &chrono::DateTime<chrono::Utc>) -> String {
+        at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    }
+}
+
 /// Data provided by the caller when recording a new transaction.
 ///
 /// The initial `status` is always `Queued` — it is not caller-controllable.
@@ -993,17 +1016,19 @@ impl TransactionStore {
     ///   (must be a valid `JobState` variant: `"succeeded"`, `"failed"`,
     ///   `"queued"`, `"running"`, `"canceled"`, `"rolled_back"`, `"needs_reboot"`)
     /// - `action_filter`: if set, only return rows with this exact action name
-    /// - `since_hours`: if set, only return rows created within the last N hours
+    /// - `since`: if set, only return rows created within the last N hours
+    ///   ([`HistorySince::Hours`]) or at/after an exact instant
+    ///   ([`HistorySince::Cutoff`])
     pub fn list_transactions(
         &self,
         limit: u32,
         status_filter: Option<&str>,
         action_filter: Option<&str>,
-        since_hours: Option<u32>,
+        since: Option<HistorySince>,
     ) -> Result<Vec<TransactionRecord>, TransactionStoreError> {
         let conn = self.connection()?;
         let (filter_sql, param_values) =
-            Self::build_history_filter(limit, status_filter, action_filter, since_hours)?;
+            Self::build_history_filter(limit, status_filter, action_filter, since)?;
         let sql = format!(
             "SELECT transaction_id, request_id, request_hash, action_name, \
              risk_level, status, approval_id, summary, warnings_json \
@@ -1031,11 +1056,11 @@ impl TransactionStore {
         limit: u32,
         status_filter: Option<&str>,
         action_filter: Option<&str>,
-        since_hours: Option<u32>,
+        since: Option<HistorySince>,
     ) -> Result<Vec<JobHistoryEntry>, TransactionStoreError> {
         let conn = self.connection()?;
         let (filter_sql, param_values) =
-            Self::build_history_filter(limit, status_filter, action_filter, since_hours)?;
+            Self::build_history_filter(limit, status_filter, action_filter, since)?;
         let sql = format!(
             "SELECT transaction_id, action_name, risk_level, status, summary, created_at \
              FROM transactions WHERE 1=1{filter_sql}"
@@ -1072,7 +1097,7 @@ impl TransactionStore {
         limit: u32,
         status_filter: Option<&str>,
         action_filter: Option<&str>,
-        since_hours: Option<u32>,
+        since: Option<HistorySince>,
     ) -> Result<(String, Vec<Box<dyn rusqlite::types::ToSql>>), TransactionStoreError> {
         let mut sql = String::new();
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -1092,9 +1117,18 @@ impl TransactionStore {
             param_values.push(Box::new(action.to_string()));
         }
 
-        if let Some(hours) = since_hours {
-            sql.push_str(" AND julianday(created_at) > julianday('now', '-' || ? || ' hours')");
-            param_values.push(Box::new(hours));
+        // julianday() normalises every stored shape to UTC: the RFC 3339
+        // `...Z` rows, explicit offsets, and legacy `datetime('now')` rows.
+        match since {
+            Some(HistorySince::Hours(hours)) => {
+                sql.push_str(" AND julianday(created_at) > julianday('now', '-' || ? || ' hours')");
+                param_values.push(Box::new(hours));
+            }
+            Some(HistorySince::Cutoff(at)) => {
+                sql.push_str(" AND julianday(created_at) >= julianday(?)");
+                param_values.push(Box::new(HistorySince::cutoff_rfc3339(&at)));
+            }
+            None => {}
         }
 
         sql.push_str(" ORDER BY seq DESC LIMIT ?");
@@ -3732,12 +3766,102 @@ mod tests {
         store.record(queued_transaction()).unwrap();
 
         // since_hours=24 should only return the fresh one.
-        let results = store.list_transactions(10, None, None, Some(24)).unwrap();
+        let results = store
+            .list_transactions(10, None, None, Some(HistorySince::Hours(24)))
+            .unwrap();
         assert_eq!(results.len(), 1);
 
         // since_hours=72 should return both.
-        let results = store.list_transactions(10, None, None, Some(72)).unwrap();
+        let results = store
+            .list_transactions(10, None, None, Some(HistorySince::Hours(72)))
+            .unwrap();
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn list_history_filters_by_exact_cutoff_below_one_hour() {
+        // Regression for #567: rows 20 and 75 minutes old, filtered by an exact
+        // cutoff. Rounding the cutoff to whole hours returned nothing for 30
+        // minutes and dropped the 75-minute row for 90 minutes.
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let conn = store.connection().unwrap();
+        for minutes_ago in [75, 20] {
+            let tx = store.record(queued_transaction()).unwrap();
+            conn.execute(
+                "UPDATE transactions \
+                 SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1) \
+                 WHERE transaction_id = ?2",
+                params![format!("-{minutes_ago} minutes"), tx.transaction_id],
+            )
+            .unwrap();
+        }
+
+        let cutoff = |minutes: i64| {
+            Some(HistorySince::Cutoff(
+                chrono::Utc::now() - chrono::Duration::minutes(minutes),
+            ))
+        };
+        assert_eq!(
+            store
+                .list_history(10, None, None, cutoff(30))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .list_history(10, None, None, cutoff(90))
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            store
+                .list_history(10, None, None, cutoff(10))
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            store
+                .list_transactions(10, None, None, cutoff(30))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn list_history_cutoff_normalises_offsets_and_legacy_rows() {
+        // The cutoff is compared in UTC whatever shape `created_at` has: an
+        // explicit +02:00 offset or the legacy `datetime('now')` form.
+        let dir = tempdir().unwrap();
+        let store = test_store(dir.path().join("tx.db"));
+        let conn = store.connection().unwrap();
+        let ten_min_ago = chrono::Utc::now() - chrono::Duration::minutes(10);
+        let shapes = [
+            ten_min_ago
+                .with_timezone(&chrono::FixedOffset::east_opt(2 * 3600).unwrap())
+                .to_rfc3339(),
+            ten_min_ago.format("%Y-%m-%d %H:%M:%S").to_string(),
+        ];
+        for created_at in &shapes {
+            let tx = store.record(queued_transaction()).unwrap();
+            conn.execute(
+                "UPDATE transactions SET created_at = ?1 WHERE transaction_id = ?2",
+                params![created_at, tx.transaction_id],
+            )
+            .unwrap();
+        }
+
+        let at = |minutes: i64| {
+            Some(HistorySince::Cutoff(
+                chrono::Utc::now() - chrono::Duration::minutes(minutes),
+            ))
+        };
+        assert_eq!(store.list_history(10, None, None, at(15)).unwrap().len(), 2);
+        assert_eq!(store.list_history(10, None, None, at(5)).unwrap().len(), 0);
     }
 
     #[test]

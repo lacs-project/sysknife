@@ -7,7 +7,7 @@ use sysknife_daemon::audit_chain::{AuditKey, BindingOutcome, VerifyOutcome};
 use sysknife_daemon::auth::CallerPrincipal;
 use sysknife_daemon::store::postgres::{PostgresConfig, PostgresStore};
 use sysknife_daemon::store::AuditStore;
-use sysknife_daemon::transactions::NewTransaction;
+use sysknife_daemon::transactions::{HistorySince, NewTransaction};
 use sysknife_types::{CallerRole, JobState, PreviewEnvelope, RequestHash, RiskLevel};
 
 fn test_url() -> Option<String> {
@@ -293,7 +293,12 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
         .expect("transaction exists");
     assert_eq!(loaded.status, JobState::Running);
     let history = store
-        .list_transactions(10, Some("running"), Some("RestartService"), Some(1))
+        .list_transactions(
+            10,
+            Some("running"),
+            Some("RestartService"),
+            Some(HistorySince::Hours(1)),
+        )
         .await
         .expect("query history");
     assert_eq!(history.len(), 1);
@@ -302,10 +307,34 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
     // typed risk_level. Exercises the Postgres list_history $idx/bind order and
     // row_to_history_entry mapping against a real server.
     let structured = store
-        .list_history(10, Some("running"), Some("RestartService"), Some(1))
+        .list_history(
+            10,
+            Some("running"),
+            Some("RestartService"),
+            Some(HistorySince::Hours(1)),
+        )
         .await
         .expect("query structured history");
     assert_eq!(structured.len(), 1);
+    // An exact cutoff (#567) keeps sub-hour precision: one minute ago still
+    // matches the fresh row, one minute ahead matches nothing.
+    for (offset_minutes, expected) in [(-1, 1), (1, 0)] {
+        let cutoff = chrono::Utc::now() + chrono::Duration::minutes(offset_minutes);
+        let rows = store
+            .list_history(
+                10,
+                None,
+                Some("RestartService"),
+                Some(HistorySince::Cutoff(cutoff)),
+            )
+            .await
+            .expect("query history by exact cutoff");
+        assert_eq!(
+            rows.len(),
+            expected,
+            "cutoff offset {offset_minutes} minutes"
+        );
+    }
     assert_eq!(structured[0].action_name, "RestartService");
     assert_eq!(structured[0].status, JobState::Running);
     assert!(

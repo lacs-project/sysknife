@@ -391,27 +391,27 @@ fn unattended_marker_present(warnings: &[String]) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// since_to_hours
+// since_to_cutoff
 // ---------------------------------------------------------------------------
 
-/// Parse an ISO-8601 datetime or calendar date and return the number of
-/// whole hours that have elapsed since that moment.
+/// Parse an ISO-8601 datetime or calendar date into the exact history cutoff
+/// sent to the daemon, normalised to an RFC 3339 UTC timestamp.
 ///
 /// Datetimes may use Z or an explicit UTC offset. A bare YYYY-MM-DD is
 /// interpreted as midnight UTC on that date.
 ///
-/// Returns None when the value is invalid, in the future, or too large to
-/// fit in u32.
-pub fn since_to_hours(s: &str) -> Option<u32> {
+/// The cutoff is kept to the second rather than rounded to whole hours: a
+/// whole-hour count turned "30 minutes ago" into zero hours and matched
+/// nothing (#567).
+///
+/// Returns None when the value is invalid or in the future.
+pub fn since_to_cutoff(s: &str) -> Option<String> {
     let epoch = iso8601_to_unix(s)?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs() as i64;
-    if epoch > now {
+    if epoch > chrono::Utc::now().timestamp() {
         return None;
     }
-    u32::try_from((now - epoch) / 3600).ok()
+    let cutoff = chrono::DateTime::<chrono::Utc>::from_timestamp(epoch, 0)?;
+    Some(cutoff.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
 }
 
 fn iso8601_to_unix(s: &str) -> Option<i64> {
@@ -904,7 +904,7 @@ pub(crate) fn build_history_params(
     limit: u32,
     status: Option<&str>,
     action: Option<&str>,
-    since_hours: Option<u32>,
+    since: Option<&str>,
 ) -> Value {
     let mut params = json!({ "limit": limit });
     if let Some(s) = status {
@@ -913,8 +913,8 @@ pub(crate) fn build_history_params(
     if let Some(a) = action {
         params["action_filter"] = json!(a);
     }
-    if let Some(h) = since_hours {
-        params["since_hours"] = json!(h);
+    if let Some(cutoff) = since {
+        params["since"] = json!(cutoff);
     }
     params
 }
@@ -1062,7 +1062,7 @@ pub async fn run_history(
     socket: SocketTarget,
     log: &Logger,
 ) -> Result<(), CliError> {
-    let since_hours = match args.since.as_deref() {
+    let since = match args.since.as_deref() {
         None => None,
         Some(s) => {
             // Distinguish the two failure modes so the user knows how to fix each.
@@ -1072,8 +1072,8 @@ pub async fn run_history(
                      (accepted formats: 2026-01-15, 2026-01-15T10:30:00Z, or 2026-01-15T12:30:00+02:00)"
                 )));
             }
-            match since_to_hours(s) {
-                Some(h) => Some(h),
+            match since_to_cutoff(s) {
+                Some(cutoff) => Some(cutoff),
                 None => {
                     return Err(CliError::ConfigOrDaemon(format!(
                         "--since: {s:?} is in the future"
@@ -1087,7 +1087,7 @@ pub async fn run_history(
         args.limit,
         args.status.as_deref(),
         args.action.as_deref(),
-        since_hours,
+        since.as_deref(),
     );
 
     let client = DaemonClient::new(socket);
@@ -4374,41 +4374,53 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // since_to_hours
+    // since_to_cutoff
     // -----------------------------------------------------------------------
 
     #[test]
-    fn since_to_hours_y2k_is_many_hours_ago() {
-        // Y2K was well over 200_000 hours ago (as of 2026).
-        let h = since_to_hours("2000-01-01T00:00:00Z").expect("should parse");
-        assert!(h > 200_000, "expected >200000 hours, got {h}");
+    fn since_to_cutoff_keeps_utc_datetime() {
+        assert_eq!(
+            since_to_cutoff("2000-01-01T00:00:00Z").as_deref(),
+            Some("2000-01-01T00:00:00Z")
+        );
     }
 
     #[test]
-    fn since_to_hours_far_future_returns_none() {
+    fn since_to_cutoff_normalises_offset_to_utc() {
+        assert_eq!(
+            since_to_cutoff("2026-01-15T12:30:00+02:00").as_deref(),
+            Some("2026-01-15T10:30:00Z")
+        );
+    }
+
+    #[test]
+    fn since_to_cutoff_bare_date_is_midnight_utc() {
+        assert_eq!(
+            since_to_cutoff("2026-01-15").as_deref(),
+            Some("2026-01-15T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn since_to_cutoff_far_future_returns_none() {
         // Year 9999 is in the future.
-        assert!(since_to_hours("9999-12-31T23:59:59Z").is_none());
+        assert!(since_to_cutoff("9999-12-31T23:59:59Z").is_none());
     }
 
     #[test]
-    fn since_to_hours_garbage_returns_none() {
-        assert!(since_to_hours("not-a-date").is_none());
+    fn since_to_cutoff_garbage_returns_none() {
+        assert!(since_to_cutoff("not-a-date").is_none());
     }
 
     #[test]
-    fn since_to_hours_epoch_returns_many_hours() {
-        // Unix epoch (1970-01-01) is always ≥ 486000 hours ago (as of 2026).
-        let h = since_to_hours("1970-01-01T00:00:00Z").expect("should parse");
-        assert!(h > 486_000, "expected >486000, got {h}");
-    }
-
-    #[test]
-    fn since_to_hours_integer_division_not_modulo() {
-        // Two timestamps exactly 1 hour apart must differ by 1 in since_to_hours.
-        // A `% 3600` regression would produce wildly different results for these.
-        let h0 = since_to_hours("1970-01-01T00:00:00Z").unwrap();
-        let h1 = since_to_hours("1970-01-01T01:00:00Z").unwrap();
-        assert_eq!(h0, h1 + 1, "timestamps 1 h apart must differ by exactly 1");
+    fn since_to_cutoff_keeps_sub_hour_precision() {
+        // Regression for #567: 30 and 90 minutes ago used to become 0 and 1
+        // whole hours. The cutoff must carry the exact instant instead.
+        for minutes in [30, 90] {
+            let at = chrono::Utc::now() - chrono::Duration::minutes(minutes);
+            let input = at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+            assert_eq!(since_to_cutoff(&input), Some(input.clone()));
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -4774,16 +4786,22 @@ mod tests {
         assert_eq!(p["limit"], json!(20));
         assert!(p.get("status_filter").is_none());
         assert!(p.get("action_filter").is_none());
-        assert!(p.get("since_hours").is_none());
+        assert!(p.get("since").is_none());
     }
 
     #[test]
     fn build_history_params_all_fields() {
-        let p = build_history_params(5, Some("succeeded"), Some("InstallPackages"), Some(48));
+        let p = build_history_params(
+            5,
+            Some("succeeded"),
+            Some("InstallPackages"),
+            Some("2026-01-15T10:30:00Z"),
+        );
         assert_eq!(p["limit"], json!(5));
         assert_eq!(p["status_filter"], json!("succeeded"));
         assert_eq!(p["action_filter"], json!("InstallPackages"));
-        assert_eq!(p["since_hours"], json!(48));
+        assert_eq!(p["since"], json!("2026-01-15T10:30:00Z"));
+        assert!(p.get("since_hours").is_none());
     }
 
     #[test]
@@ -4792,7 +4810,7 @@ mod tests {
         assert_eq!(p["limit"], json!(10));
         assert_eq!(p["status_filter"], json!("failed"));
         assert!(p.get("action_filter").is_none());
-        assert!(p.get("since_hours").is_none());
+        assert!(p.get("since").is_none());
     }
 
     // -----------------------------------------------------------------------

@@ -1172,10 +1172,10 @@ async fn history_with_client(
         limit,
     } = input;
 
-    let since_hours = match since.as_deref() {
+    let since = match since.as_deref() {
         None => None,
-        Some(s) => match crate::runner::since_to_hours(s) {
-            Some(h) => Some(h),
+        Some(s) => match crate::runner::since_to_cutoff(s) {
+            Some(cutoff) => Some(cutoff),
             None => {
                 return Err(format!(
                     "since: {s:?} is not a valid past ISO-8601 date or datetime \
@@ -1191,7 +1191,7 @@ async fn history_with_client(
             Some(limit),
             status.as_deref(),
             action.as_deref(),
-            since_hours,
+            since.as_deref(),
         )
     })
     .await

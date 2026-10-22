@@ -782,7 +782,13 @@ fn allowed_action_params(action_name: &str) -> Option<&'static [&'static str]> {
         "ConfigureFail2banJail" => &["bantime", "enabled", "findtime", "maxretry", "name"],
         "AddAuditRule" => &["key", "path", "perms"],
         "ObtainCertificate" => &["challenge", "domain", "domains", "email"],
-        "ListJobHistory" => &["limit", "status_filter", "action_filter", "since_hours"],
+        "ListJobHistory" => &[
+            "limit",
+            "status_filter",
+            "action_filter",
+            "since_hours",
+            "since",
+        ],
         _ => return None,
     })
 }
