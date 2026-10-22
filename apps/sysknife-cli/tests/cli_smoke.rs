@@ -477,8 +477,42 @@ fn a_planning_timeout_does_not_claim_an_execution_failure() {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let provider_url = format!("http://{}", listener.local_addr().unwrap());
+    let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+    let accept_thread = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    accepted_tx
+                        .send(Ok(stream))
+                        .expect("send accepted provider connection");
+                    return;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stop_rx.try_recv().is_ok() {
+                        return;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        let _ = accepted_tx.send(Err(
+                            "the CLI did not reach the local provider before the test deadline"
+                                .to_string(),
+                        ));
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => {
+                    let _ = accepted_tx.send(Err(error.to_string()));
+                    return;
+                }
+            }
+        }
+    });
 
-    cli()
+    let mut command = assert_cmd::Command::cargo_bin("sysknife").expect("sysknife binary builds");
+    command
+        .timeout(std::time::Duration::from_secs(10))
         .env_clear()
         .env("SYSKNIFE_SOCKET", fake_socket(&dir))
         .env("XDG_CONFIG_HOME", dir.path())
@@ -487,16 +521,34 @@ fn a_planning_timeout_does_not_claim_an_execution_failure() {
         .env("SYSKNIFE_LLM_PROVIDER", "ollama")
         .env("SYSKNIFE_LLM_MODEL", "test-model")
         .env("SYSKNIFE_OLLAMA_URL", provider_url)
-        .args(["--dry-run", "--json", "--timeout", "1", "check disk usage"])
+        .args(["--dry-run", "--json", "--timeout", "5", "check disk usage"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("operation timed out after 1s"))
+        .stderr(predicate::str::contains("operation timed out after 5s"))
         .stderr(predicate::str::contains("execution failed").not())
         .stdout(predicate::str::is_empty());
 
-    listener
-        .accept()
-        .expect("the CLI reached the local provider");
+    let provider_connection = match accepted_rx.recv_timeout(std::time::Duration::from_secs(3)) {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(error)) => {
+            let _ = stop_tx.send(());
+            accept_thread
+                .join()
+                .expect("provider listener thread should exit");
+            panic!("the CLI did not reach the local provider: {error}");
+        }
+        Err(error) => {
+            let _ = stop_tx.send(());
+            accept_thread
+                .join()
+                .expect("provider listener thread should exit");
+            panic!("the CLI did not reach the local provider: {error}");
+        }
+    };
+    accept_thread
+        .join()
+        .expect("provider listener thread should exit");
+    drop(provider_connection);
 }
 
 #[test]
