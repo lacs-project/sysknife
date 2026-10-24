@@ -1161,11 +1161,7 @@ impl LlmPlanner {
 
                     for (id, call_id, name, input) in &tool_calls {
                         // Emit a progress event before dispatching each tool.
-                        self.emit(match name.as_str() {
-                            "propose_plan" => PlanEvent::ProposingPlan,
-                            "get_system_state" => PlanEvent::QueryingTool("system state".into()),
-                            other => PlanEvent::QueryingTool(other.replace('_', " ")),
-                        });
+                        self.emit(progress_event(name, &tools));
 
                         match name.as_str() {
                             "get_system_state" => {
@@ -1197,10 +1193,13 @@ impl LlmPlanner {
                                         let reason = e.to_string();
                                         let raw_plan = input.to_string();
                                         eprintln!(
-                                            "[SYSKNIFE SAFETY] propose_plan rejected \
-                                             (turn {}/{max}): {reason}. Input: {raw_plan}",
-                                            turn + 1,
-                                            max = self.max_turns
+                                            "{}",
+                                            rejected_plan_notice(
+                                                &reason,
+                                                &raw_plan,
+                                                turn + 1,
+                                                self.max_turns
+                                            )
                                         );
                                         if let Some(audit) = self.audit_log.clone() {
                                             audit
@@ -1411,11 +1410,12 @@ impl LlmPlanner {
                                         // that says "the model went off-protocol" was the one
                                         // absent from the audit trail.
                                         eprintln!(
-                                            "[SYSKNIFE WARNING] LLM called unknown tool \
-                                             '{other_name}' (turn {}/{max}); sending error \
-                                             feedback.",
-                                            turn + 1,
-                                            max = self.max_turns
+                                            "{}",
+                                            unknown_tool_notice(
+                                                other_name,
+                                                turn + 1,
+                                                self.max_turns
+                                            )
                                         );
                                         if let Some(audit) = self.audit_log.clone() {
                                             audit
@@ -1452,6 +1452,58 @@ impl LlmPlanner {
     }
 }
 
+/// The progress event for a tool call the model just made.
+///
+/// The tool name is model-written, and the CLI puts the label in its spinner.
+/// Only a name from `tools`, the set this planner offered, becomes a label; any
+/// other name is the fixed string `unknown tool`, so no byte the model chose
+/// reaches the operator's terminal this way.
+fn progress_event(name: &str, tools: &[ToolDefinition]) -> PlanEvent {
+    match name {
+        "propose_plan" => PlanEvent::ProposingPlan,
+        "get_system_state" => PlanEvent::QueryingTool("system state".into()),
+        offered if tools.iter().any(|t| t.name == offered) => {
+            PlanEvent::QueryingTool(offered.replace('_', " "))
+        }
+        _ => PlanEvent::QueryingTool("unknown tool".into()),
+    }
+}
+
+/// Longest model-written fragment a planner notice prints on stderr.
+const NOTICE_FRAGMENT_MAX_BYTES: usize = 1024;
+
+/// Model-written text made safe for one line of the operator's terminal.
+///
+/// The notices below print to the same terminal as the plan and the approval
+/// prompt. `normalise_free_text_capped` removes escapes, bidi, zero-width and
+/// TAG-block characters and bounds the length; it keeps `\n`, `\r` and `\t`,
+/// which are fine in a tool result and are line forgery on a terminal, so they
+/// become spaces here.
+fn terminal_fragment(raw: &str) -> String {
+    crate::sanitize::normalise_free_text_capped(raw, NOTICE_FRAGMENT_MAX_BYTES)
+        .replace(['\n', '\r', '\t'], " ")
+}
+
+/// The stderr line for a `propose_plan` call the fence rejected. The reason
+/// quotes model strings (`propose_plan.rs` builds it from the step), and the
+/// input is the model's call verbatim.
+fn rejected_plan_notice(reason: &str, raw_plan: &str, turn: usize, max: usize) -> String {
+    format!(
+        "[SYSKNIFE SAFETY] propose_plan rejected (turn {turn}/{max}): {}. Input: {}",
+        terminal_fragment(reason),
+        terminal_fragment(raw_plan),
+    )
+}
+
+/// The stderr line for a call to a tool the planner does not offer.
+fn unknown_tool_notice(name: &str, turn: usize, max: usize) -> String {
+    format!(
+        "[SYSKNIFE WARNING] LLM called unknown tool '{}' (turn {turn}/{max}); \
+         sending error feedback.",
+        terminal_fragment(name),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests (module-local helpers only — integration tests live in
 // crates/sysknife-brain/tests/planner.rs).
@@ -1461,6 +1513,51 @@ impl LlmPlanner {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    /// A model-chosen string carrying every class that rewrites a terminal: an
+    /// erase-line CSI, a carriage return, a newline that forges a line, a
+    /// right-to-left override and a TAG-block character.
+    const HOSTILE: &str = "evil\x1b[2K\rfake\nline\u{202e}rev\u{e0041}";
+
+    fn assert_terminal_safe(s: &str) {
+        for bad in ['\x1b', '\r', '\n', '\u{202e}', '\u{e0041}'] {
+            assert!(!s.contains(bad), "{bad:?} reached the terminal: {s:?}");
+        }
+    }
+
+    /// GHSA-23mr item 2: an unknown tool name went into the spinner as is.
+    #[test]
+    fn an_unknown_tool_name_never_reaches_the_progress_event() {
+        let tools = vec![crate::planning_tools::preferences::remember_tool_def()];
+        match progress_event(HOSTILE, &tools) {
+            PlanEvent::QueryingTool(label) => assert_eq!(label, "unknown tool"),
+            other => panic!("expected QueryingTool, got {other:?}"),
+        }
+        match progress_event("remember", &tools) {
+            PlanEvent::QueryingTool(label) => assert_eq!(label, "remember"),
+            other => panic!("expected QueryingTool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_unknown_tool_notice_is_one_neutralised_line() {
+        let line = unknown_tool_notice(HOSTILE, 1, 5);
+        assert_terminal_safe(&line);
+        assert!(line.contains("evil") && line.contains("fake"), "{line}");
+    }
+
+    #[test]
+    fn the_rejected_plan_notice_is_one_neutralised_line() {
+        let line = rejected_plan_notice(HOSTILE, &format!("{{\"summary\":\"{HOSTILE}\"}}"), 2, 5);
+        assert_terminal_safe(&line);
+        assert!(line.contains("propose_plan rejected"), "{line}");
+    }
+
+    #[test]
+    fn the_rejected_plan_notice_is_bounded() {
+        let line = rejected_plan_notice("r", &"x".repeat(100_000), 1, 5);
+        assert!(line.len() < 4096, "{} bytes", line.len());
+    }
 
     // Env-var mutation is process-global; tests that touch it must be
     // serialised to avoid cross-test interference on a multi-threaded
