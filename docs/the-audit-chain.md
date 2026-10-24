@@ -495,6 +495,19 @@ signature mismatch — same report shape, different `expected`/`actual`
 pair. Either failure is reported at the *first* broken row; rows before it
 are still proven intact.
 
+A row this build cannot check does not stop the walk. That covers a
+`chain_version` newer than the build understands, and a `key_id` other than
+the loaded key's whose signature the loaded key does not reproduce (with one
+key generation today, the loaded key is always tried first, and a row it
+verifies counts as verified). The walk notes the row, still checks the
+`prev_chain_hash` link into and out of it, and verifies every row after it.
+A forged or deleted row later in the chain reports `BROKEN`, exit `1`. Only
+when nothing else is wrong does the walk report `CANNOT VERIFY`, exit `2`,
+naming the first such row and how many rows did verify. The row counts in
+both messages cover verified rows only, so they can fall short of the
+broken row's `seq`. Through 0.26.1 the walk stopped at the first such row,
+and editing one of those two columns hid everything after it.
+
 **Deleted approval events look like:**
 
 ```text
