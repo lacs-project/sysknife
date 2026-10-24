@@ -56,7 +56,7 @@ for jail in ["sshd", "_foo", ".foo", "a-b_c.d", "A1", "a" * 64]:
     if refused(mod.validated_jail, jail):
         failures.append(f"jail {jail!r} is valid for the daemon and was refused here")
 for jail in ["-foo", "", "a" * 65, "foo bar", "foo/bar", "foo;id", "foo$(id)", "ünicode",
-             "foo\nbar"]:
+             "foo\nbar", "sshd\n"]:
     if not refused(mod.validated_jail, jail):
         failures.append(f"jail {jail!r} was accepted")
 
@@ -66,7 +66,13 @@ for ip in ["192.0.2.1", "203.0.113.7", "::1", "2001:db8::1"]:
     if refused(mod.validated_ip, ip):
         failures.append(f"{ip!r} is a valid address and was refused")
 for ip in ["192.0.2.0/24", "192.0.2.1-192.0.2.9", "example.com", "", "192.0.2.256",
-           "192.0.2.1 banip", "-1"]:
+           "192.0.2.1 banip", "-1",
+           # IPv6 scope IDs. Python accepts almost any text after `%`, and
+           # std::net::IpAddr, which the daemon uses, refuses every scope ID.
+           # fail2ban puts the address into a root shell command and does not
+           # escape a space, so the text after `%` became firewall arguments.
+           "fe80::1%eth0", "fe80::1%$(id)", "fe80::1%x -j ACCEPT", "fe80::1%a;id",
+           "fe80::1%a\nb"]:
     if not refused(mod.validated_ip, ip):
         failures.append(f"{ip!r} was accepted as an address")
 

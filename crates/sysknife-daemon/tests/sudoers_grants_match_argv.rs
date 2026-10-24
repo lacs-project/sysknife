@@ -340,6 +340,10 @@ const ROOT_ESCAPES: &[(&str, &str)] = &[
         "/usr/bin/systemctl link /tmp/evil.service",
         "installs a unit file from a path the caller owns",
     ),
+    (
+        "/usr/bin/fail2ban-client set sshd action pwn actionban CMD",
+        "a jail action whose ban command runs as root",
+    ),
 ];
 
 #[test]
