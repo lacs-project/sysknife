@@ -12,6 +12,8 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.26.1] — 2026-10-24
+
 ### Security
 
 - **The lockfile moves ctutils to 0.4.4 for RUSTSEC-2026-0385.** ctutils 0.4.2
