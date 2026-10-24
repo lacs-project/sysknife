@@ -88,6 +88,39 @@ check_modes() {
     fi
 }
 
+# `systemd-analyze verify` also loads the host's own units and reports their
+# deprecations (ubuntu-latest's systemd prints `CPUAccounting= has been
+# removed` for xfs_scrub_all.service and walinuxagent.service). Those lines
+# name a unit file under a system unit directory; anything else, including
+# every line about the unit under test (it lives in a mktemp dir), still counts.
+own_unit_problems() {
+    grep -vE '^/(usr/lib|lib|etc|run)/systemd/' || true
+}
+
+# The filter must drop only host-unit lines; check it on canned logs before
+# trusting it with the real one.
+check_own_unit_problems_filter() {
+    local host_only ours mixed
+    host_only='/usr/lib/systemd/system/xfs_scrub_all.service:26: Support for option CPUAccounting= has been removed and it is ignored
+/etc/systemd/system/foo.service:3: Support for option CPUAccounting= has been removed and it is ignored'
+    ours="/tmp/tmp.abc/sysknife-daemon.service:12: Unknown key name 'ProtectSystm' in section 'Service', ignoring."
+    mixed="$host_only
+sysknife-daemon.service: Command /bin/true is not executable: No such file or directory"
+
+    if [ -n "$(own_unit_problems <<<"$host_only")" ]; then
+        printf 'FAIL: own_unit_problems kept a host-unit deprecation line\n' >&2
+        exit 1
+    fi
+    if [ "$(own_unit_problems <<<"$ours")" != "$ours" ]; then
+        printf 'FAIL: own_unit_problems dropped a problem in the unit under test\n' >&2
+        exit 1
+    fi
+    if [ "$(own_unit_problems <<<"$mixed")" != 'sysknife-daemon.service: Command /bin/true is not executable: No such file or directory' ]; then
+        printf 'FAIL: own_unit_problems dropped a problem that names no host unit\n' >&2
+        exit 1
+    fi
+}
+
 verify_systemd_unit() {
     command -v systemd-analyze >/dev/null 2>&1 || return 0
 
@@ -106,9 +139,11 @@ verify_systemd_unit() {
         rm -rf "$verify_dir"
         exit 1
     fi
-    if [ -s "$verify_log" ]; then
+    local problems
+    problems="$(own_unit_problems <"$verify_log")"
+    if [ -n "$problems" ]; then
         printf 'FAIL: systemd-analyze reported problems in packaging/sysknife-daemon.service:\n' >&2
-        cat "$verify_log" >&2
+        printf '%s\n' "$problems" >&2
         rm -rf "$verify_dir"
         exit 1
     fi
@@ -117,6 +152,7 @@ verify_systemd_unit() {
 
 check_modes 'packaging/sysknife-daemon.service' "$unit"
 check_modes 'tests/e2e/ubuntu-provision.sh' "$ubuntu_provision"
+check_own_unit_problems_filter
 verify_systemd_unit
 
 printf 'systemd directory modes match tmpfiles: runtime %s, state %s.\n' \
