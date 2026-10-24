@@ -30,8 +30,11 @@ polkit.addRule(function(action, subject) {
         "org.projectatomic.rpmostree1.override-reset-packages",
         "org.projectatomic.rpmostree1.cleanup",
         // ── systemd / systemctl ───────────────────────────────────────────
-        "org.freedesktop.systemd1.manage-units",
-        "org.freedesktop.systemd1.manage-unit-files",
+        // No manage-units or manage-unit-files: manage-units also authorises
+        // StartTransientUnit (systemd-run), a root command line over D-Bus
+        // that bypasses every sudoers narrowing. The daemon never needed them;
+        // unit verbs go through sudo and action-steps. See
+        // crates/sysknife-daemon/tests/polkit_rules.rs.
         "org.freedesktop.systemd1.reload-daemon",
         // ── hostname ─────────────────────────────────────────────────────
         // set-hostname: transient hostname (DHCP/network-provided, non-persistent)
