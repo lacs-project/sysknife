@@ -1,0 +1,27 @@
+name: Cargo Audit
+
+# Check Rust dependencies daily, including when nobody pushes.
+# The existing security-audit job in ci.yml remains the required PR check.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-audit
+
+      - name: Audit dependencies for known RustSec advisories
+        run: cargo audit
