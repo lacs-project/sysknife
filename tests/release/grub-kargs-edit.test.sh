@@ -159,6 +159,54 @@ for tok in ["lockdown=integrity", "lockdown=confidentiality", "lockdown=", "LOCK
     if not refused_append(tok):
         failures.append(f"--append {tok!r} was accepted; the daemon refuses every lockdown= value")
 
+# 3c''. Boot-mode and run tokens systemd(1) and kernel-command-line(7) honour.
+#     `emergency`, `rescue`, `-b` and runlevels 2-5 pick the boot target the way
+#     `single` and `1` already did; `systemd.run=` runs a command as a root
+#     service after boot; `rdinit=` and `rd.systemd.unit=` are the initramfs
+#     twins of `init=` and `systemd.unit=`; `rd.break` and `break` stop in an
+#     initramfs root shell. Both copies accepted every one.
+BOOT_MODE = [
+    "emergency", "rescue", "-b", "rd.emergency", "rd.rescue", "2", "3", "4", "5",
+    "systemd.run=/tmp/x", "systemd.run_success_action=reboot",
+    "systemd.run_failure_action=none", "rdinit=/bin/sh", "rd.break", "rd.break=pre-mount",
+    "break", "break=premount", "rd.systemd.unit=emergency.target",
+    "rd.systemd.unit=rescue.target", "rd.systemd.unit=debug-shell.service",
+    "EMERGENCY", "Systemd.Run=/tmp/x",
+]
+for tok in BOOT_MODE:
+    if not refused_append(tok):
+        failures.append(f"--append {tok!r} was accepted; it boots into a root shell or command")
+
+# 3c'''. PARITY with validated_safe_kernel_arg, read out of executor.rs. Every
+#     token the daemon refuses on the add path, the helper refuses on --append.
+#     The two lists agreed with each other while both missed systemd.run=, so
+#     this checks containment and the behaviour, not the comment above them.
+repo_root = os.path.dirname(os.path.dirname(os.path.abspath(script_path)))
+exec_rs = os.path.join(repo_root, "crates/sysknife-daemon/src/executor.rs")
+try:
+    exec_src = open(exec_rs, encoding="utf-8").read()
+except OSError as exc:
+    failures.append(f"cannot read {exec_rs}: {exc}; the parity check inspected nothing")
+    exec_src = ""
+fn = re.search(r"fn validated_safe_kernel_arg\(.*?\n\}\n", exec_src, re.S)
+fn_src = fn.group(0) if fn else ""
+for const, helper_attr in (("BLOCKED_PREFIXES", "DENY_APPEND_PREFIXES"),
+                           ("BLOCKED_EXACT", "DENY_APPEND_EXACT")):
+    decl = re.search(rf"const {const}:\s*&\[&str\]\s*=\s*&\[(.*?)\];", fn_src, re.S)
+    daemon = set(re.findall(r'"([^"]+)"', decl.group(1))) if decl else set()
+    if not daemon:
+        failures.append(f"{const} not found or empty in validated_safe_kernel_arg; compared nothing")
+        continue
+    missing = sorted(daemon - set(getattr(mod, helper_attr, ())))
+    if missing:
+        failures.append(f"{helper_attr} is missing {missing}, which the daemon's {const} refuses")
+    for tok in sorted(daemon):
+        for spelling in (tok, tok + "1") if const == "BLOCKED_PREFIXES" else (tok,):
+            if not refused_append(spelling):
+                failures.append(f"--append {spelling!r} was accepted; the daemon refuses it")
+if "rd.systemd.unit=" not in fn_src:
+    failures.append("validated_safe_kernel_arg does not screen rd.systemd.unit=")
+
 # 3d. Ordinary appends must survive, or the screen has eaten the feature.
 for tok in ["quiet", "splash", "nomodeset", "console=ttyS0", "transparent_hugepage=madvise"]:
     if refused_append(tok):
@@ -177,7 +225,6 @@ for tok in ["quiet", "splash", "nomodeset", "console=ttyS0", "transparent_hugepa
 #
 #     Reading the daemon's list out of its source is the point. A copy of it
 #     here would drift exactly the way the helper drifted.
-repo_root = os.path.dirname(os.path.dirname(os.path.abspath(script_path)))
 validate_rs = os.path.join(repo_root, "crates/sysknife-daemon/src/actions/validate.rs")
 try:
     rust_src = open(validate_rs, encoding="utf-8").read()

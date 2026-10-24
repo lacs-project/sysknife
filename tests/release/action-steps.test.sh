@@ -271,6 +271,45 @@ class UserAndUnitVerbs(unittest.TestCase):
                 with self.subTest(args=args), self.assertRaises(ValueError):
                     helper['main'](args)
 
+    def test_refuses_to_lock_or_unlock_a_critical_account(self):
+        # The daemon refuses to lock root, daemon, bin, sys, sudo and adm
+        # (CRITICAL_ACCOUNTS in validate.rs). This branch checked only the
+        # name's shape, so a direct `sudo action-steps user-lock root` locked
+        # root, and user-unlock reopened a root account locked on purpose.
+        runner = mock.Mock(side_effect=AssertionError('usermod must not run'))
+        with mock.patch.dict(helper, run=runner):
+            for op in ('user-lock', 'user-unlock'):
+                for name in sorted(self.daemon_critical_accounts()):
+                    with self.subTest(op=op, name=name), self.assertRaises(ValueError):
+                        helper['main']([op, name])
+        runner.assert_not_called()
+
+    def daemon_critical_accounts(self):
+        rust = Path('crates/sysknife-daemon/src/actions/validate.rs').read_text(encoding='utf-8')
+        decl = re.search(r'const CRITICAL_ACCOUNTS:\s*&\[&str\]\s*=\s*&\[(.*?)\];', rust, re.S)
+        self.assertIsNotNone(decl, 'CRITICAL_ACCOUNTS not found; this check inspected nothing')
+        names = set(re.findall(r'"([^"]+)"', decl.group(1)))
+        self.assertTrue(names, 'CRITICAL_ACCOUNTS parsed empty; refusing to compare against nothing')
+        return names
+
+    def test_critical_accounts_are_the_daemon_own_list(self):
+        # Derived, not restated, for the same reason as ROOT_SHELL_UNITS below.
+        self.assertEqual(set(helper.get('CRITICAL_ACCOUNTS', ())), self.daemon_critical_accounts())
+
+    def test_account_names_follow_validated_username(self):
+        # validated_username refuses a leading `.` and any `..`, because names
+        # reach /home/<name>/ paths. This helper accepted `..` and `.x`.
+        runner = mock.Mock(side_effect=AssertionError('must not execute'))
+        with mock.patch.dict(helper, run=runner):
+            for name in ('..', '.', '.hidden', 'a..b', '-x', ''):
+                for args in (['user-lock', name], ['user-create', name],
+                             ['group-add', name, 'wheel'], ['group-add', 'alice', name]):
+                    with self.subTest(args=args), self.assertRaises(ValueError):
+                        helper['main'](args)
+        for name in ('alice', 'a.b', '_svc', 'deploy-1', 'a' * 32):
+            with self.subTest(name=name):
+                self.assertEqual(helper['username'](name), name)
+
     def test_root_shell_denylist_is_the_daemon_own_list(self):
         # Derived, not restated. The grub-kargs helper kept its own copy of this
         # idea and drifted to three entries while the daemon had five, which is
