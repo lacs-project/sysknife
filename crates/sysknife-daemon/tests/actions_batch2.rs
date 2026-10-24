@@ -550,7 +550,11 @@ fn group_lifecycle_uses_sudo_groupadd_groupdel() {
         create.mechanism,
         ActionMechanism::Command {
             program: "sudo",
-            args: vec!["groupadd".to_string(), "developers".to_string()],
+            args: vec![
+                "/usr/lib/sysknife/action-steps".to_string(),
+                "group-create".to_string(),
+                "developers".to_string()
+            ],
         }
     );
     assert_eq!(
@@ -558,7 +562,8 @@ fn group_lifecycle_uses_sudo_groupadd_groupdel() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
-                "groupadd".to_string(),
+                "/usr/lib/sysknife/action-steps".to_string(),
+                "group-create".to_string(),
                 "--system".to_string(),
                 "svc".to_string()
             ],
@@ -568,7 +573,11 @@ fn group_lifecycle_uses_sudo_groupadd_groupdel() {
         delete.mechanism,
         ActionMechanism::Command {
             program: "sudo",
-            args: vec!["groupdel".to_string(), "developers".to_string()],
+            args: vec![
+                "/usr/lib/sysknife/action-steps".to_string(),
+                "group-delete".to_string(),
+                "developers".to_string()
+            ],
         }
     );
 }
@@ -600,7 +609,11 @@ fn user_creation_and_group_changes_use_sudo_prefixed_shadow_tools() {
         delete.mechanism,
         ActionMechanism::Command {
             program: "sudo",
-            args: vec!["userdel".to_string(), "alice".to_string()],
+            args: vec![
+                "/usr/lib/sysknife/action-steps".to_string(),
+                "user-delete".to_string(),
+                "alice".to_string()
+            ],
         }
     );
     // AddUserToGroup / RemoveUserFromGroup use a getent-guard script to handle

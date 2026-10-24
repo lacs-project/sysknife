@@ -47,7 +47,10 @@ pub fn apparmor_status() -> ActionSpec {
     }
 }
 
-/// Put an AppArmor profile into enforce mode (`sudo aa-enforce <profile_path>`).
+/// Put an AppArmor profile into enforce mode (`sudo aa-enforce -- <profile_path>`).
+///
+/// The `--` matches the sudoers grant, which requires it so a direct caller
+/// cannot add `-d <dir>` and load profiles from a directory it owns.
 ///
 /// Risk: High. Activating enforcement can immediately block operations that
 /// the application relies on, potentially causing it to fail or lose data.
@@ -55,14 +58,15 @@ pub fn apparmor_status() -> ActionSpec {
 pub fn apparmor_enforce(profile_path: &str) -> ActionSpec {
     ActionSpec {
         action_name: "AppArmorEnforce",
-        mechanism: command_mechanism("sudo", ["aa-enforce", profile_path]),
+        mechanism: command_mechanism("sudo", ["aa-enforce", "--", profile_path]),
         risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
     }
 }
 
-/// Put an AppArmor profile into complain (learning) mode (`sudo aa-complain <profile_path>`).
+/// Put an AppArmor profile into complain (learning) mode
+/// (`sudo aa-complain -- <profile_path>`; see [`apparmor_enforce`] for the `--`).
 ///
 /// Risk: High. Complain mode stops a profile from *blocking* violations — it
 /// disables mandatory-access-control enforcement for that profile (violations
@@ -74,7 +78,7 @@ pub fn apparmor_enforce(profile_path: &str) -> ActionSpec {
 pub fn apparmor_complain(profile_path: &str) -> ActionSpec {
     ActionSpec {
         action_name: "AppArmorComplain",
-        mechanism: command_mechanism("sudo", ["aa-complain", profile_path]),
+        mechanism: command_mechanism("sudo", ["aa-complain", "--", profile_path]),
         risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
@@ -143,8 +147,7 @@ mod tests {
         let (prog, args) = extract_args(&spec);
         assert_eq!(prog, "sudo");
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
-        assert_eq!(a[0], "aa-enforce");
-        assert_eq!(a[1], profile);
+        assert_eq!(a, vec!["aa-enforce", "--", profile]);
     }
 
     // ── apparmor_complain ────────────────────────────────────────────────────
@@ -174,8 +177,7 @@ mod tests {
         let (prog, args) = extract_args(&spec);
         assert_eq!(prog, "sudo");
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
-        assert_eq!(a[0], "aa-complain");
-        assert_eq!(a[1], profile);
+        assert_eq!(a, vec!["aa-complain", "--", profile]);
     }
 
     #[test]

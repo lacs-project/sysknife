@@ -27,8 +27,8 @@
 
 # User management — create and delete system/human accounts.
 # CreateUser: sudo action-steps user-create <name> [--home-dir p] [--shell s]
-# userdel:     called by DeleteUser  (sudo userdel <username>)
-# CreateUser goes through the helper, not through a `useradd` grant.
+# DeleteUser: sudo action-steps user-delete <name>
+# Both go through the helper, not through a `useradd` or `userdel` grant.
 #
 # The grant here used to be `/usr/sbin/useradd --create-home *`, on the reading
 # that a leading literal forbids the rest. It does not: sudoers matches the
@@ -38,13 +38,21 @@
 # way to say "and nothing else", so the grammar is enforced in
 # /usr/lib/sysknife/action-steps, which re-validates every token whether the
 # daemon or a direct sudo call invoked it.
+#
+# `userdel` was a bare grant, which admitted `userdel -R <dir> <name>`: userdel's
+# writes redirected into a caller-chosen root. A `userdel -- *` grant would not
+# help, because shadow-utils scans the whole argv for `-R`/`--root` and
+# `-P`/`--prefix` before getopt runs, so `--` does not stop them (seen on
+# 24.04: `userdel -- -R /tmp/x alice` still tries to chroot). groupadd, groupdel
+# and chage share that scan, which is why all four go through the helper.
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps user-create *
-sysknife ALL=(root) NOPASSWD: /usr/sbin/userdel
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps user-delete *
 
 # Group membership — add/remove users to/from groups.
 # AddUserToGroup:      sudo action-steps group-add <user> <grp>, which runs
 #                      `usermod --append --groups` as root inside the helper
-# gpasswd: called by RemoveUserFromGroup  (sudo gpasswd --delete <user> <grp>)
+# RemoveUserFromGroup: sudo action-steps group-remove <user> <grp>, which runs
+#                      `gpasswd --delete` as root inside the helper
 # LockUserAccount and UnlockUserAccount go through the helper for the same
 # reason: `/usr/sbin/usermod --lock *` also admitted
 # `usermod --lock -o -u 0 <user>`, which makes an existing account uid 0.
@@ -52,15 +60,18 @@ sysknife ALL=(root) NOPASSWD: /usr/sbin/userdel
 # after this there is no `usermod` grant at all.
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps user-lock *
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps user-unlock *
-sysknife ALL=(root) NOPASSWD: /usr/bin/gpasswd
+# No gpasswd grant: the daemon never ran it through sudo, and the bare grant
+# admitted `gpasswd --add <account> sudo` and `gpasswd -A <account> sudo`.
 
 # Group lifecycle — create/delete groups.
-# groupadd: called by CreateGroup  (sudo groupadd [--system] <group>)
-# groupdel: called by DeleteGroup  (sudo groupdel <group>)
+# CreateGroup: sudo action-steps group-create [--system] <group>
+# DeleteGroup: sudo action-steps group-delete <group>
+# The bare groupadd grant admitted `groupadd -o -g 0 <name>`, a second gid-0
+# group; both binaries honour the `-R` chroot flag described above.
 # No groupmod grant: SysKnife has no group-modify action, so that binary is
 # intentionally left ungranted per least privilege.
-sysknife ALL=(root) NOPASSWD: /usr/sbin/groupadd
-sysknife ALL=(root) NOPASSWD: /usr/sbin/groupdel
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps group-create *
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps group-delete *
 
 # Process control — SignalProcess sends an allowlisted signal to a pid
 # (`action-steps signal <SIG> <pid>`), and the action-timeout reaper (#142)
@@ -143,10 +154,16 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/ostree admin pin *
 # lvextend/lvcreate rewrite VG metadata and require root. `lvextend -r` also
 # spawns resize2fs/xfs_growfs itself (as root), so no separate resize grant is
 # needed. GetLvmReport reads metadata via bare `lvs` (the daemon is already
-# root) and needs no grant. vg/lv/snapshot names and sizes are validated
-# upstream (validated_lvm_name / validated_lvm_size in actions/validate.rs).
-sysknife ALL=(root) NOPASSWD: /usr/sbin/lvextend
-sysknife ALL=(root) NOPASSWD: /usr/sbin/lvcreate
+# root) and needs no grant.
+# The bare grants admitted `--config`, which sets any lvm.conf value for one
+# call, including `global/fsadm_executable` (the binary `-r` runs) and
+# `global/thin_check_executable`: a caller-chosen program run as root. The
+# size is an option value in the middle of the argv, where sudoers cannot pin
+# it, so the three actions go through the helper, which re-validates the names
+# and sizes (validated_lvm_name / validated_lvm_size) and builds the argv.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps lv-extend *
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps lv-create *
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps lv-snapshot *
 
 # Fixed multi-step operations. No generic exec, shell, runuser, path or environment
 # argument is accepted. The helper checks exact argument counts and allowlists.
@@ -174,17 +191,27 @@ sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps toolbox *
 sysknife ALL=(root) NOPASSWD: /usr/bin/env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get *
 
 # Apt write operations:
-#   apt-mark hold/unhold             → AptHold / AptUnhold
+#   apt-mark hold/unhold -- <pkg>    → AptHold / AptUnhold
 #   apt-get install/remove/purge/…   → ONLY via the env-wrapped grant above.
 # No bare `/usr/bin/apt-get` grant: apt.rs always invokes apt-get through the
 # `env DEBIAN_FRONTEND=… apt-get *` form, and a bare apt-get NOPASSWD grant is a
 # GTFOBins root-shell escape (e.g. `apt-get -o APT::Update::Pre-Invoke=…`), so it
 # is deliberately omitted.
-sysknife ALL=(root) NOPASSWD: /usr/bin/apt-mark
+# apt-mark had the same escape through its bare grant: `hold` runs dpkg, and
+# `apt-mark hold bash -o Dir::Bin::dpkg=/tmp/x` runs /tmp/x as root (apt parses
+# options after the subcommand too). apt stops option parsing at `--`, so the
+# packages follow a literal `--`.
+sysknife ALL=(root) NOPASSWD: /usr/bin/apt-mark hold -- *
+sysknife ALL=(root) NOPASSWD: /usr/bin/apt-mark unhold -- *
 
 # add-apt-repository — provided by software-properties-common.
-# AddPpa / RemovePpa.
-sysknife ALL=(root) NOPASSWD: /usr/bin/add-apt-repository
+# AddPpa / RemovePpa, through `--ppa`, which argparse puts in a mutually
+# exclusive group with `--uri`, `--sourceslist`, `--cloud` and the positional
+# sources.list line, so a raw `deb [trusted=yes] http://...` entry after it is
+# refused. The bare grant admitted those. A direct caller can still add any
+# PPA, which is what AddPpa does; that decision stays with the Admin tier.
+sysknife ALL=(root) NOPASSWD: /usr/bin/add-apt-repository -y --ppa *
+sysknife ALL=(root) NOPASSWD: /usr/bin/add-apt-repository -y --remove --ppa *
 
 # apt-pin edit — SetAptPin/RemoveAptPin delegate to this root-owned helper,
 # which validates the name (no dots), package glob, Pin expression, and
@@ -201,13 +228,15 @@ sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/apt-pin-edit *
 # runs bare `logrotate -d` (dry-run) and needs no grant.
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/log-edit *
 
-# PAM password policy. SetPasswordAging runs `chage` directly (fully scoped by
-# argv). SetPasswordPolicy/SetAccountLockout delegate to the root-owned pam-edit
+# PAM password policy. SetPasswordAging goes through
+# `action-steps password-aging`: the bare `chage` grant admitted `-R <dir>` and
+# `chage -E 0 root`, and the day counts are option values sudoers cannot pin.
+# SetPasswordPolicy/SetAccountLockout delegate to the root-owned pam-edit
 # helper, which re-validates ranges and writes a pwquality drop-in or a
 # marker-delimited block in /etc/security/faillock.conf. GetPasswordAging runs
 # bare `chage -l` (read-only) and needs no grant. (pam_pwquality enforcement
 # additionally needs libpam-pwquality installed + enabled in the auth stack.)
-sysknife ALL=(root) NOPASSWD: /usr/bin/chage
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps password-aging *
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/pam-edit *
 
 # Snap write operations (install / remove / refresh / hold / revert).
@@ -218,8 +247,19 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/snap refresh *
 sysknife ALL=(root) NOPASSWD: /usr/bin/snap remove *
 sysknife ALL=(root) NOPASSWD: /usr/bin/snap revert *
 
-# UFW firewall — every mutating subcommand requires root.
-sysknife ALL=(root) NOPASSWD: /usr/sbin/ufw
+# UFW firewall — every mutating subcommand requires root. One grant per verb
+# the catalogue builds. The bare grant also admitted `ufw default allow
+# incoming` and `ufw logging off`, which no action builds. ufw takes its
+# command from the first argument, so the verb is the anchor.
+sysknife ALL=(root) NOPASSWD: /usr/sbin/ufw --force enable
+sysknife ALL=(root) NOPASSWD: /usr/sbin/ufw disable
+sysknife ALL=(root) NOPASSWD: /usr/sbin/ufw --force reset
+sysknife ALL=(root) NOPASSWD: /usr/sbin/ufw status verbose
+sysknife ALL=(root) NOPASSWD: /usr/sbin/ufw status numbered
+sysknife ALL=(root) NOPASSWD: /usr/sbin/ufw allow *
+sysknife ALL=(root) NOPASSWD: /usr/sbin/ufw deny *
+sysknife ALL=(root) NOPASSWD: /usr/sbin/ufw limit *
+sysknife ALL=(root) NOPASSWD: /usr/sbin/ufw --force delete *
 
 # Netplan — apply/generate/set rewrite /etc/netplan/ + reload interfaces.
 # Path varies between releases: /usr/sbin/netplan on jammy/noble, but the
@@ -234,9 +274,12 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/netplan generate
 sysknife ALL=(root) NOPASSWD: /usr/bin/netplan set *
 
 # AppArmor — aa-status (apparmor base), aa-enforce/aa-complain (apparmor-utils).
-sysknife ALL=(root) NOPASSWD: /usr/sbin/aa-status
-sysknife ALL=(root) NOPASSWD: /usr/sbin/aa-enforce
-sysknife ALL=(root) NOPASSWD: /usr/sbin/aa-complain
+# `""` permits no arguments at all. The profile follows `--`, which argparse
+# honours, so `-d <dir>` (profiles loaded from a directory the caller owns) is
+# no longer reachable.
+sysknife ALL=(root) NOPASSWD: /usr/sbin/aa-status ""
+sysknife ALL=(root) NOPASSWD: /usr/sbin/aa-enforce -- *
+sysknife ALL=(root) NOPASSWD: /usr/sbin/aa-complain -- *
 
 # fail2ban-client — Fail2banStatus (read-only). Status only.
 #
@@ -286,13 +329,15 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/pro enable *
 sysknife ALL=(root) NOPASSWD: /usr/bin/pro disable *
 sysknife ALL=(root) NOPASSWD: /usr/bin/pro status *
 
-# Canonical Livepatch — LivepatchStatus shells through sudo.
-sysknife ALL=(root) NOPASSWD: /usr/bin/canonical-livepatch
+# Canonical Livepatch — LivepatchStatus shells through sudo. Status only; the
+# bare grant also admitted `canonical-livepatch disable`.
+sysknife ALL=(root) NOPASSWD: /usr/bin/canonical-livepatch status --verbose
 
 # do-release-upgrade — UbuntuReleaseUpgrade.
 # Long-running (20-45 min) and reboot-required; preview-profile carries the
-# warning for operators.
-sysknife ALL=(root) NOPASSWD: /usr/bin/do-release-upgrade
+# warning for operators. The exact argv the action builds; the bare grant also
+# admitted `-d` (an unreleased development series) and `--proposed`.
+sysknife ALL=(root) NOPASSWD: /usr/bin/do-release-upgrade -f DistUpgradeViewNonInteractive
 
 # GRUB karg edit — GrubSetKargs delegates to this root-owned helper script.
 # The helper encapsulates the backup, in-place edit, and update-grub steps,

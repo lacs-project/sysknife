@@ -84,7 +84,7 @@ Sources consulted:
 ### AptHold — Pin package at current version
 
 - **Canonical**: `sudo apt-mark hold <pkg>`
-- **SysKnife argv**: `["sudo", "apt-mark", "hold", "<pkg>"]`
+- **SysKnife argv**: `["sudo", "apt-mark", "hold", "--", "<pkg>"]`
 - **Status**: ✅ matches
 - **Notes**: `apt-mark hold` does not require `DEBIAN_FRONTEND`; it only writes
   to the dpkg hold file (`/var/lib/dpkg/info/<pkg>.list`) without invoking
@@ -93,7 +93,7 @@ Sources consulted:
 ### AptUnhold — Remove version pin
 
 - **Canonical**: `sudo apt-mark unhold <pkg>`
-- **SysKnife argv**: `["sudo", "apt-mark", "unhold", "<pkg>"]`
+- **SysKnife argv**: `["sudo", "apt-mark", "unhold", "--", "<pkg>"]`
 - **Status**: ✅ matches
 
 ### AptSearch — Search repositories

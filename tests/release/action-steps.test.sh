@@ -28,9 +28,9 @@ class ShellGrants(unittest.TestCase):
     def test_no_unrestricted_helper_grant(self):
         grants = [line for line in Path('packaging/sysknife-sudoers').read_text(encoding='utf-8').splitlines()
                   if line.startswith('sysknife ') and '/action-steps' in line]
-        self.assertEqual(len(grants), 14)
+        self.assertEqual(len(grants), 21)
         for grant in grants:
-            self.assertRegex(grant, r'/action-steps (firewall|group-add|group-remove|snap-install-hold|ssh-add|ssh-remove|flatpak|podman|toolbox|user-create|user-lock|user-unlock|unit|signal) \*$')
+            self.assertRegex(grant, r'/action-steps (firewall|group-add|group-remove|snap-install-hold|ssh-add|ssh-remove|flatpak|podman|toolbox|user-create|user-lock|user-unlock|unit|signal|user-delete|group-create|group-delete|password-aging|lv-extend|lv-create|lv-snapshot) \*$')
 
     def test_no_useradd_usermod_or_unit_verb_grant_remains(self):
         # The escapes GHSA-j9c3-j2qr-65c4 named matched the "narrowed" grants
@@ -373,6 +373,77 @@ class SignalVerb(unittest.TestCase):
         daemon = set(re.findall(r'"([A-Z]+)" => Ok', body.group(0)))
         self.assertTrue(daemon, 'validated_kill_signal parsed empty')
         self.assertEqual(daemon, set(helper['SIGNALS']))
+
+
+
+class ShadowAndLvmVerbs(unittest.TestCase):
+    """The verbs that replaced the bare userdel, groupadd, groupdel, chage,
+    lvextend and lvcreate grants (GHSA-8rx7-g2jg-5pxg). shadow-utils honours
+    `-R <chroot>` even after `--`, and `lvextend --config` names the fsadm
+    binary `-r` runs as root, so no sudoers spelling could narrow them."""
+
+    def argv_for(self, args):
+        with mock.patch.dict(helper, run=mock.Mock()) as patched:
+            helper['main'](args)
+            return [call.args[0] for call in patched['run'].call_args_list]
+
+    def test_builds_the_argv_the_daemon_used_to_build_itself(self):
+        for args, expected in [
+            (['user-delete', 'alice'], [['/usr/sbin/userdel', 'alice']]),
+            (['group-create', 'devs'], [['/usr/sbin/groupadd', 'devs']]),
+            (['group-create', '--system', 'devs'], [['/usr/sbin/groupadd', '--system', 'devs']]),
+            (['group-delete', 'devs'], [['/usr/sbin/groupdel', 'devs']]),
+            (['password-aging', 'alice', '-M', '90'], [['/usr/bin/chage', '-M', '90', 'alice']]),
+            (['password-aging', 'alice', '-M', '90', '-m', '1', '-W', '7'],
+             [['/usr/bin/chage', '-M', '90', '-m', '1', '-W', '7', 'alice']]),
+            (['lv-extend', 'ubuntu-vg', 'root', '+10G'],
+             [['/usr/sbin/lvextend', '-L', '+10G', '-r', 'ubuntu-vg/root']]),
+            (['lv-create', 'vg0', 'data', '20G'],
+             [['/usr/sbin/lvcreate', '-L', '20G', '-n', 'data', 'vg0']]),
+            (['lv-snapshot', 'vg0', 'root', 'root-snap', '5G'],
+             [['/usr/sbin/lvcreate', '-s', '-L', '5G', '-n', 'root-snap', 'vg0/root']]),
+        ]:
+            with self.subTest(args=args):
+                self.assertEqual(self.argv_for(args), expected)
+
+    def test_refuses_what_the_bare_grants_admitted(self):
+        bad = [
+            ['user-delete', '-R', '/tmp/x', 'alice'], ['user-delete', '--', '-R'],
+            ['user-delete', '-r'], ['user-delete', 'alice', 'bob'], ['user-delete', 'root'],
+            ['user-delete', 'sudo'],
+            ['group-create', '-o', '-g', '0', 'rootgrp'], ['group-create', '-o'],
+            ['group-create', '--system'], ['group-create', 'devs', '--system'],
+            ['group-create', '--gid', '0'], ['group-create', '-R', '/tmp/x', 'devs'],
+            ['group-delete', '-R', '/tmp/x', 'devs'], ['group-delete', '-f'],
+            ['group-delete', 'sudo'], ['group-delete', 'shadow'],
+            ['password-aging', 'alice'], ['password-aging', 'alice', '-R', '/tmp/x'],
+            ['password-aging', 'root', '-E', '0'], ['password-aging', 'alice', '-d', '0'],
+            ['password-aging', 'alice', '-M', '100000'], ['password-aging', 'alice', '-M', '-1'],
+            ['password-aging', 'alice', '-M', '1', '-M', '2'], ['password-aging', 'alice', '-M'],
+            ['password-aging', '-M', '90', 'alice'], ['password-aging', 'alice', '-M', '9x'],
+            ['lv-extend', 'vg0', 'root', '--config=global/fsadm_executable=/tmp/x'],
+            ['lv-extend', 'vg0', 'root', '-1G'], ['lv-extend', 'vg0', 'root', '+50%FREE'],
+            ['lv-extend', 'vg0', '-n', '+1G'], ['lv-extend', 'vg0/x', 'root', '+1G'],
+            ['lv-extend', 'vg0', 'root', '+1G', '--config=x'],
+            ['lv-create', 'vg0', 'data', '1G', '--type', 'thin-pool'],
+            ['lv-create', '--config=x', 'data', '1G'], ['lv-create', 'vg0', '.', '1G'],
+            ['lv-snapshot', 'vg0', 'root', '5G'], ['lv-snapshot', 'vg0', 'root', 'snap', '1.'],
+        ]
+        runner = mock.Mock(side_effect=AssertionError('must not execute'))
+        with mock.patch.dict(helper, run=runner):
+            for args in bad:
+                with self.subTest(args=args), self.assertRaises(ValueError):
+                    helper['main'](args)
+
+    def test_critical_lists_are_the_daemon_own_lists(self):
+        rust = Path('crates/sysknife-daemon/src/actions/validate.rs').read_text(encoding='utf-8')
+        for rust_name, helper_name in (('CRITICAL_ACCOUNTS', 'CRITICAL_ACCOUNTS'),
+                                       ('CRITICAL_GROUPS', 'CRITICAL_GROUPS')):
+            decl = re.search(rust_name + r':\s*&\[&str\]\s*=\s*&\[(.*?)\];', rust, re.S)
+            self.assertIsNotNone(decl, f'{rust_name} not found; this check inspected nothing')
+            names = set(re.findall(r'"([^"]+)"', decl.group(1)))
+            self.assertTrue(names, f'{rust_name} parsed empty')
+            self.assertLessEqual(names, set(helper[helper_name]))
 
 
 unittest.main(verbosity=2)

@@ -118,6 +118,29 @@ def kill_target(value):
     return target
 
 
+# Mirror CRITICAL_ACCOUNTS and CRITICAL_GROUPS in validate.rs: the accounts and
+# groups DeleteUser and DeleteGroup refuse, refused here for direct callers.
+CRITICAL_ACCOUNTS = ("root", "daemon", "bin", "sys", "sudo", "adm")
+CRITICAL_GROUPS = ("root", "sudo", "wheel", "adm", "sys", "daemon", "bin", "staff",
+                   "shadow", "disk")
+# Mirrors SetPasswordAging in executor.rs: these flags, 0..=99999 days.
+AGING_FLAGS = ("-M", "-m", "-W")
+
+
+def lvm_name(value):
+    """Mirrors validated_lvm_name: no leading dash or dot, no `/`."""
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9+_.-]{0,126}", value):
+        raise ValueError("invalid LVM name")
+    return value
+
+
+def lvm_size(value):
+    """Mirrors validated_lvm_size: `[+]<digits>[.<digits>][kmgtp]`, no shrink."""
+    if len(value) > 32 or not re.fullmatch(r"\+?[0-9]+(\.[0-9]+)?[kKmMgGtTpP]?", value):
+        raise ValueError("invalid LVM size")
+    return value
+
+
 def safe(value):
     if not re.fullmatch(r"[A-Za-z0-9._:/+@][A-Za-z0-9._:/+@-]{0,253}", value):
         raise ValueError("invalid argument")
@@ -315,6 +338,49 @@ def main(args):
         if name not in SIGNALS:
             raise ValueError("invalid signal")
         os.kill(kill_target(target), getattr(signal, "SIG" + name))
+    elif op == "user-delete" and len(values) == 1:
+        # The bare `userdel` grant admitted `userdel -R <dir> <name>`. A
+        # `userdel -- *` grant would not have helped: shadow-utils scans argv
+        # for -R/--root and -P/--prefix before getopt, past any `--`. groupadd,
+        # groupdel and chage below share that scan (GHSA-8rx7-g2jg-5pxg).
+        name = username(values[0])
+        if name in CRITICAL_ACCOUNTS:
+            raise ValueError("that account is protected")
+        run(["/usr/sbin/userdel", name])
+    elif op == "group-create" and values[:-1] in ([], ["--system"]) and values:
+        # The bare `groupadd` grant admitted `groupadd -o -g 0 <name>`.
+        run(["/usr/sbin/groupadd", *values[:-1], username(values[-1])])
+    elif op == "group-delete" and len(values) == 1:
+        group = username(values[0])
+        if group in CRITICAL_GROUPS:
+            raise ValueError("that group is protected")
+        run(["/usr/sbin/groupdel", group])
+    elif op == "password-aging" and len(values) in (3, 5, 7):
+        # The bare `chage` grant admitted `-R <dir>` and `chage -E 0 root`, and
+        # the day counts are option values sudoers cannot pin.
+        name = username(values[0])
+        argv, seen = ["/usr/bin/chage"], set()
+        for flag, days in zip(values[1::2], values[2::2]):
+            if (flag not in AGING_FLAGS or flag in seen
+                    or not re.fullmatch(r"[0-9]{1,5}", days)):
+                raise ValueError("invalid password-aging option")
+            seen.add(flag)
+            argv.extend([flag, days])
+        run([*argv, name])
+    elif op == "lv-extend" and len(values) == 3:
+        # `lvextend --config global/fsadm_executable=<path>` named the program
+        # `-r` runs as root, and the size sits mid-argv where sudoers cannot
+        # pin it, so the LVM verbs build their own argv here.
+        vg, lv, size = values
+        run(["/usr/sbin/lvextend", "-L", lvm_size(size), "-r",
+             f"{lvm_name(vg)}/{lvm_name(lv)}"])
+    elif op == "lv-create" and len(values) == 3:
+        vg, name, size = values
+        run(["/usr/sbin/lvcreate", "-L", lvm_size(size), "-n", lvm_name(name), lvm_name(vg)])
+    elif op == "lv-snapshot" and len(values) == 4:
+        vg, origin, snapshot, size = values
+        run(["/usr/sbin/lvcreate", "-s", "-L", lvm_size(size), "-n", lvm_name(snapshot),
+             f"{lvm_name(vg)}/{lvm_name(origin)}"])
     elif op in ("group-add", "group-remove") and len(values) == 2:
         name, group = map(username, values)
         ensure_local_group(group)

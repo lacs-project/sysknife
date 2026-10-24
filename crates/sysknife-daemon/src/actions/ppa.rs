@@ -41,6 +41,12 @@ const YES_FLAG: &str = "-y";
 /// `add-apt-repository` flag used to remove rather than add a PPA.
 const REMOVE_FLAG: &str = "--remove";
 
+/// Names the PPA as an option value. argparse keeps `--ppa` mutually exclusive
+/// with `--uri`, `--sourceslist` and the positional sources.list line, so the
+/// sudoers grant `add-apt-repository -y --ppa *` cannot be extended into a raw
+/// `deb [trusted=yes] http://...` entry the way the positional form could.
+const PPA_FLAG: &str = "--ppa";
+
 // ---------------------------------------------------------------------------
 // specs() — for action_consistency tests
 // ---------------------------------------------------------------------------
@@ -63,7 +69,7 @@ fn ppa_arg(name: &str) -> String {
 // Action constructors
 // ---------------------------------------------------------------------------
 
-/// Add a PPA repository (`sudo add-apt-repository -y ppa:<user>/<ppa>`).
+/// Add a PPA repository (`sudo add-apt-repository -y --ppa ppa:<user>/<ppa>`).
 ///
 /// Risk: High. Adds a third-party apt source, expanding the trusted software
 /// supply chain; manually reversible by running `RemovePpa`. Requires
@@ -79,14 +85,18 @@ fn ppa_arg(name: &str) -> String {
 pub fn add_ppa(name: &str) -> ActionSpec {
     ActionSpec {
         action_name: "AddPpa",
-        mechanism: command_mechanism("sudo", [ADD_APT_REPOSITORY, YES_FLAG, &ppa_arg(name)]),
+        mechanism: command_mechanism(
+            "sudo",
+            [ADD_APT_REPOSITORY, YES_FLAG, PPA_FLAG, &ppa_arg(name)],
+        ),
         risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
     }
 }
 
-/// Remove a PPA repository (`sudo add-apt-repository -y --remove ppa:<user>/<ppa>`).
+/// Remove a PPA repository
+/// (`sudo add-apt-repository -y --remove --ppa ppa:<user>/<ppa>`).
 ///
 /// Risk: Medium. Removes the apt source entry; manually reversible by running
 /// `AddPpa`. Requires `software-properties-common` to be installed.
@@ -99,7 +109,13 @@ pub fn remove_ppa(name: &str) -> ActionSpec {
         action_name: "RemovePpa",
         mechanism: command_mechanism(
             "sudo",
-            [ADD_APT_REPOSITORY, YES_FLAG, REMOVE_FLAG, &ppa_arg(name)],
+            [
+                ADD_APT_REPOSITORY,
+                YES_FLAG,
+                REMOVE_FLAG,
+                PPA_FLAG,
+                &ppa_arg(name),
+            ],
         ),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
@@ -145,6 +161,10 @@ mod tests {
             joined.contains("ppa:deadsnakes/ppa"),
             "missing ppa:deadsnakes/ppa: {joined}"
         );
+        assert_eq!(
+            args,
+            vec!["add-apt-repository", "-y", "--ppa", "ppa:deadsnakes/ppa"]
+        );
         // Must NOT include --remove for the add variant.
         assert!(
             !joined.contains("--remove"),
@@ -183,6 +203,16 @@ mod tests {
             "missing ppa arg: {joined}"
         );
         assert!(joined.contains("-y"), "missing -y: {joined}");
+        assert_eq!(
+            args,
+            vec![
+                "add-apt-repository",
+                "-y",
+                "--remove",
+                "--ppa",
+                "ppa:deadsnakes/ppa"
+            ]
+        );
     }
 
     #[test]

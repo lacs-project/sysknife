@@ -75,7 +75,12 @@ pub fn create_user(username: &str, shell: Option<&str>, home: Option<&str>) -> A
 pub fn delete_user(username: &str) -> ActionSpec {
     ActionSpec {
         action_name: "DeleteUser",
-        mechanism: command_mechanism("sudo", ["userdel", username]),
+        // Through the helper: shadow-utils honours `userdel -R <dir>` even
+        // after `--`, so no sudoers spelling of `userdel` could refuse it.
+        mechanism: command_mechanism(
+            "sudo",
+            ["/usr/lib/sysknife/action-steps", "user-delete", username],
+        ),
         // High risk: permanently removes login access — same class as SSH key
         // removal and group membership changes.
         risk_level: RiskLevel::High,
@@ -133,13 +138,17 @@ pub fn remove_user_from_group(username: &str, group: &str) -> ActionSpec {
     }
 }
 
-/// Create a group (`sudo groupadd [--system] <group>`).
+/// Create a group (`sudo action-steps group-create [--system] <group>`, which
+/// runs `groupadd [--system] <group>`).
 ///
 /// High risk: groups gate access to privileged resources, so creating one is a
 /// privilege-relevant operation on par with the rest of the user/group family.
 /// `system` selects a system group (GID from the system range) via `--system`.
 pub fn create_group(group: &str, system: bool) -> ActionSpec {
-    let mut args = vec!["groupadd".to_string()];
+    let mut args = vec![
+        "/usr/lib/sysknife/action-steps".to_string(),
+        "group-create".to_string(),
+    ];
     if system {
         args.push("--system".to_string());
     }
@@ -156,7 +165,8 @@ pub fn create_group(group: &str, system: bool) -> ActionSpec {
     }
 }
 
-/// Delete a group (`sudo groupdel <group>`).
+/// Delete a group (`sudo action-steps group-delete <group>`, which runs
+/// `groupdel <group>`).
 ///
 /// High risk: irreversible; removing a group can strip access from every member
 /// and orphan file ownership. `groupdel` itself refuses to remove a user's
@@ -164,7 +174,10 @@ pub fn create_group(group: &str, system: bool) -> ActionSpec {
 pub fn delete_group(group: &str) -> ActionSpec {
     ActionSpec {
         action_name: "DeleteGroup",
-        mechanism: command_mechanism("sudo", ["groupdel", group]),
+        mechanism: command_mechanism(
+            "sudo",
+            ["/usr/lib/sysknife/action-steps", "group-delete", group],
+        ),
         risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,

