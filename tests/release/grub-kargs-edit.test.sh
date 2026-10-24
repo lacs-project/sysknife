@@ -152,6 +152,13 @@ for tok in DEBUG_SHELL:
     if not refused_append(tok):
         failures.append(f"--append {tok!r} was accepted; it boots into a root shell on tty9")
 
+# 3c'. Any lockdown= value. validated_safe_kernel_arg refuses `lockdown=` by
+#     prefix, and this screen refused only the literal `lockdown=none`, so a
+#     direct call could set a lockdown mode the daemon would not.
+for tok in ["lockdown=integrity", "lockdown=confidentiality", "lockdown=", "LOCKDOWN=none"]:
+    if not refused_append(tok):
+        failures.append(f"--append {tok!r} was accepted; the daemon refuses every lockdown= value")
+
 # 3d. Ordinary appends must survive, or the screen has eaten the feature.
 for tok in ["quiet", "splash", "nomodeset", "console=ttyS0", "transparent_hugepage=madvise"]:
     if refused_append(tok):

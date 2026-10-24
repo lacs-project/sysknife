@@ -71,6 +71,9 @@ KARG_PATTERN = re.compile(r"^[A-Za-z0-9_.+@:/=-]+$")
 # near-miss cannot creep back, and rd.* covers the initrd-honoured variant.
 DENY_APPEND_PREFIXES = (
     "init=", "selinux=0", "enforcing=0", "security=", "module_blacklist=",
+    # Any lockdown mode, as the daemon refuses it: WEAKENING_KARGS below names
+    # only `lockdown=none`, so `lockdown=integrity` passed a direct call.
+    "lockdown=",
     "systemd.debug_shell", "systemd.debug-shell",
     "rd.systemd.debug_shell", "rd.systemd.debug-shell",
 )
