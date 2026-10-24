@@ -32,6 +32,10 @@ UNIT_PREFIX = "sysknife-"
 SYSTEMCTL = "/usr/bin/systemctl"
 SYSTEMD_ANALYZE = "/usr/bin/systemd-analyze"
 
+# Every pattern below is applied with fullmatch(). With match(), `$` also
+# matches just before a trailing newline, so `name\n` passed the charset and
+# then missed every exact-membership check after it.
+# tests/release/helper-anchoring.test.sh drives each helper with one.
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
@@ -78,7 +82,7 @@ def main() -> None:
     parser.add_argument("--schedule", required=True)
     args = parser.parse_args()
 
-    if not NAME_RE.match(args.name):
+    if not NAME_RE.fullmatch(args.name):
         die(f"invalid job name {args.name!r}")
     if any(ord(c) < 0x20 or ord(c) == 0x7F for c in args.command):
         die("command contains control characters")

@@ -68,7 +68,7 @@ def die(msg: str) -> None:
 
 
 def validated_jail(value: str) -> str:
-    if not JAIL_RE.match(value):
+    if not JAIL_RE.fullmatch(value):
         die(f"invalid jail name {value!r}")
     return value
 

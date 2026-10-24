@@ -79,6 +79,9 @@ for commands in [
     "/usr/sbin/nginx,/bin/bash",
     # The original case, which must keep being refused.
     "ALL",
+    # A trailing newline used to pass a `$`-anchored match() and miss the
+    # basename lookup, which compares by exact membership.
+    "/bin/bash\n",
 ]:
     if not refused(commands):
         failures.append(

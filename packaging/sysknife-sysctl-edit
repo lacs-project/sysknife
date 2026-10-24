@@ -31,6 +31,10 @@ import tempfile
 DROPIN = "/etc/sysctl.d/60-sysknife.conf"
 SYSCTL = "/usr/sbin/sysctl"
 
+# Every pattern below is applied with fullmatch(). With match(), `$` also
+# matches just before a trailing newline, so `name\n` passed the charset and
+# then missed every exact-membership check after it.
+# tests/release/helper-anchoring.test.sh drives each helper with one.
 KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 VALUE_RE = re.compile(r"^[A-Za-z0-9 ._/:,-]{1,200}$")
 
@@ -46,11 +50,11 @@ def main() -> None:
     parser.add_argument("--value", required=True)
     args = parser.parse_args()
 
-    if not KEY_RE.match(args.key):
+    if not KEY_RE.fullmatch(args.key):
         die(f"invalid sysctl key {args.key!r}")
     if any(ord(c) < 0x20 or ord(c) == 0x7F for c in args.value):
         die("value contains control characters")
-    if not VALUE_RE.match(args.value):
+    if not VALUE_RE.fullmatch(args.value):
         die(f"invalid sysctl value {args.value!r}")
 
     # Apply at runtime first — this validates the key exists and the value is

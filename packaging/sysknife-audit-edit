@@ -33,6 +33,10 @@ RULES_D = "/etc/audit/rules.d"
 AUGENRULES = "/sbin/augenrules"
 PREFIX = "sysknife-"
 
+# Every pattern below is applied with fullmatch(). With match(), `$` also
+# matches just before a trailing newline, so `name\n` passed the charset and
+# then missed every exact-membership check after it.
+# tests/release/helper-anchoring.test.sh drives each helper with one.
 KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9/._-]{1,255}$")
 PERMS_RE = re.compile(r"^[rwxa]{1,4}$")
@@ -71,11 +75,11 @@ def reload_rules() -> None:
 
 
 def op_add(args) -> None:
-    if not KEY_RE.match(args.key):
+    if not KEY_RE.fullmatch(args.key):
         die(f"invalid key {args.key!r}")
-    if not PATH_RE.match(args.path) or ".." in args.path:
+    if not PATH_RE.fullmatch(args.path) or ".." in args.path:
         die(f"invalid path {args.path!r}")
-    if not PERMS_RE.match(args.perms) or len(set(args.perms)) != len(args.perms):
+    if not PERMS_RE.fullmatch(args.perms) or len(set(args.perms)) != len(args.perms):
         die(f"invalid perms {args.perms!r} (subset of r/w/x/a, no repeats)")
     body = (
         f"# Managed by SysKnife (add_audit_rule: {args.key}).\n"
@@ -86,7 +90,7 @@ def op_add(args) -> None:
 
 
 def op_remove(args) -> None:
-    if not KEY_RE.match(args.key):
+    if not KEY_RE.fullmatch(args.key):
         die(f"invalid key {args.key!r}")
     dest = os.path.join(RULES_D, PREFIX + args.key + ".rules")
     if os.path.exists(dest):

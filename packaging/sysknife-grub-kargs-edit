@@ -39,6 +39,11 @@ import sys
 GRUB_DEFAULT = "/etc/default/grub"
 GRUB_BACKUP = "/etc/default/grub.sysknife.bak"
 
+# Every pattern below is applied with fullmatch(). With match(), `$` also
+# matches just before a trailing newline, so `name\n` passed the charset and
+# then missed every exact-membership check after it.
+# tests/release/helper-anchoring.test.sh drives each helper with one.
+
 # Defense-in-depth: each karg token is validated independently.
 # Deliberately wider than validated_safe_arg in validate.rs: kernel
 # arguments take the key=value form (module.sig_enforce=1), so '=' must be
@@ -134,7 +139,7 @@ UPDATE_GRUB = "/usr/sbin/update-grub"
 def validate_kargs(tokens: list[str], label: str) -> None:
     """Raise SystemExit(1) if any token fails the allowlist check."""
     for tok in tokens:
-        if not KARG_PATTERN.match(tok):
+        if not KARG_PATTERN.fullmatch(tok):
             print(
                 f"sysknife-grub-kargs-edit: invalid {label} karg {tok!r} "
                 "(only [A-Za-z0-9_.+@:/=-] allowed)",

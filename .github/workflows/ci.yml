@@ -142,6 +142,9 @@ jobs:
       - name: Check fail2ban-ban builds a fixed argv
         run: bash tests/release/fail2ban-ban.test.sh
 
+      - name: Check helper screens refuse a trailing newline
+        run: bash tests/release/helper-anchoring.test.sh
+
       - name: Check the docs share cards name an image the build produces
         run: bash tests/release/docs-share-cards.test.sh
 
