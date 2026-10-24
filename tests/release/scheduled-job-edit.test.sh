@@ -22,10 +22,12 @@ fi
 
 "$PYTHON" - "$SCRIPT" <<'PY'
 import importlib.util
+import io
 import os
 import sys
 import tempfile
 from importlib.machinery import SourceFileLoader
+from unittest import mock
 
 script_path = sys.argv[1]
 loader = SourceFileLoader("scheduled_job_edit", script_path)
@@ -42,6 +44,7 @@ def fake_run(cmd, **kwargs):
     calls.append(list(cmd))
     return Completed()
 
+pristine_load_path = tuple(getattr(mod, "UNIT_LOAD_PATH", ()))
 real_run = mod.subprocess.run
 real_argv = sys.argv[:]
 mod.subprocess.run = fake_run
@@ -55,11 +58,17 @@ def invoke(name):
         "--command", "/usr/bin/true",
         "--schedule", "daily",
     ]
+    real_stderr = sys.stderr
+    sys.stderr = captured = io.StringIO()
     try:
         mod.main()
         return 0
     except SystemExit as exc:
         return int(exc.code or 0)
+    finally:
+        sys.stderr = real_stderr
+        invoke.stderr = captured.getvalue()
+        real_stderr.write(invoke.stderr)
 
 try:
     # Exact reproducer requested in #484: an existing legacy/unprefixed
@@ -68,6 +77,7 @@ try:
     # ssh.service with "w" and truncates it.
     with tempfile.TemporaryDirectory() as root:
         mod.UNIT_DIR = root
+        mod.UNIT_LOAD_PATH = (root,)
         legacy = os.path.join(root, "ssh.service")
         original = b"[Unit]\nDescription=real ssh service\n"
         with open(legacy, "wb") as fh:
@@ -84,6 +94,7 @@ try:
     # Collision at the new namespaced service path must be refused atomically.
     with tempfile.TemporaryDirectory() as root:
         mod.UNIT_DIR = root
+        mod.UNIT_LOAD_PATH = (root,)
         target = os.path.join(root, "sysknife-backup.service")
         original = b"keep me\n"
         with open(target, "wb") as fh:
@@ -101,6 +112,7 @@ try:
     # just-created service so the pair is all-or-nothing.
     with tempfile.TemporaryDirectory() as root:
         mod.UNIT_DIR = root
+        mod.UNIT_LOAD_PATH = (root,)
         timer = os.path.join(root, "sysknife-nightly.timer")
         original = b"existing timer\n"
         with open(timer, "wb") as fh:
@@ -114,9 +126,62 @@ try:
         if os.path.exists(os.path.join(root, "sysknife-nightly.service")):
             failures.append("service was left behind after timer-path collision")
 
+    # The same two collisions when the unit appears between the load-path check
+    # and the create. The check above now refuses both cases first, so without
+    # hiding the file from it these would no longer reach O_EXCL and its
+    # rollback at all.
+    for unit, job in [("sysknife-race.service", "race"), ("sysknife-race.timer", "race")]:
+        with tempfile.TemporaryDirectory() as root:
+            mod.UNIT_DIR = root
+            mod.UNIT_LOAD_PATH = (root,)
+            target = os.path.join(root, unit)
+            with open(target, "wb") as fh:
+                fh.write(b"appeared late\n")
+            with mock.patch.object(mod.os.path, "lexists", return_value=False):
+                code = invoke(job)
+            if code == 0:
+                failures.append(f"{unit} created after the check did not make the helper fail")
+            if open(target, "rb").read() != b"appeared late\n":
+                failures.append(f"{unit} created after the check was modified")
+            if sorted(os.listdir(root)) != [unit]:
+                failures.append(
+                    f"a race on {unit} left {sorted(os.listdir(root))}; the pair must be "
+                    "all-or-nothing")
+
+    # The rest of systemd's unit load path. A unit in UNIT_DIR overrides one of
+    # the same name further down, so a job named `daemon` used to write
+    # /etc/systemd/system/sysknife-daemon.service over the packaged daemon unit
+    # in /usr/lib/systemd/system, as a root oneshot with a caller-chosen
+    # ExecStart. Both stems, legacy and namespaced, in every directory.
+    want_path = {"/etc/systemd/system", "/run/systemd/system",
+                 "/usr/local/lib/systemd/system", "/usr/lib/systemd/system",
+                 "/lib/systemd/system"}
+    if set(pristine_load_path) != want_path:
+        failures.append(
+            f"UNIT_LOAD_PATH is {sorted(pristine_load_path)}, expected {sorted(want_path)}")
+    for unit, job in [("sysknife-daemon.service", "daemon"),
+                      ("sysknife-backup.timer", "backup"),
+                      ("ssh.service", "ssh"),
+                      ("fstrim.timer", "fstrim")]:
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as vendor:
+            mod.UNIT_DIR = root
+            mod.UNIT_LOAD_PATH = (root, vendor)
+            with open(os.path.join(vendor, unit), "wb") as fh:
+                fh.write(b"[Unit]\nDescription=packaged unit\n")
+            code = invoke(job)
+            if code == 0:
+                failures.append(
+                    f"job {job!r} was created over {unit} in another load-path directory")
+            elif vendor not in invoke.stderr:
+                failures.append(
+                    f"refusal for job {job!r} does not name {vendor}: {invoke.stderr!r}")
+            if os.listdir(root):
+                failures.append(f"job {job!r} left {sorted(os.listdir(root))} in UNIT_DIR")
+
     # Clean creation uses the namespace consistently, including systemctl.
     with tempfile.TemporaryDirectory() as root:
         mod.UNIT_DIR = root
+        mod.UNIT_LOAD_PATH = (root,)
         calls.clear()
         code = invoke("clean")
         if code != 0:
