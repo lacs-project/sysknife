@@ -12,6 +12,15 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Security
+
+- **The lockfile moves ctutils to 0.4.4 for RUSTSEC-2026-0385.** ctutils 0.4.2
+  could compile its constant-time mask helpers to branches, and on 32-bit
+  targets its `u128` comparisons branched too. It reaches SysKnife through
+  digest 0.11 (ed25519-dalek, hmac, and the SCRAM login in sqlx-postgres).
+  SysKnife's own token and receipt comparisons use `subtle` and are not
+  affected. No API changes.
+
 ## [0.26.0] — 2026-10-21
 
 ### Security
