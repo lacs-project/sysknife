@@ -74,6 +74,22 @@ SHELL_EQUIVALENT_COMMANDS = frozenset((
     "dpkg", "rpm", "yum", "dnf", "zypper", "pip", "pip3", "gem", "npm",
     "mount"
 ))
+# Packaging suffixes Debian and Ubuntu install interpreters under. Mirrors
+# SHELL_EQUIVALENT_SUFFIXES in validate.rs, and the release test compares them.
+SHELL_EQUIVALENT_SUFFIXES = (".basic", ".tiny")
+
+
+def unversioned_command_name(base: str) -> str:
+    """`python3.12` -> `python`, `perl5.38.2` -> `perl`, `vim.basic` -> `vim`.
+
+    Mirrors unversioned_command_name in validate.rs character for character:
+    drop one packaging suffix, then every trailing digit and dot.
+    """
+    for suffix in SHELL_EQUIVALENT_SUFFIXES:
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    return base.rstrip("0123456789.")
 
 
 def shell_equivalent_command(commands: str) -> str | None:
@@ -83,7 +99,9 @@ def shell_equivalent_command(commands: str) -> str | None:
     for c in commands.split(","):
         if not c:
             continue
-        if c.rsplit("/", 1)[-1].lower() in SHELL_EQUIVALENT_COMMANDS:
+        base = c.rsplit("/", 1)[-1].lower()
+        if (base in SHELL_EQUIVALENT_COMMANDS
+                or unversioned_command_name(base) in SHELL_EQUIVALENT_COMMANDS):
             return c
     return None
 

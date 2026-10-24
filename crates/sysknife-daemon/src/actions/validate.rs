@@ -1285,6 +1285,29 @@ pub(crate) const SHELL_EQUIVALENT_COMMANDS: &[&str] = &[
     "mount",
 ];
 
+/// Packaging suffixes Debian and Ubuntu install interpreters under
+/// (`vim.basic`, `vim.tiny`). See [`unversioned_command_name`].
+///
+/// `packaging/sysknife-sudoers-edit` carries the same list, and
+/// `tests/release/sudoers-edit.test.sh` fails when the two differ.
+pub(crate) const SHELL_EQUIVALENT_SUFFIXES: &[&str] = &[".basic", ".tiny"];
+
+/// A command basename with its version removed: `python3.12` → `python`,
+/// `perl5.38.2` → `perl`, `vim.basic` → `vim`.
+///
+/// Ubuntu installs interpreters under versioned names, and an exact lookup in
+/// [`SHELL_EQUIVALENT_COMMANDS`] missed every one of them, so
+/// `NOPASSWD: /usr/bin/python3.12` passed as a narrow grant. Drops one packaging
+/// suffix, then every trailing digit and dot. The helper's
+/// `unversioned_command_name` does the same, character for character.
+fn unversioned_command_name(base: &str) -> &str {
+    let base = SHELL_EQUIVALENT_SUFFIXES
+        .iter()
+        .find_map(|suffix| base.strip_suffix(suffix))
+        .unwrap_or(base);
+    base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.')
+}
+
 /// The first command in a validated sudoers list that makes it equivalent to
 /// `ALL`, or `None` when every entry is narrower than that.
 ///
@@ -1302,6 +1325,7 @@ pub fn shell_equivalent_sudo_command(commands: &str) -> Option<String> {
         .find(|c| {
             let base = c.rsplit('/').next().unwrap_or(c).to_ascii_lowercase();
             SHELL_EQUIVALENT_COMMANDS.contains(&base.as_str())
+                || SHELL_EQUIVALENT_COMMANDS.contains(&unversioned_command_name(&base))
         })
         .map(str::to_string)
 }
