@@ -290,6 +290,51 @@ class UserAndUnitVerbs(unittest.TestCase):
                         with self.subTest(unit=spelling, verb=verb), self.assertRaises(ValueError):
                             helper['main'](['unit', verb, spelling])
 
+    def rust_list(self, name):
+        rust = Path('crates/sysknife-daemon/src/actions/validate.rs').read_text(encoding='utf-8')
+        decl = re.search(name + r':\s*&\[&str\]\s*=\s*&\[(.*?)\];', rust, re.S)
+        self.assertIsNotNone(decl, f'{name} not found; this check inspected nothing')
+        values = set(re.findall(r'"([^"]+)"', decl.group(1)))
+        self.assertTrue(values, f'{name} parsed empty; refusing to compare against nothing')
+        return values
+
+    def test_power_state_denylist_is_the_daemon_own_list(self):
+        # StartService and RestartService are Medium (Dev). `reboot.target`
+        # passed both copies of the screen, so a Dev caller reached the outcome
+        # of RebootSystem, which is High (GHSA-68v6-p23h-fwcf).
+        daemon_units = self.rust_list('POWER_STATE_UNITS')
+        self.assertLessEqual(daemon_units, set(helper['POWER_STATE_UNITS']))
+        runner = mock.Mock(side_effect=AssertionError('must not execute'))
+        with mock.patch.dict(helper, run=runner):
+            for unit in sorted(daemon_units):
+                for spelling in (unit, f'{unit}.service', f'{unit}.target', unit.upper()):
+                    for verb in ('start', 'restart', 'enable', 'unmask'):
+                        with self.subTest(unit=spelling, verb=verb), self.assertRaises(ValueError):
+                            helper['main'](['unit', verb, spelling])
+        self.assertEqual(self.argv_for(['unit', 'stop', 'reboot.target']),
+                         [['/usr/bin/systemctl', 'stop', 'reboot.target']])
+
+    def test_protected_units_refuse_stop_and_restart(self):
+        # Stopping sysknife-daemon, auditd or ssh is not something the Dev tier
+        # may do; MaskService on the same units is High.
+        exact = self.rust_list('RESOURCE_LIMIT_PROTECTED_UNITS')
+        prefixes = self.rust_list('RESOURCE_LIMIT_PROTECTED_PREFIXES')
+        self.assertLessEqual(exact, set(helper['PROTECTED_UNITS']))
+        self.assertLessEqual(prefixes, set(helper['PROTECTED_UNIT_PREFIXES']))
+        spellings = [u + '.service' for u in sorted(exact)] + [
+            'SSHD.SERVICE', 'sshd@1.service', 'systemd-journald-audit.socket',
+            'audit-rules.service']
+        runner = mock.Mock(side_effect=AssertionError('must not execute'))
+        with mock.patch.dict(helper, run=runner):
+            for unit in spellings:
+                for verb in ('stop', 'restart'):
+                    with self.subTest(unit=unit, verb=verb), self.assertRaises(ValueError):
+                        helper['main'](['unit', verb, unit])
+        self.assertEqual(self.argv_for(['unit', 'start', 'ssh.service']),
+                         [['/usr/bin/systemctl', 'start', 'ssh.service']])
+        self.assertEqual(self.argv_for(['unit', 'restart', 'nginx.service']),
+                         [['/usr/bin/systemctl', 'restart', 'nginx.service']])
+
 
 unittest.main(verbosity=2)
 PY
