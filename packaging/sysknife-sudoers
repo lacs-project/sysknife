@@ -62,16 +62,17 @@ sysknife ALL=(root) NOPASSWD: /usr/bin/gpasswd
 sysknife ALL=(root) NOPASSWD: /usr/sbin/groupadd
 sysknife ALL=(root) NOPASSWD: /usr/sbin/groupdel
 
-# Process control — SignalProcess sends an allowlisted signal to a pid.
-# kill is not a shell-spawner (no GTFOBins escalation); the daemon validates
-# pid >= 2 and the signal name before invoking it.
-# Also backs the action-timeout reaper (#142): when a sudo action's root child
-# outlives the deadline, the daemon runs `sudo -n /usr/bin/kill -s <SIG> -- -<pgid>`
-# to signal that action's own process group as root — no new grant needed.
-# SignalProcess always builds the `-s <SIG>` form, and so does the
-# action-timeout reaper (#142). Requiring the literal `-s` keeps a bare
-# `kill -9 -1` off the grant.
-sysknife ALL=(root) NOPASSWD: /usr/bin/kill -s *
+# Process control — SignalProcess sends an allowlisted signal to a pid
+# (`action-steps signal <SIG> <pid>`), and the action-timeout reaper (#142)
+# signals a timed-out action's own process group as root
+# (`sudo -n action-steps signal <SIG> -<pgid>`).
+# The grant used to be `/usr/bin/kill -s *`, with a comment saying the literal
+# `-s` kept `kill -9 -1` off it. It kept one spelling off: `kill -s KILL -1`
+# and `kill -s KILL -- -1` signal every process root can reach, and
+# `kill -s KILL 1` kills init. The daemon's pid >= 2 check guards only the argv
+# the daemon builds, and sudoers cannot refuse a target, so the helper refuses
+# pid and pgid -1, 0 and 1 and allowlists the signal for every caller.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps signal *
 
 # Service management — start, stop, restart, reload, enable, disable, mask, unmask,
 # daemon-reload. All systemctl write operations require root on Fedora.

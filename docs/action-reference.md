@@ -94,7 +94,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `ListProcesses` | `ps aux --sort=-%mem` | Low | All | – | – | list running processes with CPU and memory usage — no params |
-| `SignalProcess` | `sudo kill -s TERM 1234` | High | All | – | – | send a signal to a process to stop it — params: pid\* (integer &gt; 1); signal (TERM\|KILL\|HUP\|INT, default TERM) |
+| `SignalProcess` | `sudo /usr/lib/sysknife/action-steps signal TERM 1234` | High | All | – | – | send a signal to a process to stop it — params: pid\* (integer &gt; 1); signal (TERM\|KILL\|HUP\|INT, default TERM) |
 
 ## Journald
 

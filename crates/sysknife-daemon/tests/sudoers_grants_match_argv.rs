@@ -340,7 +340,22 @@ const ROOT_ESCAPES: &[(&str, &str)] = &[
         "/usr/bin/systemctl link /tmp/evil.service",
         "installs a unit file from a path the caller owns",
     ),
+    // GHSA-8rx7-g2jg-5pxg item 5: `kill -s *` admitted every target.
+    (
+        "/usr/bin/kill -s KILL -1",
+        "signals every process root can reach",
+    ),
+    (
+        "/usr/bin/kill -s KILL -- -1",
+        "the same with options terminated",
+    ),
+    ("/usr/bin/kill -s KILL 1", "kills init"),
 ];
+
+/// The argv the action-timeout reaper builds. It is not a catalogue action, so
+/// `every_sudo_action_is_authorised_by_a_packaged_grant` never sees it.
+/// `executor::tests::root_group_kill_argv_*` pins the daemon to this shape.
+const REAPER_ARGV: &str = "/usr/lib/sysknife/action-steps signal KILL -4242";
 
 #[test]
 fn no_grant_authorises_a_documented_root_escape() {
@@ -358,6 +373,12 @@ fn no_grant_authorises_a_documented_root_escape() {
     assert!(
         grants.iter().any(|g| grant_allows(g, &allowed)),
         "the matcher refused an argv the catalogue builds, so it is refusing everything"
+    );
+    let reaper: Vec<String> = REAPER_ARGV.split_whitespace().map(str::to_string).collect();
+    assert!(
+        grants.iter().any(|g| grant_allows(g, &reaper)),
+        "no grant admits the action-timeout reaper's `sudo {REAPER_ARGV}`, so a \
+         timed-out root child would never be signalled"
     );
 
     let mut admitted = Vec::new();
@@ -393,6 +414,10 @@ fn the_root_shell_primitives_have_no_direct_grant() {
             "/usr/sbin/usermod",
             "`-o -u 0` moves an existing account to uid 0",
         ),
+        (
+            "/usr/bin/kill",
+            "`-s KILL -1` signals every process; sudoers cannot refuse a target",
+        ),
     ] {
         let matching: Vec<&Grant> = grants.iter().filter(|g| g.tokens[0] == cmd).collect();
         assert!(
@@ -405,7 +430,6 @@ fn the_root_shell_primitives_have_no_direct_grant() {
     // These keep direct grants, and each one must stay argument-constrained.
     for cmd in [
         "/usr/bin/systemctl",
-        "/usr/bin/kill",
         "/usr/bin/hostnamectl",
         "/usr/bin/timedatectl",
         "/usr/bin/localectl",

@@ -282,17 +282,17 @@ fn is_rpm_ostree_action(program: &str, args: &[String]) -> bool {
 }
 
 /// The argv for a privileged, non-interactive signal to a whole process group:
-/// `sudo -n /usr/bin/kill -s <SIGNAL> -- -<pgid>`. Run as root, it reaches the
-/// root children a `sudo` action forked that the unprivileged daemon cannot
-/// signal itself. `-n` never prompts (the sysknife sudoers entry is NOPASSWD),
-/// `--` ends options so the negative pgid is unambiguously a group, not a flag.
+/// `sudo -n /usr/lib/sysknife/action-steps signal <SIGNAL> -<pgid>`. Run as
+/// root, it reaches the root children a `sudo` action forked that the
+/// unprivileged daemon cannot signal itself. `-n` never prompts (the sysknife
+/// sudoers entry is NOPASSWD). The helper reads `-<pgid>` as a group and
+/// refuses -1, 0 and 1 for every caller, which a `kill -s *` grant could not.
 fn root_group_kill_argv(signal: &str, pgid: i32) -> Vec<String> {
     vec![
         "-n".to_string(),
-        "/usr/bin/kill".to_string(),
-        "-s".to_string(),
+        "/usr/lib/sysknife/action-steps".to_string(),
+        "signal".to_string(),
         signal.to_string(),
-        "--".to_string(),
         format!("-{pgid}"),
     ]
 }
@@ -392,7 +392,7 @@ const REAP_WAIT_CAP: Duration = Duration::from_secs(2);
 /// An unprivileged daemon cannot signal a process running as root, which every
 /// `sudo` action's real work does. When the group survives the daemon's own
 /// signals it therefore escalates to a privileged reaper ([`privileged_reap`]):
-/// a root kill of the group via the sudoers-authorised `/usr/bin/kill`, or an
+/// a root kill of the group via the sudoers-authorised `action-steps signal`, or an
 /// `rpm-ostree cancel` for a transaction that lives in another cgroup (#142).
 /// Only when even that cannot confirm the group gone does it return
 /// [`ExecutorError::ActionNotStopped`] — now a genuine last resort — and the
@@ -3291,15 +3291,22 @@ mod tests {
 
     #[test]
     fn root_group_kill_argv_targets_the_whole_group_non_interactively() {
-        // sudo -n /usr/bin/kill -s KILL -- -<pgid>: non-interactive (NOPASSWD),
-        // options terminated so the negative pgid is a group, not a flag.
+        // sudo -n action-steps signal KILL -<pgid>: non-interactive
+        // (NOPASSWD). tests/sudoers_grants_match_argv.rs holds REAPER_ARGV,
+        // the same argv, and fails if no grant admits it.
         assert_eq!(
             root_group_kill_argv("KILL", 4242),
-            vec!["-n", "/usr/bin/kill", "-s", "KILL", "--", "-4242"]
+            vec![
+                "-n",
+                "/usr/lib/sysknife/action-steps",
+                "signal",
+                "KILL",
+                "-4242"
+            ]
         );
         assert_eq!(
             root_group_kill_argv("TERM", 7)[3..].to_vec(),
-            vec!["TERM", "--", "-7"]
+            vec!["TERM", "-7"]
         );
     }
 
@@ -4114,8 +4121,8 @@ mod tests {
             ActionMechanism::Command {
                 program: "sudo",
                 args: vec![
-                    "kill".to_string(),
-                    "-s".to_string(),
+                    "/usr/lib/sysknife/action-steps".to_string(),
+                    "signal".to_string(),
                     "KILL".to_string(),
                     "4242".to_string()
                 ],
@@ -4124,7 +4131,10 @@ mod tests {
         // Default signal is TERM when omitted.
         let spec = build_action_spec("SignalProcess", &json!({ "pid": 4242 })).unwrap();
         if let ActionMechanism::Command { args, .. } = spec.mechanism {
-            assert_eq!(args, vec!["kill", "-s", "TERM", "4242"]);
+            assert_eq!(
+                args,
+                vec!["/usr/lib/sysknife/action-steps", "signal", "TERM", "4242"]
+            );
         } else {
             panic!("expected Command mechanism");
         }

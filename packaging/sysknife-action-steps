@@ -8,6 +8,7 @@ user-configurable tool. Never add a generic exec mode or a caller-selected path.
 """
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -96,6 +97,25 @@ def absolute_path(value):
     if not re.fullmatch(r"[A-Za-z0-9/_.-]+", value):
         raise ValueError("invalid path")
     return value
+
+
+# Mirrors validated_kill_signal in crates/sysknife-daemon/src/executor.rs.
+SIGNALS = ("TERM", "KILL", "HUP", "INT")
+
+
+def kill_target(value):
+    """A pid, or a process group as `-<pgid>`, never -1, 0 or 1.
+
+    `/usr/bin/kill -s *` was a direct grant, and `kill -s KILL -1` signals every
+    process root can reach while `kill -s KILL 1` kills init. The daemon's
+    `pid >= 2` check covers only the argv the daemon builds.
+    """
+    if not re.fullmatch(r"-?[1-9][0-9]{0,9}", value):
+        raise ValueError("invalid pid")
+    target = int(value)
+    if not 2 <= abs(target) <= 2**31 - 1:
+        raise ValueError("pid and pgid -1, 0 and 1 are refused")
+    return target
 
 
 def safe(value):
@@ -287,6 +307,14 @@ def main(args):
         if verb in STOPPING_VERBS:
             stoppable_unit(unit)
         run(["/usr/bin/systemctl", verb, unit])
+    elif op == "signal" and len(values) == 2:
+        # SignalProcess (`signal <SIG> <pid>`) and the action-timeout reaper
+        # (`signal <SIG> -<pgid>`). os.kill, so there is no kill(1) argv left
+        # for a caller to extend.
+        name, target = values
+        if name not in SIGNALS:
+            raise ValueError("invalid signal")
+        os.kill(kill_target(target), getattr(signal, "SIG" + name))
     elif op in ("group-add", "group-remove") and len(values) == 2:
         name, group = map(username, values)
         ensure_local_group(group)
