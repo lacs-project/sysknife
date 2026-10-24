@@ -12,6 +12,26 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Security
+
+- **PostgreSQL chains job outcomes, and one edited column no longer stops
+  `audit verify`.** The 0.19.0 fix that chains every status change reached
+  SQLite only. On PostgreSQL no write path appended a `status_*` event and
+  `audit verify` left the status check unset, so anyone with `UPDATE` on
+  `transactions` could rewrite a succeeded job as canceled and verification
+  still exited 0. PostgreSQL now appends the same events in the same database
+  transaction as each status change and runs the same comparison as SQLite.
+  Migration 5 marks the rows that exist when it runs, because no earlier
+  release chained their outcomes there: an unsigned terminal status on one of
+  them is inconclusive (exit 2), not tampering. A binary older than this
+  release refuses to start against a migrated database, as with earlier
+  migrations. Separately, the chain walks stopped with exit 2 at the first row
+  carrying an unknown `chain_version` or a foreign `key_id`, which hid any
+  forged or deleted row after it. Both walks now record such a row, check the
+  links around it, verify every later row and report exit 1 if any is broken.
+  A row with a foreign `key_id` that the loaded key still verifies counts as
+  verified (GHSA-2hvc-9x2h-pq2m).
+
 ## [0.26.1] — 2026-10-24
 
 ### Security

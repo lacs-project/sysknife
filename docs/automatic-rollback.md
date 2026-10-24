@@ -143,11 +143,11 @@ approval live in the approval-event chain (see
 column and stays out of the transaction row's signed payload, but each status
 change also appends a signed `status_*` event (a rollback writes
 `status_rolled_back`) to the append-only `audit_events` table, in the same
-SQLite transaction as the column write. On SQLite, `sysknife audit verify`
-compares every live status with its newest signed status event and exits `1`
-on a disagreement, so rewriting a rolled-back job's status is detectable.
-PostgreSQL stores have no status cross-check yet. See
-[Execution-status verification on SQLite](the-audit-chain.md#execution-status-verification-on-sqlite).
+database transaction as the column write, on SQLite and on PostgreSQL.
+`sysknife audit verify` compares every live status with its newest signed
+status event and exits `1` on a disagreement, so rewriting a rolled-back job's
+status is detectable on either backend. See
+[Execution-status verification](the-audit-chain.md#execution-status-verification).
 
 ## See also
 

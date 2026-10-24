@@ -73,11 +73,25 @@
 //!   transaction as the column write, so the two cannot diverge through a
 //!   crash, and `TransactionStore::status_matches_chain` compares each row's
 //!   `status` against the newest status event chained for it. Rewriting the
-//!   column no longer agrees with a signed record. Exploiting the original
-//!   gap needed write access to a database that is `0600` inside a `0700`
-//!   directory owned by the daemon account, so the attacker was already root
-//!   or the `sysknife` user; the cost was to the investigator afterwards,
-//!   not to the boundary.
+//!   column no longer agrees with a signed record.
+//!
+//!   That fix reached SQLite only. Through 0.26.1 the Postgres backend, the
+//!   one meant for centralised deployments, appended no status event on any
+//!   path and its verify functions left the status verdict unset, so the
+//!   original gap stayed open there. Postgres now appends the same events in
+//!   the same sqlx transactions and runs the same comparison
+//!   (`status_outcome`). Its rows written before migration 5 carry no status
+//!   event, so a terminal status on one of them is reported as unproven rather
+//!   than as a rewrite. The marker that says so (`predates_status_events`) is
+//!   an unsigned column: flipping it can turn a detected rewrite on an older
+//!   row into "cannot verify" (exit 2), never into a pass.
+//!
+//!   Exploiting the original gap needed write access to a database that is
+//!   `0600` inside a `0700` directory owned by the daemon account, so on
+//!   SQLite the attacker was already root or the `sysknife` user. On Postgres
+//!   it needs `UPDATE` on `transactions`, held by the daemon's role and by any
+//!   other role the deployment grants it. Either way the cost was to the
+//!   investigator afterwards, not to the boundary.
 //!
 //! ## Key management
 //!
@@ -1437,6 +1451,95 @@ pub enum StatusOutcome {
     CannotVerify { detail: String },
 }
 
+/// One transaction's inputs to the status cross-check, as a backend reads them.
+#[derive(Debug, Clone)]
+pub(crate) struct StatusEvidence {
+    pub transaction_id: String,
+    /// The live, unsigned `status` column.
+    pub status: sysknife_types::JobState,
+    /// Kind of the newest `status_*` event chained for this transaction.
+    pub newest_status_event: Option<String>,
+    /// Whether an `approval_consumed` event is chained for it.
+    pub approval_consumed: bool,
+    /// The row was written before its store chained status events at all, so
+    /// a missing event is history rather than evidence. Always `false` on
+    /// SQLite, whose terminal transitions have chained since 0.19.0. On
+    /// Postgres, which chained none through 0.26.1, it marks the rows that
+    /// existed when migration 5 ran.
+    pub predates_status_events: bool,
+}
+
+/// Compare each row's live status with its newest chained status event.
+///
+/// The one implementation of the rules both backends apply. Signed
+/// contradictions are broken. A `Running` or `Canceled` row with no status
+/// event is inconclusive, because claims, cancellations and sweeps chained
+/// none before 0.26.0 on SQLite. Any other non-queued row with no status event
+/// is a contradiction, unless it predates status events in its store.
+pub(crate) fn status_outcome(rows: impl IntoIterator<Item = StatusEvidence>) -> StatusOutcome {
+    use sysknife_types::JobState;
+    let mut disagreements = Vec::new();
+    let mut unproven = Vec::new();
+    let mut checked: u64 = 0;
+    for row in rows {
+        checked += 1;
+        let StatusEvidence {
+            transaction_id: id,
+            status: state,
+            newest_status_event,
+            approval_consumed: consumed,
+            predates_status_events,
+        } = row;
+        // Pre-fix claims and cancellations did not chain a status event.
+        // Their exact current outcome cannot be inferred from approval
+        // lifecycle events: revocation also legitimately leaves Queued,
+        // and consumption says nothing about eventual completion.
+        let Some(newest) = newest_status_event else {
+            if state == JobState::Queued && consumed {
+                disagreements.push(format!(
+                    "{id}: status is Queued but a chained approval_consumed event proves it left Queued"
+                ));
+            } else if matches!(state, JobState::Running | JobState::Canceled) {
+                unproven.push(format!(
+                    "{id}: status is {state:?} and no status event was ever chained; \
+                     historical writes cannot establish the execution outcome"
+                ));
+            } else if state != JobState::Queued && predates_status_events {
+                unproven.push(format!(
+                    "{id}: status is {state:?} on a row written before this store \
+                     chained status events; nothing signed records its outcome"
+                ));
+            } else if state != JobState::Queued {
+                disagreements.push(format!(
+                    "{id}: status is {state:?} but no status event was ever chained; \
+                     terminal outcomes require a signed status event"
+                ));
+            }
+            continue;
+        };
+        let expected = AuditEventKind::from(state).as_str();
+        if newest != expected {
+            disagreements.push(format!(
+                "{id}: status column says {state:?} ({expected}) and the newest \
+                 chained status event is {newest}"
+            ));
+        }
+    }
+    if !disagreements.is_empty() {
+        StatusOutcome::Disagrees {
+            detail: disagreements.join("; "),
+        }
+    } else if !unproven.is_empty() {
+        StatusOutcome::CannotVerify {
+            detail: unproven.join("; "),
+        }
+    } else {
+        StatusOutcome::Agrees {
+            rows_checked: checked,
+        }
+    }
+}
+
 /// Exit code for the status cross-check, on the same scale as
 /// [`outcome_to_exit_code`]. A disagreement is a detected tamper, not an
 /// inconclusive read: both sides were present and they contradict each other.
@@ -1530,9 +1633,10 @@ pub struct AuditVerification {
     ///
     /// `None` where the check could not run rather than a verdict it did not
     /// reach: the comparison needs the live status column, so the pure
-    /// `verify_all` functions and the postgres path leave it unset. Reporting
-    /// `Agrees` there would be a claim nobody checked, which is the shape this
-    /// whole module exists to refuse.
+    /// `verify_all` functions leave it unset and the store that holds the
+    /// column fills it in (the CLI for SQLite, `PostgresStore` for Postgres).
+    /// Reporting `Agrees` there would be a claim nobody checked, which is the
+    /// shape this whole module exists to refuse.
     pub status: Option<StatusOutcome>,
 }
 

@@ -380,7 +380,14 @@ Every daemon execution — previewed, approved, running, succeeded, failed, or
 rolled back — is recorded in the configured transaction database. SQLite is
 the default at `SYSKNIFE_DATABASE_PATH` (packaged default:
 `/var/lib/sysknife/daemon.sqlite`); PostgreSQL is available for centralized,
-off-host durability. Both backends store the same signed hash-chain fields.
+off-host durability. Both backends store the same signed hash-chain fields
+and chain every status change as a signed `status_*` event in the same database
+transaction, and `sysknife audit verify` compares the live `status` column with
+those events on both. Through 0.26.1 the PostgreSQL backend chained no status
+event and did not run that comparison, so a rewritten outcome there went
+unreported. PostgreSQL rows written before the upgrade carry no status event
+and verify as inconclusive (exit `2`) rather than intact; see
+[`docs/the-audit-chain.md`](docs/the-audit-chain.md#execution-status-verification).
 
 The transaction database is authoritative. Query it with `sysknife history`
 and verify its chain with `sysknife audit verify`. See

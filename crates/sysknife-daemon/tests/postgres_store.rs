@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use sqlx_core::row::Row;
 use sqlx_postgres::{PgConnectOptions, PgPoolOptions};
-use sysknife_daemon::audit_chain::{AuditKey, BindingOutcome, VerifyOutcome};
+use sysknife_daemon::audit_chain::{AuditKey, BindingOutcome, StatusOutcome, VerifyOutcome};
 use sysknife_daemon::auth::CallerPrincipal;
 use sysknife_daemon::store::postgres::{PostgresConfig, PostgresStore};
 use sysknife_daemon::store::AuditStore;
@@ -186,7 +186,7 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
     .await
     .expect("read schema migration version");
     assert_eq!(
-        migration, 4,
+        migration, 5,
         "every migration in MIGRATIONS must have applied"
     );
     assert!(store
@@ -219,6 +219,20 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
             .await
             .expect("probe audit_events");
     assert!(events_table_exists, "migration 2 creates audit_events");
+
+    // The legacy row says `succeeded`, and no binary before migration 5 chained
+    // a status event on Postgres. Its outcome cannot be corroborated, which is
+    // inconclusive, never a detected rewrite: every upgraded deployment holds
+    // rows like this one.
+    let historical = PostgresStore::verify_all_with_pubkey(&config, &key.verifying_key_hex())
+        .await
+        .expect("verify the migrated legacy store");
+    assert!(
+        matches!(historical.status, Some(StatusOutcome::CannotVerify { .. })),
+        "a terminal row written before status events existed is unproven, not \
+         tampered: {:?}",
+        historical.status
+    );
 
     // `audit_events` is truncated with the rest: its rows are signed with the
     // audit key, and this test generates a fresh key per run, so events left
@@ -347,16 +361,29 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
         .expect("verify Postgres chain with public key only");
     assert_eq!(pubkey_only.chain, VerifyOutcome::Intact { rows_checked: 1 });
     // The flow above approved and then claimed this transaction, so the event
-    // chain holds exactly those two events — and the auditor path, holding only
-    // the public key, can verify them.
+    // chain holds the grant, the consume and the `status_running` the claim
+    // chains in the same transaction, exactly as SQLite does. The auditor
+    // path, holding only the public key, can verify all three.
     assert_eq!(
         pubkey_only.events,
-        VerifyOutcome::Intact { rows_checked: 2 }
+        VerifyOutcome::Intact { rows_checked: 3 }
     );
     let events = store.fetch_event_rows().await.expect("fetch events");
     assert_eq!(
         events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
-        vec!["approval_granted", "approval_consumed"]
+        vec!["approval_granted", "approval_consumed", "status_running"]
+    );
+    // Status events name no account and stay on the legacy encoding, as on
+    // SQLite (`a_stored_status_event_carries_no_principal_and_stays_legacy`).
+    assert_eq!(events[2].caller_principal, None);
+    assert_eq!(
+        events[2].chain_version,
+        sysknife_daemon::audit_chain::EVENT_VERSION_LEGACY
+    );
+    assert_eq!(
+        pubkey_only.status,
+        Some(StatusOutcome::Agrees { rows_checked: 1 }),
+        "the Postgres verify path must run the status cross-check"
     );
     // #249 acceptance on the Postgres backend: the event rows name the
     // accounts that acted, a grant by uid:1000 and a consume by uid:1001 are
@@ -394,9 +421,15 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
         JobState::Canceled
     );
     assert_eq!(
-        store.fetch_event_rows().await.expect("fetch events").len(),
-        2,
-        "canceling an unapproved transaction must not append an event"
+        store
+            .fetch_event_rows()
+            .await
+            .expect("fetch events")
+            .iter()
+            .map(|e| e.kind.clone())
+            .collect::<Vec<_>>()[3..],
+        ["status_canceled"],
+        "canceling an unapproved transaction chains the outcome and revokes nothing"
     );
 
     let approved = store
@@ -430,8 +463,11 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
         vec![
             "approval_granted",
             "approval_consumed",
+            "status_running",
+            "status_canceled",
             "approval_granted",
-            "approval_revoked"
+            "approval_revoked",
+            "status_canceled"
         ]
     );
 
@@ -445,13 +481,14 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
             .expect("count migrations");
     // Idempotence: reconnecting re-runs `initialize`, which must not record a
     // migration a second time.
-    assert_eq!(migration_count, 4);
+    assert_eq!(migration_count, 5);
 
     for (version, name) in [
         (1_i64, "initial_audit_schema"),
         (2, "caller_identity_and_approval_events"),
         (3, "caller_principal"),
         (4, "event_approver_identity"),
+        (5, "status_event_boundary"),
     ] {
         let migration_row = sqlx_core::query::query(
             "SELECT version, name FROM schema_migrations WHERE version = $1",
@@ -880,7 +917,8 @@ async fn an_auditor_denied_the_event_table_cannot_verify() {
         .await
         .expect("owner verifies the chain");
     assert_eq!(as_owner.chain, VerifyOutcome::Intact { rows_checked: 2 });
-    assert_eq!(as_owner.events, VerifyOutcome::Intact { rows_checked: 2 });
+    // Grant, consume, and the `status_running` the claim chains with them.
+    assert_eq!(as_owner.events, VerifyOutcome::Intact { rows_checked: 3 });
     assert!(
         matches!(as_owner.binding, BindingOutcome::Consistent { .. }),
         "control: the owner's binding check must run, got {:?}",
@@ -1040,4 +1078,297 @@ async fn a_chain_predating_the_event_table_still_verifies() {
         verdict.binding
     );
     assert_eq!(verdict.exit_code(), 0);
+}
+
+/// Postgres half of SQLite's `a_terminal_outcome_is_chained_so_rewriting_status_is_detectable`
+/// and `audit_status_tracks_stale_sweep_with_and_without_approval`.
+///
+/// Until this test, Postgres `update_status` appended no event and both verify
+/// paths left the status verdict unset, so anyone with UPDATE on
+/// `transactions` could rewrite a succeeded job as canceled and `audit verify`
+/// still exited 0.
+#[tokio::test]
+#[ignore = "live Postgres; set SYSKNIFE_TEST_POSTGRES_URL and run with --include-ignored"]
+async fn a_rewritten_status_column_is_reported_on_postgres() {
+    let Some(url) = live_postgres_url() else {
+        return;
+    };
+    assert!(
+        url.contains("sysknife_test"),
+        "refusing destructive integration test against a non-test database"
+    );
+
+    const SCHEMA: &str = "sysknife_status_events";
+
+    let options = PgConnectOptions::from_str(&url).expect("parse test database URL");
+    let admin = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .expect("connect to test database");
+    let exec = |sql: String| {
+        let admin = admin.clone();
+        async move {
+            sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(sql))
+                .execute(&admin)
+                .await
+        }
+    };
+    exec(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE"))
+        .await
+        .expect("reset the test schema");
+    exec(format!("CREATE SCHEMA {SCHEMA}"))
+        .await
+        .expect("create the test schema");
+
+    let key_dir = tempfile::tempdir().expect("create audit-key directory");
+    let key = Arc::new(
+        AuditKey::load_or_generate(&key_dir.path().join("audit-key")).expect("generate audit key"),
+    );
+    let config = PostgresConfig {
+        url: url_with_schema(&url, SCHEMA),
+        ..PostgresConfig::default()
+    };
+    let store = PostgresStore::connect(&config, Arc::clone(&key))
+        .await
+        .expect("connect and migrate into the test schema");
+
+    // A job that runs to completion.
+    let done = store.record(new_transaction()).await.expect("record");
+    let receipt = store
+        .approve_transaction(&done.transaction_id, CallerPrincipal::Uid(1000))
+        .await
+        .expect("approve")
+        .expect("fresh transaction is approved");
+    assert!(store
+        .claim_approved_for_execution(
+            &done.transaction_id,
+            &sysknife_daemon::audit_chain::approval_receipt_digest(&receipt),
+            CallerPrincipal::Uid(1000),
+        )
+        .await
+        .expect("claim"));
+    store
+        .update_status(&done.transaction_id, JobState::Succeeded)
+        .await
+        .expect("record the outcome");
+
+    let events = store.fetch_event_rows().await.expect("fetch events");
+    assert_eq!(
+        events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
+        [
+            "approval_granted",
+            "approval_consumed",
+            "status_running",
+            "status_succeeded"
+        ]
+    );
+
+    // Control: an untouched store agrees on both verify paths.
+    let clean = store.verify_all(&key).await.expect("verify with the key");
+    assert_eq!(
+        clean.status,
+        Some(StatusOutcome::Agrees { rows_checked: 1 })
+    );
+    assert_eq!(clean.exit_code(), 0, "control: {clean:?}");
+
+    // Rewrite the outcome the way anyone with UPDATE on the table can.
+    let set_status = |status: &str| {
+        exec(format!(
+            "UPDATE {SCHEMA}.transactions SET status = '\"{status}\"' WHERE transaction_id = '{}'",
+            done.transaction_id
+        ))
+    };
+    let rewritten = set_status("canceled")
+        .await
+        .expect("rewrite the status column");
+    assert_eq!(rewritten.rows_affected(), 1, "the fixture rewrote nothing");
+
+    let with_key = store.verify_all(&key).await.expect("verify with the key");
+    let with_pubkey = PostgresStore::verify_all_with_pubkey(&config, &key.verifying_key_hex())
+        .await
+        .expect("verify with the public key");
+    for (path, verdict) in [("private key", &with_key), ("public key", &with_pubkey)] {
+        let Some(StatusOutcome::Disagrees { detail }) = &verdict.status else {
+            panic!(
+                "{path}: a rewritten status must be reported, got {:?}",
+                verdict.status
+            );
+        };
+        assert!(
+            detail.contains(&done.transaction_id),
+            "{path}: the report must name the transaction: {detail}"
+        );
+        // The UPDATE touched no signed row, which is why the chains alone
+        // could not see it.
+        assert!(matches!(verdict.chain, VerifyOutcome::Intact { .. }));
+        assert!(matches!(verdict.events, VerifyOutcome::Intact { .. }));
+        assert_eq!(verdict.exit_code(), 1, "{path}: a detected rewrite exits 1");
+    }
+    set_status("succeeded")
+        .await
+        .expect("put the status column back");
+
+    // A row written after migration 5 is held to the SQLite rule: a terminal
+    // status with no status event at all is a contradiction, not history.
+    let unsigned = store.record(new_transaction()).await.expect("record");
+    let set_unsigned = |status: &str| {
+        exec(format!(
+            "UPDATE {SCHEMA}.transactions SET status = '\"{status}\"' WHERE transaction_id = '{}'",
+            unsigned.transaction_id
+        ))
+    };
+    set_unsigned("succeeded").await.expect("forge a completion");
+    let forged = store.verify_all(&key).await.expect("verify with the key");
+    let Some(StatusOutcome::Disagrees { detail }) = &forged.status else {
+        panic!(
+            "a completion nothing signed must be reported, got {:?}",
+            forged.status
+        );
+    };
+    assert!(detail.contains(&unsigned.transaction_id), "{detail}");
+    set_unsigned("queued")
+        .await
+        .expect("put the status column back");
+
+    // Two stale jobs swept by the daemon, one approved and one not. Ageing
+    // them rewrites `created_at`, which the transaction chain signs, so from
+    // here on only the event chain and the status check are asserted.
+    let stale_plain = store.record(new_transaction()).await.expect("record");
+    let stale_approved = store.record(new_transaction()).await.expect("record");
+    store
+        .approve_transaction(&stale_approved.transaction_id, CallerPrincipal::Uid(1000))
+        .await
+        .expect("approve")
+        .expect("fresh transaction is approved");
+    exec(format!(
+        "UPDATE {SCHEMA}.transactions \
+         SET created_at = to_char((now() - INTERVAL '20 minutes') AT TIME ZONE 'UTC', \
+                                  'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') \
+         WHERE transaction_id IN ('{}', '{}')",
+        stale_plain.transaction_id, stale_approved.transaction_id
+    ))
+    .await
+    .expect("age the stale rows");
+    assert_eq!(store.cleanup_stale_queued().await.expect("sweep"), 2);
+    let after_sweep = store.fetch_event_rows().await.expect("fetch events").len();
+    assert_eq!(
+        store.cleanup_stale_queued().await.expect("second sweep"),
+        0,
+        "a second sweep finds nothing"
+    );
+    assert_eq!(
+        store.fetch_event_rows().await.expect("fetch events").len(),
+        after_sweep,
+        "a sweep that cancels nothing chains nothing"
+    );
+
+    let events = store.fetch_event_rows().await.expect("fetch events");
+    let kinds_for = |id: &str| {
+        events
+            .iter()
+            .filter(|e| e.transaction_id == id)
+            .map(|e| e.kind.as_str())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(kinds_for(&stale_plain.transaction_id), ["status_canceled"]);
+    assert_eq!(
+        kinds_for(&stale_approved.transaction_id),
+        ["approval_granted", "approval_revoked", "status_canceled"]
+    );
+    let swept = store.verify_all(&key).await.expect("verify with the key");
+
+    exec(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE"))
+        .await
+        .ok();
+
+    assert_eq!(
+        swept.status,
+        Some(StatusOutcome::Agrees { rows_checked: 4 })
+    );
+    assert_eq!(swept.events, VerifyOutcome::Intact { rows_checked: 8 });
+}
+
+/// The auditor path runs no migrations, so it can meet a store written by a
+/// daemon that never ran migration 5 and never chained a status event. Every
+/// row there predates status events: an unsigned completion is unproven, not
+/// a rewrite, and reporting it as tampering would fail every such audit.
+#[tokio::test]
+#[ignore = "live Postgres; set SYSKNIFE_TEST_POSTGRES_URL and run with --include-ignored"]
+async fn an_unmigrated_store_reports_unsigned_outcomes_as_unproven() {
+    let Some(url) = live_postgres_url() else {
+        return;
+    };
+    assert!(
+        url.contains("sysknife_test"),
+        "refusing destructive integration test against a non-test database"
+    );
+
+    const SCHEMA: &str = "sysknife_status_unmigrated";
+
+    let options = PgConnectOptions::from_str(&url).expect("parse test database URL");
+    let admin = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .expect("connect to test database");
+    let exec = |sql: String| {
+        let admin = admin.clone();
+        async move {
+            sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(sql))
+                .execute(&admin)
+                .await
+        }
+    };
+    exec(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE"))
+        .await
+        .expect("reset the test schema");
+    exec(format!("CREATE SCHEMA {SCHEMA}"))
+        .await
+        .expect("create the test schema");
+
+    let key_dir = tempfile::tempdir().expect("create audit-key directory");
+    let key = Arc::new(
+        AuditKey::load_or_generate(&key_dir.path().join("audit-key")).expect("generate audit key"),
+    );
+    let config = PostgresConfig {
+        url: url_with_schema(&url, SCHEMA),
+        ..PostgresConfig::default()
+    };
+    let store = PostgresStore::connect(&config, Arc::clone(&key))
+        .await
+        .expect("connect and migrate into the test schema");
+    let recorded = store.record(new_transaction()).await.expect("record");
+    drop(store);
+
+    // Put the schema back to version 4, and complete the job the way a 0.26.1
+    // daemon did: a status column write with no event.
+    for statement in [
+        format!("ALTER TABLE {SCHEMA}.transactions DROP COLUMN predates_status_events"),
+        format!("DELETE FROM {SCHEMA}.schema_migrations WHERE version = 5"),
+        format!(
+            "UPDATE {SCHEMA}.transactions SET status = '\"succeeded\"' WHERE transaction_id = '{}'",
+            recorded.transaction_id
+        ),
+    ] {
+        exec(statement).await.expect("rebuild a version-4 store");
+    }
+
+    let verdict = PostgresStore::verify_all_with_pubkey(&config, &key.verifying_key_hex())
+        .await
+        .expect("verify an unmigrated store");
+
+    exec(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE"))
+        .await
+        .ok();
+
+    let Some(StatusOutcome::CannotVerify { detail }) = &verdict.status else {
+        panic!(
+            "an outcome no release chained must be unproven: {:?}",
+            verdict.status
+        );
+    };
+    assert!(detail.contains(&recorded.transaction_id), "{detail}");
+    assert_eq!(verdict.chain, VerifyOutcome::Intact { rows_checked: 1 });
+    assert_eq!(verdict.exit_code(), 2);
 }
