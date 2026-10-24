@@ -12,6 +12,44 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Security
+
+- **Helper screens refuse a trailing newline, and versioned interpreter names
+  count as shells.** Ten `packaging/` helpers validated with a `$`-anchored
+  `re.match()`, which accepts `bash\n`, so a direct `sudo` call could step past
+  the exact-match denylists in `sudoers-edit` and `grub-kargs-edit`. Every
+  helper now uses `fullmatch()`, and `sudoers-edit` checks command paths before
+  its shell lookup. Both copies of the shell-equivalent list also strip version
+  and packaging suffixes, so both refuse a `NOPASSWD` grant for `python3.12`,
+  `perl5.38.2`, `ruby3.2` or `vim.basic`. (GHSA-3448-xjpf-cc4j)
+
+- **`fail2ban-ban` refuses IPv6 scope IDs.** Python's `ipaddress` accepts almost
+  any text after `%`, the daemon's parser refuses every scope ID, and fail2ban
+  splits an unescaped space into extra firewall arguments under a root shell.
+  The helper anchors the jail name with `fullmatch()`, and the sudoers grant
+  test now lists `fail2ban-client set ... actionban` as a root escape.
+  (GHSA-4gp9-9fmc-wgqp)
+
+- **The kernel-argument screens refuse systemd's boot-mode and run tokens, and
+  `user-lock` refuses critical accounts.** Both copies accepted `systemd.run=`,
+  `emergency`, `rescue`, `rdinit=`, `rd.break` and `rd.systemd.unit=`, each a
+  root shell or a root command at the next boot. They now refuse those, `-b`,
+  runlevels 2 to 5 and their `rd.` forms. The `action-steps` helper now refuses
+  to lock or unlock `root`, `daemon`, `bin`, `sys`, `sudo` and `adm`, as the
+  daemon does, and `UnlockUserAccount` applies the same list. The helper also
+  refuses account names that start with `.` or contain `..`, as the daemon
+  does. (GHSA-76v3-hw9r-58pm)
+
+- **`grub-kargs-edit` refuses every `lockdown=` value on `--append`.** The daemon
+  refused the prefix and the helper only `lockdown=none`, so a direct call could
+  set `lockdown=integrity`. (GHSA-8rx7-g2jg-5pxg)
+
+- **`scheduled-job-edit` checks the whole systemd unit load path.** It looked
+  for collisions in `/etc/systemd/system` alone, so a job named `daemon` could
+  write a root oneshot over SysKnife's own unit in `/usr/lib/systemd/system`. It
+  now refuses a job whose unit exists in any load-path directory and names that
+  directory. (GHSA-7p9v-4r44-fh7c)
+
 ## [0.26.1] — 2026-10-24
 
 ### Security
