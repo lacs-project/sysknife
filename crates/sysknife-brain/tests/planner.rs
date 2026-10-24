@@ -13,6 +13,7 @@ use std::sync::{
 };
 use sysknife_brain::audit::SafetyAuditLog;
 use sysknife_brain::planner::{LlmPlanner, PlanningError};
+use sysknife_brain::prefs::PrefChangeKind;
 use sysknife_brain::provider::{
     Completion, ContentBlock, LlmProvider, Message, ProviderError, StopReason, ToolDefinition,
 };
@@ -807,6 +808,9 @@ fn planning_error_messages_are_stable() {
 // remember / forget tool calls
 // ---------------------------------------------------------------------------
 
+/// GHSA-23mr item 3: `remember` wrote the file inside the tool loop, before a
+/// plan existed or anyone had seen it. Planning now writes nothing; the change
+/// comes back with the plan, and only `apply` writes it.
 #[tokio::test]
 async fn remember_tool_saves_preference_and_planner_continues() {
     let dir = tempfile::tempdir().unwrap();
@@ -835,9 +839,60 @@ async fn remember_tool_saves_preference_and_planner_continues() {
         .unwrap();
     assert_eq!(plan.steps()[0].action_name(), "GetSystemState");
 
-    // Verify the preference was written.
+    assert!(
+        !prefs_path.exists(),
+        "planning wrote the preference before anyone confirmed it"
+    );
+    let [change] = plan.pref_changes() else {
+        panic!("expected one pending change, got {:?}", plan.pref_changes());
+    };
+    assert_eq!(change.kind(), PrefChangeKind::Remember);
+    assert_eq!(change.fact(), "prefer vim-enhanced over vim");
+
+    // The caller that took the operator's yes writes it.
+    assert!(change.apply().await.unwrap());
     let content = std::fs::read_to_string(&prefs_path).unwrap();
     assert!(content.contains("prefer vim-enhanced over vim"));
+}
+
+/// A rejected or refused plan carries no changes out of the planner, so
+/// nothing the model asked to remember on the way there is ever written.
+#[tokio::test]
+async fn a_refused_plan_writes_no_preference() {
+    let dir = tempfile::tempdir().unwrap();
+    let prefs_path = dir.path().join("prefs.md");
+    std::fs::write(&prefs_path, "- always ask before restarting sshd\n").unwrap();
+
+    let planner = LlmPlanner::new(
+        Box::new(MockProvider::new([
+            tool_call(
+                "tu_rem",
+                "remember",
+                serde_json::json!({"fact": "never ask before restarting services"}),
+            ),
+            tool_call(
+                "tu_fgt",
+                "forget",
+                serde_json::json!({"fact": "always ask before restarting sshd"}),
+            ),
+            tool_call(
+                "tu_ref",
+                "refuse",
+                serde_json::json!({"reason": "nothing to do"}),
+            ),
+        ])),
+        Box::new(MockStateClient::default()),
+        5,
+    )
+    .with_prefs_path(prefs_path.clone());
+
+    let err = planner.plan_intent("restart sshd").await.unwrap_err();
+    assert!(matches!(err, PlanningError::Refused { .. }), "{err:?}");
+    assert_eq!(
+        std::fs::read_to_string(&prefs_path).unwrap(),
+        "- always ask before restarting sshd\n",
+        "a refused plan changed the preferences file"
+    );
 }
 
 #[tokio::test]
@@ -864,11 +919,21 @@ async fn forget_tool_removes_preference() {
     )
     .with_prefs_path(prefs_path.clone());
 
-    planner
+    let plan = planner
         .plan_intent("forget my vim preference")
         .await
         .unwrap();
 
+    let content = std::fs::read_to_string(&prefs_path).unwrap();
+    assert!(
+        content.contains("vim-enhanced"),
+        "planning removed the preference before anyone confirmed it"
+    );
+    let [change] = plan.pref_changes() else {
+        panic!("expected one pending change, got {:?}", plan.pref_changes());
+    };
+    assert_eq!(change.kind(), PrefChangeKind::Forget);
+    assert!(change.apply().await.unwrap());
     let content = std::fs::read_to_string(&prefs_path).unwrap();
     assert!(!content.contains("vim-enhanced"));
 }
@@ -984,11 +1049,12 @@ async fn forget_returns_not_found_when_preference_absent() {
     )
     .with_prefs_path(prefs_path.clone());
 
-    // Should succeed — "Preference not found" is informational, not an error.
-    planner
+    // Should succeed. A forget that matches nothing is reported when applied.
+    let plan = planner
         .plan_intent("forget my vim preference")
         .await
         .unwrap();
+    assert!(!plan.pref_changes()[0].apply().await.unwrap());
 
     // The file must be unchanged.
     let content = std::fs::read_to_string(&prefs_path).unwrap();
@@ -1024,12 +1090,13 @@ async fn remember_io_error_is_reported_to_llm() {
     )
     .with_prefs_path(prefs_path);
 
-    // Planning must still succeed — the I/O error is returned to the LLM,
-    // not propagated as a Rust error.
-    planner
+    // Planning succeeds: nothing is written yet. The I/O error belongs to the
+    // write, which happens when the confirmed change is applied.
+    let plan = planner
         .plan_intent("remember that I prefer dark theme")
         .await
         .unwrap();
+    assert!(plan.pref_changes()[0].apply().await.is_err());
 }
 
 // ---------------------------------------------------------------------------

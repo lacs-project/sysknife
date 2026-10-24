@@ -33,9 +33,10 @@ use std::time::Duration;
 use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::{OwoColorize, Stream};
 use sysknife_brain::planner::{AuthorizedPlan, PlanRiskLevel};
+use sysknife_brain::prefs::PrefChangeKind;
 use sysknife_types::{JobState, PreviewEnvelope, ResultEnvelope};
 
-use crate::operator_text::operator_safe;
+use crate::operator_text::{operator_safe, operator_safe_block, OperatorBlock};
 use crate::runner::Logger;
 
 /// Spinner frame interval. Fast enough to read as motion, slow enough not to
@@ -92,11 +93,40 @@ pub fn risk_colored(risk: &PlanRiskLevel) -> String {
 // Plan display
 // ---------------------------------------------------------------------------
 
+/// What a printed view left out, so a prompt taken on it can refuse.
+///
+/// The plan and the step header print bounded blocks (see
+/// [`operator_safe_block`]). A bounded block is fine to print when nobody is
+/// consenting to it, under `--yes` or `--dry-run`; it is not fine to ask a
+/// question about. Returning the counts from the function that printed the
+/// block means the caller deciding whether to ask has the numbers for the view
+/// that was really on screen, not a second computation that could drift.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Omissions {
+    /// Whole lines dropped past the line cap.
+    pub withheld_lines: usize,
+    /// Lines kept but cut short past the width cap.
+    pub shortened_lines: usize,
+}
+
+impl Omissions {
+    /// Did the operator see every byte of every block?
+    pub fn is_none(&self) -> bool {
+        self.withheld_lines == 0 && self.shortened_lines == 0
+    }
+
+    fn record(&mut self, block: &OperatorBlock) {
+        self.withheld_lines += block.withheld_lines();
+        self.shortened_lines += block.shortened_lines();
+    }
+}
+
 /// Print the plan summary and step list to stdout (via `log`).
 ///
 /// Takes an [`AuthorizedPlan`] so the risk badges shown to the operator are the
 /// authoritative `ActionSpec` risks, never the LLM's proposal.
-pub fn print_plan(plan: &AuthorizedPlan, log: &Logger) {
+pub fn print_plan(plan: &AuthorizedPlan, log: &Logger) -> Omissions {
+    let mut omitted = Omissions::default();
     log.println("");
     // The summaries below are model-written, from a context full of
     // host-controlled strings. This is the plan the operator is about to
@@ -134,8 +164,60 @@ pub fn print_plan(plan: &AuthorizedPlan, log: &Logger) {
             "     {}",
             operator_safe(step.summary()).if_supports_color(Stream::Stdout, |t| t.dimmed())
         ));
+        // The values the step acts on: the user, group, package, URL or path
+        // the model chose. Without them the operator approved a summary the
+        // model also wrote (GHSA-23mr item 1).
+        if let Some(block) = json_block(step.params()) {
+            log.println("     params:");
+            log.println(&indent(block.text(), "       "));
+            omitted.record(&block);
+        }
+    }
+    let changes = plan.pref_changes();
+    if !changes.is_empty() {
+        log.println("");
+        log.println("  Preference changes (saved only if you confirm them below):");
+        for change in changes {
+            let verb = match change.kind() {
+                PrefChangeKind::Remember => "remember",
+                PrefChangeKind::Forget => "forget",
+            };
+            // One line per fact: `append_pref` refuses line breaks anyway, and
+            // the block renderer counts a fact cut at the width cap.
+            let block = operator_safe_block(&change.fact().replace(['\n', '\r'], " "));
+            log.println(&format!("    {verb}: {}", block.text()));
+            omitted.record(&block);
+        }
     }
     log.println("");
+    omitted
+}
+
+/// Pretty-print a JSON value as a bounded, neutralised block, or `None` when
+/// there is nothing to show (`null`, `{}`, `[]`).
+///
+/// `serde_json` escapes C0 controls but emits U+202E and TAG characters
+/// literally, so the text goes through [`operator_safe_block`].
+fn json_block(value: &serde_json::Value) -> Option<OperatorBlock> {
+    let empty = match value {
+        serde_json::Value::Null => true,
+        serde_json::Value::Object(map) => map.is_empty(),
+        serde_json::Value::Array(items) => items.is_empty(),
+        _ => false,
+    };
+    if empty {
+        return None;
+    }
+    let pretty = serde_json::to_string_pretty(value).unwrap_or_else(|_| "<unavailable>".into());
+    Some(operator_safe_block(&pretty))
+}
+
+/// Prefix every line of `text` with `prefix`.
+fn indent(text: &str, prefix: &str) -> String {
+    text.lines()
+        .map(|line| format!("{prefix}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -145,26 +227,55 @@ pub fn print_plan(plan: &AuthorizedPlan, log: &Logger) {
 /// Print the `▶ ActionName  summary` step header to stderr.
 ///
 /// Goes to stderr so it does not pollute piped stdout.
-pub fn print_step_header(action: &str, preview: &PreviewEnvelope) {
-    eprintln!(
+pub fn print_step_header(action: &str, preview: &PreviewEnvelope) -> Omissions {
+    let (text, omitted) = step_header_text(action, preview);
+    eprintln!("{text}");
+    omitted
+}
+
+/// The step header as printed, and what its blocks left out.
+fn step_header_text(action: &str, preview: &PreviewEnvelope) -> (String, Omissions) {
+    let mut omitted = Omissions::default();
+    let mut lines = vec![format!(
         "\n  {} {}  {}",
         "▶".if_supports_color(Stream::Stderr, |t| t.cyan()),
         action.if_supports_color(Stream::Stderr, |t| t.bold()),
         operator_safe(&preview.summary).if_supports_color(Stream::Stderr, |t| t.dimmed()),
-    );
+    )];
     if preview.reboot_required {
-        eprintln!(
+        lines.push(format!(
             "    {} reboot required after this step",
             "⚠".if_supports_color(Stream::Stderr, |t| t.yellow())
-        );
+        ));
     }
     for w in &preview.warnings {
-        eprintln!(
+        lines.push(format!(
             "    {} {}",
             "!".if_supports_color(Stream::Stderr, |t| t.yellow()),
             operator_safe(w),
-        );
+        ));
     }
+    // What the daemon resolved the step to, and what else it expects to
+    // happen. This is the substance of a post-preview confirmation, the same
+    // field `sysknife approve` shows.
+    if let Some(block) = json_block(&preview.proposed_change) {
+        lines.push("    proposed change:".into());
+        lines.push(indent(block.text(), "      "));
+        omitted.record(&block);
+    }
+    if !preview.expected_side_effects.is_empty() {
+        // One line per effect, so an effect cannot forge a second bullet.
+        let effects: Vec<String> = preview
+            .expected_side_effects
+            .iter()
+            .map(|e| format!("- {}", e.replace(['\n', '\r'], " ")))
+            .collect();
+        let block = operator_safe_block(&effects.join("\n"));
+        lines.push("    side effects:".into());
+        lines.push(indent(block.text(), "      "));
+        omitted.record(&block);
+    }
+    (lines.join("\n"), omitted)
 }
 
 /// Print one line of execution output with an indent, via `log`.
@@ -684,6 +795,136 @@ mod tests {
         assert!(
             !config_doc.to_lowercase().contains("chain-integrity"),
             "doctor docs must not claim a chain-integrity check; use `sysknife audit verify` instead"
+        );
+    }
+
+    fn one_step_plan(params: serde_json::Value) -> AuthorizedPlan {
+        use sysknife_brain::action_name::ActionName;
+        use sysknife_brain::planner::{Plan, PlanStep};
+        Plan::new(
+            "intent".into(),
+            "plan summary".into(),
+            "explanation".into(),
+            vec![PlanStep::new(
+                ActionName::parse("AddUserToGroup").unwrap(),
+                "add a user to a group".into(),
+                PlanRiskLevel::Medium,
+                params,
+            )
+            .unwrap()],
+        )
+        .unwrap()
+        .into_authorized(|_| PlanRiskLevel::Medium)
+    }
+
+    fn render_plan_to_string(plan: &AuthorizedPlan) -> (String, Omissions) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("plan.log");
+        let log = Logger::new(Some(&path)).expect("logger");
+        let omitted = print_plan(plan, &log);
+        (std::fs::read_to_string(&path).expect("logger tee"), omitted)
+    }
+
+    fn preview_with(proposed_change: serde_json::Value, side_effects: &[&str]) -> PreviewEnvelope {
+        PreviewEnvelope {
+            summary: "AddUserToGroup (medium risk)".into(),
+            risk_level: sysknife_types::RiskLevel::Medium,
+            current_state: serde_json::json!({}),
+            proposed_change,
+            expected_side_effects: side_effects.iter().map(|s| s.to_string()).collect(),
+            reboot_required: false,
+            rollback_available: false,
+            warnings: Vec::new(),
+            request_hash: sysknife_types::RequestHash::new("hash"),
+        }
+    }
+
+    /// GHSA-23mr item 1: the run path printed the model's own summary and the
+    /// action name, never the user, group, package or path the step acts on.
+    /// The parameters go through the block renderer, because `serde_json`
+    /// emits U+202E and tag characters literally.
+    #[test]
+    fn the_plan_shows_each_steps_parameters_neutralised() {
+        let plan = one_step_plan(serde_json::json!({
+            "user": "alice\u{202e}nimda",
+            "group": "wheel\u{e0041}",
+        }));
+        let (out, omitted) = render_plan_to_string(&plan);
+        assert!(out.contains("\"user\""), "parameter names missing:\n{out}");
+        assert!(
+            out.contains("alicenimda"),
+            "parameter value missing:\n{out}"
+        );
+        assert!(out.contains("\"wheel\""), "parameter value missing:\n{out}");
+        assert!(
+            !out.contains('\u{202e}') && !out.contains('\u{e0041}'),
+            "invisible characters reached the terminal:\n{out:?}"
+        );
+        assert!(omitted.is_none(), "a short block must count as complete");
+    }
+
+    #[test]
+    fn a_parameter_block_too_tall_to_show_is_counted() {
+        let many: serde_json::Map<String, serde_json::Value> = (0..60)
+            .map(|i| (format!("k{i:02}"), serde_json::json!(i)))
+            .collect();
+        let (_, omitted) = render_plan_to_string(&one_step_plan(serde_json::Value::Object(many)));
+        assert!(
+            omitted.withheld_lines > 0,
+            "a 60-key parameter block cannot fit in 40 lines: {omitted:?}"
+        );
+    }
+
+    /// The daemon's proposed change is what the step will really do. The run
+    /// path dropped it, and the side effects with it, so the operator approved a
+    /// Medium or High step on the action name and the model's summary.
+    #[test]
+    fn the_step_header_shows_the_proposed_change_and_side_effects() {
+        let preview = preview_with(
+            serde_json::json!({"add_user": "mallory\u{202e}", "to_group": "sudo"}),
+            &[
+                "\x1b[2K\rgrants root via sudo",
+                "user must log in again\u{e0041}",
+            ],
+        );
+        let (out, omitted) = step_header_text("AddUserToGroup", &preview);
+        assert!(
+            out.contains("\"add_user\""),
+            "proposed change missing:\n{out}"
+        );
+        assert!(
+            out.contains("\"mallory\""),
+            "proposed change missing:\n{out}"
+        );
+        assert!(
+            out.contains("grants root via sudo"),
+            "side effect missing:\n{out}"
+        );
+        assert!(
+            out.contains("user must log in again"),
+            "side effect missing:\n{out}"
+        );
+        assert!(
+            !out.contains('\x1b')
+                && !out.contains('\r')
+                && !out.contains('\u{202e}')
+                && !out.contains('\u{e0041}'),
+            "control or invisible characters reached the terminal:\n{out:?}"
+        );
+        assert!(omitted.is_none(), "{omitted:?}");
+    }
+
+    #[test]
+    fn a_proposed_change_too_tall_or_wide_to_show_is_counted() {
+        let tall: Vec<u32> = (0..60).collect();
+        let (_, omitted) = step_header_text("X", &preview_with(serde_json::json!(tall), &[]));
+        assert!(omitted.withheld_lines > 0, "{omitted:?}");
+
+        let wide = "x".repeat(2000);
+        let (_, omitted) = step_header_text("X", &preview_with(serde_json::json!({}), &[&wide]));
+        assert!(
+            omitted.shortened_lines > 0,
+            "a cut side effect is unseen text: {omitted:?}"
         );
     }
 

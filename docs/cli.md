@@ -64,11 +64,27 @@ sysknife "layer vim via rpm-ostree"
 1. A spinner appears while the LLM plans (`Thinking…` → `Querying …` →
    `Proposing plan…`).
 2. The coloured plan is printed — each step shows a risk badge
-   (`● low` / `● medium` / `● HIGH`), the action name, and a summary.
-3. If any step requires approval, you are prompted.  HIGH-risk steps always
-   require confirmation regardless of `--yes`.
-4. Execution streams output line by line with a `›` prefix; a `✓` / `✗`
+   (`● low` / `● medium` / `● HIGH`), the action name, a summary and the
+   step's parameters.
+3. If any step requires approval, you are prompted once for the plan.  HIGH-risk
+   steps always require confirmation regardless of `--yes`.
+4. Before each step runs, its header prints the daemon's proposed change and
+   expected side effects.  A MEDIUM or HIGH step that `--yes` did not
+   auto-approve asks again here, with that change on screen.
+5. Execution streams output line by line with a `›` prefix; a `✓` / `✗`
    result icon is printed after each step.
+
+The plan and step views are capped at 40 lines per block and 512 columns per
+line, so a long parameter list cannot scroll the prompt away.  If a block you
+are about to answer for does not fit, the run refuses to ask and exits 1;
+re-run with `--json` to see it in full.  Under `--yes` nothing is asked, so the
+capped view is printed and the run continues.
+
+If you ask the planner to remember or forget a preference, the plan lists the
+change under **Preference changes** and you answer a separate question before
+`prefs.md` changes.  Nothing is written under `--dry-run`, `--yes` or
+`--non-interactive`, or when you reject the plan.  `sysknife_plan` over MCP
+never writes preferences.
 
 The natural-language planner has no secure way to collect or resolve a
 credential after planning. It therefore does not offer Ubuntu Pro attachment,
@@ -444,7 +460,7 @@ One thing: the approval gate.
 - `--yes` may now auto-approve HIGH-risk steps. The cap moves from MEDIUM to
   HIGH, and nothing else is switched on.
 - When `--yes` approves a HIGH step, its post-preview confirmation no longer
-  asks. The preview is
+  asks, the same as for a MEDIUM step under `--yes --max-risk medium`. The preview is
   still fetched and still printed, because it is the only record of what the
   run was about to change.
 

@@ -100,6 +100,22 @@ pub enum CliError {
         shortened_note: String,
     },
 
+    /// A run was about to ask for consent on a plan or a step preview that did
+    /// not fit on screen.
+    ///
+    /// The run-path twin of [`Self::ApprovalViewIncomplete`]. `--json` prints
+    /// the plan and every preview in full, so it is the way to see all of it.
+    #[error(
+        "{what} does not fit on screen: {withheld} line(s) were not shown{shortened_note}. \
+         Approving would mean consenting to text you were not shown. Re-run with --json to \
+         see all of it before you answer"
+    )]
+    RunViewIncomplete {
+        what: String,
+        withheld: usize,
+        shortened_note: String,
+    },
+
     /// Produced by subcommands that have their own exit-code semantics (e.g.
     /// `sysknife audit verify` uses 0/1/2). The wrapped value is the literal
     /// exit code the process should return.
@@ -119,7 +135,8 @@ impl CliError {
             | Self::NonInteractive
             | Self::UnattendedConsentMissing(_)
             | Self::ApprovalNeedsTerminal
-            | Self::ApprovalViewIncomplete { .. } => 1,
+            | Self::ApprovalViewIncomplete { .. }
+            | Self::RunViewIncomplete { .. } => 1,
             Self::ExecutionFailed(_) | Self::TimedOut(_) => 2,
             Self::PlanningFailed(_) => 3,
             Self::ConfigOrDaemon(_) => 4,

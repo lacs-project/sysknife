@@ -333,6 +333,11 @@ pub struct Plan {
     summary: String,
     explanation: String,
     steps: Vec<PlanStep>,
+    /// Preference changes the model asked for, unwritten. Not serialised: the
+    /// MCP path has no operator to confirm them, so they never leave the
+    /// process there (see [`crate::prefs::PendingPrefChange`]).
+    #[serde(skip)]
+    pref_changes: Vec<crate::prefs::PendingPrefChange>,
 }
 
 impl Plan {
@@ -365,7 +370,20 @@ impl Plan {
             summary,
             explanation,
             steps,
+            pref_changes: Vec::new(),
         })
+    }
+
+    /// Attach the preference changes the model asked for while planning.
+    #[must_use]
+    pub fn with_pref_changes(mut self, changes: Vec<crate::prefs::PendingPrefChange>) -> Self {
+        self.pref_changes = changes;
+        self
+    }
+
+    /// Preference changes awaiting the operator's confirmation.
+    pub fn pref_changes(&self) -> &[crate::prefs::PendingPrefChange] {
+        &self.pref_changes
     }
 
     pub fn intent(&self) -> &str {
@@ -456,6 +474,11 @@ impl AuthorizedPlan {
     /// The plan's steps, each exposing its authoritative risk.
     pub fn steps(&self) -> impl ExactSizeIterator<Item = AuthorizedStep<'_>> {
         self.plan.steps.iter().map(AuthorizedStep)
+    }
+
+    /// Preference changes awaiting the operator's confirmation.
+    pub fn pref_changes(&self) -> &[crate::prefs::PendingPrefChange] {
+        self.plan.pref_changes()
     }
 
     /// Highest authoritative risk across all steps (`None` only if empty, which
@@ -1090,6 +1113,10 @@ impl LlmPlanner {
         // Same lifetime as the prompt: one build per plan, reused across turns.
         let tools = self.tool_defs();
 
+        // `remember`/`forget` calls, returned with the plan and written by
+        // nobody here. A refused or failed plan drops them.
+        let mut pref_changes = Vec::new();
+
         for turn in 0..self.max_turns {
             self.emit(PlanEvent::Thinking);
             let completion = self
@@ -1188,7 +1215,7 @@ impl LlmPlanner {
                                 // within the remaining turns. Symmetric with the
                                 // unknown-tool retry path below.
                                 match parse_proposed_plan(intent, input) {
-                                    Ok(plan) => return Ok(plan),
+                                    Ok(plan) => return Ok(plan.with_pref_changes(pref_changes)),
                                     Err(e) => {
                                         let reason = e.to_string();
                                         let raw_plan = input.to_string();
@@ -1271,65 +1298,41 @@ impl LlmPlanner {
                                     }
                                 }
                             }
-                            "remember" => {
-                                let (result_text, err) = match self.prepare_pref_op(input, |fact| {
-                                    crate::prefs::contains_sensitive(fact).then(|| {
+                            "remember" | "forget" => {
+                                // Queued, never written here. The plan carries
+                                // the change out, and the CLI writes it only
+                                // after the operator has seen it and said yes
+                                // (see `prefs::PendingPrefChange`).
+                                let (kind, verb) = if name == "remember" {
+                                    (crate::prefs::PrefChangeKind::Remember, "save")
+                                } else {
+                                    (crate::prefs::PrefChangeKind::Forget, "remove")
+                                };
+                                let prepared = self.prepare_pref_op(input, |fact| {
+                                    (kind == crate::prefs::PrefChangeKind::Remember
+                                        && crate::prefs::contains_sensitive(fact))
+                                    .then(|| {
                                         "Error: preference rejected — it appears to contain \
                                          sensitive data (passwords, tokens, keys). Preferences \
                                          must not store secrets."
                                             .to_string()
                                     })
-                                }) {
-                                    Ok((fact, prefs_path)) => {
-                                        match crate::prefs::append_pref_async(
-                                            prefs_path.clone(),
-                                            fact.to_string(),
-                                        )
-                                        .await
-                                        {
-                                            Ok(()) => (format!("Preference saved: {fact}"), false),
-                                            Err(e) => {
-                                                eprintln!(
-                                                    "[sysknife-brain] failed to save preference to {}: {e}",
-                                                    prefs_path.display()
-                                                );
-                                                (format!("Error saving preference: {e}"), true)
-                                            }
-                                        }
-                                    }
-                                    Err(pair) => pair,
-                                };
-                                tool_results.push(ToolResultBlock {
-                                    tool_use_id: id.clone(),
-                                    call_id: call_id.clone(),
-                                    content: result_text,
-                                    is_error: err,
                                 });
-                            }
-                            "forget" => {
-                                let (result_text, err) = match self.prepare_pref_op(input, |_| None)
-                                {
+                                let (result_text, err) = match prepared {
                                     Ok((fact, prefs_path)) => {
-                                        match crate::prefs::remove_pref_async(
-                                            prefs_path.clone(),
+                                        pref_changes.push(crate::prefs::PendingPrefChange::new(
+                                            kind,
                                             fact.to_string(),
+                                            prefs_path,
+                                        ));
+                                        (
+                                            format!(
+                                                "Queued, not yet done: the operator will be asked \
+                                                 to {verb} this preference after the plan is \
+                                                 shown: {fact}"
+                                            ),
+                                            false,
                                         )
-                                        .await
-                                        {
-                                            Ok(true) => {
-                                                (format!("Preference removed: {fact}"), false)
-                                            }
-                                            Ok(false) => {
-                                                (format!("Preference not found: {fact}"), false)
-                                            }
-                                            Err(e) => {
-                                                eprintln!(
-                                                    "[sysknife-brain] failed to remove preference from {}: {e}",
-                                                    prefs_path.display()
-                                                );
-                                                (format!("Error removing preference: {e}"), true)
-                                            }
-                                        }
                                     }
                                     Err(pair) => pair,
                                 };
