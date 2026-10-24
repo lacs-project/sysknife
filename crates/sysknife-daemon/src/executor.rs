@@ -11,13 +11,13 @@ use crate::actions::{
         validated_email, validated_fstype, validated_group, validated_group_not_critical,
         validated_home_dir, validated_hostname, validated_install_package, validated_journal_grep,
         validated_journal_priority, validated_journal_time, validated_locale, validated_log_path,
-        validated_lvm_name, validated_lvm_size, validated_memory_limit, validated_mount_device,
-        validated_mount_options, validated_mount_point, validated_port_or_service,
-        validated_ppa_name, validated_pro_service, validated_resource_limit_unit,
-        validated_safe_arg, validated_stoppable_unit, validated_sudo_commands,
-        validated_sudoers_name, validated_swap_path, validated_sysctl_key, validated_sysctl_value,
-        validated_syslog_host, validated_tasks_max, validated_timezone, validated_unit_name,
-        validated_username, validated_username_not_critical,
+        validated_log_rotation, validated_lvm_name, validated_lvm_size, validated_memory_limit,
+        validated_mount_device, validated_mount_options, validated_mount_point,
+        validated_port_or_service, validated_ppa_name, validated_pro_service,
+        validated_resource_limit_unit, validated_safe_arg, validated_stoppable_unit,
+        validated_sudo_commands, validated_sudoers_name, validated_swap_path, validated_sysctl_key,
+        validated_sysctl_value, validated_syslog_host, validated_tasks_max, validated_timezone,
+        validated_unit_name, validated_username, validated_username_not_critical,
     },
     ActionMechanism, ActionSpec,
 };
@@ -1394,7 +1394,6 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         }
         "ConfigureLogRotation" => {
             let name = validated_sudoers_name(require_str(params, "name")?, "name")?;
-            let path = validated_log_path(require_str(params, "path")?, "path")?;
             let frequency = require_str(params, "frequency")?;
             if !matches!(frequency, "daily" | "weekly" | "monthly") {
                 return Err(ExecutorError::InvalidParam("frequency"));
@@ -1403,6 +1402,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             if rotate > 1000 {
                 return Err(ExecutorError::InvalidParam("rotate"));
             }
+            let path = validated_log_rotation(require_str(params, "path")?, rotate)?;
             let compress = params
                 .get("compress")
                 .and_then(|v| v.as_bool())

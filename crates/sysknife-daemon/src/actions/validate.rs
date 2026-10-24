@@ -1100,6 +1100,52 @@ pub fn validated_log_path(s: &str, param: &'static str) -> Result<String, Execut
     Ok(s.to_string())
 }
 
+/// The directories that hold the host's record of what happened. Mirrors
+/// `LOG_EVIDENCE_DIRS` in `packaging/sysknife-log-edit`.
+const LOG_EVIDENCE_DIRS: &[&str] = &["/var/log", "/var/log/audit", "/var/log/journal"];
+
+/// Whether a rotation target ends in a bare wildcard over the log evidence.
+///
+/// `ConfigureLogRotation` is Medium, so the Dev tier reaches it, and root's
+/// logrotate acts on what it writes. `/var/log/*`, `/var/log/audit/*` and
+/// `/var/log/journal/*` passed [`validated_log_path`] and name every file in
+/// the directories auditd and journald write to. A wildcard directory such as
+/// `/var/log/*/*` sweeps the audit and journal trees with it, so a bare final
+/// `*` under any wildcard component counts too. `//` and `.` components are
+/// dropped first so the same directory cannot be spelled past the list.
+fn log_glob_sweeps_evidence(path: &str) -> bool {
+    let parts: Vec<&str> = path
+        .split('/')
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect();
+    let Some((last, parent)) = parts.split_last() else {
+        return false;
+    };
+    if !last.chars().all(|c| c == '*') {
+        return false;
+    }
+    LOG_EVIDENCE_DIRS.contains(&format!("/{}", parent.join("/")).as_str())
+        || parent.iter().any(|p| p.contains('*'))
+}
+
+/// Validate a `ConfigureLogRotation` target and its rotate count together.
+///
+/// Refuses a bare wildcard over the log evidence (see
+/// [`log_glob_sweeps_evidence`]) on `path`, and `rotate 0` over any wildcard on
+/// `rotate`: logrotate deletes every rotated file a zero count leaves, and a
+/// glob decides how many files that is (GHSA-68v6-p23h-fwcf). Mirrors
+/// `op_logrotate` in `packaging/sysknife-log-edit`.
+pub fn validated_log_rotation(path: &str, rotate: u32) -> Result<String, ExecutorError> {
+    let path = validated_log_path(path, "path")?;
+    if log_glob_sweeps_evidence(&path) {
+        return Err(ExecutorError::InvalidParam("path"));
+    }
+    if path.contains('*') && rotate == 0 {
+        return Err(ExecutorError::InvalidParam("rotate"));
+    }
+    Ok(path)
+}
+
 /// Validate a syslog collector host: a hostname or IPv4/IPv6 literal
 /// (`[A-Za-z0-9.:_-]`, no `..`, 1..=255). Mirrors `HOST_RE` in the helper.
 pub fn validated_syslog_host(s: &str, param: &'static str) -> Result<String, ExecutorError> {
