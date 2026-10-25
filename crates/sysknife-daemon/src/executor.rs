@@ -1605,7 +1605,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             Ok(users::lock_user_account(&username))
         }
         "UnlockUserAccount" => {
-            let username = validated_username(resolve_username(params)?, "username")?;
+            let username = validated_username_not_critical(resolve_username(params)?, "username")?;
             Ok(users::unlock_user_account(&username))
         }
 
@@ -2388,9 +2388,14 @@ fn str_array_or_empty(params: &Value, key: &'static str) -> Result<Vec<String>, 
 /// - `enforcing=0`     — sets SELinux to permissive
 /// - `security=`       — overrides LSM module selection
 /// - `apparmor=0`      — disables the AppArmor LSM (Ubuntu's default MAC)
-/// - `systemd.unit=emergency` / `systemd.unit=rescue` / `systemd.unit=single`
-///   — unprotected root shell
+/// - `systemd.unit=emergency` / `systemd.unit=rescue` / `systemd.unit=single`,
+///   and the same under `rd.systemd.unit=` — unprotected root shell
 /// - `single` / `1` / `s` — single-user mode (root without password)
+/// - `emergency` / `rescue` / `-b` / `rd.emergency` / `rd.rescue` / `2`-`5` —
+///   the boot target chosen by its short name
+/// - `systemd.run` — runs a command as a root service after boot
+/// - `rdinit=` / `rd.break` / `break` — the initramfs init, or a stop in an
+///   initramfs root shell
 /// - `module_blacklist=` — can disable security-critical kernel modules
 /// - `mitigations=off` — disables CPU speculative-execution vulnerability
 ///   mitigations (Spectre/Meltdown/MDS/etc.)
@@ -2423,8 +2428,34 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
         "systemd.debug-shell",
         "rd.systemd.debug_shell",
         "rd.systemd.debug-shell",
+        // `systemd.run=` runs a command as a root service once boot completes,
+        // and the prefix covers `systemd.run_success_action=` and
+        // `systemd.run_failure_action=` too. `rdinit=` is the initramfs twin of
+        // `init=`; `rd.break` and `break` stop the boot in an initramfs root
+        // shell.
+        "systemd.run",
+        "rdinit=",
+        "rd.break",
+        "break",
     ];
-    const BLOCKED_EXACT: &[&str] = &["single", "s", "1", "nosmap", "nosmep"];
+    // `emergency`, `rescue`, `-b` and the runlevels 2-5 pick the boot target
+    // the way `single` and `1` do (kernel-command-line(7)).
+    const BLOCKED_EXACT: &[&str] = &[
+        "single",
+        "s",
+        "1",
+        "nosmap",
+        "nosmep",
+        "emergency",
+        "rescue",
+        "-b",
+        "rd.emergency",
+        "rd.rescue",
+        "2",
+        "3",
+        "4",
+        "5",
+    ];
     // Shared with `validated_activatable_unit`, deliberately: these two screens
     // encode the same idea from opposite directions — one refuses to START a
     // root-shell unit, the other refuses to BOOT into it — and keeping two lists
@@ -2442,8 +2473,12 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
     if BLOCKED_EXACT.iter().any(|e| lower == *e) {
         return Err(ExecutorError::InvalidParam(param));
     }
-    // Block systemd.unit= pointing to emergency/rescue/single targets.
-    if let Some(unit_val) = lower.strip_prefix("systemd.unit=") {
+    // Block systemd.unit= pointing to emergency/rescue/single targets, and
+    // rd.systemd.unit=, the same choice made in the initramfs.
+    if let Some(unit_val) = lower
+        .strip_prefix("systemd.unit=")
+        .or_else(|| lower.strip_prefix("rd.systemd.unit="))
+    {
         if BLOCKED_UNIT_PREFIXES
             .iter()
             .any(|u| unit_val.starts_with(u))
@@ -3081,6 +3116,20 @@ mod tests {
             matches!(err, ExecutorError::InvalidParam("username")),
             "expected InvalidParam(username), got: {err}"
         );
+    }
+
+    /// The helper behind UnlockUserAccount refuses critical accounts, as the
+    /// lock path always has: unlocking a root account an administrator locked
+    /// on purpose is the same decision made in reverse.
+    #[test]
+    fn unlock_user_account_rejects_critical_account() {
+        let err =
+            build_action_spec("UnlockUserAccount", &json!({ "username": "root" })).unwrap_err();
+        assert!(
+            matches!(err, ExecutorError::InvalidParam("username")),
+            "expected InvalidParam(username), got: {err}"
+        );
+        assert!(build_action_spec("UnlockUserAccount", &json!({ "username": "alice" })).is_ok());
     }
 
     #[test]
@@ -4015,6 +4064,60 @@ mod tests {
             validated_safe_kernel_arg("systemd.unit=single.target", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
+    }
+
+    /// Boot-mode and run tokens that systemd(1) and kernel-command-line(7)
+    /// honour. `emergency`, `rescue`, `-b` and runlevels 2-5 pick the boot target
+    /// as `single` and `1` do; `systemd.run=` runs a command as a root service
+    /// after boot; `rdinit=` and `rd.systemd.unit=` are the initramfs twins of
+    /// `init=` and `systemd.unit=`; `rd.break` and `break` stop in an initramfs
+    /// root shell. tests/release/grub-kargs-edit.test.sh holds the helper to the
+    /// same list.
+    #[test]
+    fn kernel_arg_blocks_boot_mode_and_run_tokens() {
+        for arg in [
+            "emergency",
+            "rescue",
+            "-b",
+            "rd.emergency",
+            "rd.rescue",
+            "2",
+            "3",
+            "4",
+            "5",
+            "systemd.run=/tmp/x",
+            "systemd.run_success_action=reboot",
+            "systemd.run_failure_action=none",
+            "rdinit=/bin/sh",
+            "rd.break",
+            "rd.break=pre-mount",
+            "break",
+            "break=premount",
+            "rd.systemd.unit=emergency.target",
+            "rd.systemd.unit=rescue.target",
+            "rd.systemd.unit=debug-shell.service",
+            "EMERGENCY",
+            "Systemd.Run=/tmp/x",
+        ] {
+            assert!(
+                matches!(
+                    validated_safe_kernel_arg(arg, "add"),
+                    Err(ExecutorError::InvalidParam("add"))
+                ),
+                "{arg} boots into a root shell or runs a root command and must be refused"
+            );
+        }
+        for arg in [
+            "quiet",
+            "splash",
+            "rd.systemd.unit=graphical.target",
+            "loglevel=3",
+        ] {
+            assert!(
+                validated_safe_kernel_arg(arg, "add").is_ok(),
+                "{arg} carries no boot-security meaning and must stay appendable"
+            );
+        }
     }
 
     #[test]

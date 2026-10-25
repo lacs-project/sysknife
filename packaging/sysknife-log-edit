@@ -41,6 +41,10 @@ PREFIX = "sysknife-"
 # where logs are allowed to live does.
 LOG_ROOT = "/var/log/"
 
+# Every pattern below is applied with fullmatch(). With match(), `$` also
+# matches just before a trailing newline, so `name\n` passed the charset and
+# then missed every exact-membership check after it.
+# tests/release/helper-anchoring.test.sh drives each helper with one.
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9/._*-]{1,255}$")
 HOST_RE = re.compile(r"^[A-Za-z0-9.:_-]{1,255}$")  # hostname or IPv4/IPv6-ish
@@ -61,7 +65,7 @@ def valid_log_glob(path: str) -> bool:
     Strict: the log directory itself is not a rotation target, and `/var/logs`
     must not pass on a bare string prefix match against `/var/log`.
     """
-    if not PATH_RE.match(path) or ".." in path:
+    if not PATH_RE.fullmatch(path) or ".." in path:
         return False
     normalised = os.path.normpath(path)
     # normpath collapses `//x` to `/x` but preserves a leading `//` (POSIX
@@ -113,7 +117,7 @@ def write_validated(dest: str, body: str, validate_cmd: list, error_prefix: str)
 
 
 def op_logrotate(args) -> None:
-    if not NAME_RE.match(args.name):
+    if not NAME_RE.fullmatch(args.name):
         die(f"invalid name {args.name!r}")
     if not valid_log_glob(args.path):
         die(f"log path {args.path!r} must be a path under {LOG_ROOT}")
@@ -138,7 +142,7 @@ def op_logrotate(args) -> None:
 
 
 def op_rm_logrotate(args) -> None:
-    if not NAME_RE.match(args.name):
+    if not NAME_RE.fullmatch(args.name):
         die(f"invalid name {args.name!r}")
     dest = os.path.join(LOGROTATE_D, PREFIX + args.name)
     if os.path.exists(dest):
@@ -146,7 +150,7 @@ def op_rm_logrotate(args) -> None:
 
 
 def op_rsyslog_forward(args) -> None:
-    if not HOST_RE.match(args.host) or ".." in args.host:
+    if not HOST_RE.fullmatch(args.host) or ".." in args.host:
         die(f"invalid host {args.host!r}")
     if args.port < 1 or args.port > 65535:
         die("port out of range")

@@ -56,6 +56,10 @@ CRITICAL_MOUNTPOINTS = {
     "/lib64", "/var", "/home", "/root", "/proc", "/sys", "/dev", "/run",
 }
 
+# Every pattern below is applied with fullmatch(). With match(), `$` also
+# matches just before a trailing newline, so `name\n` passed the charset and
+# then missed every exact-membership check after it.
+# tests/release/helper-anchoring.test.sh drives each helper with one.
 DEVICE_RE = re.compile(
     r"^(/dev/[A-Za-z0-9/_.-]+"
     r"|UUID=[0-9A-Fa-f-]{8,}"
@@ -74,7 +78,7 @@ def die(msg: str) -> None:
 
 def valid_mountpoint(mp: str) -> bool:
     return (
-        bool(MOUNTPOINT_RE.match(mp))
+        bool(MOUNTPOINT_RE.fullmatch(mp))
         and ".." not in mp
         and mp not in CRITICAL_MOUNTPOINTS
         and mp != ""
@@ -230,14 +234,14 @@ def remove_fstab_lines(lines: list, field_fn, value: str) -> list:
 
 
 def op_mount(args) -> None:
-    if not DEVICE_RE.match(args.device):
+    if not DEVICE_RE.fullmatch(args.device):
         die(f"invalid device {args.device!r}")
     if not valid_mountpoint(args.mountpoint):
         die(f"invalid or forbidden mountpoint {args.mountpoint!r}")
     if args.fstype not in FSTYPE_ALLOW:
         die(f"fstype {args.fstype!r} not in allowlist")
     options = args.options or "defaults"
-    if not OPTIONS_RE.match(options):
+    if not OPTIONS_RE.fullmatch(options):
         die(f"invalid options {options!r}")
     # Refuse rather than silently strip: an operator who asked for `suid` must
     # be told it was refused, or they will believe the mount carries it.
@@ -315,7 +319,7 @@ def op_unmount(args) -> None:
 
 def op_addswap(args) -> None:
     path = args.file
-    if not path.startswith("/") or ".." in path or not MOUNTPOINT_RE.match(path):
+    if not path.startswith("/") or ".." in path or not MOUNTPOINT_RE.fullmatch(path):
         die(f"invalid swap file path {path!r}")
     if args.size_mb < 1 or args.size_mb > 1_048_576:  # cap at 1 TiB
         die("size-mb out of range")
@@ -426,7 +430,7 @@ def known_swap_files() -> set:
 
 def op_rmswap(args) -> None:
     path = args.file
-    if not path.startswith("/") or ".." in path or not MOUNTPOINT_RE.match(path):
+    if not path.startswith("/") or ".." in path or not MOUNTPOINT_RE.fullmatch(path):
         die(f"invalid swap file path {path!r}")
     # A root unlink gated only by a charset check is an arbitrary-deletion
     # primitive. Every step between the check and the unlink tolerates a

@@ -68,7 +68,7 @@ def die(msg: str) -> None:
 
 
 def validated_jail(value: str) -> str:
-    if not JAIL_RE.match(value):
+    if not JAIL_RE.fullmatch(value):
         die(f"invalid jail name {value!r}")
     return value
 
@@ -77,9 +77,16 @@ def validated_ip(value: str) -> str:
     try:
         # Rejects CIDR, ranges, hostnames and anything fail2ban would treat as
         # more than one address. The catalogue bans one address at a time.
-        return str(ipaddress.ip_address(value))
+        addr = ipaddress.ip_address(value)
     except ValueError:
         die(f"invalid IP address {value!r}")
+    # Python accepts an IPv6 scope ID (`fe80::1%eth0`) and puts almost no limit
+    # on its characters: `fe80::1%x -j ACCEPT` parses. std::net::IpAddr, which
+    # the daemon uses, refuses every scope ID, and fail2ban substitutes the
+    # address into a root shell command without escaping spaces.
+    if getattr(addr, "scope_id", None) is not None:
+        die(f"invalid IP address {value!r}: a scope ID is not an address")
+    return str(addr)
 
 
 def main() -> int:

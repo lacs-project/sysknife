@@ -30,6 +30,10 @@ import tempfile
 PREFS_D = "/etc/apt/preferences.d"
 PREFIX = "sysknife-"
 
+# Every pattern below is applied with fullmatch(). With match(), `$` also
+# matches just before a trailing newline, so `name\n` passed the charset and
+# then missed every exact-membership check after it.
+# tests/release/helper-anchoring.test.sh drives each helper with one.
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 # Mirrors validated_apt_package in actions/validate.rs, including its
 # refusal of a leading "-" so a package name can never act as a flag.
@@ -43,11 +47,11 @@ def die(msg: str) -> None:
 
 
 def op_set(args) -> None:
-    if not NAME_RE.match(args.name):
+    if not NAME_RE.fullmatch(args.name):
         die(f"invalid name {args.name!r}")
-    if not PACKAGE_RE.match(args.package):
+    if not PACKAGE_RE.fullmatch(args.package):
         die(f"invalid package glob {args.package!r}")
-    if not PIN_RE.match(args.pin):
+    if not PIN_RE.fullmatch(args.pin):
         die(f"invalid pin expression {args.pin!r}")
     if args.priority < -1 or args.priority > 1000:
         die("priority out of range [-1, 1000]")
@@ -71,7 +75,7 @@ def op_set(args) -> None:
 
 
 def op_remove(args) -> None:
-    if not NAME_RE.match(args.name):
+    if not NAME_RE.fullmatch(args.name):
         die(f"invalid name {args.name!r}")
     dest = os.path.join(PREFS_D, PREFIX + args.name)
     if os.path.exists(dest):

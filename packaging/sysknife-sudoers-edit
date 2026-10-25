@@ -36,6 +36,10 @@ SUDOERS_D = "/etc/sudoers.d"
 VISUDO = "/usr/sbin/visudo"
 PREFIX = "sysknife-grant-"
 
+# Every pattern below is applied with fullmatch(). With match(), `$` also
+# matches just before a trailing newline, so `name\n` passed the charset and
+# then missed every exact-membership check after it.
+# tests/release/helper-anchoring.test.sh drives each helper with one.
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 IDENT_RE = re.compile(r"^[a-z_][a-z0-9_-]*\$?$")  # unix user/group name
 CMD_RE = re.compile(r"^/[A-Za-z0-9/._-]+$")
@@ -70,6 +74,22 @@ SHELL_EQUIVALENT_COMMANDS = frozenset((
     "dpkg", "rpm", "yum", "dnf", "zypper", "pip", "pip3", "gem", "npm",
     "mount"
 ))
+# Packaging suffixes Debian and Ubuntu install interpreters under. Mirrors
+# SHELL_EQUIVALENT_SUFFIXES in validate.rs, and the release test compares them.
+SHELL_EQUIVALENT_SUFFIXES = (".basic", ".tiny")
+
+
+def unversioned_command_name(base: str) -> str:
+    """`python3.12` -> `python`, `perl5.38.2` -> `perl`, `vim.basic` -> `vim`.
+
+    Mirrors unversioned_command_name in validate.rs character for character:
+    drop one packaging suffix, then every trailing digit and dot.
+    """
+    for suffix in SHELL_EQUIVALENT_SUFFIXES:
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    return base.rstrip("0123456789.")
 
 
 def shell_equivalent_command(commands: str) -> str | None:
@@ -79,7 +99,9 @@ def shell_equivalent_command(commands: str) -> str | None:
     for c in commands.split(","):
         if not c:
             continue
-        if c.rsplit("/", 1)[-1].lower() in SHELL_EQUIVALENT_COMMANDS:
+        base = c.rsplit("/", 1)[-1].lower()
+        if (base in SHELL_EQUIVALENT_COMMANDS
+                or unversioned_command_name(base) in SHELL_EQUIVALENT_COMMANDS):
             return c
     return None
 
@@ -92,12 +114,22 @@ def die(msg: str) -> None:
 def validated_ident(value: str, what: str) -> str:
     if value == "ALL":
         return value
-    if len(value) > 32 or not IDENT_RE.match(value):
+    if len(value) > 32 or not IDENT_RE.fullmatch(value):
         die(f"invalid {what} {value!r}")
     return value
 
 
 def build_rule(user: str, runas: str, nopasswd: bool, commands: str) -> str:
+    # Shape first, then policy. The denylist below compares basenames by exact
+    # membership, so a value the charset check would refuse (`/bin/bash\n`) must
+    # never reach it: it is not a member, and the refusal would not fire.
+    if commands != "ALL":
+        cmds = [c for c in commands.split(",") if c]
+        if not cmds:
+            die("no commands given")
+        for c in cmds:
+            if not CMD_RE.fullmatch(c) or ".." in c or "*" in c:
+                die(f"invalid command path {c!r} (absolute, no wildcards, no ..)")
     shell_equivalent = shell_equivalent_command(commands)
     if (commands == "ALL" or shell_equivalent) and nopasswd:
         # A standing passwordless unrestricted root credential. visudo accepts
@@ -118,22 +150,13 @@ def build_rule(user: str, runas: str, nopasswd: bool, commands: str) -> str:
             "refusing to grant unrestricted commands with NOPASSWD: scope "
             "--commands to specific absolute paths, or drop --nopasswd"
         )
-    if commands == "ALL":
-        cmd_spec = "ALL"
-    else:
-        cmds = [c for c in commands.split(",") if c]
-        if not cmds:
-            die("no commands given")
-        for c in cmds:
-            if not CMD_RE.match(c) or ".." in c or "*" in c:
-                die(f"invalid command path {c!r} (absolute, no wildcards, no ..)")
-        cmd_spec = ", ".join(cmds)
+    cmd_spec = "ALL" if commands == "ALL" else ", ".join(cmds)
     tag = "NOPASSWD: " if nopasswd else ""
     return f"{user} ALL=({runas}) {tag}{cmd_spec}\n"
 
 
 def op_grant(args) -> None:
-    if not NAME_RE.match(args.name):
+    if not NAME_RE.fullmatch(args.name):
         die(f"invalid name {args.name!r}")
     user = validated_ident(args.user, "user")
     if user == "ALL":
@@ -164,7 +187,7 @@ def op_grant(args) -> None:
 
 
 def op_revoke(args) -> None:
-    if not NAME_RE.match(args.name):
+    if not NAME_RE.fullmatch(args.name):
         die(f"invalid name {args.name!r}")
     dest = os.path.join(SUDOERS_D, PREFIX + args.name)
     if os.path.exists(dest):

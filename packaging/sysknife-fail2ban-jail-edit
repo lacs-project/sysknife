@@ -30,6 +30,10 @@ JAIL_D = "/etc/fail2ban/jail.d"
 FAIL2BAN_CLIENT = "/usr/bin/fail2ban-client"
 PREFIX = "sysknife-"
 
+# Every pattern below is applied with fullmatch(). With match(), `$` also
+# matches just before a trailing newline, so `name\n` passed the charset and
+# then missed every exact-membership check after it.
+# tests/release/helper-anchoring.test.sh drives each helper with one.
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
@@ -71,7 +75,7 @@ def main() -> None:
     p.add_argument("--enabled", choices=["true", "false"])
     args = p.parse_args()
 
-    if not NAME_RE.match(args.name):
+    if not NAME_RE.fullmatch(args.name):
         die(f"invalid jail name {args.name!r}")
     require_range("maxretry", args.maxretry, 1, 100)
     # bantime/findtime seconds; cap at 30 days (bantime -1 = permanent is not

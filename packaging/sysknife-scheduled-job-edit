@@ -31,7 +31,24 @@ UNIT_DIR = "/etc/systemd/system"
 UNIT_PREFIX = "sysknife-"
 SYSTEMCTL = "/usr/bin/systemctl"
 SYSTEMD_ANALYZE = "/usr/bin/systemd-analyze"
+# systemd's system unit load path, highest precedence first (systemd.unit(5)).
+# A file in UNIT_DIR overrides a unit of the same name further down, so a job
+# whose stem matches a packaged unit would replace it with a root oneshot
+# running the caller's command. The Makefile installs SysKnife's own units in
+# /usr/lib/systemd/system, so `--name daemon` used to replace the daemon.
+# /lib/systemd/system is listed for hosts where /lib is not merged into /usr.
+UNIT_LOAD_PATH = (
+    UNIT_DIR,
+    "/run/systemd/system",
+    "/usr/local/lib/systemd/system",
+    "/usr/lib/systemd/system",
+    "/lib/systemd/system",
+)
 
+# Every pattern below is applied with fullmatch(). With match(), `$` also
+# matches just before a trailing newline, so `name\n` passed the charset and
+# then missed every exact-membership check after it.
+# tests/release/helper-anchoring.test.sh drives each helper with one.
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
@@ -45,13 +62,6 @@ def unit_paths(name: str) -> tuple[str, str]:
     return (
         os.path.join(UNIT_DIR, f"{stem}.service"),
         os.path.join(UNIT_DIR, f"{stem}.timer"),
-    )
-
-
-def legacy_unit_paths(name: str) -> tuple[str, str]:
-    return (
-        os.path.join(UNIT_DIR, f"{name}.service"),
-        os.path.join(UNIT_DIR, f"{name}.timer"),
     )
 
 
@@ -78,7 +88,7 @@ def main() -> None:
     parser.add_argument("--schedule", required=True)
     args = parser.parse_args()
 
-    if not NAME_RE.match(args.name):
+    if not NAME_RE.fullmatch(args.name):
         die(f"invalid job name {args.name!r}")
     if any(ord(c) < 0x20 or ord(c) == 0x7F for c in args.command):
         die("command contains control characters")
@@ -100,18 +110,21 @@ def main() -> None:
     exec_start = args.command.replace("%", "%%")
 
     service_path, timer_path = unit_paths(args.name)
-    legacy_service_path, legacy_timer_path = legacy_unit_paths(args.name)
     timer_unit_name = os.path.basename(timer_path)
 
-    # Existing unprefixed units are ambiguous with jobs created by older
-    # SysKnife releases. Do not overwrite or silently create a second logical
-    # job beside them; leave migration/removal to an explicit operator action.
-    for legacy_path in (legacy_service_path, legacy_timer_path):
-        if os.path.lexists(legacy_path):
-            die(
-                f"refusing scheduled job {args.name!r}: existing legacy unit "
-                f"{legacy_path}"
-            )
+    # Refuse a job whose unit already exists anywhere systemd would load it
+    # from. The unprefixed stem is ambiguous with jobs created by older
+    # SysKnife releases, and the namespaced one may be a packaged unit. Leave
+    # migration or removal to an explicit operator action. O_EXCL below still
+    # closes the race in UNIT_DIR itself.
+    for directory in UNIT_LOAD_PATH:
+        for stem in (args.name, f"{UNIT_PREFIX}{args.name}"):
+            for suffix in (".service", ".timer"):
+                if os.path.lexists(os.path.join(directory, stem + suffix)):
+                    die(
+                        f"refusing scheduled job {args.name!r}: unit "
+                        f"{stem}{suffix} already exists in {directory}"
+                    )
 
     service_unit = (
         "[Unit]\n"

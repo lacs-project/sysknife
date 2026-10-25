@@ -31,6 +31,11 @@ UNIT_SUFFIXES = (".service", ".target", ".socket", ".mount", ".path", ".slice",
 # taking one down does not, and masking one is a mitigation.
 ACTIVATING_VERBS = ("start", "restart", "enable", "unmask")
 QUIESCING_VERBS = ("stop", "disable", "mask", "reload")
+# Mirrors CRITICAL_ACCOUNTS in validate.rs, and the release test compares them.
+# The daemon refuses to lock these; the user-lock branch below checked only the
+# name's shape, so a direct call could lock root, and user-unlock could reopen
+# a root account an administrator had locked on purpose.
+CRITICAL_ACCOUNTS = ("root", "daemon", "bin", "sys", "sudo", "adm")
 
 
 def unit_name(value):
@@ -70,7 +75,12 @@ def safe(value):
 
 
 def username(value):
-    if not re.fullmatch(r"[A-Za-z0-9._][A-Za-z0-9._-]{0,31}", value):
+    """Mirrors validated_username: no leading `-` or `.`, no `..` anywhere.
+
+    Names reach /home/<name>/ paths, so `..` and a leading dot are traversal.
+    """
+    if (not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,31}", value)
+            or ".." in value):
         raise ValueError("invalid account name")
     return value
 
@@ -238,7 +248,10 @@ def main(args):
         # Same shape: `usermod --lock *` also admitted
         # `usermod --lock -o -u 0 <user>`, which makes an existing account uid 0.
         flag = "--lock" if op == "user-lock" else "--unlock"
-        run(["/usr/sbin/usermod", flag, username(values[0])])
+        name = username(values[0])
+        if name in CRITICAL_ACCOUNTS:
+            raise ValueError("refusing to change the lock on a critical system account")
+        run(["/usr/sbin/usermod", flag, name])
     elif op == "unit" and len(values) == 2:
         # `systemctl start *` put the unit name in the wildcard, so
         # `systemctl start debug-shell.service` matched: an unauthenticated root

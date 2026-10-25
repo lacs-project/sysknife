@@ -74,6 +74,35 @@ const NARROW: &[&str] = &[
     "/usr/sbin/nginx,/usr/bin/df",
 ];
 
+/// Interpreters under the names Ubuntu installs them as. An exact basename
+/// lookup missed every one, in the daemon and in `packaging/sysknife-sudoers-edit`.
+/// `tests/release/sudoers-edit.test.sh` reads this list and feeds it to the
+/// helper, so both matchers are checked on the same inputs.
+const VERSIONED: &[&str] = &[
+    "/usr/bin/python3.12",
+    "/usr/bin/python2.7",
+    "/usr/bin/perl5.38.2",
+    "/usr/bin/ruby3.2",
+    "/usr/bin/vim.basic",
+    "/usr/bin/vim.tiny",
+    "/usr/bin/lua5.4",
+    "/usr/bin/tclsh8.6",
+    "/usr/bin/PYTHON3.12",
+    "/usr/sbin/nginx,/usr/bin/python3.12",
+];
+
+/// Names with digits that are not a versioned interpreter, which stripping the
+/// version must not turn into one.
+const VERSIONED_NARROW: &[&str] = &[
+    "/usr/bin/md5sum",
+    "/usr/bin/sha256sum",
+    "/usr/sbin/e2fsck",
+    "/usr/bin/x86_64-linux-gnu-gcc-13",
+    "/usr/bin/2to3",
+    // Only a trailing version is stripped, so a digit inside a name stays put.
+    "/usr/bin/python3-config",
+];
+
 fn grant(
     commands: &str,
     nopasswd: bool,
@@ -91,7 +120,7 @@ fn grant(
 
 #[test]
 fn a_shell_equivalent_grant_is_refused_with_nopasswd() {
-    for commands in SHELL_EQUIVALENT {
+    for commands in SHELL_EQUIVALENT.iter().chain(VERSIONED) {
         let result = grant(commands, true);
         assert!(
             matches!(result, Err(ExecutorError::InvalidParam("commands"))),
@@ -102,7 +131,7 @@ fn a_shell_equivalent_grant_is_refused_with_nopasswd() {
 
 #[test]
 fn a_narrow_grant_still_works_with_nopasswd() {
-    for commands in NARROW {
+    for commands in NARROW.iter().chain(VERSIONED_NARROW) {
         assert!(
             grant(commands, true).is_ok(),
             "{commands} is a narrow grant and must stay available"

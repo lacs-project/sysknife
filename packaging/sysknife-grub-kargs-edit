@@ -39,6 +39,11 @@ import sys
 GRUB_DEFAULT = "/etc/default/grub"
 GRUB_BACKUP = "/etc/default/grub.sysknife.bak"
 
+# Every pattern below is applied with fullmatch(). With match(), `$` also
+# matches just before a trailing newline, so `name\n` passed the charset and
+# then missed every exact-membership check after it.
+# tests/release/helper-anchoring.test.sh drives each helper with one.
+
 # Defense-in-depth: each karg token is validated independently.
 # Deliberately wider than validated_safe_arg in validate.rs: kernel
 # arguments take the key=value form (module.sig_enforce=1), so '=' must be
@@ -66,12 +71,26 @@ KARG_PATTERN = re.compile(r"^[A-Za-z0-9_.+@:/=-]+$")
 # near-miss cannot creep back, and rd.* covers the initrd-honoured variant.
 DENY_APPEND_PREFIXES = (
     "init=", "selinux=0", "enforcing=0", "security=", "module_blacklist=",
+    # Any lockdown mode, as the daemon refuses it: WEAKENING_KARGS below names
+    # only `lockdown=none`, so `lockdown=integrity` passed a direct call.
+    "lockdown=",
+    # Prefixes in the executor too, so `apparmor=01` is refused here as there.
+    "apparmor=0", "mitigations=off", "pti=off",
     "systemd.debug_shell", "systemd.debug-shell",
     "rd.systemd.debug_shell", "rd.systemd.debug-shell",
+    # systemd.run= runs a command as a root service once boot completes, and
+    # covers systemd.run_success_action= and systemd.run_failure_action= too.
+    # rdinit= is the initramfs twin of init=; rd.break and break stop the boot
+    # in an initramfs root shell.
+    "systemd.run", "rdinit=", "rd.break", "break",
 )
 # nosmap/nosmep disable SMAP/SMEP enforcement; they are in the executor's
-# BLOCKED_EXACT and were missing here.
-DENY_APPEND_EXACT = ("single", "s", "1", "nosmap", "nosmep")
+# BLOCKED_EXACT and were missing here. emergency, rescue, -b and the runlevels
+# 2-5 pick the boot target the way single and 1 do (kernel-command-line(7)).
+DENY_APPEND_EXACT = (
+    "single", "s", "1", "nosmap", "nosmep",
+    "emergency", "rescue", "-b", "rd.emergency", "rd.rescue", "2", "3", "4", "5",
+)
 # Mirrors ROOT_SHELL_UNITS in crates/sysknife-daemon/src/actions/validate.rs.
 # The helper is directly sudo-invocable through the wildcard grant, so the
 # daemon refusing these is not enough. It held three of the five, so
@@ -134,7 +153,7 @@ UPDATE_GRUB = "/usr/sbin/update-grub"
 def validate_kargs(tokens: list[str], label: str) -> None:
     """Raise SystemExit(1) if any token fails the allowlist check."""
     for tok in tokens:
-        if not KARG_PATTERN.match(tok):
+        if not KARG_PATTERN.fullmatch(tok):
             print(
                 f"sysknife-grub-kargs-edit: invalid {label} karg {tok!r} "
                 "(only [A-Za-z0-9_.+@:/=-] allowed)",
@@ -148,7 +167,11 @@ def reject_dangerous_append(tokens: list[str]) -> None:
     for tok in tokens:
         lower = tok.lower()
         base = lower.split("=", 1)[0]
-        unit_val = lower[len("systemd.unit="):] if lower.startswith("systemd.unit=") else ""
+        # rd.systemd.unit= is the same choice made in the initramfs.
+        unit_val = next(
+            (lower[len(p):] for p in ("systemd.unit=", "rd.systemd.unit=") if lower.startswith(p)),
+            "",
+        )
         blocked = (
             any(lower.startswith(p) for p in DENY_APPEND_PREFIXES)
             or lower in DENY_APPEND_EXACT

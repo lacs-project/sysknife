@@ -79,6 +79,9 @@ for commands in [
     "/usr/sbin/nginx,/bin/bash",
     # The original case, which must keep being refused.
     "ALL",
+    # A trailing newline used to pass a `$`-anchored match() and miss the
+    # basename lookup, which compares by exact membership.
+    "/bin/bash\n",
 ]:
     if not refused(commands):
         failures.append(
@@ -138,6 +141,42 @@ else:
         if not refused(f"/usr/bin/{cmd}"):
             failures.append(
                 f"--commands /usr/bin/{cmd} --nopasswd was accepted; the daemon refuses it")
+
+# 4b. Versioned interpreter names. Ubuntu installs interpreters as python3.12,
+#     perl5.38.2, ruby3.2 and vim.basic, and an exact basename lookup missed
+#     every one, in both copies. Both now strip the same packaging suffixes and
+#     trailing version digits. Compare the suffix lists, then feed this helper
+#     the names the daemon's own test uses, so the two matchers are checked on
+#     one set of inputs rather than on two lists someone has to keep in step.
+sdecl = re.search(r"SHELL_EQUIVALENT_SUFFIXES:\s*&\[&str\]\s*=\s*&\[(.*?)\];", rust_src, re.S)
+if sdecl is None:
+    failures.append(
+        "SHELL_EQUIVALENT_SUFFIXES not found in validate.rs; the suffix parity check "
+        "would compare nothing, so it fails instead")
+else:
+    daemon_suffixes = set(re.findall(r'"([^"]+)"', sdecl.group(1)))
+    helper_suffixes = set(getattr(mod, "SHELL_EQUIVALENT_SUFFIXES", ()))
+    if not daemon_suffixes or daemon_suffixes != helper_suffixes:
+        failures.append(
+            f"packaging suffixes differ: daemon {sorted(daemon_suffixes)}, helper "
+            f"{sorted(helper_suffixes)}")
+scope_rs = os.path.join(repo_root, "crates/sysknife-daemon/tests/sudo_grant_scope.rs")
+try:
+    scope_src = open(scope_rs, encoding="utf-8").read()
+except OSError as exc:
+    failures.append(f"cannot read {scope_rs}: {exc}; the versioned-name check inspected nothing")
+    scope_src = ""
+for const, want_refused in (("VERSIONED", True), ("VERSIONED_NARROW", False)):
+    decl = re.search(rf"const {const}:\s*&\[&str\]\s*=\s*&\[(.*?)\];", scope_src, re.S)
+    names = re.findall(r'"([^"]+)"', decl.group(1)) if decl else []
+    if not names:
+        failures.append(f"{const} not found or empty in sudo_grant_scope.rs; checked nothing")
+    for commands in names:
+        if refused(commands) != want_refused:
+            failures.append(
+                f"--commands {commands!r} --nopasswd was "
+                f"{'accepted' if want_refused else 'refused'} here and "
+                f"{'refused' if want_refused else 'accepted'} by the daemon's test")
 
 # 5. WIRING: op_grant must go through build_rule. Drive it and assert it exits
 #    non-zero before touching /etc/sudoers.d.
