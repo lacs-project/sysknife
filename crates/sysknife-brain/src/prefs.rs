@@ -75,6 +75,56 @@ pub async fn remove_pref_async(path: std::path::PathBuf, fact: String) -> Result
         .map_err(|e| io::Error::other(format!("spawn_blocking join failed: {e}")))?
 }
 
+/// Which preference operation the model asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefChangeKind {
+    Remember,
+    Forget,
+}
+
+/// A `remember` or `forget` the model asked for during planning, not yet
+/// written.
+///
+/// The tools used to write the file inside the tool loop, before a plan
+/// existed: under `--dry-run`, for a plan the operator then rejected, and for
+/// a model steered by a poisoned tool result. A saved line is replayed into
+/// every later system prompt, so one injected `remember` became a standing
+/// instruction, and one injected `forget` removed the operator's own. The
+/// planner now returns these with the plan, and only a caller that has shown
+/// them to the operator and taken a yes calls [`Self::apply`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingPrefChange {
+    kind: PrefChangeKind,
+    fact: String,
+    path: std::path::PathBuf,
+}
+
+impl PendingPrefChange {
+    pub fn new(kind: PrefChangeKind, fact: String, path: std::path::PathBuf) -> Self {
+        Self { kind, fact, path }
+    }
+
+    pub fn kind(&self) -> PrefChangeKind {
+        self.kind
+    }
+
+    /// The fact as the model wrote it. Untrusted: render it neutralised.
+    pub fn fact(&self) -> &str {
+        &self.fact
+    }
+
+    /// Write the change. `Ok(false)` means a `forget` found nothing to remove.
+    pub async fn apply(&self) -> Result<bool, io::Error> {
+        match self.kind {
+            PrefChangeKind::Remember => {
+                append_pref_async(self.path.clone(), self.fact.clone()).await?;
+                Ok(true)
+            }
+            PrefChangeKind::Forget => remove_pref_async(self.path.clone(), self.fact.clone()).await,
+        }
+    }
+}
+
 /// Read the user preferences file. Returns `Ok(None)` if the file does not
 /// exist or is empty; returns `Ok(Some(content))` on success; propagates I/O
 /// errors other than `NotFound`.

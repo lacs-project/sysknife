@@ -333,6 +333,11 @@ pub struct Plan {
     summary: String,
     explanation: String,
     steps: Vec<PlanStep>,
+    /// Preference changes the model asked for, unwritten. Not serialised: the
+    /// MCP path has no operator to confirm them, so they never leave the
+    /// process there (see [`crate::prefs::PendingPrefChange`]).
+    #[serde(skip)]
+    pref_changes: Vec<crate::prefs::PendingPrefChange>,
 }
 
 impl Plan {
@@ -365,7 +370,20 @@ impl Plan {
             summary,
             explanation,
             steps,
+            pref_changes: Vec::new(),
         })
+    }
+
+    /// Attach the preference changes the model asked for while planning.
+    #[must_use]
+    pub fn with_pref_changes(mut self, changes: Vec<crate::prefs::PendingPrefChange>) -> Self {
+        self.pref_changes = changes;
+        self
+    }
+
+    /// Preference changes awaiting the operator's confirmation.
+    pub fn pref_changes(&self) -> &[crate::prefs::PendingPrefChange] {
+        &self.pref_changes
     }
 
     pub fn intent(&self) -> &str {
@@ -456,6 +474,11 @@ impl AuthorizedPlan {
     /// The plan's steps, each exposing its authoritative risk.
     pub fn steps(&self) -> impl ExactSizeIterator<Item = AuthorizedStep<'_>> {
         self.plan.steps.iter().map(AuthorizedStep)
+    }
+
+    /// Preference changes awaiting the operator's confirmation.
+    pub fn pref_changes(&self) -> &[crate::prefs::PendingPrefChange] {
+        self.plan.pref_changes()
     }
 
     /// Highest authoritative risk across all steps (`None` only if empty, which
@@ -1090,6 +1113,10 @@ impl LlmPlanner {
         // Same lifetime as the prompt: one build per plan, reused across turns.
         let tools = self.tool_defs();
 
+        // `remember`/`forget` calls, returned with the plan and written by
+        // nobody here. A refused or failed plan drops them.
+        let mut pref_changes = Vec::new();
+
         for turn in 0..self.max_turns {
             self.emit(PlanEvent::Thinking);
             let completion = self
@@ -1161,11 +1188,7 @@ impl LlmPlanner {
 
                     for (id, call_id, name, input) in &tool_calls {
                         // Emit a progress event before dispatching each tool.
-                        self.emit(match name.as_str() {
-                            "propose_plan" => PlanEvent::ProposingPlan,
-                            "get_system_state" => PlanEvent::QueryingTool("system state".into()),
-                            other => PlanEvent::QueryingTool(other.replace('_', " ")),
-                        });
+                        self.emit(progress_event(name, &tools));
 
                         match name.as_str() {
                             "get_system_state" => {
@@ -1192,15 +1215,18 @@ impl LlmPlanner {
                                 // within the remaining turns. Symmetric with the
                                 // unknown-tool retry path below.
                                 match parse_proposed_plan(intent, input) {
-                                    Ok(plan) => return Ok(plan),
+                                    Ok(plan) => return Ok(plan.with_pref_changes(pref_changes)),
                                     Err(e) => {
                                         let reason = e.to_string();
                                         let raw_plan = input.to_string();
                                         eprintln!(
-                                            "[SYSKNIFE SAFETY] propose_plan rejected \
-                                             (turn {}/{max}): {reason}. Input: {raw_plan}",
-                                            turn + 1,
-                                            max = self.max_turns
+                                            "{}",
+                                            rejected_plan_notice(
+                                                &reason,
+                                                &raw_plan,
+                                                turn + 1,
+                                                self.max_turns
+                                            )
                                         );
                                         if let Some(audit) = self.audit_log.clone() {
                                             audit
@@ -1272,65 +1298,41 @@ impl LlmPlanner {
                                     }
                                 }
                             }
-                            "remember" => {
-                                let (result_text, err) = match self.prepare_pref_op(input, |fact| {
-                                    crate::prefs::contains_sensitive(fact).then(|| {
+                            "remember" | "forget" => {
+                                // Queued, never written here. The plan carries
+                                // the change out, and the CLI writes it only
+                                // after the operator has seen it and said yes
+                                // (see `prefs::PendingPrefChange`).
+                                let (kind, verb) = if name == "remember" {
+                                    (crate::prefs::PrefChangeKind::Remember, "save")
+                                } else {
+                                    (crate::prefs::PrefChangeKind::Forget, "remove")
+                                };
+                                let prepared = self.prepare_pref_op(input, |fact| {
+                                    (kind == crate::prefs::PrefChangeKind::Remember
+                                        && crate::prefs::contains_sensitive(fact))
+                                    .then(|| {
                                         "Error: preference rejected — it appears to contain \
                                          sensitive data (passwords, tokens, keys). Preferences \
                                          must not store secrets."
                                             .to_string()
                                     })
-                                }) {
-                                    Ok((fact, prefs_path)) => {
-                                        match crate::prefs::append_pref_async(
-                                            prefs_path.clone(),
-                                            fact.to_string(),
-                                        )
-                                        .await
-                                        {
-                                            Ok(()) => (format!("Preference saved: {fact}"), false),
-                                            Err(e) => {
-                                                eprintln!(
-                                                    "[sysknife-brain] failed to save preference to {}: {e}",
-                                                    prefs_path.display()
-                                                );
-                                                (format!("Error saving preference: {e}"), true)
-                                            }
-                                        }
-                                    }
-                                    Err(pair) => pair,
-                                };
-                                tool_results.push(ToolResultBlock {
-                                    tool_use_id: id.clone(),
-                                    call_id: call_id.clone(),
-                                    content: result_text,
-                                    is_error: err,
                                 });
-                            }
-                            "forget" => {
-                                let (result_text, err) = match self.prepare_pref_op(input, |_| None)
-                                {
+                                let (result_text, err) = match prepared {
                                     Ok((fact, prefs_path)) => {
-                                        match crate::prefs::remove_pref_async(
-                                            prefs_path.clone(),
+                                        pref_changes.push(crate::prefs::PendingPrefChange::new(
+                                            kind,
                                             fact.to_string(),
+                                            prefs_path,
+                                        ));
+                                        (
+                                            format!(
+                                                "Queued, not yet done: the operator will be asked \
+                                                 to {verb} this preference after the plan is \
+                                                 shown: {fact}"
+                                            ),
+                                            false,
                                         )
-                                        .await
-                                        {
-                                            Ok(true) => {
-                                                (format!("Preference removed: {fact}"), false)
-                                            }
-                                            Ok(false) => {
-                                                (format!("Preference not found: {fact}"), false)
-                                            }
-                                            Err(e) => {
-                                                eprintln!(
-                                                    "[sysknife-brain] failed to remove preference from {}: {e}",
-                                                    prefs_path.display()
-                                                );
-                                                (format!("Error removing preference: {e}"), true)
-                                            }
-                                        }
                                     }
                                     Err(pair) => pair,
                                 };
@@ -1411,11 +1413,12 @@ impl LlmPlanner {
                                         // that says "the model went off-protocol" was the one
                                         // absent from the audit trail.
                                         eprintln!(
-                                            "[SYSKNIFE WARNING] LLM called unknown tool \
-                                             '{other_name}' (turn {}/{max}); sending error \
-                                             feedback.",
-                                            turn + 1,
-                                            max = self.max_turns
+                                            "{}",
+                                            unknown_tool_notice(
+                                                other_name,
+                                                turn + 1,
+                                                self.max_turns
+                                            )
                                         );
                                         if let Some(audit) = self.audit_log.clone() {
                                             audit
@@ -1452,6 +1455,58 @@ impl LlmPlanner {
     }
 }
 
+/// The progress event for a tool call the model just made.
+///
+/// The tool name is model-written, and the CLI puts the label in its spinner.
+/// Only a name from `tools`, the set this planner offered, becomes a label; any
+/// other name is the fixed string `unknown tool`, so no byte the model chose
+/// reaches the operator's terminal this way.
+fn progress_event(name: &str, tools: &[ToolDefinition]) -> PlanEvent {
+    match name {
+        "propose_plan" => PlanEvent::ProposingPlan,
+        "get_system_state" => PlanEvent::QueryingTool("system state".into()),
+        offered if tools.iter().any(|t| t.name == offered) => {
+            PlanEvent::QueryingTool(offered.replace('_', " "))
+        }
+        _ => PlanEvent::QueryingTool("unknown tool".into()),
+    }
+}
+
+/// Longest model-written fragment a planner notice prints on stderr.
+const NOTICE_FRAGMENT_MAX_BYTES: usize = 1024;
+
+/// Model-written text made safe for one line of the operator's terminal.
+///
+/// The notices below print to the same terminal as the plan and the approval
+/// prompt. `normalise_free_text_capped` removes escapes, bidi, zero-width and
+/// TAG-block characters and bounds the length; it keeps `\n`, `\r` and `\t`,
+/// which are fine in a tool result and are line forgery on a terminal, so they
+/// become spaces here.
+fn terminal_fragment(raw: &str) -> String {
+    crate::sanitize::normalise_free_text_capped(raw, NOTICE_FRAGMENT_MAX_BYTES)
+        .replace(['\n', '\r', '\t'], " ")
+}
+
+/// The stderr line for a `propose_plan` call the fence rejected. The reason
+/// quotes model strings (`propose_plan.rs` builds it from the step), and the
+/// input is the model's call verbatim.
+fn rejected_plan_notice(reason: &str, raw_plan: &str, turn: usize, max: usize) -> String {
+    format!(
+        "[SYSKNIFE SAFETY] propose_plan rejected (turn {turn}/{max}): {}. Input: {}",
+        terminal_fragment(reason),
+        terminal_fragment(raw_plan),
+    )
+}
+
+/// The stderr line for a call to a tool the planner does not offer.
+fn unknown_tool_notice(name: &str, turn: usize, max: usize) -> String {
+    format!(
+        "[SYSKNIFE WARNING] LLM called unknown tool '{}' (turn {turn}/{max}); \
+         sending error feedback.",
+        terminal_fragment(name),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests (module-local helpers only — integration tests live in
 // crates/sysknife-brain/tests/planner.rs).
@@ -1461,6 +1516,51 @@ impl LlmPlanner {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    /// A model-chosen string carrying every class that rewrites a terminal: an
+    /// erase-line CSI, a carriage return, a newline that forges a line, a
+    /// right-to-left override and a TAG-block character.
+    const HOSTILE: &str = "evil\x1b[2K\rfake\nline\u{202e}rev\u{e0041}";
+
+    fn assert_terminal_safe(s: &str) {
+        for bad in ['\x1b', '\r', '\n', '\u{202e}', '\u{e0041}'] {
+            assert!(!s.contains(bad), "{bad:?} reached the terminal: {s:?}");
+        }
+    }
+
+    /// GHSA-23mr item 2: an unknown tool name went into the spinner as is.
+    #[test]
+    fn an_unknown_tool_name_never_reaches_the_progress_event() {
+        let tools = vec![crate::planning_tools::preferences::remember_tool_def()];
+        match progress_event(HOSTILE, &tools) {
+            PlanEvent::QueryingTool(label) => assert_eq!(label, "unknown tool"),
+            other => panic!("expected QueryingTool, got {other:?}"),
+        }
+        match progress_event("remember", &tools) {
+            PlanEvent::QueryingTool(label) => assert_eq!(label, "remember"),
+            other => panic!("expected QueryingTool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_unknown_tool_notice_is_one_neutralised_line() {
+        let line = unknown_tool_notice(HOSTILE, 1, 5);
+        assert_terminal_safe(&line);
+        assert!(line.contains("evil") && line.contains("fake"), "{line}");
+    }
+
+    #[test]
+    fn the_rejected_plan_notice_is_one_neutralised_line() {
+        let line = rejected_plan_notice(HOSTILE, &format!("{{\"summary\":\"{HOSTILE}\"}}"), 2, 5);
+        assert_terminal_safe(&line);
+        assert!(line.contains("propose_plan rejected"), "{line}");
+    }
+
+    #[test]
+    fn the_rejected_plan_notice_is_bounded() {
+        let line = rejected_plan_notice("r", &"x".repeat(100_000), 1, 5);
+        assert!(line.len() < 4096, "{} bytes", line.len());
+    }
 
     // Env-var mutation is process-global; tests that touch it must be
     // serialised to avoid cross-test interference on a multi-threaded

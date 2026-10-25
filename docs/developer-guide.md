@@ -344,6 +344,11 @@ Manage preferences through natural language:
 - "Remember that I always prefer vim-enhanced over vim"
 - "Forget my vim preference"
 
+The planner never writes the file itself. `remember` and `forget` return
+pending changes with the plan (`Plan::pref_changes`), and the CLI writes them
+only after the operator confirms them in a separate prompt. MCP planning drops
+them.
+
 Or edit `~/.config/sysknife/prefs.md` directly. Maximum 10 KB. The planner's
 `remember` tool rejects known credential formats and value-bearing secret
 labels through `prefs::contains_sensitive`; ordinary words such as

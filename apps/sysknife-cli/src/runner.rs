@@ -24,6 +24,7 @@ use clap::CommandFactory;
 use serde_json::{json, Value};
 use sysknife_brain::config::BrainConfig;
 use sysknife_brain::planner::{AuthorizedPlan, LlmPlanner, Plan, PlanRiskLevel};
+use sysknife_brain::prefs::PrefChangeKind;
 use sysknife_brain::PlanEvent;
 use sysknife_types::{
     DistroHint, JobState, RiskLevel, TransactionId, DISTRO_FAMILY_DEBIAN, DISTRO_FAMILY_FEDORA,
@@ -36,6 +37,7 @@ use crate::approval::{ApprovalDecision, ApprovalPolicy, MaxRisk};
 use crate::cli::{AuditExportArgs, AuditVerifyArgs, Cli, HistoryArgs};
 use crate::client::{DaemonClient, SocketTarget};
 use crate::error::CliError;
+use crate::render::Omissions;
 
 // ---------------------------------------------------------------------------
 // distro_id_to_hint — DistroId → DistroHint conversion
@@ -359,14 +361,16 @@ fn anchor_caveat() -> &'static str {
 ///
 /// - `--step-by-step` asks about every step, so every step is confirmed here,
 ///   where the daemon's proposed change is already visible.
-/// - Otherwise the single plan-level prompt covers the scope of the run, and
-///   re-asking per step would turn one prompt into N. HIGH risk is the
-///   exception: it is the one class `--yes` can never auto-approve
-///   (`HARDCODED_MAX_AUTO_APPROVE` is MEDIUM), and it is where "what exactly
-///   changes" matters most, so it is re-confirmed against the real preview.
+/// - Otherwise the single plan-level prompt covers LOW steps. MEDIUM and HIGH
+///   steps are re-confirmed against the real preview. The plan prompt comes
+///   before any preview exists, so for those steps it was consent to the
+///   model's summary and parameters, never to what the daemon resolved
+///   (GHSA-23mr item 1). LOW steps are read-only or trivially reversible, and
+///   re-asking for them would turn one prompt into N for every query.
 ///
 /// This adds no new refusal class to `--non-interactive`: a plan containing a
-/// HIGH step is already refused at the plan gate before this point.
+/// step that needs a prompt is already refused at the plan gate, and under
+/// `--yes` the policy answers `AutoApproved` here for every step it covers.
 ///
 /// `--dangerously-skip-approval` deliberately does not change this predicate.
 /// A HIGH step still takes the post-preview branch, so the daemon's preview is
@@ -375,7 +379,7 @@ fn anchor_caveat() -> &'static str {
 /// here instead would have skipped the preview itself, and the preview is the
 /// only record of what an unattended run was about to change.
 fn post_preview_confirmation_required(step_by_step: bool, risk: &PlanRiskLevel) -> bool {
-    step_by_step || matches!(risk, PlanRiskLevel::High)
+    step_by_step || *risk >= PlanRiskLevel::Medium
 }
 
 /// Whether the daemon recorded the unattended declaration in this preview.
@@ -2265,19 +2269,44 @@ where
                 })
             })
             .collect();
+        let preference_changes: Vec<Value> = plan
+            .pref_changes()
+            .iter()
+            .map(|c| {
+                json!({
+                    "kind": match c.kind() {
+                        PrefChangeKind::Remember => "remember",
+                        PrefChangeKind::Forget => "forget",
+                    },
+                    "fact": c.fact(),
+                })
+            })
+            .collect();
         log.println(
             &serde_json::to_string(&json!({
-                "plan": { "intent": plan.intent(), "summary": plan.summary(), "steps": steps }
+                "plan": {
+                    "intent": plan.intent(),
+                    "summary": plan.summary(),
+                    "steps": steps,
+                    "preference_changes": preference_changes,
+                }
             }))
             .expect("static JSON"),
         );
-    } else {
-        crate::render::print_plan(plan, log);
     }
+    // `--json` prints every parameter in full, so only the text view can omit.
+    let plan_view = if opts.json {
+        Omissions::default()
+    } else {
+        crate::render::print_plan(plan, log)
+    };
 
     if opts.dry_run {
         if opts.step_by_step {
             log.print_stderr("warning: --step-by-step has no effect with --dry-run");
+        }
+        if !plan.pref_changes().is_empty() {
+            log.print_stderr("Preference changes not saved: this is a dry run.");
         }
         return Ok(());
     }
@@ -2305,8 +2334,47 @@ where
                     crate::render::risk_colored(&highest),
                 )
             };
+            require_complete_view(plan_view, "the plan".into())?;
             if !confirm(msg).await {
                 return Err(CliError::Rejected);
+            }
+        }
+    }
+
+    // ---- preference changes ----------------------------------------------
+
+    // The model's `remember`/`forget` calls, held back by the planner. They are
+    // asked about on their own: a yes to the plan is a yes to its steps, and a
+    // standing instruction replayed into every later system prompt is a
+    // different decision. `--yes` approves risk-rated steps, not this, so an
+    // unattended run never writes one (GHSA-23mr item 3).
+    let changes = plan.pref_changes();
+    if !changes.is_empty() {
+        if opts.yes || opts.non_interactive {
+            log.print_stderr(
+                "Preference changes not saved: they need an interactive confirmation, \
+                 and this run is unattended.",
+            );
+        } else {
+            require_complete_view(plan_view, "the plan".into())?;
+            let n = changes.len();
+            let msg = format!(
+                "  Save the {n} preference change{} listed above?",
+                if n == 1 { "" } else { "s" }
+            );
+            if confirm(msg).await {
+                for change in changes {
+                    match change.apply().await {
+                        Ok(true) => {}
+                        Ok(false) => log.print_stderr(&format!(
+                            "Preference not found, nothing removed: {}",
+                            crate::operator_text::operator_safe(change.fact())
+                        )),
+                        Err(e) => log.print_stderr(&format!("Preference not saved: {e}")),
+                    }
+                }
+            } else {
+                log.print_stderr("Preference changes not saved.");
             }
         }
     }
@@ -2375,11 +2443,12 @@ where
             )));
         }
 
-        if opts.json {
+        let step_view = if opts.json {
             log.println(&serde_json::to_string(preview).expect("PreviewEnvelope is Serialize"));
+            Omissions::default()
         } else {
-            crate::render::print_step_header(step.action_name(), preview);
-        }
+            crate::render::print_step_header(step.action_name(), preview)
+        };
 
         // Now that the authoritative preview is on screen, take the approval
         // decision for this step. `--step-by-step` asks about every step;
@@ -2405,6 +2474,10 @@ where
                             crate::render::risk_colored(step.risk_level()),
                         )
                     };
+                    require_complete_view(
+                        step_view,
+                        format!("the {} preview", step.action_name()),
+                    )?;
                     if !confirm(msg).await {
                         return Err(CliError::Rejected);
                     }
@@ -2465,6 +2538,26 @@ where
     }
 
     Ok(())
+}
+
+/// Refuse to ask about a view that left text out.
+///
+/// The run-path counterpart of [`approval_view`]: a prompt answered on a view
+/// that was cut short is consent to text the operator did not see.
+fn require_complete_view(view: Omissions, what: String) -> Result<(), CliError> {
+    if view.is_none() {
+        return Ok(());
+    }
+    let shortened = view.shortened_lines;
+    Err(CliError::RunViewIncomplete {
+        what,
+        withheld: view.withheld_lines,
+        shortened_note: if shortened == 0 {
+            String::new()
+        } else {
+            format!(", and {shortened} shown line(s) were cut short")
+        },
+    })
 }
 
 /// Production step boundary, exercised with a framed-socket daemon double.
@@ -3785,17 +3878,17 @@ mod tests {
         }
     }
 
-    /// In the default single-approval mode the plan prompt covers scope, so
-    /// re-asking about every step would turn one prompt into N. HIGH is the
-    /// exception: it is the class that can never be auto-approved, and the
-    /// preview is the only place the operator sees what actually changes.
+    /// In the default single-approval mode the plan prompt covers scope for
+    /// LOW steps. MEDIUM and HIGH steps are asked about again once the daemon's
+    /// proposed change is on screen (GHSA-23mr item 1): the plan prompt comes
+    /// before any preview, so it cannot be consent to what the daemon resolved.
     #[test]
-    fn default_mode_reconfirms_only_high_risk_steps_at_the_preview() {
+    fn default_mode_reconfirms_medium_and_high_steps_at_the_preview() {
         assert!(!post_preview_confirmation_required(
             false,
             &PlanRiskLevel::Low
         ));
-        assert!(!post_preview_confirmation_required(
+        assert!(post_preview_confirmation_required(
             false,
             &PlanRiskLevel::Medium
         ));
@@ -3965,6 +4058,7 @@ mod tests {
             socket: &std::path::Path,
             events: Events,
             execution_statuses: &[(&str, &str)],
+            proposed_changes: &[(&str, Value)],
         ) -> (
             tokio::sync::oneshot::Sender<()>,
             tokio::task::JoinHandle<()>,
@@ -3973,6 +4067,10 @@ mod tests {
             let statuses: std::collections::HashMap<String, String> = execution_statuses
                 .iter()
                 .map(|(action, status)| (action.to_string(), status.to_string()))
+                .collect();
+            let changes: std::collections::HashMap<String, Value> = proposed_changes
+                .iter()
+                .map(|(action, change)| (action.to_string(), change.clone()))
                 .collect();
             let listener = tokio::net::UnixListener::bind(socket).unwrap();
             let (stop, mut stopped) = tokio::sync::oneshot::channel();
@@ -3995,7 +4093,8 @@ mod tests {
                             "preview": {
                                 "summary": "mock preview",
                                 "risk_level": authoritative_plan_risk(action).as_str(),
-                                "current_state": {}, "proposed_change": {},
+                                "current_state": {},
+                                "proposed_change": changes.get(action).cloned().unwrap_or(json!({})),
                                 "expected_side_effects": [], "reboot_required": false,
                                 "rollback_available": false,
                                 "warnings": if request["unattended"] == true {
@@ -4069,16 +4168,31 @@ mod tests {
 
         async fn run_with_statuses(
             plan: &AuthorizedPlan,
+            opts: RunOpts,
+            answers: &[bool],
+            execution_statuses: &[(&str, &str)],
+        ) -> (Result<(), CliError>, Vec<String>) {
+            run_against(plan, opts, answers, execution_statuses, &[]).await
+        }
+
+        async fn run_against(
+            plan: &AuthorizedPlan,
             mut opts: RunOpts,
             answers: &[bool],
             execution_statuses: &[(&str, &str)],
+            proposed_changes: &[(&str, Value)],
         ) -> (Result<(), CliError>, Vec<String>) {
             let dir = tempfile::tempdir().unwrap();
             let socket = dir.path().join("daemon.sock");
             opts.socket = SocketTarget::Unix(socket.clone());
             let events: Events = Arc::new(Mutex::new(Vec::new()));
-            let (stop, task) =
-                mock_execution_daemon(&socket, Arc::clone(&events), execution_statuses).await;
+            let (stop, task) = mock_execution_daemon(
+                &socket,
+                Arc::clone(&events),
+                execution_statuses,
+                proposed_changes,
+            )
+            .await;
             let log = Logger::new(None).unwrap();
             let mut answers = answers.iter();
             let result = execute_plan(plan, &opts, &log, |_| {
@@ -4281,6 +4395,205 @@ mod tests {
                     "execute:RebootSystem",
                 ]
             );
+        }
+
+        fn text_opts() -> RunOpts {
+            let mut opts = opts(PathBuf::new());
+            opts.step_by_step = false;
+            opts.yes = false;
+            opts.json = false;
+            opts
+        }
+
+        fn plan_with_params(action: &str, params: Value) -> AuthorizedPlan {
+            Plan::new(
+                "test".into(),
+                "test plan".into(),
+                "test explanation".into(),
+                vec![PlanStep::new(
+                    ActionName::parse(action).unwrap(),
+                    action.into(),
+                    authoritative_plan_risk(action),
+                    params,
+                )
+                .unwrap()],
+            )
+            .unwrap()
+            .into_authorized(authoritative_plan_risk)
+        }
+
+        fn tall_json() -> Value {
+            Value::Object((0..60).map(|i| (format!("k{i:02}"), json!(i))).collect())
+        }
+
+        /// GHSA-23mr item 1: a MEDIUM step ran on the plan-level answer alone,
+        /// given before any preview existed. It is now asked about again with
+        /// the daemon's proposed change on screen.
+        #[tokio::test]
+        async fn normal_mode_reconfirms_a_medium_step_after_its_preview() {
+            let (result, events) =
+                run(&plan(&["RestartService"]), text_opts(), &[true, true]).await;
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(
+                events,
+                [
+                    "prompt",
+                    "preview:RestartService",
+                    "prompt",
+                    "approve:",
+                    "execute:RestartService",
+                ]
+            );
+        }
+
+        /// The unattended contract is unchanged: `--yes --max-risk medium`
+        /// runs a MEDIUM step with nobody asked, preview first.
+        #[tokio::test]
+        async fn yes_with_a_medium_ceiling_still_runs_a_medium_step_unasked() {
+            let mut opts = text_opts();
+            opts.yes = true;
+            opts.non_interactive = true;
+            opts.max_risk = Some(MaxRisk::Medium);
+            let (result, events) = run(&plan(&["RestartService"]), opts, &[]).await;
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(
+                events,
+                [
+                    "preview:RestartService",
+                    "approve:",
+                    "execute:RestartService"
+                ]
+            );
+        }
+
+        /// The plan prompt is consent to the parameters printed above it. If
+        /// they did not fit, refuse before asking, as `sysknife approve` does.
+        #[tokio::test]
+        async fn a_plan_whose_parameters_do_not_fit_is_refused_before_the_prompt() {
+            let plan = plan_with_params("GetDiskUsage", tall_json());
+            let (result, events) = run(&plan, text_opts(), &[true]).await;
+            assert!(
+                matches!(result, Err(CliError::RunViewIncomplete { withheld, .. }) if withheld > 0),
+                "{result:?}"
+            );
+            assert!(events.is_empty(), "asked or touched the daemon: {events:?}");
+
+            // No consent is taken under --yes, so a bounded view is fine there.
+            let mut unattended = text_opts();
+            unattended.yes = true;
+            let (result, events) = run(&plan, unattended, &[]).await;
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(
+                events,
+                ["preview:GetDiskUsage", "approve:", "execute:GetDiskUsage"]
+            );
+
+            // --json prints the parameters in full, so its prompt may be asked.
+            let mut json_mode = text_opts();
+            json_mode.json = true;
+            let (result, _) = run(&plan, json_mode, &[true]).await;
+            assert!(result.is_ok(), "{result:?}");
+        }
+
+        fn plan_remembering(prefs: &std::path::Path, fact: &str) -> AuthorizedPlan {
+            use sysknife_brain::prefs::{PendingPrefChange, PrefChangeKind};
+            Plan::new(
+                "test".into(),
+                "test plan".into(),
+                "test explanation".into(),
+                vec![PlanStep::new(
+                    ActionName::parse("GetDiskUsage").unwrap(),
+                    "GetDiskUsage".into(),
+                    PlanRiskLevel::Low,
+                    json!({}),
+                )
+                .unwrap()],
+            )
+            .unwrap()
+            .with_pref_changes(vec![PendingPrefChange::new(
+                PrefChangeKind::Remember,
+                fact.into(),
+                prefs.to_path_buf(),
+            )])
+            .into_authorized(authoritative_plan_risk)
+        }
+
+        /// GHSA-23mr item 3: a preference the model asked to remember is
+        /// written only after the operator answers a question about it.
+        #[tokio::test]
+        async fn a_pending_preference_is_written_only_on_its_own_yes() {
+            let dir = tempfile::tempdir().unwrap();
+            let prefs = dir.path().join("prefs.md");
+            let plan = plan_remembering(&prefs, "prefer nala over apt");
+
+            // Plan yes, preference no: the plan runs, nothing is written.
+            let (result, events) = run(&plan, text_opts(), &[true, false]).await;
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(
+                events,
+                [
+                    "prompt",
+                    "prompt",
+                    "preview:GetDiskUsage",
+                    "approve:",
+                    "execute:GetDiskUsage"
+                ]
+            );
+            assert!(!prefs.exists(), "written after the operator said no");
+
+            // Plan no: the preference question is never asked.
+            let (result, events) = run(&plan, text_opts(), &[false]).await;
+            assert!(matches!(result, Err(CliError::Rejected)), "{result:?}");
+            assert_eq!(events, ["prompt"]);
+            assert!(!prefs.exists(), "written for a rejected plan");
+
+            // Both yes: written.
+            let (result, _) = run(&plan, text_opts(), &[true, true]).await;
+            assert!(result.is_ok(), "{result:?}");
+            let saved = std::fs::read_to_string(&prefs).unwrap();
+            assert!(saved.contains("prefer nala over apt"), "{saved}");
+        }
+
+        /// No operator answers under --dry-run, --yes or --non-interactive, so
+        /// a preference change is shown and dropped, never written.
+        #[tokio::test]
+        async fn a_pending_preference_is_never_written_without_an_operator() {
+            let dir = tempfile::tempdir().unwrap();
+            let prefs = dir.path().join("prefs.md");
+            let plan = plan_remembering(&prefs, "never ask before restarting services");
+
+            let mut dry = text_opts();
+            dry.dry_run = true;
+            let mut yes = text_opts();
+            yes.yes = true;
+            let mut scripted = text_opts();
+            scripted.yes = true;
+            scripted.non_interactive = true;
+            for opts in [dry, yes, scripted] {
+                let (result, events) = run(&plan, opts, &[]).await;
+                assert!(result.is_ok(), "{result:?}");
+                assert!(!events.contains(&"prompt".to_string()), "{events:?}");
+                assert!(!prefs.exists(), "written with nobody asked");
+            }
+        }
+
+        /// The post-preview prompt is consent to the proposed change. A change
+        /// that did not fit is refused at that prompt, never approved.
+        #[tokio::test]
+        async fn a_proposed_change_that_does_not_fit_is_refused_at_the_step_prompt() {
+            let (result, events) = run_against(
+                &plan(&["RestartService"]),
+                text_opts(),
+                &[true, true],
+                &[],
+                &[("RestartService", tall_json())],
+            )
+            .await;
+            assert!(
+                matches!(result, Err(CliError::RunViewIncomplete { withheld, .. }) if withheld > 0),
+                "{result:?}"
+            );
+            assert_eq!(events, ["prompt", "preview:RestartService"]);
         }
     }
 

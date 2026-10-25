@@ -203,7 +203,8 @@ test CLI path) before and after. A story that passed before must not regress.
 
 User preferences live in `~/.config/sysknife/prefs.md` and are injected into the
 system prompt at the start of each `plan_intent()` call. The `remember` and
-`forget` planning tools modify this file during planning.
+`forget` planning tools queue changes to this file; the planner returns them
+with the plan, and the CLI writes them only after the operator confirms.
 
 Preferences are NOT system state. They are user-stated intentions that inform
 planning decisions. Do not store system facts as preferences — those are

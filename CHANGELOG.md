@@ -32,6 +32,29 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   A row with a foreign `key_id` that the loaded key still verifies counts as
   verified (GHSA-2hvc-9x2h-pq2m).
 
+- **`sysknife "<intent>"` shows what you approve, keeps model text off your
+  terminal, and saves preferences only when you say yes.** The plan now prints
+  each step's parameters, and each step header prints the daemon's proposed
+  change and expected side effects. MEDIUM steps get the post-preview
+  confirmation HIGH steps already had, so you answer with the resolved change
+  on screen. If a parameter block or a proposed change runs past 40 lines or
+  512 columns, the run refuses to ask, the way `sysknife approve` refuses
+  without `--full`; `--json` prints both in full. `--yes` and `--max-risk`
+  behave as before. During planning, the spinner shows `unknown tool` for a
+  tool name the planner never offered, and the stderr notices for unknown tools
+  and rejected plans strip escapes, bidi and TAG characters and fold line
+  breaks. `remember` and `forget` no longer write `prefs.md` inside the tool
+  loop. The plan lists them, you answer a separate question, and SysKnife
+  writes nothing under `--dry-run`, `--yes`, `--non-interactive`, for a plan
+  you reject, or through `sysknife_plan` over MCP, which wrote the file before
+  this change (GHSA-23mr-j544-74x6).
+- **MCP tool errors reach the assistant normalised and enveloped, like
+  results.** A failed read-only query carried the host command's stderr to the
+  calling assistant raw, TAG characters and ANSI escapes included, and so did
+  planning and preview errors. Every tool error now passes the same normaliser
+  as a result, sits inside an `<untrusted_tool_output>` envelope, and stops at
+  8 KiB (GHSA-g9fw-wvj3-hcgj).
+
 ## [0.26.1] — 2026-10-24
 
 ### Security
