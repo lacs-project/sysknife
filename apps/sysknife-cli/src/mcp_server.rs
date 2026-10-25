@@ -2780,6 +2780,49 @@ mod tests {
         assert!(err.message.len() < 16 * 1024, "{} bytes", err.message.len());
     }
 
+    /// Only the query route is driven through a socket above. The other tool
+    /// error sites share `tool_error`, and nothing behavioural would notice one
+    /// of them going back to a raw `internal_error`, so the source is pinned:
+    /// outside `tool_error` itself, production code builds no `ErrorData`
+    /// except the fixed `resource_not_found`, whose only data is the client's
+    /// own URI.
+    #[test]
+    fn every_tool_error_goes_through_tool_error() {
+        let src = include_str!("mcp_server.rs");
+        // Stop at the first test module, so the literals below are not read
+        // as production code.
+        let production = &src[..src
+            .find("#[cfg(test)]")
+            .expect("the test modules follow the production code")];
+        let helper_start = production
+            .find("fn tool_error(e: String) -> ErrorData {")
+            .expect("tool_error is defined in production code");
+        let helper_end = helper_start
+            + production[helper_start..]
+                .find("\n}\n")
+                .expect("tool_error has a closing brace");
+        let mut stray = Vec::new();
+        for (at, _) in production.match_indices("ErrorData::") {
+            let inside_helper = (helper_start..helper_end).contains(&at);
+            let rest = &production[at..];
+            if !inside_helper && !rest.starts_with("ErrorData::resource_not_found(") {
+                let line = production[..at].lines().count();
+                stray.push(format!(
+                    "line {line}: {}",
+                    rest.lines().next().unwrap_or("")
+                ));
+            }
+        }
+        assert!(
+            production[helper_start..helper_end].contains("ErrorData::internal_error("),
+            "tool_error no longer builds the error; this guard inspects nothing"
+        );
+        assert!(
+            stray.is_empty(),
+            "ErrorData built outside tool_error reaches the assistant unscreened: {stray:#?}"
+        );
+    }
+
     #[tokio::test]
     async fn mcp_tools_integrate_with_a_daemon_over_the_socket() {
         use sysknife_daemon::transport::framing::FramedStream;

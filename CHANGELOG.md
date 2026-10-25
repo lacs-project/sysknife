@@ -109,6 +109,7 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   `kill -s *`, which admitted `kill -s KILL -1` and `kill -s KILL 1`, to
   `action-steps signal`, which refuses pid and pgid -1, 0 and 1. A direct caller
   can still add any PPA, as `AddPpa` can. (GHSA-8rx7-g2jg-5pxg)
+
 - **Dev-tier callers lose three routes to Admin outcomes, and the `sysknife`
   account loses systemd unit control over polkit.** `StartService` and
   `RestartService` are Medium and accepted `reboot.target`, `poweroff.target`
