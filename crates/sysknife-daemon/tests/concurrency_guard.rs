@@ -289,7 +289,7 @@ async fn unrelated_mutating_action_passes_while_dpkg_lock_held() {
     let executor: Arc<dyn ActionExecutor> = Arc::new(InstantSuccessExecutor);
     let mut framed = spawn_handler(state, executor, CallerRole::Admin).await;
 
-    let params = json!({"unit": "ssh.service"});
+    let params = json!({"unit": "nginx.service"});
     let (transaction_id, receipt) = do_preview(&mut framed, "RestartService", params.clone()).await;
     let msgs = do_execute(
         &mut framed,

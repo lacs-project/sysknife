@@ -94,7 +94,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `ListProcesses` | `ps aux --sort=-%mem` | Low | All | – | – | list running processes with CPU and memory usage — no params |
-| `SignalProcess` | `sudo kill -s TERM 1234` | High | All | – | – | send a signal to a process to stop it — params: pid\* (integer &gt; 1); signal (TERM\|KILL\|HUP\|INT, default TERM) |
+| `SignalProcess` | `sudo /usr/lib/sysknife/action-steps signal TERM 1234` | High | All | – | – | send a signal to a process to stop it — params: pid\* (integer &gt; 1); signal (TERM\|KILL\|HUP\|INT, default TERM) |
 
 ## Journald
 
@@ -108,9 +108,9 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GetLvmReport` | `lvs --reportformat json --units b -o lv_name,vg_name,lv_size,lv_attr,origin,data_percent` | Low | All | – | – | list logical volumes with VG, size, attributes, and usage as JSON (lvs) — no params; read-only |
-| `ExtendLogicalVolume` | `sudo lvextend -L +10G -r ubuntu-vg/ubuntu-lv` | High | All | – | – | grow a logical volume AND its filesystem in one step (lvextend -r) — params: vg\*, lv\*, size\* (e.g. '+10G' to add, or '50G' absolute); High risk |
-| `CreateLogicalVolume` | `sudo lvcreate -L 20G -n data ubuntu-vg` | Medium | All | – | – | create a new logical volume in a volume group (lvcreate) — params: vg\*, name\*, size\* (e.g. '20G'); Medium risk |
-| `CreateLvSnapshot` | `sudo lvcreate -s -L 5G -n ubuntu-lv-snap ubuntu-vg/ubuntu-lv` | Medium | All | – | – | snapshot a logical volume before risky changes (lvcreate -s) — params: vg\*, origin\* (LV to snapshot), snapshot\* (new name), size\* (copy-on-write reserve, e.g. '5G'); Medium risk |
+| `ExtendLogicalVolume` | `sudo /usr/lib/sysknife/action-steps lv-extend ubuntu-vg ubuntu-lv +10G` | High | All | – | – | grow a logical volume AND its filesystem in one step (lvextend -r) — params: vg\*, lv\*, size\* (e.g. '+10G' to add, or '50G' absolute); High risk |
+| `CreateLogicalVolume` | `sudo /usr/lib/sysknife/action-steps lv-create ubuntu-vg data 20G` | Medium | All | – | – | create a new logical volume in a volume group (lvcreate) — params: vg\*, name\*, size\* (e.g. '20G'); Medium risk |
+| `CreateLvSnapshot` | `sudo /usr/lib/sysknife/action-steps lv-snapshot ubuntu-vg ubuntu-lv ubuntu-lv-snap 5G` | Medium | All | – | – | snapshot a logical volume before risky changes (lvcreate -s) — params: vg\*, origin\* (LV to snapshot), snapshot\* (new name), size\* (copy-on-write reserve, e.g. '5G'); Medium risk |
 
 ## Kernel parameters — sysctl
 
@@ -144,7 +144,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GetPasswordAging` | `chage -l alice` | Low | All | – | – | show a user's password-aging fields (chage -l) — param: user\*; read-only |
-| `SetPasswordAging` | `sudo chage -M 90 alice` | High | All | – | – | set a user's password aging (chage) — params: user\*, plus at least one of max_days/min_days/warn_days (0-99999); High risk |
+| `SetPasswordAging` | `sudo /usr/lib/sysknife/action-steps password-aging alice -M 90` | High | All | – | – | set a user's password aging (chage) — params: user\*, plus at least one of max_days/min_days/warn_days (0-99999); High risk |
 | `SetPasswordPolicy` | `sudo /usr/lib/sysknife/pam-edit --op pwquality --minlen 12` | High | All | – | – | set password-quality rules via pwquality — params: at least one of minlen (1-128), dcredit/ucredit/lcredit/ocredit (-64..64); High risk — needs libpam-pwquality enabled in the PAM stack to take effect |
 | `SetAccountLockout` | `sudo /usr/lib/sysknife/pam-edit --op faillock --deny 5` | High | All | – | – | configure account lockout via faillock — params: at least one of deny (1-1000), unlock_time/fail_interval (seconds, 0-604800); High risk — needs pam_faillock enabled in the PAM stack to take effect |
 
@@ -209,11 +209,11 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `ListUsers` | `getent passwd` | Low | All | – | – | list all local user accounts — no params |
 | `ListGroups` | `getent group` | Low | All | – | – | list all local groups — no params |
 | `CreateUser` | `sudo /usr/lib/sysknife/action-steps user-create alice --home-dir /home/alice --shell /bin/bash` | High | All | – | – | create a local user account — param: username\*; optional: shell, home |
-| `DeleteUser` | `sudo userdel alice` | High | All | – | – | delete a local user account — param: username\* |
+| `DeleteUser` | `sudo /usr/lib/sysknife/action-steps user-delete alice` | High | All | – | – | delete a local user account — param: username\* |
 | `AddUserToGroup` | `sudo /usr/lib/sysknife/action-steps group-add alice wheel` | High | All | – | – | add a user to a group — params: username\*, group\* |
 | `RemoveUserFromGroup` | `sudo /usr/lib/sysknife/action-steps group-remove alice wheel` | High | All | – | – | remove a user from a group — params: username\*, group\* |
-| `CreateGroup` | `sudo groupadd developers` | Medium | All | – | – | create a local group — param: group\*; optional: system (bool → system GID range) |
-| `DeleteGroup` | `sudo groupdel developers` | High | All | – | – | delete a local group — param: group\*; irreversible |
+| `CreateGroup` | `sudo /usr/lib/sysknife/action-steps group-create developers` | Medium | All | – | – | create a local group — param: group\*; optional: system (bool → system GID range) |
+| `DeleteGroup` | `sudo /usr/lib/sysknife/action-steps group-delete developers` | High | All | – | – | delete a local group — param: group\*; irreversible |
 | `LockUserAccount` | `sudo /usr/lib/sysknife/action-steps user-lock alice` | High | All | – | – | disable password login for a user without deleting it — param: username\* |
 | `UnlockUserAccount` | `sudo /usr/lib/sysknife/action-steps user-unlock alice` | High | All | – | – | re-enable password login for a locked user — param: username\* |
 
@@ -265,8 +265,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `AppArmorStatus` | `sudo aa-status` | Low | Ubuntu | – | – | show status of all loaded AppArmor profiles (aa-status) — no params; read-only |
-| `AppArmorEnforce` | `sudo aa-enforce /etc/apparmor.d/usr.bin.firefox` | High | Ubuntu | – | – | put an AppArmor profile into enforce mode (aa-enforce) — param: profile_path\* (e.g. /etc/apparmor.d/usr.bin.firefox); High risk |
-| `AppArmorComplain` | `sudo aa-complain /etc/apparmor.d/usr.bin.firefox` | High | Ubuntu | – | – | put an AppArmor profile into complain/learning mode (aa-complain) — param: profile_path\*; High risk (disables MAC enforcement for the profile) |
+| `AppArmorEnforce` | `sudo aa-enforce -- /etc/apparmor.d/usr.bin.firefox` | High | Ubuntu | – | – | put an AppArmor profile into enforce mode (aa-enforce) — param: profile_path\* (e.g. /etc/apparmor.d/usr.bin.firefox); High risk |
+| `AppArmorComplain` | `sudo aa-complain -- /etc/apparmor.d/usr.bin.firefox` | High | Ubuntu | – | – | put an AppArmor profile into complain/learning mode (aa-complain) — param: profile_path\*; High risk (disables MAC enforcement for the profile) |
 
 ## cloud-init
 
@@ -293,8 +293,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `AptRemove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get remove -y curl` | Medium | Ubuntu | – | – | remove a package, keep config files — param: package\* |
 | `AptPurge` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get purge -y curl` | Medium | Ubuntu | – | – | remove a package AND its config files — param: package\* |
 | `AptAutoremove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get autoremove -y` | Medium | Ubuntu | – | – | remove automatically-installed packages no longer needed — no params |
-| `AptHold` | `sudo apt-mark hold curl` | Medium | Ubuntu | – | – | pin a package at its current version (apt-mark hold) — param: package\* |
-| `AptUnhold` | `sudo apt-mark unhold curl` | Medium | Ubuntu | – | – | unpin a package to allow upgrades (apt-mark unhold) — param: package\* |
+| `AptHold` | `sudo apt-mark hold -- curl` | Medium | Ubuntu | – | – | pin a package at its current version (apt-mark hold) — param: package\* |
+| `AptUnhold` | `sudo apt-mark unhold -- curl` | Medium | Ubuntu | – | – | unpin a package to allow upgrades (apt-mark unhold) — param: package\* |
 | `AptSearch` | `apt-cache search curl` | Low | Ubuntu | – | – | search apt repos for packages — param: term\*; read-only |
 | `AptListInstalled` | `dpkg -l` | Low | Ubuntu | – | – | list all installed packages (dpkg -l) — no params; read-only |
 | `AptShow` | `apt-cache show curl` | Low | Ubuntu | – | – | show package details (version, deps, description) — param: package\*; read-only |
@@ -314,8 +314,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `AddPpa` | `sudo add-apt-repository -y ppa:deadsnakes/ppa` | High | Ubuntu | – | – | add a Launchpad PPA — param: name\* in &lt;user&gt;/&lt;ppa&gt; format (e.g. 'deadsnakes/ppa'); Ubuntu only; requires software-properties-common |
-| `RemovePpa` | `sudo add-apt-repository -y --remove ppa:deadsnakes/ppa` | Medium | Ubuntu | – | – | remove a Launchpad PPA — param: name\* in &lt;user&gt;/&lt;ppa&gt; format; Ubuntu only |
+| `AddPpa` | `sudo add-apt-repository -y --ppa ppa:deadsnakes/ppa` | High | Ubuntu | – | – | add a Launchpad PPA — param: name\* in &lt;user&gt;/&lt;ppa&gt; format (e.g. 'deadsnakes/ppa'); Ubuntu only; requires software-properties-common |
+| `RemovePpa` | `sudo add-apt-repository -y --remove --ppa ppa:deadsnakes/ppa` | Medium | Ubuntu | – | – | remove a Launchpad PPA — param: name\* in &lt;user&gt;/&lt;ppa&gt; format; Ubuntu only |
 
 ## snap
 

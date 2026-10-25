@@ -38,12 +38,18 @@ pub fn get_password_aging(user: &str) -> ActionSpec {
     }
 }
 
-/// Set a user's password aging via `chage`. `flags` is a pre-validated list of
-/// `chage` options (`-M`/`-m`/`-W` + values); the username is appended last.
+/// Set a user's password aging via `sudo action-steps password-aging <user>
+/// <flags>`, which runs `chage <flags> <user>`. `flags` is a pre-validated list
+/// of `chage` options (`-M`/`-m`/`-W` + values). A direct `chage` grant admitted
+/// `-R <dir>` and `-E 0 root`, and the day counts sit where sudoers cannot pin
+/// them.
 pub fn set_password_aging(user: &str, flags: &[String]) -> ActionSpec {
-    let mut args = vec!["chage".to_string()];
+    let mut args = vec![
+        "/usr/lib/sysknife/action-steps".to_string(),
+        "password-aging".to_string(),
+        user.to_string(),
+    ];
     args.extend(flags.iter().cloned());
-    args.push(user.to_string());
     ActionSpec {
         action_name: "SetPasswordAging",
         mechanism: command_mechanism("sudo", args),
@@ -110,13 +116,22 @@ mod tests {
     }
 
     #[test]
-    fn set_aging_appends_user_after_flags() {
+    fn set_aging_routes_through_the_helper() {
         let (program, args) = args_of(&set_password_aging(
             "bob",
             &["-M".to_string(), "90".to_string()],
         ));
         assert_eq!(program, "sudo");
-        assert_eq!(args, vec!["chage", "-M", "90", "bob"]);
+        assert_eq!(
+            args,
+            vec![
+                "/usr/lib/sysknife/action-steps",
+                "password-aging",
+                "bob",
+                "-M",
+                "90"
+            ]
+        );
         assert_eq!(set_password_aging("b", &[]).risk_level, RiskLevel::High);
     }
 

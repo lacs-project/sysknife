@@ -91,6 +91,39 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   now refuses a job whose unit exists in any load-path directory and names that
   directory. (GHSA-7p9v-4r44-fh7c)
 
+- **Fifteen sudoers grants that accepted any arguments now accept only the argv
+  SysKnife builds, and the `kill` grant is gone.** A grant that names a command
+  and no arguments lets sudo run it with any arguments. For several of these
+  that meant root code execution for whoever holds the `sysknife` account:
+  `apt-mark hold bash -o Dir::Bin::dpkg=/tmp/x` and
+  `lvextend --config global/fsadm_executable=/tmp/x -r ...` run a program the
+  caller chose, and `gpasswd --add <account> sudo` hands out root-equivalent
+  membership. `userdel`, `groupadd`, `groupdel`, `chage`, `lvextend` and
+  `lvcreate` now go through new verbs of `/usr/lib/sysknife/action-steps`,
+  because shadow-utils reads `-R <chroot>` even after `--` and an LVM size sits
+  where sudoers cannot pin it. `apt-mark`, `aa-enforce` and `aa-complain` take
+  their operand after a literal `--`, `add-apt-repository` takes `--ppa`, and
+  `ufw`, `aa-status`, `canonical-livepatch` and `do-release-upgrade` get the
+  exact argv the catalogue builds. The `gpasswd` grant had no caller and is
+  removed. `SignalProcess` and the action-timeout reaper move from
+  `kill -s *`, which admitted `kill -s KILL -1` and `kill -s KILL 1`, to
+  `action-steps signal`, which refuses pid and pgid -1, 0 and 1. A direct caller
+  can still add any PPA, as `AddPpa` can. (GHSA-8rx7-g2jg-5pxg)
+- **Dev-tier callers lose three routes to Admin outcomes, and the `sysknife`
+  account loses systemd unit control over polkit.** `StartService` and
+  `RestartService` are Medium and accepted `reboot.target`, `poweroff.target`
+  and the services behind them, which is what the High `RebootSystem` does. The
+  daemon and `action-steps` now refuse the power-state and sleep units on every
+  verb that brings a unit up. `StopService` and `RestartService` refuse
+  `sysknife-daemon`, `auditd`, `rsyslog`, `systemd-journald`, `ssh`, `sshd` and
+  the other units `SetServiceResourceLimits` already protected.
+  `ConfigureLogRotation` refuses a bare `*` over `/var/log`, `/var/log/audit`
+  or `/var/log/journal` and needs a `rotate` of at least 1 for any wildcard, in
+  the daemon and in `log-edit`. `50-sysknife.rules` drops `manage-units` and
+  `manage-unit-files`: `manage-units` authorises `StartTransientUnit`, a root
+  command line over D-Bus, and no SysKnife code path used either.
+  (GHSA-68v6-p23h-fwcf)
+
 ## [0.26.1] — 2026-10-24
 
 ### Security

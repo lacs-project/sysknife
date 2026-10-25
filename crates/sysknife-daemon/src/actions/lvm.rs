@@ -5,8 +5,10 @@
 //! storage layout and are therefore Admin/High.
 //!
 //! `lvs` is run directly (the daemon is root, so it reads the metadata without
-//! `sudo`); the mutating verbs go through `sudo lvextend`/`sudo lvcreate`
-//! (narrow sudoers grants — see `packaging/sysknife-sudoers`).
+//! `sudo`); the mutating verbs go through `sudo action-steps lv-extend`,
+//! `lv-create` and `lv-snapshot`, which re-validate the names and sizes and
+//! build the `lvextend`/`lvcreate` argv. A direct grant on either binary
+//! admitted `--config`, which names programs LVM runs as root.
 //!
 //! **Grow-with-filesystem is one atomic step.** `ExtendLogicalVolume` uses
 //! `lvextend -r` (`--resizefs`): LVM's own `lvresize_fs_helper.sh` runs
@@ -52,7 +54,9 @@ pub fn get_lvm_report() -> ActionSpec {
     }
 }
 
-/// Grow an LV and its filesystem in one step (`sudo lvextend -L <size> -r <vg>/<lv>`).
+/// Grow an LV and its filesystem in one step
+/// (`sudo action-steps lv-extend <vg> <lv> <size>`, which runs
+/// `lvextend -L <size> -r <vg>/<lv>`).
 ///
 /// `size` is a validated LVM size expression, typically relative (`+10G`) but an
 /// absolute target (`50G`) is also accepted. `-r` resizes the filesystem after
@@ -62,7 +66,7 @@ pub fn extend_logical_volume(vg: &str, lv: &str, size: &str) -> ActionSpec {
         action_name: "ExtendLogicalVolume",
         mechanism: command_mechanism(
             "sudo",
-            ["lvextend", "-L", size, "-r", &format!("{vg}/{lv}")],
+            ["/usr/lib/sysknife/action-steps", "lv-extend", vg, lv, size],
         ),
         risk_level: RiskLevel::High,
         reboot_required: false,
@@ -70,18 +74,30 @@ pub fn extend_logical_volume(vg: &str, lv: &str, size: &str) -> ActionSpec {
     }
 }
 
-/// Create a new LV in a volume group (`sudo lvcreate -L <size> -n <name> <vg>`).
+/// Create a new LV in a volume group (`sudo action-steps lv-create <vg> <name>
+/// <size>`, which runs `lvcreate -L <size> -n <name> <vg>`).
 pub fn create_logical_volume(vg: &str, name: &str, size: &str) -> ActionSpec {
     ActionSpec {
         action_name: "CreateLogicalVolume",
-        mechanism: command_mechanism("sudo", ["lvcreate", "-L", size, "-n", name, vg]),
+        mechanism: command_mechanism(
+            "sudo",
+            [
+                "/usr/lib/sysknife/action-steps",
+                "lv-create",
+                vg,
+                name,
+                size,
+            ],
+        ),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
     }
 }
 
-/// Snapshot an existing LV (`sudo lvcreate -s -L <size> -n <snapshot> <vg>/<origin>`).
+/// Snapshot an existing LV (`sudo action-steps lv-snapshot <vg> <origin>
+/// <snapshot> <size>`, which runs `lvcreate -s -L <size> -n <snapshot>
+/// <vg>/<origin>`).
 ///
 /// `size` is the copy-on-write space reserved for the snapshot, not the size of
 /// the origin.
@@ -91,13 +107,12 @@ pub fn create_lv_snapshot(vg: &str, origin: &str, snapshot: &str, size: &str) ->
         mechanism: command_mechanism(
             "sudo",
             [
-                "lvcreate",
-                "-s",
-                "-L",
-                size,
-                "-n",
+                "/usr/lib/sysknife/action-steps",
+                "lv-snapshot",
+                vg,
+                origin,
                 snapshot,
-                &format!("{vg}/{origin}"),
+                size,
             ],
         ),
         risk_level: RiskLevel::Medium,
@@ -133,19 +148,44 @@ mod tests {
         let spec = extend_logical_volume("ubuntu-vg", "root", "+10G");
         let (program, args) = args_of(&spec);
         assert_eq!(program, "sudo");
-        assert_eq!(args, vec!["lvextend", "-L", "+10G", "-r", "ubuntu-vg/root"]);
+        assert_eq!(
+            args,
+            vec![
+                "/usr/lib/sysknife/action-steps",
+                "lv-extend",
+                "ubuntu-vg",
+                "root",
+                "+10G"
+            ]
+        );
         assert_eq!(spec.risk_level, RiskLevel::High);
     }
 
     #[test]
     fn create_lv_and_snapshot_shapes() {
         let (_, create) = args_of(&create_logical_volume("vg0", "data", "20G"));
-        assert_eq!(create, vec!["lvcreate", "-L", "20G", "-n", "data", "vg0"]);
+        assert_eq!(
+            create,
+            vec![
+                "/usr/lib/sysknife/action-steps",
+                "lv-create",
+                "vg0",
+                "data",
+                "20G"
+            ]
+        );
 
         let (_, snap) = args_of(&create_lv_snapshot("vg0", "root", "root-snap", "5G"));
         assert_eq!(
             snap,
-            vec!["lvcreate", "-s", "-L", "5G", "-n", "root-snap", "vg0/root"]
+            vec![
+                "/usr/lib/sysknife/action-steps",
+                "lv-snapshot",
+                "vg0",
+                "root",
+                "root-snap",
+                "5G"
+            ]
         );
     }
 }

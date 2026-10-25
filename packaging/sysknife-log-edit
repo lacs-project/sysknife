@@ -75,6 +75,25 @@ def valid_log_glob(path: str) -> bool:
     return normalised.startswith(LOG_ROOT) and normalised != LOG_ROOT.rstrip("/")
 
 
+# Mirrors LOG_EVIDENCE_DIRS in crates/sysknife-daemon/src/actions/validate.rs.
+LOG_EVIDENCE_DIRS = ("/var/log", "/var/log/audit", "/var/log/journal")
+
+
+def sweeps_log_evidence(path: str) -> bool:
+    """True if `path` ends in a bare wildcard over the log evidence.
+
+    Mirrors log_glob_sweeps_evidence. `/var/log/*`, `/var/log/audit/*` and
+    `/var/log/journal/*` name every file in the directories that hold the
+    host's record of what happened, and a wildcard directory such as
+    `/var/log/*/*` sweeps the audit and journal trees with it.
+    """
+    parts = [p for p in path.split("/") if p not in ("", ".")]
+    if not parts or parts[-1].strip("*"):
+        return False
+    parent = parts[:-1]
+    return "/" + "/".join(parent) in LOG_EVIDENCE_DIRS or any("*" in p for p in parent)
+
+
 def atomic_write(path: str, content: str, mode: int = 0o644) -> None:
     directory = os.path.dirname(path)
     os.makedirs(directory, exist_ok=True)
@@ -125,6 +144,12 @@ def op_logrotate(args) -> None:
         die(f"frequency must be one of {sorted(FREQ)}")
     if args.rotate < 0 or args.rotate > 1000:
         die("rotate count out of range [0, 1000]")
+    # A Dev-tier caller reaches this through ConfigureLogRotation, and root's
+    # logrotate deletes what `rotate 0` leaves behind (GHSA-68v6-p23h-fwcf).
+    if sweeps_log_evidence(args.path):
+        die(f"log path {args.path!r} is a bare wildcard over the host's log evidence")
+    if "*" in args.path and args.rotate < 1:
+        die("a wildcard log path needs rotate >= 1")
 
     body = (
         f"# Managed by SysKnife (configure_log_rotation: {args.name}).\n"

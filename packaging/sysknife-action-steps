@@ -8,6 +8,7 @@ user-configurable tool. Never add a generic exec mode or a caller-selected path.
 """
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -27,9 +28,27 @@ ROOT_SHELL_UNITS = ("debug-shell", "emergency", "rescue", "runlevel1", "single")
 # denylist. systemd unit names are case-insensitive, so the comparison is too.
 UNIT_SUFFIXES = (".service", ".target", ".socket", ".mount", ".path", ".slice",
                  ".scope")
-# The split mirrors the executor: bringing a unit up has to clear the denylist,
-# taking one down does not, and masking one is a mitigation.
+# Mirrors POWER_STATE_UNITS. A Medium `unit start reboot.target` reached the
+# outcome of RebootSystem, which is High (GHSA-68v6-p23h-fwcf).
+POWER_STATE_UNITS = (
+    "reboot", "soft-reboot", "poweroff", "halt", "kexec", "ctrl-alt-del", "exit",
+    "runlevel0", "runlevel6", "shutdown", "umount", "sleep", "suspend",
+    "hibernate", "hybrid-sleep", "suspend-then-hibernate", "systemd-reboot",
+    "systemd-soft-reboot", "systemd-poweroff", "systemd-halt", "systemd-kexec",
+    "systemd-exit", "systemd-suspend", "systemd-hibernate",
+    "systemd-hybrid-sleep", "systemd-suspend-then-hibernate")
+# Mirror RESOURCE_LIMIT_PROTECTED_UNITS and RESOURCE_LIMIT_PROTECTED_PREFIXES:
+# stopping one of these switches off the enforcement, the evidence, or the way
+# back in, and MaskService on them is High.
+PROTECTED_UNITS = ("sysknife-daemon", "auditd", "systemd-journald", "rsyslog",
+                   "dbus", "dbus-broker", "polkit", "polkitd", "systemd-logind",
+                   "ssh", "sshd")
+PROTECTED_UNIT_PREFIXES = ("systemd-journald", "auditd", "audit-rules")
+# The split mirrors the executor: bringing a unit up has to clear the denylists,
+# stopping or restarting one has to clear the protected list, and masking one
+# is a mitigation.
 ACTIVATING_VERBS = ("start", "restart", "enable", "unmask")
+STOPPING_VERBS = ("stop", "restart")
 QUIESCING_VERBS = ("stop", "disable", "mask", "reload")
 # Mirrors CRITICAL_ACCOUNTS in validate.rs, and the release test compares them.
 # The daemon refuses to lock these; the user-lock branch below checked only the
@@ -45,13 +64,30 @@ def unit_name(value):
     return value
 
 
-def activatable_unit(value):
-    """Mirrors validated_activatable_unit: unit_name plus the root-shell list."""
-    unit = unit_name(value)
+def bare_unit(unit):
+    """Mirrors bare_unit_name: lowercase, no type suffix, no instance."""
     lower = unit.lower()
     bare = next((lower[: -len(s)] for s in UNIT_SUFFIXES if lower.endswith(s)), lower)
+    return bare.split("@", 1)[0]
+
+
+def activatable_unit(value):
+    """Mirrors validated_activatable_unit: unit_name plus both denylists."""
+    unit = unit_name(value)
+    bare = bare_unit(unit)
     if bare in ROOT_SHELL_UNITS:
         raise ValueError("that unit hands out a root shell")
+    if bare in POWER_STATE_UNITS:
+        raise ValueError("that unit changes the power state")
+    return unit
+
+
+def stoppable_unit(value):
+    """Mirrors validated_stoppable_unit: unit_name plus the protected list."""
+    unit = unit_name(value)
+    bare = bare_unit(unit)
+    if bare in PROTECTED_UNITS or bare.startswith(PROTECTED_UNIT_PREFIXES):
+        raise ValueError("that unit is protected from stop and restart")
     return unit
 
 
@@ -65,6 +101,47 @@ def absolute_path(value):
         raise ValueError("invalid path")
     if not re.fullmatch(r"[A-Za-z0-9/_.-]+", value):
         raise ValueError("invalid path")
+    return value
+
+
+# Mirrors validated_kill_signal in crates/sysknife-daemon/src/executor.rs.
+SIGNALS = ("TERM", "KILL", "HUP", "INT")
+
+
+def kill_target(value):
+    """A pid, or a process group as `-<pgid>`, never -1, 0 or 1.
+
+    `/usr/bin/kill -s *` was a direct grant, and `kill -s KILL -1` signals every
+    process root can reach while `kill -s KILL 1` kills init. The daemon's
+    `pid >= 2` check covers only the argv the daemon builds.
+    """
+    if not re.fullmatch(r"-?[1-9][0-9]{0,9}", value):
+        raise ValueError("invalid pid")
+    target = int(value)
+    if not 2 <= abs(target) <= 2**31 - 1:
+        raise ValueError("pid and pgid -1, 0 and 1 are refused")
+    return target
+
+
+# Mirrors CRITICAL_GROUPS in validate.rs: the groups DeleteGroup refuses,
+# refused here for direct callers. CRITICAL_ACCOUNTS is declared above.
+CRITICAL_GROUPS = ("root", "sudo", "wheel", "adm", "sys", "daemon", "bin", "staff",
+                   "shadow", "disk")
+# Mirrors SetPasswordAging in executor.rs: these flags, 0..=99999 days.
+AGING_FLAGS = ("-M", "-m", "-W")
+
+
+def lvm_name(value):
+    """Mirrors validated_lvm_name: no leading dash or dot, no `/`."""
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9+_.-]{0,126}", value):
+        raise ValueError("invalid LVM name")
+    return value
+
+
+def lvm_size(value):
+    """Mirrors validated_lvm_size: `[+]<digits>[.<digits>][kmgtp]`, no shrink."""
+    if len(value) > 32 or not re.fullmatch(r"\+?[0-9]+(\.[0-9]+)?[kKmMgGtTpP]?", value):
+        raise ValueError("invalid LVM size")
     return value
 
 
@@ -257,13 +334,65 @@ def main(args):
         # `systemctl start debug-shell.service` matched: an unauthenticated root
         # shell on tty9, past the daemon's own denylist.
         verb, unit = values
-        if verb in ACTIVATING_VERBS:
-            unit = activatable_unit(unit)
-        elif verb in QUIESCING_VERBS:
-            unit = unit_name(unit)
-        else:
+        if verb not in ACTIVATING_VERBS and verb not in QUIESCING_VERBS:
             raise ValueError("invalid unit operation")
+        unit = unit_name(unit)
+        if verb in ACTIVATING_VERBS:
+            activatable_unit(unit)
+        if verb in STOPPING_VERBS:
+            stoppable_unit(unit)
         run(["/usr/bin/systemctl", verb, unit])
+    elif op == "signal" and len(values) == 2:
+        # SignalProcess (`signal <SIG> <pid>`) and the action-timeout reaper
+        # (`signal <SIG> -<pgid>`). os.kill, so there is no kill(1) argv left
+        # for a caller to extend.
+        name, target = values
+        if name not in SIGNALS:
+            raise ValueError("invalid signal")
+        os.kill(kill_target(target), getattr(signal, "SIG" + name))
+    elif op == "user-delete" and len(values) == 1:
+        # The bare `userdel` grant admitted `userdel -R <dir> <name>`. A
+        # `userdel -- *` grant would not have helped: shadow-utils scans argv
+        # for -R/--root and -P/--prefix before getopt, past any `--`. groupadd,
+        # groupdel and chage below share that scan (GHSA-8rx7-g2jg-5pxg).
+        name = username(values[0])
+        if name in CRITICAL_ACCOUNTS:
+            raise ValueError("that account is protected")
+        run(["/usr/sbin/userdel", name])
+    elif op == "group-create" and values[:-1] in ([], ["--system"]) and values:
+        # The bare `groupadd` grant admitted `groupadd -o -g 0 <name>`.
+        run(["/usr/sbin/groupadd", *values[:-1], username(values[-1])])
+    elif op == "group-delete" and len(values) == 1:
+        group = username(values[0])
+        if group in CRITICAL_GROUPS:
+            raise ValueError("that group is protected")
+        run(["/usr/sbin/groupdel", group])
+    elif op == "password-aging" and len(values) in (3, 5, 7):
+        # The bare `chage` grant admitted `-R <dir>` and `chage -E 0 root`, and
+        # the day counts are option values sudoers cannot pin.
+        name = username(values[0])
+        argv, seen = ["/usr/bin/chage"], set()
+        for flag, days in zip(values[1::2], values[2::2]):
+            if (flag not in AGING_FLAGS or flag in seen
+                    or not re.fullmatch(r"[0-9]{1,5}", days)):
+                raise ValueError("invalid password-aging option")
+            seen.add(flag)
+            argv.extend([flag, days])
+        run([*argv, name])
+    elif op == "lv-extend" and len(values) == 3:
+        # `lvextend --config global/fsadm_executable=<path>` named the program
+        # `-r` runs as root, and the size sits mid-argv where sudoers cannot
+        # pin it, so the LVM verbs build their own argv here.
+        vg, lv, size = values
+        run(["/usr/sbin/lvextend", "-L", lvm_size(size), "-r",
+             f"{lvm_name(vg)}/{lvm_name(lv)}"])
+    elif op == "lv-create" and len(values) == 3:
+        vg, name, size = values
+        run(["/usr/sbin/lvcreate", "-L", lvm_size(size), "-n", lvm_name(name), lvm_name(vg)])
+    elif op == "lv-snapshot" and len(values) == 4:
+        vg, origin, snapshot, size = values
+        run(["/usr/sbin/lvcreate", "-s", "-L", lvm_size(size), "-n", lvm_name(snapshot),
+             f"{lvm_name(vg)}/{lvm_name(origin)}"])
     elif op in ("group-add", "group-remove") and len(values) == 2:
         name, group = map(username, values)
         ensure_local_group(group)

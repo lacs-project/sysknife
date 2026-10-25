@@ -105,10 +105,56 @@ finally:
     mod.atomic_write = real_atomic_write
     mod.subprocess.run = real_run
 
+# 4. A bare wildcard over the log root, the audit directory or the journal,
+#    and `rotate 0` over any wildcard, let a Dev-tier caller have root's
+#    logrotate delete the host's evidence (GHSA-68v6-p23h-fwcf). The daemon
+#    refuses both; this helper is reachable directly through its wildcard grant,
+#    so it refuses them too, before writing anything.
+def refused(path, rotate):
+    args = Args(path)
+    args.rotate = rotate
+    wrote["path"] = None
+    mod.atomic_write = fake_atomic_write
+    mod.subprocess.run = lambda *a, **k: FakeCompleted()
+    try:
+        mod.op_logrotate(args)
+        return False
+    except SystemExit as exc:
+        return exc.code != 0 and wrote["path"] is None
+    finally:
+        mod.atomic_write = real_atomic_write
+        mod.subprocess.run = real_run
+
+
+import re
+from pathlib import Path
+rust = Path(script_path).resolve().parents[1].joinpath(
+    "crates/sysknife-daemon/src/actions/validate.rs").read_text(encoding="utf-8")
+decl = re.search(r"LOG_EVIDENCE_DIRS:\s*&\[&str\]\s*=\s*&\[(.*?)\];", rust, re.S)
+daemon_dirs = set(re.findall(r'"([^"]+)"', decl.group(1))) if decl else set()
+if not daemon_dirs:
+    failures.append("LOG_EVIDENCE_DIRS not found in validate.rs; parity checked nothing")
+elif not daemon_dirs <= set(getattr(mod, "LOG_EVIDENCE_DIRS", ())):
+    failures.append(f"helper LOG_EVIDENCE_DIRS is missing {sorted(daemon_dirs - set(mod.LOG_EVIDENCE_DIRS))}")
+
+for p in ["/var/log/*", "/var/log/**", "/var/log/audit/*", "/var/log/journal/*",
+          "/var/log//audit/*", "/var/log/./audit/*", "/var/log/audit/./*",
+          "/var/log/*/*", "/var/log/journal/*/*"]:
+    if not refused(p, 7):
+        failures.append(f"{p!r} sweeps the log evidence but was accepted")
+for p in ["/var/log/nginx/*.log", "/var/log/myapp/*"]:
+    if not refused(p, 0):
+        failures.append(f"rotate 0 over {p!r} was accepted")
+for p, rotate in [("/var/log/nginx/*.log", 7), ("/var/log/myapp/*", 1),
+                  ("/var/log/app.log", 0), ("/var/log/audit/audit.log", 5)]:
+    if refused(p, rotate):
+        failures.append(f"{p!r} rotate {rotate} is ordinary but was refused")
+
 if failures:
     for f in failures:
         print("FAIL:", f)
     sys.exit(1)
 print("ok: sysknife-log-edit confines rotation targets to the log root")
 print("ok: op_logrotate refuses an out-of-root path before writing a config")
+print("ok: op_logrotate refuses a wildcard sweep of the log evidence and rotate 0 over a glob")
 PY

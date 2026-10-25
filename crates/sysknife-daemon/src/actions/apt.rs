@@ -259,27 +259,32 @@ pub fn apt_autoremove() -> ActionSpec {
     }
 }
 
-/// Pin a package at its current version (`apt-mark hold <package>`).
+/// Pin a package at its current version (`apt-mark hold -- <package>`).
+///
+/// The `--` is load-bearing: apt parses options after the subcommand, and
+/// `apt-mark hold <pkg> -o Dir::Bin::dpkg=<path>` runs `<path>` as root. The
+/// sudoers grant requires the literal `--`.
 ///
 /// Risk: Medium. Prevents upgrades for the named package until unheld.
 /// Useful to freeze a known-good version when upstream upgrades are risky.
 pub fn apt_hold(package: &str) -> ActionSpec {
     ActionSpec {
         action_name: "AptHold",
-        mechanism: command_mechanism("sudo", ["apt-mark", "hold", package]),
+        mechanism: command_mechanism("sudo", ["apt-mark", "hold", "--", package]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
     }
 }
 
-/// Remove the hold on a package, allowing upgrades again (`apt-mark unhold <package>`).
+/// Remove the hold on a package, allowing upgrades again
+/// (`apt-mark unhold -- <package>`; see [`apt_hold`] for the `--`).
 ///
 /// Risk: Medium. After unholding, the next `apt upgrade` can update the package.
 pub fn apt_unhold(package: &str) -> ActionSpec {
     ActionSpec {
         action_name: "AptUnhold",
-        mechanism: command_mechanism("sudo", ["apt-mark", "unhold", package]),
+        mechanism: command_mechanism("sudo", ["apt-mark", "unhold", "--", package]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
@@ -609,9 +614,7 @@ mod tests {
         let spec = apt_hold("nginx");
         let (prog, args) = extract_args(&spec);
         assert_eq!(prog, "sudo");
-        assert!(args.contains(&"apt-mark"));
-        assert!(args.contains(&"hold"));
-        assert!(args.contains(&"nginx"));
+        assert_eq!(args, vec!["apt-mark", "hold", "--", "nginx"]);
     }
 
     #[test]
@@ -630,9 +633,7 @@ mod tests {
     fn apt_unhold_uses_apt_mark_unhold() {
         let spec = apt_unhold("nginx");
         let (_, args) = extract_args(&spec);
-        assert!(args.contains(&"apt-mark"));
-        assert!(args.contains(&"unhold"));
-        assert!(args.contains(&"nginx"));
+        assert_eq!(args, vec!["apt-mark", "unhold", "--", "nginx"]);
     }
 
     #[test]

@@ -193,7 +193,67 @@ pub(crate) const ROOT_SHELL_UNITS: &[&str] =
 /// risk is in bringing a unit up, not in reading or stopping it.
 pub fn validated_activatable_unit(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     let unit = validated_unit_name(s, param)?;
-    if ROOT_SHELL_UNITS.contains(&bare_unit_name(&unit).as_str()) {
+    let bare = bare_unit_name(&unit);
+    if ROOT_SHELL_UNITS.contains(&bare.as_str()) || POWER_STATE_UNITS.contains(&bare.as_str()) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(unit)
+}
+
+/// Units whose activation reboots, powers off, halts, kexecs, suspends or
+/// stops every service on the host.
+///
+/// `StartService` and `RestartService` are Medium, which maps to the Dev tier,
+/// and `RebootSystem` is High. Without this list `StartService reboot.target`
+/// gave a Dev caller the Admin outcome (GHSA-68v6-p23h-fwcf). The targets and
+/// the services behind them are both listed, because `systemd-reboot.service`
+/// reboots as surely as `reboot.target`. `runlevel0` and `runlevel6` are stock
+/// aliases of `poweroff` and `reboot`, the way `runlevel1` is of `rescue`.
+/// `shutdown` and `umount` stop or unmount everything that conflicts with them,
+/// which is nearly every unit. `exit` is what PID 1 treats as a power-off.
+///
+/// Name-based, so it shares the limit issue #144 records for
+/// [`ROOT_SHELL_UNITS`]: a site-local alias is spelled differently.
+pub(crate) const POWER_STATE_UNITS: &[&str] = &[
+    "reboot",
+    "soft-reboot",
+    "poweroff",
+    "halt",
+    "kexec",
+    "ctrl-alt-del",
+    "exit",
+    "runlevel0",
+    "runlevel6",
+    "shutdown",
+    "umount",
+    "sleep",
+    "suspend",
+    "hibernate",
+    "hybrid-sleep",
+    "suspend-then-hibernate",
+    "systemd-reboot",
+    "systemd-soft-reboot",
+    "systemd-poweroff",
+    "systemd-halt",
+    "systemd-kexec",
+    "systemd-exit",
+    "systemd-suspend",
+    "systemd-hibernate",
+    "systemd-hybrid-sleep",
+    "systemd-suspend-then-hibernate",
+];
+
+/// Validate a unit name that an action will **stop** or **restart** at Medium.
+///
+/// Layered on [`validated_unit_name`], plus a refusal of
+/// [`RESOURCE_LIMIT_PROTECTED_UNITS`] and its families. `StopService` validated
+/// by charset alone, so the Dev tier could stop `sysknife-daemon`, `auditd` or
+/// `ssh` while `MaskService` on the same units is High. Those are the units the
+/// resource-limit screen already protects, for the same reason: stopping one
+/// switches off the enforcement, the evidence, or the way back in.
+pub fn validated_stoppable_unit(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    let unit = validated_unit_name(s, param)?;
+    if is_protected_unit(&bare_unit_name(&unit)) {
         return Err(ExecutorError::InvalidParam(param));
     }
     Ok(unit)
@@ -316,15 +376,19 @@ pub fn validated_resource_limit_unit(
     if lower.ends_with(".slice") || lower.ends_with(".scope") {
         return Err(ExecutorError::InvalidParam(param));
     }
-    let bare = bare_unit_name(&unit);
-    if RESOURCE_LIMIT_PROTECTED_UNITS.contains(&bare.as_str())
-        || RESOURCE_LIMIT_PROTECTED_PREFIXES
-            .iter()
-            .any(|family| bare.starts_with(family))
-    {
+    if is_protected_unit(&bare_unit_name(&unit)) {
         return Err(ExecutorError::InvalidParam(param));
     }
     Ok(unit)
+}
+
+/// Whether a [`bare_unit_name`] is one of [`RESOURCE_LIMIT_PROTECTED_UNITS`] or
+/// belongs to one of [`RESOURCE_LIMIT_PROTECTED_PREFIXES`].
+fn is_protected_unit(bare: &str) -> bool {
+    RESOURCE_LIMIT_PROTECTED_UNITS.contains(&bare)
+        || RESOURCE_LIMIT_PROTECTED_PREFIXES
+            .iter()
+            .any(|family| bare.starts_with(family))
 }
 
 /// Validate a hostname per RFC 1123: `[a-zA-Z0-9.-]`, 1-253 chars, labels 1-63
@@ -1034,6 +1098,52 @@ pub fn validated_log_path(s: &str, param: &'static str) -> Result<String, Execut
         return Err(ExecutorError::InvalidParam(param));
     }
     Ok(s.to_string())
+}
+
+/// The directories that hold the host's record of what happened. Mirrors
+/// `LOG_EVIDENCE_DIRS` in `packaging/sysknife-log-edit`.
+const LOG_EVIDENCE_DIRS: &[&str] = &["/var/log", "/var/log/audit", "/var/log/journal"];
+
+/// Whether a rotation target ends in a bare wildcard over the log evidence.
+///
+/// `ConfigureLogRotation` is Medium, so the Dev tier reaches it, and root's
+/// logrotate acts on what it writes. `/var/log/*`, `/var/log/audit/*` and
+/// `/var/log/journal/*` passed [`validated_log_path`] and name every file in
+/// the directories auditd and journald write to. A wildcard directory such as
+/// `/var/log/*/*` sweeps the audit and journal trees with it, so a bare final
+/// `*` under any wildcard component counts too. `//` and `.` components are
+/// dropped first so the same directory cannot be spelled past the list.
+fn log_glob_sweeps_evidence(path: &str) -> bool {
+    let parts: Vec<&str> = path
+        .split('/')
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect();
+    let Some((last, parent)) = parts.split_last() else {
+        return false;
+    };
+    if !last.chars().all(|c| c == '*') {
+        return false;
+    }
+    LOG_EVIDENCE_DIRS.contains(&format!("/{}", parent.join("/")).as_str())
+        || parent.iter().any(|p| p.contains('*'))
+}
+
+/// Validate a `ConfigureLogRotation` target and its rotate count together.
+///
+/// Refuses a bare wildcard over the log evidence (see
+/// [`log_glob_sweeps_evidence`]) on `path`, and `rotate 0` over any wildcard on
+/// `rotate`: logrotate deletes every rotated file a zero count leaves, and a
+/// glob decides how many files that is (GHSA-68v6-p23h-fwcf). Mirrors
+/// `op_logrotate` in `packaging/sysknife-log-edit`.
+pub fn validated_log_rotation(path: &str, rotate: u32) -> Result<String, ExecutorError> {
+    let path = validated_log_path(path, "path")?;
+    if log_glob_sweeps_evidence(&path) {
+        return Err(ExecutorError::InvalidParam("path"));
+    }
+    if path.contains('*') && rotate == 0 {
+        return Err(ExecutorError::InvalidParam("rotate"));
+    }
+    Ok(path)
 }
 
 /// Validate a syslog collector host: a hostname or IPv4/IPv6 literal
