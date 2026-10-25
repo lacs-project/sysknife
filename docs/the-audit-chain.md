@@ -45,7 +45,7 @@ The mutable `status` column (queued → running → succeeded/failed/rolled
 back) is **not** part of the signed content. The chain protects the
 *authorization decision* captured at insert time, not the live execution
 state. Execution status is protected separately by signed status events and
-the SQLite status cross-check described below.
+the status cross-check described below, on both backends.
 ```
 
 ```admonish info title="Three row encodings coexist"
@@ -286,12 +286,13 @@ The residual exposure is the same bounded tail every append-only log has:
 events appended after the most recent transaction row are not yet bound by
 anything, until the next row is written.
 
-### Execution-status verification on SQLite
+### Execution-status verification
 
 Claiming an approved job records `status_running`; canceling or sweeping an
 expired queued job records `status_canceled`. Each status event commits in the
-same SQLite transaction as the status and approval changes. Terminal updates
-also record their status events. A failed event write rolls back the transition.
+same database transaction as the status and approval changes, on SQLite and on
+PostgreSQL. Terminal updates also record their status events. A failed event
+write rolls back the transition.
 
 The verifier compares each live status with its newest signed status event.
 CLI text reports the result explicitly; CLI JSON and `sysknife_audit_verify`
@@ -309,7 +310,17 @@ backfilled or accepted as intact: revoking approval can leave a job queued, and
 consuming approval cannot establish its eventual outcome. A queued row with a
 chained consumption event is a provable contradiction and remains broken.
 Signed status contradictions also remain broken when other rows lack evidence.
-When the status check did not run, including on Postgres, `status_check` is `null`.
+When the status check did not run, `status_check` is `null`.
+
+PostgreSQL chained no status event through 0.26.1, so a store upgraded from
+that release holds terminal rows with none. Migration 5 marks every row present
+when it runs (`predates_status_events = TRUE`). On a marked row, an unsigned
+terminal status reports `cannot_verify` (exit `2`) instead of a disagreement;
+every row written afterwards follows the rules above. An auditor reading a
+store that has not run migration 5 treats every row as marked. The marker is an
+unsigned column: anyone who can write to the table can set it, which turns a
+detected rewrite of an older row into exit `2`, never into exit `0`. A row with a
+signed status event is compared with it whatever the marker says.
 
 ## Signed checkpoints: closing the truncation gap
 
@@ -495,6 +506,19 @@ signature mismatch — same report shape, different `expected`/`actual`
 pair. Either failure is reported at the *first* broken row; rows before it
 are still proven intact.
 
+A row this build cannot check does not stop the walk. That covers a
+`chain_version` newer than the build understands, and a `key_id` other than
+the loaded key's whose signature the loaded key does not reproduce (with one
+key generation today, the loaded key is always tried first, and a row it
+verifies counts as verified). The walk notes the row, still checks the
+`prev_chain_hash` link into and out of it, and verifies every row after it.
+A forged or deleted row later in the chain reports `BROKEN`, exit `1`. Only
+when nothing else is wrong does the walk report `CANNOT VERIFY`, exit `2`,
+naming the first such row and how many rows did verify. The row counts in
+both messages cover verified rows only, so they can fall short of the
+broken row's `seq`. Through 0.26.1 the walk stopped at the first such row,
+and editing one of those two columns hid everything after it.
+
 **Deleted approval events look like:**
 
 ```text
@@ -541,10 +565,11 @@ it does and does not prove:
   anchored tips remain unreproducible from a rewritten chain.
 - **Row signatures alone do not prove `status`.** They protect the decision
   recorded at insert time. Signed status events protect later transitions, and
-  SQLite verification compares those events with the live column. Historical
-  running or canceled rows without status evidence are inconclusive; unsigned
-  terminal outcomes are broken. Postgres has no status
-  cross-check. Read `status_check` alongside the chain verdict.
+  verification compares those events with the live column on both backends.
+  Historical running or canceled rows without status evidence are
+  inconclusive; unsigned terminal outcomes are broken, except on PostgreSQL
+  rows written before status events existed there, which are inconclusive.
+  Read `status_check` alongside the chain verdict.
 - **Truncation needs an external sink to be detectable at all.** Without a
   checkpoint anchored off-host, deleting the tail of the chain is invisible
   to `sysknife audit verify` by construction. The same applies to approval

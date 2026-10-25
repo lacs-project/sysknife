@@ -18,7 +18,15 @@
 //!
 //! Verification (`sysknife audit verify`) walks rows in `seq` order and checks
 //! each row's signature **with the public key**, reporting the first broken
-//! link. Because verification needs only the public key, an auditor or a
+//! link. A row this build cannot check (a `chain_version` it does not know, or
+//! a `key_id` it does not hold whose signature the loaded key does not
+//! reproduce) is recorded and walked past, with its `prev_chain_hash` link
+//! still checked. The walk returns `Broken` if any later row is provably
+//! broken, and `CannotVerify` only when nothing is. Through 0.26.1 the walk
+//! stopped at such a row, so editing one `chain_version` or `key_id` column
+//! hid every forged or deleted row after it behind exit 2.
+//!
+//! Because verification needs only the public key, an auditor or a
 //! central log aggregator can verify the chain **without holding the private
 //! key** — they cannot forge entries. This is the property a symmetric MAC
 //! (the previous HMAC-SHA256 design) could not provide: with an HMAC, the
@@ -65,11 +73,25 @@
 //!   transaction as the column write, so the two cannot diverge through a
 //!   crash, and `TransactionStore::status_matches_chain` compares each row's
 //!   `status` against the newest status event chained for it. Rewriting the
-//!   column no longer agrees with a signed record. Exploiting the original
-//!   gap needed write access to a database that is `0600` inside a `0700`
-//!   directory owned by the daemon account, so the attacker was already root
-//!   or the `sysknife` user; the cost was to the investigator afterwards,
-//!   not to the boundary.
+//!   column no longer agrees with a signed record.
+//!
+//!   That fix reached SQLite only. Through 0.26.1 the Postgres backend, the
+//!   one meant for centralised deployments, appended no status event on any
+//!   path and its verify functions left the status verdict unset, so the
+//!   original gap stayed open there. Postgres now appends the same events in
+//!   the same sqlx transactions and runs the same comparison
+//!   (`status_outcome`). Its rows written before migration 5 carry no status
+//!   event, so a terminal status on one of them is reported as unproven rather
+//!   than as a rewrite. The marker that says so (`predates_status_events`) is
+//!   an unsigned column: flipping it can turn a detected rewrite on an older
+//!   row into "cannot verify" (exit 2), never into a pass.
+//!
+//!   Exploiting the original gap needed write access to a database that is
+//!   `0600` inside a `0700` directory owned by the daemon account, so on
+//!   SQLite the attacker was already root or the `sysknife` user. On Postgres
+//!   it needs `UPDATE` on `transactions`, held by the daemon's role and by any
+//!   other role the deployment grants it. Either way the cost was to the
+//!   investigator afterwards, not to the boundary.
 //!
 //! ## Key management
 //!
@@ -87,7 +109,10 @@
 //! outgoing key whose payload references both public-key fingerprints;
 //! verification walks the chain through epoch boundaries by looking up each
 //! row's `key_id` in a directory of retired public keys. For now, all rows use
-//! `key_id = "v1"` and rotation is manual (delete the chain, regenerate).
+//! `key_id = "v1"` and rotation is manual (delete the chain, regenerate). With
+//! one epoch, a row whose `key_id` differs is still tried against the loaded
+//! key before it is conceded as unverifiable: `key_id` is inside the signed
+//! message, so a signature the loaded key reproduces is authentic.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -872,44 +897,154 @@ fn signature_ok(vk: &VerifyingKey, msg: &[u8], sig_hex: &str) -> bool {
     vk.verify_strict(msg, &Signature::from_bytes(&arr)).is_ok()
 }
 
-/// Walk `rows` in seq order, verifying each row's signature with `vk` and its
-/// `prev_chain_hash` linkage. Returns the first break (or `Intact`). When
-/// `expect_key_id` is `Some`, every row must carry that `key_id`.
-fn verify_rows(vk: &VerifyingKey, expect_key_id: Option<&str>, rows: &[ChainRow]) -> VerifyOutcome {
-    let mut last_hash = String::new();
+/// What the walk learned about one row, apart from its `prev_chain_hash` link,
+/// which [`walk_chain`] checks for every row before asking.
+enum RowCheck {
+    /// The signature reproduces under the loaded key.
+    Verified,
+    /// This build cannot decide either way: an encoding it does not know, or a
+    /// `key_id` it does not hold whose signature the loaded key does not
+    /// reproduce. Evidence of neither tampering nor integrity.
+    Unverifiable(String),
+    /// Provably not what the daemon signed.
+    Broken { expected: String, actual: String },
+}
+
+/// The linkage columns every chained table shares.
+trait ChainLink {
+    fn seq(&self) -> u64;
+    fn transaction_id(&self) -> &str;
+    fn prev_chain_hash(&self) -> &str;
+    fn chain_hash(&self) -> &str;
+}
+
+impl ChainLink for ChainRow {
+    fn seq(&self) -> u64 {
+        self.seq
+    }
+    fn transaction_id(&self) -> &str {
+        &self.transaction_id
+    }
+    fn prev_chain_hash(&self) -> &str {
+        &self.prev_chain_hash
+    }
+    fn chain_hash(&self) -> &str {
+        &self.chain_hash
+    }
+}
+
+impl ChainLink for EventRow {
+    fn seq(&self) -> u64 {
+        self.seq
+    }
+    fn transaction_id(&self) -> &str {
+        &self.transaction_id
+    }
+    fn prev_chain_hash(&self) -> &str {
+        &self.prev_chain_hash
+    }
+    fn chain_hash(&self) -> &str {
+        &self.chain_hash
+    }
+}
+
+/// Walk `rows` in seq order: check each row's `prev_chain_hash` link, then ask
+/// `check` about its signature. Returns the first provable break, else
+/// `CannotVerify` if any row could not be checked, else `Intact`.
+///
+/// An unverifiable row does not end the walk. It used to: one edited
+/// `chain_version` or `key_id` column returned `CannotVerify` at that row, so a
+/// forged summary or a deleted row anywhere after it went unseen and the
+/// operator was told to fetch a newer build. Changing either column leaves every
+/// `chain_hash` as it was, so a checkpoint anchor comparing the tip could not
+/// see it either. Now the walk records the row, keeps its `chain_hash` as the
+/// link the next row must point at, and carries on, so a break later in the
+/// chain still reports `Broken`. Linkage across the skipped row stays checked:
+/// the next row signs its `prev_chain_hash`, so deleting the row after the
+/// skipped one, or inserting one beside it, still breaks a verifiable row.
+fn walk_chain<R: ChainLink>(rows: &[R], mut check: impl FnMut(&R) -> RowCheck) -> VerifyOutcome {
+    let mut last_hash = "";
     let mut rows_checked = 0u64;
+    let mut first_unverifiable: Option<String> = None;
+    let mut unverifiable = 0u64;
     for row in rows {
-        if let Some(kid) = expect_key_id {
-            if row.key_id != kid {
-                return VerifyOutcome::CannotVerify {
-                    reason: format!(
-                        "row seq={} uses key_id={:?} but only {:?} is loaded; \
-                         epoch keys not yet supported",
-                        row.seq, row.key_id, kid
-                    ),
+        if row.prev_chain_hash() != last_hash {
+            return VerifyOutcome::Broken {
+                rows_checked,
+                first_broken_seq: row.seq(),
+                first_broken_transaction_id: row.transaction_id().to_string(),
+                expected: format!("prev_chain_hash={last_hash}"),
+                actual: format!("prev_chain_hash={}", row.prev_chain_hash()),
+            };
+        }
+        match check(row) {
+            RowCheck::Verified => rows_checked += 1,
+            RowCheck::Unverifiable(reason) => {
+                unverifiable += 1;
+                first_unverifiable.get_or_insert(reason);
+            }
+            RowCheck::Broken { expected, actual } => {
+                return VerifyOutcome::Broken {
+                    rows_checked,
+                    first_broken_seq: row.seq(),
+                    first_broken_transaction_id: row.transaction_id().to_string(),
+                    expected,
+                    actual,
                 };
             }
         }
-        if row.prev_chain_hash != last_hash {
-            return VerifyOutcome::Broken {
-                rows_checked,
-                first_broken_seq: row.seq,
-                first_broken_transaction_id: row.transaction_id.clone(),
-                expected: format!("prev_chain_hash={last_hash}"),
-                actual: format!("prev_chain_hash={}", row.prev_chain_hash),
-            };
-        }
+        last_hash = row.chain_hash();
+    }
+    match first_unverifiable {
+        None => VerifyOutcome::Intact { rows_checked },
+        Some(first) => VerifyOutcome::CannotVerify {
+            reason: format!(
+                "{first}; {unverifiable} row(s) could not be checked, \
+                 {rows_checked} other row(s) verified and every link is intact"
+            ),
+        },
+    }
+}
+
+/// A signature the loaded key did not reproduce. Conceded as unverifiable only
+/// when the row names a key generation other than the loaded one; otherwise it
+/// is a break. The loaded key has been tried first on purpose: with one key
+/// epoch today, a row it reproduces is authentic whatever its `key_id` says,
+/// because `key_id` is inside the signed message.
+fn failed_signature(
+    what: &str,
+    seq: u64,
+    key_id: &str,
+    expect_key_id: Option<&str>,
+    chain_hash: &str,
+) -> RowCheck {
+    match expect_key_id {
+        Some(kid) if key_id != kid => RowCheck::Unverifiable(format!(
+            "{what} seq={seq} uses key_id={key_id:?} but only {kid:?} is loaded, \
+             and the loaded key does not reproduce its signature; epoch keys not yet supported"
+        )),
+        _ => RowCheck::Broken {
+            expected: "valid ed25519 signature".to_string(),
+            actual: chain_hash.to_string(),
+        },
+    }
+}
+
+/// Walk `rows` in seq order, verifying each row's signature with `vk` and its
+/// `prev_chain_hash` linkage. See [`walk_chain`] for how a row this build
+/// cannot check is handled. When `expect_key_id` is `Some`, a row carrying a
+/// different `key_id` is still tried against `vk` before it is conceded.
+fn verify_rows(vk: &VerifyingKey, expect_key_id: Option<&str>, rows: &[ChainRow]) -> VerifyOutcome {
+    walk_chain(rows, |row| {
         let identity = match row.identity() {
             Ok(identity) => identity,
             Err(RowIdentityError::UnknownVersion(v)) => {
-                return VerifyOutcome::CannotVerify {
-                    reason: format!(
-                        "row seq={} declares chain_version={v}, which this binary cannot \
-                         reproduce (it understands {CHAIN_VERSION_LEGACY}..={CHAIN_VERSION_CURRENT}); \
-                         verify with a build at least as new as the one that wrote the chain",
-                        row.seq
-                    ),
-                };
+                return RowCheck::Unverifiable(format!(
+                    "row seq={} declares chain_version={v}, which this binary cannot \
+                     reproduce (it understands {CHAIN_VERSION_LEGACY}..={CHAIN_VERSION_CURRENT}); \
+                     verify with a build at least as new as the one that wrote the chain",
+                    row.seq
+                ));
             }
             Err(RowIdentityError::MissingField(field)) => {
                 // Report the version the row itself declares. Formatting
@@ -922,10 +1057,7 @@ fn verify_rows(vk: &VerifyingKey, expect_key_id: Option<&str>, rows: &[ChainRow]
                     "caller_principal" => row.caller_principal.as_deref(),
                     _ => None,
                 };
-                return VerifyOutcome::Broken {
-                    rows_checked,
-                    first_broken_seq: row.seq,
-                    first_broken_transaction_id: row.transaction_id.clone(),
+                return RowCheck::Broken {
                     expected: format!(
                         "chain_version={} row carrying a non-empty {field}",
                         row.chain_version
@@ -955,19 +1087,12 @@ fn verify_rows(vk: &VerifyingKey, expect_key_id: Option<&str>, rows: &[ChainRow]
             identity,
         };
         let msg = chain_message(&content, &row.prev_chain_hash);
-        if !signature_ok(vk, &msg, &row.chain_hash) {
-            return VerifyOutcome::Broken {
-                rows_checked,
-                first_broken_seq: row.seq,
-                first_broken_transaction_id: row.transaction_id.clone(),
-                expected: "valid ed25519 signature".to_string(),
-                actual: row.chain_hash.clone(),
-            };
+        if signature_ok(vk, &msg, &row.chain_hash) {
+            RowCheck::Verified
+        } else {
+            failed_signature("row", row.seq, &row.key_id, expect_key_id, &row.chain_hash)
         }
-        last_hash = row.chain_hash.clone();
-        rows_checked += 1;
-    }
-    VerifyOutcome::Intact { rows_checked }
+    })
 }
 
 // ── Approval-event chain ─────────────────────────────────────────────────────
@@ -1236,36 +1361,11 @@ fn verify_event_rows(
     expect_key_id: Option<&str>,
     rows: &[EventRow],
 ) -> VerifyOutcome {
-    let mut last_hash = String::new();
-    let mut rows_checked = 0u64;
-    for row in rows {
-        if let Some(kid) = expect_key_id {
-            if row.key_id != kid {
-                return VerifyOutcome::CannotVerify {
-                    reason: format!(
-                        "event seq={} uses key_id={:?} but only {:?} is loaded; \
-                         epoch keys not yet supported",
-                        row.seq, row.key_id, kid
-                    ),
-                };
-            }
-        }
-        if row.prev_chain_hash != last_hash {
-            return VerifyOutcome::Broken {
-                rows_checked,
-                first_broken_seq: row.seq,
-                first_broken_transaction_id: row.transaction_id.clone(),
-                expected: format!("prev_chain_hash={last_hash}"),
-                actual: format!("prev_chain_hash={}", row.prev_chain_hash),
-            };
-        }
+    walk_chain(rows, |row| {
         // An unknown `kind` cannot be re-encoded, so it can never reproduce a
         // valid signature. Report it as the break it is instead of guessing.
         let Some(kind) = parse_event_kind(&row.kind) else {
-            return VerifyOutcome::Broken {
-                rows_checked,
-                first_broken_seq: row.seq,
-                first_broken_transaction_id: row.transaction_id.clone(),
+            return RowCheck::Broken {
                 expected: "a known event kind".to_string(),
                 actual: format!("kind={:?}", row.kind),
             };
@@ -1278,20 +1378,15 @@ fn verify_event_rows(
         let identity = match row.identity() {
             Ok(identity) => identity,
             Err(RowIdentityError::UnknownVersion(v)) => {
-                return VerifyOutcome::CannotVerify {
-                    reason: format!(
-                        "event seq={} declares chain_version={v}, which this binary cannot \
-                         reproduce (it understands {EVENT_VERSION_LEGACY}..={EVENT_VERSION_CURRENT}); \
-                         verify with a build at least as new as the one that wrote the chain",
-                        row.seq
-                    ),
-                };
+                return RowCheck::Unverifiable(format!(
+                    "event seq={} declares chain_version={v}, which this binary cannot \
+                     reproduce (it understands {EVENT_VERSION_LEGACY}..={EVENT_VERSION_CURRENT}); \
+                     verify with a build at least as new as the one that wrote the chain",
+                    row.seq
+                ));
             }
             Err(RowIdentityError::MissingField(field)) => {
-                return VerifyOutcome::Broken {
-                    rows_checked,
-                    first_broken_seq: row.seq,
-                    first_broken_transaction_id: row.transaction_id.clone(),
+                return RowCheck::Broken {
                     expected: format!(
                         "a non-empty {field} on a chain_version={} row",
                         row.chain_version
@@ -1309,23 +1404,22 @@ fn verify_event_rows(
             created_at: &row.created_at,
             identity,
         };
-        if !signature_ok(
+        if signature_ok(
             vk,
             &event_message(&content, &row.prev_chain_hash),
             &row.chain_hash,
         ) {
-            return VerifyOutcome::Broken {
-                rows_checked,
-                first_broken_seq: row.seq,
-                first_broken_transaction_id: row.transaction_id.clone(),
-                expected: "valid ed25519 signature".to_string(),
-                actual: row.chain_hash.clone(),
-            };
+            RowCheck::Verified
+        } else {
+            failed_signature(
+                "event",
+                row.seq,
+                &row.key_id,
+                expect_key_id,
+                &row.chain_hash,
+            )
         }
-        last_hash = row.chain_hash.clone();
-        rows_checked += 1;
-    }
-    VerifyOutcome::Intact { rows_checked }
+    })
 }
 
 fn parse_event_kind(raw: &str) -> Option<AuditEventKind> {
@@ -1355,6 +1449,95 @@ pub enum StatusOutcome {
     /// revocation alone does not prove cancellation, so do not invent a
     /// matching outcome or report that absence as proven tampering.
     CannotVerify { detail: String },
+}
+
+/// One transaction's inputs to the status cross-check, as a backend reads them.
+#[derive(Debug, Clone)]
+pub(crate) struct StatusEvidence {
+    pub transaction_id: String,
+    /// The live, unsigned `status` column.
+    pub status: sysknife_types::JobState,
+    /// Kind of the newest `status_*` event chained for this transaction.
+    pub newest_status_event: Option<String>,
+    /// Whether an `approval_consumed` event is chained for it.
+    pub approval_consumed: bool,
+    /// The row was written before its store chained status events at all, so
+    /// a missing event is history rather than evidence. Always `false` on
+    /// SQLite, whose terminal transitions have chained since 0.19.0. On
+    /// Postgres, which chained none through 0.26.1, it marks the rows that
+    /// existed when migration 5 ran.
+    pub predates_status_events: bool,
+}
+
+/// Compare each row's live status with its newest chained status event.
+///
+/// The one implementation of the rules both backends apply. Signed
+/// contradictions are broken. A `Running` or `Canceled` row with no status
+/// event is inconclusive, because claims, cancellations and sweeps chained
+/// none before 0.26.0 on SQLite. Any other non-queued row with no status event
+/// is a contradiction, unless it predates status events in its store.
+pub(crate) fn status_outcome(rows: impl IntoIterator<Item = StatusEvidence>) -> StatusOutcome {
+    use sysknife_types::JobState;
+    let mut disagreements = Vec::new();
+    let mut unproven = Vec::new();
+    let mut checked: u64 = 0;
+    for row in rows {
+        checked += 1;
+        let StatusEvidence {
+            transaction_id: id,
+            status: state,
+            newest_status_event,
+            approval_consumed: consumed,
+            predates_status_events,
+        } = row;
+        // Pre-fix claims and cancellations did not chain a status event.
+        // Their exact current outcome cannot be inferred from approval
+        // lifecycle events: revocation also legitimately leaves Queued,
+        // and consumption says nothing about eventual completion.
+        let Some(newest) = newest_status_event else {
+            if state == JobState::Queued && consumed {
+                disagreements.push(format!(
+                    "{id}: status is Queued but a chained approval_consumed event proves it left Queued"
+                ));
+            } else if matches!(state, JobState::Running | JobState::Canceled) {
+                unproven.push(format!(
+                    "{id}: status is {state:?} and no status event was ever chained; \
+                     historical writes cannot establish the execution outcome"
+                ));
+            } else if state != JobState::Queued && predates_status_events {
+                unproven.push(format!(
+                    "{id}: status is {state:?} on a row written before this store \
+                     chained status events; nothing signed records its outcome"
+                ));
+            } else if state != JobState::Queued {
+                disagreements.push(format!(
+                    "{id}: status is {state:?} but no status event was ever chained; \
+                     terminal outcomes require a signed status event"
+                ));
+            }
+            continue;
+        };
+        let expected = AuditEventKind::from(state).as_str();
+        if newest != expected {
+            disagreements.push(format!(
+                "{id}: status column says {state:?} ({expected}) and the newest \
+                 chained status event is {newest}"
+            ));
+        }
+    }
+    if !disagreements.is_empty() {
+        StatusOutcome::Disagrees {
+            detail: disagreements.join("; "),
+        }
+    } else if !unproven.is_empty() {
+        StatusOutcome::CannotVerify {
+            detail: unproven.join("; "),
+        }
+    } else {
+        StatusOutcome::Agrees {
+            rows_checked: checked,
+        }
+    }
 }
 
 /// Exit code for the status cross-check, on the same scale as
@@ -1450,9 +1633,10 @@ pub struct AuditVerification {
     ///
     /// `None` where the check could not run rather than a verdict it did not
     /// reach: the comparison needs the live status column, so the pure
-    /// `verify_all` functions and the postgres path leave it unset. Reporting
-    /// `Agrees` there would be a claim nobody checked, which is the shape this
-    /// whole module exists to refuse.
+    /// `verify_all` functions leave it unset and the store that holds the
+    /// column fills it in (the CLI for SQLite, `PostgresStore` for Postgres).
+    /// Reporting `Agrees` there would be a claim nobody checked, which is the
+    /// shape this whole module exists to refuse.
     pub status: Option<StatusOutcome>,
 }
 
@@ -1517,8 +1701,8 @@ fn standing(row: &ChainRow) -> RowStanding {
             },
         },
         // An encoding this binary does not know, which is any value outside 1..=3:
-        // a newer daemon's, or a corrupt column. `verify_rows` already reports
-        // `CannotVerify` for such a row, and the census must not claim an account
+        // a newer daemon's, or a corrupt column. `verify_rows` already counts
+        // such a row as unverifiable, and the census must not claim an account
         // either, because this binary cannot say which fields that encoding signs
         // -- including whether it signs this column at all.
         _ => RowStanding::Unattested,
@@ -3159,6 +3343,141 @@ mod tests {
         let outcome = verify_chain(&key, &rows);
         assert!(matches!(outcome, VerifyOutcome::CannotVerify { .. }));
         assert_eq!(outcome_to_exit_code(&outcome), 2);
+    }
+
+    // ── an unverifiable row does not end the walk ─────────────────────────
+    //
+    // Editing one `chain_version` or `key_id` column used to stop the walk at
+    // that row with `CannotVerify`, so every forged or deleted row after it
+    // went unseen and `audit verify` exited 2, "could not check".
+
+    fn expect_broken_at(outcome: VerifyOutcome, seq: u64) {
+        match outcome {
+            VerifyOutcome::Broken {
+                first_broken_seq, ..
+            } => assert_eq!(first_broken_seq, seq),
+            other => panic!("expected Broken at seq={seq}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unknown_version_row_does_not_hide_a_forgery_after_it() {
+        let key = fixed_key();
+        let mut rows = build_chain(&key, 4);
+        rows[1].chain_version = CHAIN_VERSION_CURRENT + 1;
+        rows[3].summary = "FORGED".to_string();
+        expect_broken_at(verify_chain(&key, &rows), 4);
+        expect_broken_at(verify_chain_with_pubkey(&key.verifying_key_hex(), &rows), 4);
+    }
+
+    #[test]
+    fn a_row_deleted_after_an_unknown_version_row_breaks_the_link() {
+        let key = fixed_key();
+        let mut rows = build_chain(&key, 4);
+        rows[1].chain_version = CHAIN_VERSION_CURRENT + 1;
+        // Seq 3 links to the unverifiable row's hash; removing it leaves seq 4
+        // pointing at a predecessor that is no longer there.
+        rows.remove(2);
+        expect_broken_at(verify_chain(&key, &rows), 4);
+    }
+
+    #[test]
+    fn an_unknown_version_row_alone_is_still_cannot_verify() {
+        let key = fixed_key();
+        let mut rows = build_chain(&key, 4);
+        rows[1].chain_version = CHAIN_VERSION_CURRENT + 1;
+        match verify_chain(&key, &rows) {
+            VerifyOutcome::CannotVerify { reason } => {
+                assert!(
+                    reason.contains("seq=2"),
+                    "name the row that could not be checked: {reason}"
+                );
+                assert!(
+                    reason.contains("3 other row(s) verified"),
+                    "say the rest of the chain was walked: {reason}"
+                );
+            }
+            other => panic!("nothing here is provably broken: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_key_id_mismatch_does_not_hide_a_forgery_after_it() {
+        let key = fixed_key();
+        let mut rows = build_chain(&key, 3);
+        rows[0].key_id = "v99".to_string();
+        rows[2].summary = "FORGED".to_string();
+        expect_broken_at(verify_chain(&key, &rows), 3);
+    }
+
+    /// One key epoch exists today, so a row carrying another `key_id` that the
+    /// loaded key nevertheless signed is authentic: `key_id` is inside the
+    /// signed message, and only the private key could have produced it.
+    #[test]
+    fn a_foreign_key_id_the_loaded_key_signed_verifies() {
+        let key = fixed_key();
+        let mut content = sample_content(1, "tx0");
+        content.key_id = "v0";
+        let hash = key.chain_hash(&content, "");
+        let row = row_for(&content, "", hash);
+        assert_eq!(
+            verify_chain(&key, &[row]),
+            VerifyOutcome::Intact { rows_checked: 1 }
+        );
+    }
+
+    #[test]
+    fn an_unknown_event_version_does_not_hide_a_forged_event_after_it() {
+        let key = fixed_key();
+        let mut rows = build_event_chain(
+            &key,
+            &[
+                AuditEventKind::ApprovalGranted,
+                AuditEventKind::ApprovalConsumed,
+                AuditEventKind::StatusSucceeded,
+            ],
+        );
+        rows[0].chain_version = EVENT_VERSION_CURRENT + 1;
+        rows[2].kind = AuditEventKind::StatusCanceled.as_str().to_string();
+        expect_broken_at(verify_event_chain(&key, &rows), 3);
+        expect_broken_at(
+            verify_event_chain_with_pubkey(&key.verifying_key_hex(), &rows),
+            3,
+        );
+    }
+
+    #[test]
+    fn an_event_key_id_mismatch_does_not_hide_a_forged_event_after_it() {
+        let key = fixed_key();
+        let mut rows = build_event_chain(
+            &key,
+            &[
+                AuditEventKind::ApprovalGranted,
+                AuditEventKind::ApprovalConsumed,
+                AuditEventKind::StatusSucceeded,
+            ],
+        );
+        rows[0].key_id = "v99".to_string();
+        rows[2].kind = AuditEventKind::StatusCanceled.as_str().to_string();
+        expect_broken_at(verify_event_chain(&key, &rows), 3);
+    }
+
+    #[test]
+    fn an_unknown_event_version_alone_is_still_cannot_verify() {
+        let key = fixed_key();
+        let mut rows = build_event_chain(
+            &key,
+            &[
+                AuditEventKind::ApprovalGranted,
+                AuditEventKind::ApprovalConsumed,
+            ],
+        );
+        rows[0].chain_version = EVENT_VERSION_CURRENT + 1;
+        let outcome = verify_event_chain(&key, &rows);
+        assert!(
+            matches!(outcome, VerifyOutcome::CannotVerify { .. }),
+            "{outcome:?}"
+        );
     }
 
     // ── approval-event chain ──────────────────────────────────────────────

@@ -593,20 +593,12 @@ impl TransactionStore {
     pub fn status_matches_chain(
         &self,
     ) -> Result<audit_chain::StatusOutcome, TransactionStoreError> {
+        use crate::store::{APPROVAL_CONSUMED_SQL, NEWEST_STATUS_EVENT_SQL};
         let conn = self.connection()?;
-        let mut stmt = conn.prepare(
-            "SELECT t.transaction_id, t.status, ( \
-                 SELECT e.kind FROM audit_events e \
-                 WHERE e.transaction_id = t.transaction_id AND e.kind LIKE 'status_%' \
-                 ORDER BY e.seq DESC LIMIT 1 \
-             ), EXISTS ( \
-                 SELECT 1 FROM audit_events e \
-                 WHERE e.transaction_id = t.transaction_id AND e.kind = 'approval_consumed' \
-             ) FROM transactions t",
-        )?;
-        let mut disagreements = Vec::new();
-        let mut unproven = Vec::new();
-        let mut checked: u64 = 0;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT t.transaction_id, t.status, {NEWEST_STATUS_EVENT_SQL}, \
+                    {APPROVAL_CONSUMED_SQL} FROM transactions t"
+        ))?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -615,53 +607,20 @@ impl TransactionStore {
                 row.get::<_, bool>(3)?,
             ))
         })?;
+        let mut evidence = Vec::new();
         for row in rows {
-            let (id, status_json, newest, consumed) = row?;
-            checked += 1;
-            let state: JobState = deserialize_field(&status_json)?;
-            // Pre-fix claims and cancellations did not chain a status event.
-            // Their exact current outcome cannot be inferred from approval
-            // lifecycle events: revocation also legitimately leaves Queued,
-            // and consumption says nothing about eventual completion.
-            let Some(newest) = newest else {
-                if state == JobState::Queued && consumed {
-                    disagreements.push(format!(
-                        "{id}: status is Queued but a chained approval_consumed event proves it left Queued"
-                    ));
-                } else if matches!(state, JobState::Running | JobState::Canceled) {
-                    unproven.push(format!(
-                        "{id}: status is {state:?} and no status event was ever chained; \
-                         historical writes cannot establish the execution outcome"
-                    ));
-                } else if state != JobState::Queued {
-                    disagreements.push(format!(
-                        "{id}: status is {state:?} but no status event was ever chained; \
-                         terminal outcomes require a signed status event"
-                    ));
-                }
-                continue;
-            };
-            let expected = AuditEventKind::from(state).as_str();
-            if newest != expected {
-                disagreements.push(format!(
-                    "{id}: status column says {state:?} ({expected}) and the newest \
-                     chained status event is {newest}"
-                ));
-            }
+            let (transaction_id, status_json, newest_status_event, approval_consumed) = row?;
+            evidence.push(audit_chain::StatusEvidence {
+                transaction_id,
+                status: deserialize_field(&status_json)?,
+                newest_status_event,
+                approval_consumed,
+                // Terminal transitions on SQLite have chained a status event
+                // since 0.19.0, so an unsigned one is a contradiction here.
+                predates_status_events: false,
+            });
         }
-        Ok(if !disagreements.is_empty() {
-            audit_chain::StatusOutcome::Disagrees {
-                detail: disagreements.join("; "),
-            }
-        } else if !unproven.is_empty() {
-            audit_chain::StatusOutcome::CannotVerify {
-                detail: unproven.join("; "),
-            }
-        } else {
-            audit_chain::StatusOutcome::Agrees {
-                rows_checked: checked,
-            }
-        })
+        Ok(audit_chain::status_outcome(evidence))
     }
 
     /// Attach one immutable approval receipt digest to a fresh queued preview.

@@ -72,6 +72,21 @@ pub(crate) const CHAIN_ROW_COLUMNS: &str =
      created_at, prev_chain_hash, chain_hash, chain_version, caller_role, event_tip, \
      caller_principal";
 
+/// The two facts the status cross-check reads from `audit_events` for each
+/// transaction: the kind of its newest `status_*` event, and whether an
+/// `approval_consumed` event exists for it. Correlated subqueries over `t`, the
+/// `transactions` alias, and valid in both dialects.
+///
+/// Declared once for the reason [`CHAIN_ROW_COLUMNS`] is: the Postgres status
+/// check is a port of the SQLite one, and two copies of this SQL could drift
+/// into two different verdicts over the same evidence.
+pub(crate) const NEWEST_STATUS_EVENT_SQL: &str = "(SELECT e.kind FROM audit_events e \
+     WHERE e.transaction_id = t.transaction_id AND e.kind LIKE 'status_%' \
+     ORDER BY e.seq DESC LIMIT 1)";
+/// See [`NEWEST_STATUS_EVENT_SQL`].
+pub(crate) const APPROVAL_CONSUMED_SQL: &str = "EXISTS (SELECT 1 FROM audit_events e \
+     WHERE e.transaction_id = t.transaction_id AND e.kind = 'approval_consumed')";
+
 /// Async, polymorphic interface to the audit log. Implemented by
 /// [`SqliteStore`] (rusqlite, blocking under the hood) and
 /// [`postgres::PostgresStore`] (sqlx, native async).

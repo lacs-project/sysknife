@@ -37,7 +37,8 @@ use uuid::Uuid;
 
 use crate::audit_chain::{
     AttributionCensus, AuditEventKind, AuditKey, AuditVerification, BindingOutcome, ChainContent,
-    ChainIdentity, ChainRow, EventContent, EventIdentity, EventRow, VerifyOutcome, CURRENT_KEY_ID,
+    ChainIdentity, ChainRow, EventContent, EventIdentity, EventRow, StatusEvidence, StatusOutcome,
+    VerifyOutcome, CURRENT_KEY_ID,
 };
 use crate::audit_watermark::emit_chain_tip_watermark;
 use crate::auth::CallerPrincipal;
@@ -58,6 +59,7 @@ const MIGRATION_LOCK_ID: i64 = 0x5359_534b_4e49_4645;
 /// live-Postgres test — the unit tests, which never touch this SQL, stayed
 /// green. That history now lives on the single declaration.
 use crate::store::CHAIN_ROW_COLUMNS;
+use crate::store::{APPROVAL_CONSUMED_SQL, NEWEST_STATUS_EVENT_SQL};
 
 struct Migration {
     version: i64,
@@ -148,6 +150,20 @@ const MIGRATIONS: &[Migration] = &[Migration {
         statements: &[
             "ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS chain_version BIGINT NOT NULL DEFAULT 1",
             "ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS caller_principal TEXT",
+        ],
+    },
+    // Postgres only, with no SQLite twin. Through 0.26.1 this backend chained
+    // no status event, so every terminal row written before this step has
+    // none, and the status cross-check's rule that an unsigned terminal status
+    // is a contradiction would report every upgraded store as tampered. Rows
+    // present now read `TRUE` from the column default; the second statement
+    // flips the default so every row written afterwards is held to that rule.
+    Migration {
+        version: 5,
+        name: "status_event_boundary",
+        statements: &[
+            "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS predates_status_events BOOLEAN NOT NULL DEFAULT TRUE",
+            "ALTER TABLE transactions ALTER COLUMN predates_status_events SET DEFAULT FALSE",
         ],
     },
 ];
@@ -285,11 +301,10 @@ impl PostgresStore {
                 }
             }
         };
-        Ok(crate::audit_chain::verify_all_with_pubkey(
-            verifying_key_hex,
-            &tx_rows,
-            &event_rows,
-        ))
+        let mut verification =
+            crate::audit_chain::verify_all_with_pubkey(verifying_key_hex, &tx_rows, &event_rows);
+        verification.status = Some(status_verdict(&pool).await);
+        Ok(verification)
     }
 
     /// The transaction chain still verifies on its own — report it — but the
@@ -303,10 +318,14 @@ impl PostgresStore {
     ) -> AuditVerification {
         AuditVerification {
             chain: crate::audit_chain::verify_chain_with_pubkey(verifying_key_hex, tx_rows),
+            // The status events live in the table that could not be read, so
+            // the cross-check has nothing to compare the column with.
+            status: Some(StatusOutcome::CannotVerify {
+                detail: format!("status cross-check not run: {reason}"),
+            }),
             events: VerifyOutcome::CannotVerify { reason },
             binding: BindingOutcome::NotChecked,
             attribution: Some(AttributionCensus::of(tx_rows)),
-            status: None,
         }
     }
 
@@ -327,7 +346,9 @@ impl PostgresStore {
     ) -> Result<AuditVerification, TransactionStoreError> {
         let tx_rows = fetch_chain_rows_from_pool(&self.pool).await?;
         let event_rows = fetch_event_rows_from_pool(&self.pool).await?;
-        Ok(crate::audit_chain::verify_all(key, &tx_rows, &event_rows))
+        let mut verification = crate::audit_chain::verify_all(key, &tx_rows, &event_rows);
+        verification.status = Some(status_verdict(&self.pool).await);
+        Ok(verification)
     }
 
     /// Apply pending schema migrations atomically. The advisory transaction
@@ -600,6 +621,19 @@ impl AuditStore for PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(map_sqlx_err)?;
+        // The outcome is chained in the same transaction as the column write,
+        // as on SQLite: written separately, a crash between them would leave a
+        // status nobody can corroborate, which the cross-check reads as
+        // tampering. Status events name no account (#249) and stay legacy.
+        append_event(
+            &mut tx,
+            &self.audit_key,
+            AuditEventKind::from(new_status),
+            transaction_id,
+            "",
+            EventIdentity::LegacyV1,
+        )
+        .await?;
         tx.commit().await.map_err(map_sqlx_err)?;
         Ok(())
     }
@@ -743,6 +777,15 @@ impl AuditStore for PostgresStore {
                 },
             )
             .await?;
+            append_event(
+                &mut tx,
+                &self.audit_key,
+                AuditEventKind::StatusRunning,
+                transaction_id,
+                "",
+                EventIdentity::LegacyV1,
+            )
+            .await?;
         }
         tx.commit().await.map_err(map_sqlx_err)?;
         Ok(result.rows_affected() > 0)
@@ -786,6 +829,15 @@ impl AuditStore for PostgresStore {
                     &CallerPrincipal::Unattributed.as_signed_str(),
                 )
                 .await?;
+                append_event(
+                    &mut tx,
+                    &self.audit_key,
+                    AuditEventKind::StatusCanceled,
+                    &transaction_id,
+                    "",
+                    EventIdentity::LegacyV1,
+                )
+                .await?;
                 canceled_count += result.rows_affected();
             }
         }
@@ -821,6 +873,15 @@ impl AuditStore for PostgresStore {
                 &self.audit_key,
                 transaction_id,
                 &canceller.as_signed_str(),
+            )
+            .await?;
+            append_event(
+                &mut tx,
+                &self.audit_key,
+                AuditEventKind::StatusCanceled,
+                transaction_id,
+                "",
+                EventIdentity::LegacyV1,
             )
             .await?;
         }
@@ -992,6 +1053,69 @@ async fn audit_events_table_absent(pool: &PgPool) -> Result<bool, TransactionSto
             .await
             .map_err(map_sqlx_err)?;
     Ok(present.is_none())
+}
+
+/// The status cross-check, with a failure to run it reported as an
+/// inconclusive verdict. Dropping a failed check would let the other checks
+/// report an intact log; the SQLite CLI path maps errors the same way.
+async fn status_verdict(pool: &PgPool) -> StatusOutcome {
+    status_matches_chain_from_pool(pool)
+        .await
+        .unwrap_or_else(|error| StatusOutcome::CannotVerify {
+            detail: format!("status cross-check failed: {error}"),
+        })
+}
+
+/// Postgres twin of `TransactionStore::status_matches_chain`: the same SQL
+/// fragments and the same rules ([`crate::audit_chain::status_outcome`]).
+///
+/// The auditor path runs no migrations, so it may read a store whose daemon
+/// predates `audit_events` or migration 5. It asks which of the two exists
+/// rather than failing: with no event table there is no status event to find,
+/// and with no boundary column every row predates status events, because the
+/// daemon that wrote them chained none.
+async fn status_matches_chain_from_pool(
+    pool: &PgPool,
+) -> Result<StatusOutcome, TransactionStoreError> {
+    let events_present = !audit_events_table_absent(pool).await?;
+    let boundary_present: bool = sqlx_core::query_scalar::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_attribute \
+         WHERE attrelid = to_regclass('transactions') \
+           AND attname = 'predates_status_events' AND NOT attisdropped)",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(map_sqlx_err)?;
+    let (newest, consumed) = if events_present {
+        (NEWEST_STATUS_EVENT_SQL, APPROVAL_CONSUMED_SQL)
+    } else {
+        ("NULL::text", "FALSE")
+    };
+    let predates = if boundary_present {
+        "t.predates_status_events"
+    } else {
+        "TRUE"
+    };
+    let rows = sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(format!(
+        "SELECT t.transaction_id, t.status, {newest} AS newest, {consumed} AS consumed, \
+                {predates} AS predates FROM transactions t"
+    )))
+    .fetch_all(pool)
+    .await
+    .map_err(map_sqlx_err)?;
+    let evidence = rows
+        .into_iter()
+        .map(|row| {
+            Ok(StatusEvidence {
+                transaction_id: row.try_get("transaction_id").map_err(map_sqlx_err)?,
+                status: deserialize(&row.try_get::<String, _>("status").map_err(map_sqlx_err)?)?,
+                newest_status_event: row.try_get("newest").map_err(map_sqlx_err)?,
+                approval_consumed: row.try_get("consumed").map_err(map_sqlx_err)?,
+                predates_status_events: row.try_get("predates").map_err(map_sqlx_err)?,
+            })
+        })
+        .collect::<Result<Vec<_>, TransactionStoreError>>()?;
+    Ok(crate::audit_chain::status_outcome(evidence))
 }
 
 /// Fetch every approval event in seq order.
