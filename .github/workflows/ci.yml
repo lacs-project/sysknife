@@ -118,6 +118,9 @@ jobs:
       - name: Check npm audit stays off the pull-request path
         run: bash tests/release/npm-audit-off-pr-path.test.sh
 
+      - name: Check scheduled Cargo audit workflow
+        run: bash tests/release/cargo-audit-schedule.test.sh
+
       - name: Check tracked files use portable line endings
         run: bash tests/release/tracked-eol.test.sh
 

@@ -7,6 +7,7 @@
 use crate::action_name::ActionName;
 use crate::planner::{Plan, PlanRiskLevel, PlanStep, PlanningError};
 use crate::provider::ToolDefinition;
+use std::collections::HashSet;
 use sysknife_core::action_family::{
     action_requires_supported_host, DEBIAN_ONLY_ACTIONS, FEDORA_ONLY_ACTIONS,
     NON_CANONICAL_ON_DEBIAN, NON_CANONICAL_ON_DEBIAN_HOST, NON_CANONICAL_ON_FEDORA,
@@ -538,6 +539,488 @@ fn available_on(action: &str, hint: Option<&sysknife_types::DistroHint>) -> bool
     }
 }
 
+struct ParameterExample {
+    actions: &'static [(&'static str, &'static str)],
+    action_separator: &'static str,
+    template: &'static str,
+    params: &'static str,
+}
+
+struct ParameterLine {
+    examples: &'static [ParameterExample],
+    separator: &'static str,
+}
+
+struct ParameterSection {
+    prefix: &'static str,
+    prefix_without_toolboxes: Option<&'static str>,
+    line_separator: &'static str,
+    lines: &'static [ParameterLine],
+}
+
+const PARAMETER_SECTIONS: &[ParameterSection] = &[
+    ParameterSection {
+        prefix: "\n• Flatpak (username is REQUIRED, use key 'username' not 'user'):\n  ",
+        prefix_without_toolboxes: None,
+        line_separator: "\n  ",
+        lines: &[
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[("InstallFlatpak", "InstallFlatpak")],
+                    action_separator: "",
+                    template: "{actions}: {params}",
+                    params: r#"{"username":"alice","app_id":"org.mozilla.firefox","remote":"flathub"}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[
+                        ("RemoveFlatpak", "RemoveFlatpak"),
+                        ("GetFlatpakAppInfo", "GetFlatpakAppInfo"),
+                    ],
+                    action_separator: " / ",
+                    template: "{actions}: {params}",
+                    params: r#"{"username":"alice","app_id":"org.mozilla.firefox"}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[("UpdateFlatpak", "UpdateFlatpak")],
+                    action_separator: "",
+                    template: "{actions}: {params}",
+                    params: r#"{"username":"alice"} or {"username":"alice","app_id":"org.mozilla.firefox"}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[
+                        ("ListInstalledFlatpaks", "ListInstalledFlatpaks"),
+                        ("ListFlatpakRemotes", "ListFlatpakRemotes"),
+                    ],
+                    action_separator: " / ",
+                    template: "{actions}: {params}",
+                    params: r#"{"username":"alice"}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[("SearchFlatpakApps", "SearchFlatpakApps")],
+                    action_separator: "",
+                    template: "{actions}: {params}",
+                    params: r#"{"term":"firefox"}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[("AddFlatpakRemote", "AddFlatpakRemote")],
+                    action_separator: "",
+                    template: "{actions}: {params}",
+                    params: r#"{"username":"alice","remote":"flathub","url":"https://..."}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[("RemoveFlatpakRemote", "RemoveFlatpakRemote")],
+                    action_separator: "",
+                    template: "{actions}: {params}",
+                    params: r#"{"username":"alice","remote":"flathub"}"#,
+                }],
+                separator: "",
+            },
+        ],
+    },
+    ParameterSection {
+        prefix: "\n• Containers/Toolbox (all require username):\n  ",
+        prefix_without_toolboxes: Some("\n• Containers (all require username):\n  "),
+        line_separator: "\n  ",
+        lines: &[
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[
+                        ("ListContainers", "ListContainers"),
+                        ("ListToolboxes", "ListToolboxes"),
+                    ],
+                    action_separator: " / ",
+                    template: "{actions}: {params}",
+                    params: r#"{"username":"alice"}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[("CreateContainer", "CreateContainer")],
+                    action_separator: "",
+                    template: "{actions}: {params}",
+                    params: r#"{"username":"alice","name":"mybox","image":"ubuntu:22.04"}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[
+                        ("StartContainer", "Start"),
+                        ("StopContainer", "Stop"),
+                        ("RemoveContainer", "Remove"),
+                        ("GetContainerInfo", "GetContainerInfo"),
+                    ],
+                    action_separator: "/",
+                    template: "{actions}: {params}",
+                    params: r#"{"username":"alice","name":"mybox"}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[("CreateToolbox", "CreateToolbox")],
+                    action_separator: "",
+                    template: "{actions}: {params} (image/release optional)",
+                    params: r#"{"username":"alice","name":"mybox"}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[("RemoveToolbox", "RemoveToolbox")],
+                    action_separator: "",
+                    template: "{actions}: {params}",
+                    params: r#"{"username":"alice","name":"mybox"}"#,
+                }],
+                separator: "",
+            },
+        ],
+    },
+    ParameterSection {
+        prefix: "\n• Services: ",
+        prefix_without_toolboxes: None,
+        line_separator: "\n  ",
+        lines: &[
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[
+                        ("StartService", "Start"),
+                        ("StopService", "Stop"),
+                        ("RestartService", "Restart"),
+                        ("ReloadService", "Reload"),
+                        ("MaskService", "Mask"),
+                        ("UnmaskService", "Unmask"),
+                        ("GetServiceLogs", "GetLogs"),
+                        ("GetServiceStatus", "GetStatus"),
+                    ],
+                    action_separator: "/",
+                    template: "{params} for {actions}",
+                    params: r#"{"unit":"sshd.service"}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[("SetServiceEnabled", "SetServiceEnabled")],
+                    action_separator: "",
+                    template: "{actions}: {params}",
+                    params: r#"{"unit":"sshd.service","enabled":true}"#,
+                }],
+                separator: "",
+            },
+        ],
+    },
+    ParameterSection {
+        prefix: "\n• SSH: ",
+        prefix_without_toolboxes: None,
+        line_separator: "\n  ",
+        lines: &[
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[("GetAuthorizedKeys", "GetAuthorizedKeys")],
+                    action_separator: "",
+                    template: "{actions}: {params}",
+                    params: r#"{"username":"alice"}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[
+                        ("AddAuthorizedKey", "Add"),
+                        ("RemoveAuthorizedKey", "Remove"),
+                    ],
+                    action_separator: "/",
+                    template: "{actions}AuthorizedKey: {params}",
+                    params: r#"{"username":"alice","public_key":"ssh-ed25519 AAAA... comment"}"#,
+                }],
+                separator: "",
+            },
+        ],
+    },
+    ParameterSection {
+        prefix: "\n• Users: ",
+        prefix_without_toolboxes: None,
+        line_separator: "\n  ",
+        lines: &[
+            ParameterLine {
+                examples: &[
+                    ParameterExample {
+                        actions: &[("CreateUser", "CreateUser")],
+                        action_separator: "",
+                        template: "{actions}: {params} (shell/home optional)",
+                        params: r#"{"username":"alice"}"#,
+                    },
+                    ParameterExample {
+                        actions: &[("DeleteUser", "DeleteUser")],
+                        action_separator: "",
+                        template: "{actions}: {params}",
+                        params: r#"{"username":"alice"}"#,
+                    },
+                ],
+                separator: "; ",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[
+                        ("AddUserToGroup", "AddUserToGroup"),
+                        ("RemoveUserFromGroup", "RemoveUserFromGroup"),
+                    ],
+                    action_separator: "/",
+                    template: "{actions}: {params}",
+                    params: r#"{"username":"alice","group":"wheel"}"#,
+                }],
+                separator: "",
+            },
+        ],
+    },
+    ParameterSection {
+        prefix: "\n• Identity: ",
+        prefix_without_toolboxes: None,
+        line_separator: "\n  ",
+        lines: &[
+            ParameterLine {
+                examples: &[
+                    ParameterExample {
+                        actions: &[("SetHostname", "SetHostname")],
+                        action_separator: "",
+                        template: "{actions}: {params}",
+                        params: r#"{"hostname":"myhost"}"#,
+                    },
+                    ParameterExample {
+                        actions: &[("SetTimezone", "SetTimezone")],
+                        action_separator: "",
+                        template: "{actions}: {params}",
+                        params: r#"{"timezone":"America/Chicago"}"#,
+                    },
+                ],
+                separator: "; ",
+            },
+            ParameterLine {
+                examples: &[
+                    ParameterExample {
+                        actions: &[("SetLocale", "SetLocale")],
+                        action_separator: "",
+                        template: "{actions}: {params}",
+                        params: r#"{"locale":"en_US.UTF-8"}"#,
+                    },
+                    ParameterExample {
+                        actions: &[("SetNtp", "SetNtp")],
+                        action_separator: "",
+                        template: "{actions}: {params}",
+                        params: r#"{"enabled":true}"#,
+                    },
+                ],
+                separator: "; ",
+            },
+        ],
+    },
+    ParameterSection {
+        prefix: "\n• Layering: ",
+        prefix_without_toolboxes: None,
+        line_separator: "\n  ",
+        lines: &[
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[
+                        ("AddLayeredPackage", "AddLayeredPackage"),
+                        ("RemoveLayeredPackage", "RemoveLayeredPackage"),
+                        ("RemoveBasePackage", "RemoveBasePackage"),
+                    ],
+                    action_separator: "/",
+                    template: "{actions}: {params}",
+                    params: r#"{"package":"vim"}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[
+                        ("InstallPackages", "InstallPackages"),
+                        ("RemovePackages", "RemovePackages"),
+                    ],
+                    action_separator: "/",
+                    template: "{actions}: {params}",
+                    params: r#"{"packages":["vim","git"]}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[("ReplaceLayeredPackage", "ReplaceLayeredPackage")],
+                    action_separator: "",
+                    template: "{actions}: {params}",
+                    params: r#"{"old":"vim","new":"vim-enhanced"}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[
+                        ("PinDeployment", "PinDeployment"),
+                        ("UnpinDeployment", "UnpinDeployment"),
+                    ],
+                    action_separator: "/",
+                    template: "{actions}: {params}",
+                    params: r#"{"index":0}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[("RebaseSystem", "RebaseSystem")],
+                    action_separator: "",
+                    template: "{actions}: {params}",
+                    params: r#"{"target_ref":"fedora/40/x86_64/silverblue"}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[("SetKernelArguments", "SetKernelArguments")],
+                    action_separator: "",
+                    template: "{actions}: {params}",
+                    params: r#"{"add":["quiet"],"remove":["rhgb"]}"#,
+                }],
+                separator: "",
+            },
+        ],
+    },
+    ParameterSection {
+        prefix: "\n• Repos: ",
+        prefix_without_toolboxes: None,
+        line_separator: "\n  ",
+        lines: &[
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[("AddPackageRepository", "AddPackageRepository")],
+                    action_separator: "",
+                    template: "{actions}: {params}",
+                    params: r#"{"repo_id":"epel","repo_url":"https://..."}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[
+                        ("RemovePackageRepository", "Remove"),
+                        ("EnablePackageRepository", "Enable"),
+                        ("DisablePackageRepository", "Disable"),
+                    ],
+                    action_separator: "/",
+                    template: "{actions}PackageRepository: {params}",
+                    params: r#"{"repo_id":"epel"}"#,
+                }],
+                separator: "",
+            },
+        ],
+    },
+    ParameterSection {
+        prefix: "\n• Network: ",
+        prefix_without_toolboxes: None,
+        line_separator: "\n  ",
+        lines: &[
+            ParameterLine {
+                examples: &[ParameterExample {
+                    actions: &[("ConfigureFirewall", "ConfigureFirewall")],
+                    action_separator: "",
+                    template: "{actions}: {params}",
+                    params: r#"{"zone":"public","service":"ssh","enabled":true}"#,
+                }],
+                separator: "",
+            },
+            ParameterLine {
+                examples: &[
+                    ParameterExample {
+                        actions: &[(
+                            "ConfigureWifi",
+                            "ConfigureWifi (open networks only, never a password)",
+                        )],
+                        action_separator: "",
+                        template: "{actions}: {params}",
+                        params: r#"{"ssid":"CafeGuest"}"#,
+                    },
+                    ParameterExample {
+                        actions: &[("SetDnsServers", "SetDnsServers")],
+                        action_separator: "",
+                        template: "{actions}: {params}",
+                        params: r#"{"interface":"wlp1s0","servers":["1.1.1.1"]}"#,
+                    },
+                ],
+                separator: "; ",
+            },
+        ],
+    },
+];
+
+fn parameter_description(offered_actions: &HashSet<&str>) -> String {
+    let mut description = String::from(
+        "Action parameters as a JSON string. Use \"{}\" only for no-param actions (see action description). For all others include EXACT key names — the daemon rejects unknown keys.",
+    );
+    for section in PARAMETER_SECTIONS {
+        let mut has_lines = false;
+        for line in section.lines {
+            let examples = line
+                .examples
+                .iter()
+                .filter_map(|example| {
+                    let actions = example
+                        .actions
+                        .iter()
+                        .filter(|(action, _)| offered_actions.contains(action))
+                        .map(|(_, label)| *label)
+                        .collect::<Vec<_>>();
+                    if actions.is_empty() {
+                        return None;
+                    }
+                    Some(
+                        example
+                            .template
+                            .replace("{actions}", &actions.join(example.action_separator))
+                            .replace("{params}", example.params),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if examples.is_empty() {
+                continue;
+            }
+            if has_lines {
+                description.push_str(section.line_separator);
+            } else {
+                let prefix = if offered_actions.contains("ListToolboxes") {
+                    section.prefix
+                } else {
+                    section.prefix_without_toolboxes.unwrap_or(section.prefix)
+                };
+                description.push_str(prefix);
+                has_lines = true;
+            }
+            description.push_str(&examples.join(line.separator));
+        }
+    }
+    description.push_str("\nIMPORTANT: Extract parameter values verbatim from intent. Never omit required fields. Never guess key names — use exact names from the action description.");
+    description
+}
+
 /// Build the `propose_plan` tool definition from both family and distribution
 /// identity, including the planner preferences appropriate to that host.
 ///
@@ -578,6 +1061,8 @@ pub fn propose_plan_tool_def(hint: Option<&sysknife_types::DistroHint>) -> ToolD
          Choose by PURPOSE, not by name similarity. \
          Catalogue (name — what it does):\n{action_catalogue}"
     );
+    let offered_action_names: HashSet<&str> = offered.iter().map(|(name, _)| *name).collect();
+    let params_description = parameter_description(&offered_action_names);
 
     ToolDefinition {
         name: "propose_plan".into(),
@@ -620,7 +1105,7 @@ pub fn propose_plan_tool_def(hint: Option<&sysknife_types::DistroHint>) -> ToolD
                             },
                             "params": {
                                 "type": "string",
-                                "description": "Action parameters as a JSON string. Use \"{}\" only for no-param actions (see action description). For all others include EXACT key names — the daemon rejects unknown keys.\n• Flatpak (username is REQUIRED, use key 'username' not 'user'):\n  InstallFlatpak: {\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\",\"remote\":\"flathub\"}\n  RemoveFlatpak / GetFlatpakAppInfo: {\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\"}\n  UpdateFlatpak: {\"username\":\"alice\"} or {\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\"}\n  ListInstalledFlatpaks / ListFlatpakRemotes: {\"username\":\"alice\"}\n  SearchFlatpakApps: {\"term\":\"firefox\"}\n  AddFlatpakRemote: {\"username\":\"alice\",\"remote\":\"flathub\",\"url\":\"https://...\"}\n  RemoveFlatpakRemote: {\"username\":\"alice\",\"remote\":\"flathub\"}\n• Containers/Toolbox (all require username):\n  ListContainers / ListToolboxes: {\"username\":\"alice\"}\n  CreateContainer: {\"username\":\"alice\",\"name\":\"mybox\",\"image\":\"ubuntu:22.04\"}\n  Start/Stop/Remove/GetContainerInfo: {\"username\":\"alice\",\"name\":\"mybox\"}\n  CreateToolbox: {\"username\":\"alice\",\"name\":\"mybox\"} (image/release optional)\n  RemoveToolbox: {\"username\":\"alice\",\"name\":\"mybox\"}\n• Services: {\"unit\":\"sshd.service\"} for Start/Stop/Restart/Reload/Mask/Unmask/GetLogs/GetStatus\n  SetServiceEnabled: {\"unit\":\"sshd.service\",\"enabled\":true}\n• SSH: GetAuthorizedKeys: {\"username\":\"alice\"}\n  Add/RemoveAuthorizedKey: {\"username\":\"alice\",\"public_key\":\"ssh-ed25519 AAAA... comment\"}\n• Users: CreateUser: {\"username\":\"alice\"} (shell/home optional); DeleteUser: {\"username\":\"alice\"}\n  AddUserToGroup/RemoveUserFromGroup: {\"username\":\"alice\",\"group\":\"wheel\"}\n• Identity: SetHostname: {\"hostname\":\"myhost\"}; SetTimezone: {\"timezone\":\"America/Chicago\"}\n  SetLocale: {\"locale\":\"en_US.UTF-8\"}; SetNtp: {\"enabled\":true}\n• Layering: AddLayeredPackage/RemoveLayeredPackage/RemoveBasePackage: {\"package\":\"vim\"}\n  InstallPackages/RemovePackages: {\"packages\":[\"vim\",\"git\"]}\n  ReplaceLayeredPackage: {\"old\":\"vim\",\"new\":\"vim-enhanced\"}\n  PinDeployment/UnpinDeployment: {\"index\":0}\n  RebaseSystem: {\"target_ref\":\"fedora/40/x86_64/silverblue\"}\n  SetKernelArguments: {\"add\":[\"quiet\"],\"remove\":[\"rhgb\"]}\n• Repos: AddPackageRepository: {\"repo_id\":\"epel\",\"repo_url\":\"https://...\"}\n  Remove/Enable/DisablePackageRepository: {\"repo_id\":\"epel\"}\n• Network: ConfigureFirewall: {\"zone\":\"public\",\"service\":\"ssh\",\"enabled\":true}\n  ConfigureWifi (open networks only, never a password): {\"ssid\":\"CafeGuest\"}; SetDnsServers: {\"interface\":\"wlp1s0\",\"servers\":[\"1.1.1.1\"]}\nIMPORTANT: Extract parameter values verbatim from intent. Never omit required fields. Never guess key names — use exact names from the action description."
+                                "description": params_description
                             }
                         },
                         "required": ["action_name", "summary", "risk_level", "params"]
@@ -1310,6 +1795,12 @@ mod tests {
             .collect()
     }
 
+    fn params_description(def: &ToolDefinition) -> &str {
+        def.input_schema["properties"]["steps"]["items"]["properties"]["params"]["description"]
+            .as_str()
+            .expect("params carries a description")
+    }
+
     #[test]
     fn debian_tool_def_omits_fedora_only_actions() {
         let def = tool_def_for_family(Some(DISTRO_FAMILY_DEBIAN));
@@ -1363,6 +1854,70 @@ mod tests {
                 "Fedora tool def dropped Fedora action {kept}"
             );
         }
+    }
+
+    #[test]
+    fn debian_params_description_omits_fedora_and_noncanonical_examples() {
+        let def = tool_def_for_family(Some(DISTRO_FAMILY_DEBIAN));
+        let description = params_description(&def);
+        for name in FEDORA_ONLY_ACTIONS.iter().chain(NON_CANONICAL_ON_DEBIAN) {
+            assert!(
+                !description.contains(*name),
+                "Debian params description mentioned unavailable action {name}"
+            );
+        }
+        for name in ["ConfigureWifi", "SetDnsServers", "SetServiceEnabled"] {
+            assert!(
+                description.contains(name),
+                "Debian params description omitted available action {name}"
+            );
+        }
+        assert!(description.contains(
+            r#"ConfigureWifi (open networks only, never a password): {"ssid":"CafeGuest"}; SetDnsServers: {"interface":"wlp1s0","servers":["1.1.1.1"]}"#
+        ));
+        assert!(description.contains(
+            r#"AddUserToGroup/RemoveUserFromGroup: {"username":"alice","group":"wheel"}"#
+        ));
+        assert!(description.contains("• Containers (all require username):"));
+        assert!(!description.contains("Toolbox"));
+        // A section whose actions are all withheld must vanish with its
+        // parameters, not leave a bare `: {...}` line behind.
+        for orphan in ["• Layering", "• Repos", "target_ref", "repo_url"] {
+            assert!(
+                !description.contains(orphan),
+                "Debian params description kept {orphan} without its actions"
+            );
+        }
+    }
+
+    #[test]
+    fn fedora_params_description_omits_debian_and_noncanonical_examples() {
+        let def = tool_def_for_family(Some(DISTRO_FAMILY_FEDORA));
+        let description = params_description(&def);
+        for name in DEBIAN_ONLY_ACTIONS
+            .iter()
+            .chain(UBUNTU_ONLY_ACTIONS)
+            .chain(NON_CANONICAL_ON_FEDORA)
+        {
+            assert!(
+                !description.contains(*name),
+                "Fedora params description mentioned unavailable action {name}"
+            );
+        }
+        for name in ["RebaseSystem", "SetKernelArguments", "ListToolboxes"] {
+            assert!(
+                description.contains(name),
+                "Fedora params description omitted available action {name}"
+            );
+        }
+        assert!(description.contains("• Containers/Toolbox (all require username):"));
+        assert!(description.contains(r#"ListContainers / ListToolboxes: {"username":"alice"}"#));
+        assert!(
+            description.contains(r#"RebaseSystem: {"target_ref":"fedora/40/x86_64/silverblue"}"#)
+        );
+        assert!(description.contains(
+            "• Identity: SetHostname: {\"hostname\":\"myhost\"}; SetTimezone: {\"timezone\":\"America/Chicago\"}\n  SetLocale: {\"locale\":\"en_US.UTF-8\"}; SetNtp: {\"enabled\":true}"
+        ));
     }
 
     #[test]
