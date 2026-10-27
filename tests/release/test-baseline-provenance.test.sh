@@ -121,6 +121,19 @@ mkdir -p "$fake_bin" "$sandbox/scripts" "$sandbox/tests/evidence" \
     "$sandbox/apps/sysknife-shell/node_modules/.bin"
 cp "$repo_root/scripts/test_baseline.sh" "$sandbox/scripts/test_baseline.sh"
 cp "$recorder" "$sandbox/scripts/record_test_baseline.py"
+# The recording step re-renders the published figures. The real renderer needs
+# the whole claim surface; the sandbox holds a stand-in that logs how it was
+# called and can be made to fail, which is what the wiring has to be tested with.
+render_log="$fixture/render-calls.log"
+cat > "$sandbox/scripts/render_figures.py" <<'PYEOF'
+import os
+import sys
+with open(os.environ["RENDER_LOG"], "a", encoding="utf-8") as log:
+    log.write(" ".join(sys.argv[1:]) + "\n")
+sys.exit(int(os.environ.get("FAKE_RENDER_STATUS", "0")))
+PYEOF
+export RENDER_LOG="$render_log"
+: > "$render_log"
 cp "$repo_root/tests/evidence/workspace-tests.json" \
     "$sandbox/tests/evidence/workspace-tests.json"
 python3 - "$fake_bin/cargo" "$fake_bin/vitest" <<'PY'
@@ -210,7 +223,24 @@ if python3 "$recorder" --artifact "$legacy_read" --field tests --read >/dev/null
 fi
 cmp "$legacy_read_before" "$legacy_read"
 
+# A verifying run renders nothing; only a recording run re-renders, with --write,
+# and a renderer that fails fails the recording.
+if [[ -s "$render_log" ]]; then
+    printf 'FAIL: a verifying run called the figure renderer: %s\n' "$(cat "$render_log")" >&2
+    exit 1
+fi
+if UPDATE_TEST_BASELINE=1 FAKE_RENDER_STATUS=3 FAKE_RUST_COUNT=$((rust_count + 1)) \
+    run_baseline >/dev/null 2>&1; then
+    printf 'FAIL: a failed figure render was swallowed by the recording run\n' >&2
+    exit 1
+fi
+: > "$render_log"
 UPDATE_TEST_BASELINE=1 FAKE_RUST_COUNT=$((rust_count + 1)) run_baseline >/dev/null
+if [[ "$(cat "$render_log")" != "--write $sandbox" ]]; then
+    printf 'FAIL: recording did not run render_figures.py --write on the tree: %s\n' \
+        "$(cat "$render_log")" >&2
+    exit 1
+fi
 python3 - "$sandbox/tests/evidence/workspace-tests.json" "$frontend_count" "$rust_count" <<'PY'
 import json
 import sys

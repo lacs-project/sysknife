@@ -15,6 +15,10 @@
 #   UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh              # Rust workspace
 #   UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh --frontend   # vitest
 #
+# Either one then runs scripts/render_figures.py --write, which re-renders every
+# figure marker in the README and docs from the evidence. Commit the evidence
+# file and whatever it re-rendered.
+#
 # Without UPDATE_TEST_BASELINE the run verifies instead: a suite whose size no
 # longer matches the recorded baseline fails, because a published claim derives
 # from that baseline. Remaining arguments are forwarded to the runner, so this is
@@ -104,6 +108,10 @@ if [[ "${UPDATE_TEST_BASELINE:-0}" == "1" ]]; then
         --count "$count"
     printf '\ntest_baseline: recorded %s %s tests in %s\n' \
         "$count" "$suite" "${artifact#"$repo_root"/}"
+    # The published figures derive from the evidence just recorded, so re-render
+    # them in the same step: one command updates evidence and docs. No pipe, so a
+    # failed render is this script's exit status.
+    python3 "$repo_root/scripts/render_figures.py" --write "$repo_root"
     exit 0
 fi
 
