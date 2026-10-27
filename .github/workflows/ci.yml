@@ -213,6 +213,9 @@ jobs:
       - name: Check provider parity across E2E entry points
         run: bash tests/e2e/provider-parity.test.sh
 
+      - name: Check the E2E installers run only after their sha256 matches
+        run: bash tests/e2e/pinned-installers.test.sh
+
       - name: Check VM harnesses keep provider keys out of process arguments
         run: bash tests/e2e/vm-env-secrets.test.sh
 

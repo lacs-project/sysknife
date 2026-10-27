@@ -178,13 +178,51 @@ elif not re.search(r"^\s*npm ci\b", install_fn.group(), re.M):
     fail("scripts/ci-local.sh frontend_install must install with `npm ci`")
 
 # ---------------------------------------------------------------------------
+# Installers: e2e.yml:129, provision.sh:88 and :113, ubuntu-provision.sh:169
+# ---------------------------------------------------------------------------
+# Each one now goes through tests/e2e/pinned-installers.sh, which checks a pinned
+# sha256 before it runs anything. tests/e2e/pinned-installers.test.sh proves the
+# helper refuses a mismatch; this part proves the four sites actually use it.
+
+helper_rel = "tests/e2e/pinned-installers.sh"
+helper_use = {
+    "tests/e2e/provision.sh": ["pinned_install_rustup", "pinned_install_ollama"],
+    "tests/e2e/ubuntu-provision.sh": ["pinned_install_rustup"],
+}
+for rel, functions in helper_use.items():
+    text = code_lines(read(rel))
+    if "pinned-installers.sh" not in text or not re.search(r"\bsource\b|(?:^|\s)\.\s", text):
+        fail(f"{rel} does not source {helper_rel}")
+    for function in functions:
+        if not re.search(r"\b" + function + r"\b", text):
+            fail(f"{rel} never calls {function}")
+    for forbidden in ("sh.rustup.rs", "ollama.com/install.sh"):
+        if forbidden in text:
+            fail(f"{rel} still references {forbidden} outside the pinned helper")
+
+e2e = run_blocks(".github/workflows/e2e.yml")
+ollama_step = next((script for name, script in e2e.items() if name.endswith("/Install Ollama")), "")
+if not ollama_step:
+    fail("e2e.yml has no 'Install Ollama' step")
+else:
+    if "pinned_install_ollama" not in ollama_step or "tests/e2e/pinned-installers.sh" not in ollama_step:
+        fail("e2e.yml 'Install Ollama' must source tests/e2e/pinned-installers.sh and call pinned_install_ollama")
+    if "ollama.com/install.sh" in ollama_step:
+        fail("e2e.yml 'Install Ollama' still references ollama.com/install.sh")
+
+ci_steps = run_blocks(".github/workflows/ci.yml")
+if not any(script.strip() == "bash tests/e2e/pinned-installers.test.sh" for script in ci_steps.values()):
+    fail("ci.yml does not run tests/e2e/pinned-installers.test.sh")
+
+# ---------------------------------------------------------------------------
 # The scan itself, over every file Scorecard reads for these shapes
 # ---------------------------------------------------------------------------
 
-for rel in (".github/workflows/ci.yml", ".github/workflows/release.yml"):
+for rel in (".github/workflows/ci.yml", ".github/workflows/e2e.yml", ".github/workflows/release.yml"):
     for step, script in run_blocks(rel).items():
         scan_unpinned(f"{rel} [{step}]", script)
-for rel in ("scripts/ci-local.sh",):
+for rel in ("scripts/ci-local.sh", "tests/e2e/provision.sh", "tests/e2e/ubuntu-provision.sh",
+            "tests/e2e/pinned-installers.sh"):
     scan_unpinned(rel, read(rel))
 
 # The scanner must be able to fail: each shape it forbids, once, as a self-check.

@@ -125,8 +125,12 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
 
       - name: Install Ollama
+        # Not `curl ... | sh`: pinned_install_ollama downloads Ollama's install.sh
+        # at a fixed commit, checks its sha256 and only then runs it, installing
+        # the pinned release. A mismatch fails this step.
         run: |
-          curl -fsSL https://ollama.com/install.sh | sh
+          source tests/e2e/pinned-installers.sh
+          pinned_install_ollama
           nohup ollama serve > /tmp/ollama.log 2>&1 &
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:11434/api/tags > /dev/null; then

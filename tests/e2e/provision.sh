@@ -43,6 +43,11 @@ fail() {
     exit 1
 }
 
+# rustup and Ollama are installed from sha256-pinned downloads, never piped into
+# a shell. See tests/e2e/pinned-installers.sh.
+# shellcheck source=tests/e2e/pinned-installers.sh
+source "$(dirname "${BASH_SOURCE[0]}")/pinned-installers.sh"
+
 # ---------------------------------------------------------------------------
 # Phase 1: Layer build tools via rpm-ostree (requires reboot afterward)
 # ---------------------------------------------------------------------------
@@ -85,9 +90,7 @@ step "Install Rust via rustup"
 source "$HOME/.cargo/env" 2>/dev/null || true
 export PATH="$HOME/.cargo/bin:$PATH"
 if ! command -v cargo &>/dev/null; then
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- -y --default-toolchain stable \
-        || fail "Install Rust"
+    pinned_install_rustup || fail "Install Rust"
     # shellcheck disable=SC1091
     source "$HOME/.cargo/env" 2>/dev/null || true
     export PATH="$HOME/.cargo/bin:$PATH"
@@ -110,7 +113,7 @@ fi
 
 if [ -z "$_skip_ollama" ]; then
     if ! command -v ollama &>/dev/null; then
-        curl -fsSL https://ollama.com/install.sh | sh || fail "Ollama install"
+        pinned_install_ollama || fail "Ollama install"
     fi
 
     # The official installer tries to create a systemd unit + ollama system
