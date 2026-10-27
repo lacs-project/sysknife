@@ -12,6 +12,20 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Added
+
+- **Fuzz targets for the trust boundary, run by ClusterFuzzLite on pull
+  requests.** `fuzz/` holds cargo-fuzz targets for the `validated_*` functions,
+  action-parameter decoding through `build_action_spec`, the daemon's request
+  decoding and its frame reader. A validator that accepts a value outside its
+  documented contract (a control character, a leading `-`, a length past its
+  bound) fails the fuzzer even when it does not panic. `.clusterfuzzlite/` and
+  `.github/workflows/cflite_pr.yml` run the targets for five minutes on pull
+  requests that touch `crates/` or the fuzz setup. The daemon exposes its
+  private pieces to the fuzz crate only under `#[cfg(fuzzing)]`, so its public
+  API does not change. [docs/contributing/fuzzing.md](docs/contributing/fuzzing.md)
+  covers running a target and adding one.
+
 ## [0.28.0] — 2026-10-28
 
 ### Changed

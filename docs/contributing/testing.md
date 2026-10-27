@@ -11,6 +11,7 @@ validation before a release.
 | Unit tests (Rust) | Individual functions, parsers, traits | <5s | Every commit, every CI run |
 | Unit tests (TypeScript) | React components, reducers, IPC shims | <5s | Every commit, every CI run |
 | Integration (Rust) | Daemon IPC, safety fence, policy | <10s | Every commit, every CI run |
+| Fuzzing (cargo-fuzz) | Validators, action-parameter decoding, request and frame decoding, on arbitrary bytes | 5 min in CI, as long as you like locally | Pull requests that touch `crates/` or the fuzz setup (ClusterFuzzLite); locally after a validator change |
 | **Dev stories (local, no VM)** | LLM plan structure for read-only stories; runs on any Linux host | 1-3 min | After brain/prompt changes |
 | CI smoke (container) | Daemon + Ollama + read-only stories in a Linux runner | 5-10 min | Opt-in (manual `workflow_dispatch` only) |
 | E2E Atomic VM | **Real Silverblue** in QEMU/KVM, full stack, all <!-- fig:stories_atomic floor=10 -->50+<!-- /fig --> stories | 15-30 min first boot; 2-3 min subsequent | Local / pre-release |
@@ -35,6 +36,14 @@ npm ci
 npm test
 npm exec -- tsc --noEmit
 ```
+
+## Fuzzing the trust boundary
+
+ClusterFuzzLite fuzzes the `validated_*` functions, the action-parameter decoding,
+and the daemon's request and frame decoding on every pull request that touches
+`crates/` or the fuzz setup. After you change a validator, run its target locally; the commands,
+the corpus layout and how to add a validator or a target are in
+[Fuzzing the trust boundary](fuzzing.md).
 
 ## Running stories on your dev machine (no VM required)
 
