@@ -1084,4 +1084,301 @@ grep -q '"rate_limited": 1' \
 assert_rejected 'Validated tier backed by a replay with rate-limited stories'
 
 
+# ---------------------------------------------------------------------------
+# Figures are rendered, not typed (scripts/render_figures.py).
+#
+# Each refusal below is proved to bite by deleting its guard (see the mutation
+# notes in the commit that added it); a test here that stays green with its
+# guard removed is decorative.
+# ---------------------------------------------------------------------------
+renderer="$repo_root/scripts/render_figures.py"
+
+# The tier tests above left a mutated replay twin behind. Put every story run
+# back, and prove the whole fixture passes again, before attacking figures: a
+# rejection below must come from the figure under test.
+cp "$repo_root"/tests/evidence/story-runs/*.json "$fixture/tests/evidence/story-runs/"
+if ! output="$("$checker" "$fixture" 2>&1)"; then
+    printf 'FAIL: the fixture is rejected before the figure tests begin\n%s\n' "$output" >&2
+    exit 1
+fi
+
+# A stale marker fails, names the file and line, and shows both values. Only the
+# renderer can catch this one: the stored floor is not an exact count, so no
+# semantic check compares it.
+want_rust="$(rendered rust_tests 1000)"
+old_value="$(set_marker_value "$fixture/README.md" rust_tests '1,000+')"
+if [[ "$old_value" != "$want_rust" || "$want_rust" == '1,000+' ]]; then
+    printf 'FAIL: stale-marker mutation did not change the value (was %s, rendered %s)\n' \
+        "$old_value" "$want_rust" >&2
+    exit 1
+fi
+assert_rejected_with_diagnostic 'a stale figure marker' \
+    'README.md:' "stale figure 'rust_tests'" "stored '1,000+'" "rendered '$want_rust'"
+restore_claim_file README.md
+
+# An unknown NAME fails and lists what is known.
+python3 - "$fixture/docs/architecture.md" <<'PYEOF'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+if text.count("fig:typed_actions ") != 1:
+    raise SystemExit("expected exactly one typed_actions marker in architecture.md")
+path.write_text(text.replace("fig:typed_actions ", "fig:typed_actionz "), encoding="utf-8")
+PYEOF
+grep -Fq 'fig:typed_actionz' "$fixture/docs/architecture.md" || {
+    printf 'FAIL: unknown-NAME mutation did not apply\n' >&2
+    exit 1
+}
+assert_rejected_with_diagnostic 'an unknown figure NAME' \
+    'docs/architecture.md:' "unknown figure NAME 'typed_actionz'" 'rust_tests'
+restore_claim_file docs/architecture.md
+
+# A figure outside a marker fails, even a rounded floor that no semantic check
+# could validate. This is the loophole: without it a hand-typed number creeps back.
+printf '\nThe suite has 2,000+ Rust tests.\n' >> "$fixture/README.md"
+assert_rejected_with_diagnostic 'a hand-typed floor outside a marker' \
+    'README.md:' "figure '2,000+ Rust tests' is not inside a"
+restore_claim_file README.md
+printf '\nThe catalogue holds 190+ typed actions and 72 frontend tests.\n' >> "$fixture/README.md"
+assert_rejected_with_diagnostic 'hand-typed action and frontend figures' \
+    "figure '190+ typed actions'" "figure '72 frontend tests'"
+restore_claim_file README.md
+
+# The two README badges read the evidence file and carry no figure. They must be
+# present, or the pristine pass above says nothing about them.
+for badge in 'query=$.tests&label=Rust%20tests' 'query=$.frontend_tests&label=frontend%20tests'; do
+    if ! grep -Fq "$badge" "$fixture/README.md"; then
+        printf 'FAIL: README is missing the live badge %s\n' "$badge" >&2
+        exit 1
+    fi
+done
+
+# A marker inside a code fence fails; one inside an inline code span is syntax
+# documentation and does not.
+printf '\n```sh\n# <!-- fig:rust_tests floor=1000 -->%s<!-- /fig -->\n```\n' "$want_rust" >> "$fixture/README.md"
+assert_rejected_with_diagnostic 'a figure marker inside a code fence' \
+    'README.md:' 'figure marker inside a fenced code block'
+restore_claim_file README.md
+printf '\nWrite `<!-- fig:NAME -->VALUE<!-- /fig -->` around a figure.\n' >> "$fixture/README.md"
+if ! output="$("$checker" "$fixture" 2>&1)"; then
+    printf 'FAIL: a marker shown in an inline code span was parsed\n%s\n' "$output" >&2
+    exit 1
+fi
+restore_claim_file README.md
+
+# Malformed markers: unbalanced and nested.
+printf '\nSee <!-- fig:rust_tests floor=1000 -->%s for the size.\n' "$want_rust" >> "$fixture/README.md"
+assert_rejected_with_diagnostic 'an unbalanced figure marker' \
+    'README.md:' 'unbalanced figure marker'
+restore_claim_file README.md
+printf '\nSee <!-- fig:rust_tests floor=1000 --><!-- fig:frontend_tests -->1<!-- /fig --><!-- /fig -->.\n' >> "$fixture/README.md"
+assert_rejected_with_diagnostic 'a nested figure marker' \
+    'README.md:' 'nested figure marker'
+restore_claim_file README.md
+
+# A doc that must state the test count loses its marker: dropping the figure
+# must not pass silently.
+python3 - "$fixture/docs/distro-support.md" <<'PYEOF'
+import re
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+updated, count = re.subn(r"<!-- fig:rust_tests floor=1000 -->[^<]*<!-- /fig --> Rust tests", "unit tests", text)
+if count != 1:
+    raise SystemExit("expected one rust_tests marker in distro-support.md")
+path.write_text(updated, encoding="utf-8")
+PYEOF
+assert_rejected_with_diagnostic 'a required test-count doc that stopped stating it' \
+    'docs/distro-support.md' 'does not state the measured baseline'
+restore_claim_file docs/distro-support.md
+
+# Rounding at the boundary, against fixture evidence: v = K*n renders n*K+, and
+# v = K*n - 1 renders (n-1)*K+, and v < K refuses. The fixture evidence is changed
+# through the real recorder's schema (only the `tests` field moves).
+set_tests() {
+    python3 - "$fixture/tests/evidence/workspace-tests.json" "$1" <<'PYEOF'
+import json
+import sys
+path = sys.argv[1]
+doc = json.loads(open(path, encoding="utf-8").read())
+doc["tests"] = int(sys.argv[2])
+open(path, "w", encoding="utf-8").write(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+PYEOF
+}
+marker_of() {  # file name -> the first marker's stored value
+    python3 - "$1" "$2" <<'PYEOF'
+import re
+import sys
+text = open(sys.argv[1], encoding="utf-8").read()
+match = re.search(r"<!--\s*fig:" + re.escape(sys.argv[2]) + r"(?:\s+floor=[0-9]+)?\s*-->([^<\n]*)<!--", text)
+if not match:
+    raise SystemExit(f"no marker {sys.argv[2]}")
+print(match.group(1))
+PYEOF
+}
+# The claim files, read from the checker, for the snapshot and restore steps.
+mapfile -t restore_list < <(
+    python3 - "$repo_root/scripts/check_evidence_claims.py" <<'PYEOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("checker", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print("\n".join(mod.CLAIM_FILES))
+PYEOF
+)
+((${#restore_list[@]})) || { printf 'FAIL: could not list the claim files\n' >&2; exit 1; }
+snapshot="$(mktemp -d)"
+trap 'rm -rf "$fixture" "$snapshot"' EXIT
+for rel in "${restore_list[@]}"; do
+    mkdir -p "$snapshot/$(dirname "$rel")"
+    cp "$fixture/$rel" "$snapshot/$rel"
+done
+set_tests 3000
+if python3 "$renderer" --check "$fixture" >/dev/null 2>&1; then
+    printf 'FAIL: --check accepted markers that are stale against the evidence\n' >&2
+    exit 1
+fi
+python3 "$renderer" --write "$fixture" >/dev/null || {
+    printf 'FAIL: --write failed on a stale fixture\n' >&2
+    exit 1
+}
+# --write rewrites only marker contents: with every marker masked, each file is
+# byte-identical to its snapshot, and at least one marker value did change.
+python3 - "$snapshot" "$fixture" "$repo_root/scripts/check_evidence_claims.py" <<'PYEOF'
+import importlib.util
+import sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("checker", sys.argv[3])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+before, after = Path(sys.argv[1]), Path(sys.argv[2])
+changed = 0
+for rel in mod.CLAIM_FILES:
+    old = (before / rel).read_text(encoding="utf-8")
+    new = (after / rel).read_text(encoding="utf-8")
+    if mod.mask_markers(old) != mod.mask_markers(new):
+        raise SystemExit(f"--write changed bytes outside the markers in {rel}")
+    changed += old != new
+if not changed:
+    raise SystemExit("--write changed nothing, so the check above proves nothing")
+PYEOF
+at_boundary="$(marker_of "$fixture/README.md" rust_tests)"
+if [[ "$at_boundary" != '3,000+' ]]; then
+    printf 'FAIL: v = K*n rendered %s, want 3,000+\n' "$at_boundary" >&2
+    exit 1
+fi
+set_tests 2999
+python3 "$renderer" --write "$fixture" >/dev/null || {
+    printf 'FAIL: --write failed at K*n - 1\n' >&2
+    exit 1
+}
+below_boundary="$(marker_of "$fixture/README.md" rust_tests)"
+if [[ "$below_boundary" != '2,000+' ]]; then
+    printf 'FAIL: v = K*n - 1 rendered %s, want 2,000+\n' "$below_boundary" >&2
+    exit 1
+fi
+
+# v = K exactly is not below its floor.
+set_tests 1000
+python3 "$renderer" --write "$fixture" >/dev/null || {
+    printf 'FAIL: --write refused v = K, which is not below its floor\n' >&2
+    exit 1
+}
+at_floor="$(marker_of "$fixture/README.md" rust_tests)"
+if [[ "$at_floor" != '1,000+' ]]; then
+    printf 'FAIL: v = K rendered %s, want 1,000+\n' "$at_floor" >&2
+    exit 1
+fi
+set_tests 2999
+python3 "$renderer" --write "$fixture" >/dev/null
+
+# --write then --check passes, and a second --write changes no byte.
+python3 "$renderer" --check "$fixture" >/dev/null || {
+    printf 'FAIL: --check rejected the tree --write had just rendered\n' >&2
+    exit 1
+}
+before_second="$(cat "$fixture/README.md" "$fixture/docs/introduction.md" "$fixture/docs/distro-support.md" | sha256sum)"
+python3 "$renderer" --write "$fixture" >/dev/null
+after_second="$(cat "$fixture/README.md" "$fixture/docs/introduction.md" "$fixture/docs/distro-support.md" | sha256sum)"
+if [[ "$before_second" != "$after_second" ]]; then
+    printf 'FAIL: a second --write changed bytes\n' >&2
+    exit 1
+fi
+
+# A value below its floor refuses, and --write then writes nothing at all.
+set_tests 999
+before_refused="$(cat "$fixture/README.md" "$fixture/docs/introduction.md" | sha256sum)"
+if refusal="$(python3 "$renderer" --write "$fixture" 2>&1)"; then
+    printf 'FAIL: --write accepted a value below its floor\n' >&2
+    exit 1
+fi
+after_refused="$(cat "$fixture/README.md" "$fixture/docs/introduction.md" | sha256sum)"
+if [[ "$before_refused" != "$after_refused" || "$refusal" != *'is below floor=1,000'* ]]; then
+    printf 'FAIL: below-floor refusal wrote files or lost its diagnostic\n%s\n' "$refusal" >&2
+    exit 1
+fi
+cp "$repo_root/tests/evidence/workspace-tests.json" "$fixture/tests/evidence/workspace-tests.json"
+for rel in README.md docs/introduction.md docs/distro-support.md; do
+    restore_claim_file "$rel"
+done
+
+# An unreadable evidence file fails closed, from the renderer itself and not only
+# from the checker that runs before it: missing, then corrupt.
+mv "$fixture/tests/evidence/workspace-tests.json" "$fixture/tests/evidence/held.json"
+if unreadable="$(python3 "$renderer" --check "$fixture" 2>&1)"; then
+    printf 'FAIL: renderer passed with the evidence file missing\n' >&2
+    exit 1
+fi
+if [[ "$unreadable" != *'Figures could not be rendered'*'workspace-tests.json'* ]]; then
+    printf 'FAIL: missing-evidence diagnostic did not name the file\n%s\n' "$unreadable" >&2
+    exit 1
+fi
+printf '{ not json' > "$fixture/tests/evidence/workspace-tests.json"
+if unreadable="$(python3 "$renderer" --write "$fixture" 2>&1)"; then
+    printf 'FAIL: renderer wrote from a corrupt evidence file\n' >&2
+    exit 1
+fi
+if [[ "$unreadable" != *'not readable JSON'* ]]; then
+    printf 'FAIL: corrupt-evidence diagnostic did not say so\n%s\n' "$unreadable" >&2
+    exit 1
+fi
+rm -f "$fixture/tests/evidence/held.json"
+cp "$repo_root/tests/evidence/workspace-tests.json" "$fixture/tests/evidence/workspace-tests.json"
+
+# A run that finds no marker anywhere is an error, never a pass.
+python3 - "$repo_root/scripts/check_evidence_claims.py" "$fixture" <<'PYEOF'
+import importlib.util
+import sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("checker", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+root = Path(sys.argv[2])
+for rel in mod.CLAIM_FILES:
+    path = root / rel
+    path.write_text(mod.unwrap_markers(path.read_text(encoding="utf-8")), encoding="utf-8")
+PYEOF
+if [[ -n "$(grep -rl 'fig:' "$fixture/README.md" || true)" ]]; then
+    printf 'FAIL: marker-stripping mutation did not apply\n' >&2
+    exit 1
+fi
+if none="$(python3 "$renderer" --check "$fixture" 2>&1)"; then
+    printf 'FAIL: renderer passed over a tree with no markers\n' >&2
+    exit 1
+fi
+if [[ "$none" != *'no figure markers found'* ]]; then
+    printf 'FAIL: no-marker diagnostic lost\n%s\n' "$none" >&2
+    exit 1
+fi
+((${#restore_list[@]})) || { printf 'FAIL: could not list the claim files to restore\n' >&2; exit 1; }
+for rel in "${restore_list[@]}"; do
+    restore_claim_file "$rel"
+done
+if ! output="$("$checker" "$fixture" 2>&1)"; then
+    printf 'FAIL: the restored fixture is rejected after the figure tests\n%s\n' "$output" >&2
+    exit 1
+fi
+
 printf 'Public claims contract passed.\n'
