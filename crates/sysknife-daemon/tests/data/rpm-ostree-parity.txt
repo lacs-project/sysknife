@@ -1,6 +1,6 @@
 # One rpm-ostree operand per line, and what each validator must say about it.
 #
-#   <kind> <ok|refuse|helper-only> <operand>
+#   <kind> <ok|refuse> <operand>
 #
 # The daemon validates these operands in crates/sysknife-daemon/src/executor.rs and
 # crates/sysknife-daemon/src/actions/validate.rs, and the root-owned helper
@@ -18,10 +18,9 @@
 #   append   validated_safe_kernel_arg      (SetKernelArguments add; helper karg_append)
 #   delete   validated_safe_kernel_arg_removal (SetKernelArguments remove; helper karg_delete)
 #
-# The helper's append screen is grub-kargs-edit's, which also refuses every downgrade in
-# WEAKENING_KARGS. The daemon's add screen refuses only the ones in its own lists. The tokens
-# where the two differ are `append helper-only` lines: the daemon accepts them and the helper
-# refuses them. tests/release/action-steps.test.sh pins the helper's lists to grub-kargs-edit.
+# append and delete follow one allowlist, held in all three copies (executor.rs,
+# grub-kargs-edit, action-steps): an append is accepted only for a listed key, and a delete only
+# for an ordinary listed key or an exact downgrade in KARG_WEAKENING.
 #
 # The operand is everything after the second space, so it may contain spaces. Lines that
 # start with `#` and blank lines are skipped. Any other line that does not parse fails the
@@ -100,8 +99,8 @@ ref refuse fedora=41
 append ok quiet
 append ok nomodeset
 append ok console=ttyS0,115200
-append ok rd.luks.uuid=luks-0123
-append ok systemd.unit=multi-user.target
+append refuse rd.luks.uuid=luks-0123
+append refuse systemd.unit=multi-user.target
 append ok intel_iommu=on
 append ok mitigations=auto
 append refuse breakfast
@@ -144,7 +143,7 @@ append refuse enforcing=0
 append refuse security=none
 append refuse apparmor=0
 append refuse lockdown=none
-append refuse lockdown=integrity
+append ok lockdown=integrity
 append refuse mitigations=off
 append refuse pti=off
 append refuse nosmap
@@ -200,7 +199,7 @@ delete ok rhgb=1
 # --- append: units pulled in with wants, and the remaining weakenings ---
 append refuse systemd.wants=debug-shell.service
 append refuse rd.systemd.wants=emergency.target
-append ok systemd.wants=sshd.service
+append refuse systemd.wants=sshd.service
 append refuse lsm=landlock
 append refuse rd.shell
 append refuse systemd.mask=auditd.service
@@ -213,8 +212,8 @@ append refuse nospectre_v2
 append refuse spectre_v2=off
 append refuse spec_store_bypass_disable=off
 append refuse nokaslr
-append ok audit=1
-append ok spectre_v2=on
+append refuse audit=1
+append refuse spectre_v2=on
 # --- rebase: `..` and `@/` where no other rule sees them ---
 ref refuse fedora/../../tmp/x
 ref refuse ostree-unverified-registry:x@/tmp/repo
@@ -229,7 +228,7 @@ append refuse rd.systemd.debug-shell
 append refuse nospectre-bhb
 append refuse tsx-async-abort=off
 append refuse nospectre-v2
-append ok systemd.wants=foo-bar.service
+append refuse systemd.wants=foo-bar.service
 append refuse systemd.unit=debug-shell.service
 delete refuse module.sig-enforce=1
 delete refuse init-on-alloc=1
@@ -263,11 +262,11 @@ append refuse gather_data_sampling=off
 append refuse reg_file_data_sampling=off
 append refuse nospec_store_bypass_disable
 append refuse nospectre_bhb
-append ok mds=full
-append ok retbleed=auto
-append ok l1tf=flush
-append ok spectre_bhi=on
-append ok gather_data_sampling=force
+append refuse mds=full
+append refuse retbleed=auto
+append refuse l1tf=flush
+append refuse spectre_bhi=on
+append refuse gather_data_sampling=force
 delete refuse mds=full
 delete refuse mds
 delete refuse tsx_async_abort=full
@@ -282,10 +281,10 @@ delete refuse spectre_v2=on
 delete refuse spec_store_bypass_disable=on
 delete ok mds=off
 delete ok retbleed=off
-delete ok audit=false
-delete ok pti=no
+delete refuse audit=false
+delete refuse pti=no
 delete ok spectre_v2=off
-# --- downgrades the helper refuses on append and the daemon accepts ---
-append helper-only debugfs=on
-append helper-only iommu=off
-append helper-only intel_iommu=off
+# --- downgrades: refused on append by every copy ---
+append refuse debugfs=on
+append refuse iommu=off
+append refuse intel_iommu=off

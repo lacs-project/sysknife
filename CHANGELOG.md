@@ -78,28 +78,25 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   runlevels 2 to 5 and their `rd.` forms. The daemon's copy also requires each
   `SetKernelArguments` value to be one boot-line token from the helper's
   character set plus `,`, so whitespace, quotes and control bytes no longer
-  carry a second argument past the screen. Every copy now refuses to remove a
-  protective argument by its bare key, such as `lockdown`, which libostree reads
-  as removing `lockdown=confidentiality`. The add screens also refuse a
-  root-shell unit pulled in with `systemd.wants=`, and `lsm=`, `rd.shell`,
-  `systemd.mask=`, `modprobe.blacklist=`, `audit=0`, `nokaslr`, `nopti`,
-  `nospectre_v1`, `nospectre_v2`, `spectre_v2=off` and
-  `spec_store_bypass_disable=off`. Every screen now reads `-` and `_` as one
-  character in a parameter name, as the kernel and systemd do, so
-  `spectre-v2=off` is refused like `spectre_v2=off`, and refuses every spelling
-  of off (`0`, `off`, `n`, `no`, `false`) for `audit` and the mitigation
-  switches, which now include `mds`, `tsx_async_abort`, `mmio_stale_data`,
-  `retbleed`, `srbds`, `l1tf`, `spectre_bhi`, `gather_data_sampling`,
-  `reg_file_data_sampling`, `nospec_store_bypass_disable` and `nospectre_bhb`.
+  carry a second argument past the screen. Review kept finding spellings past
+  the denylists, so all three kernel-argument screens (the daemon,
+  `grub-kargs-edit` and the `rpm-ostree kargs` verb of `action-steps`) now
+  accept a fixed list of keys instead: display and boot flags such as `quiet`,
+  ordinary keys such as `console=` and `rd.driver.blacklist=`, and hardening
+  keys only at their hardening values, such as `lockdown=integrity`. They read
+  `-` and `_` as one character in a key, as the kernel does. Removal is limited
+  to the ordinary keys and to known downgrades such as `mitigations=off`, so a
+  hardening argument cannot be dropped, by its full spelling or by its bare key.
   The `action-steps` helper now refuses
   to lock or unlock `root`, `daemon`, `bin`, `sys`, `sudo` and `adm`, as the
   daemon does, and `UnlockUserAccount` applies the same list. The helper also
   refuses account names that start with `.` or contain `..`, as the daemon
   does. (GHSA-76v3-hw9r-58pm)
 
-- **`grub-kargs-edit` refuses every `lockdown=` value on `--append`.** The daemon
-  refused the prefix and the helper only `lockdown=none`, so a direct call could
-  set `lockdown=integrity`. (GHSA-8rx7-g2jg-5pxg)
+- **`grub-kargs-edit` and the daemon agree on `lockdown=`.** The daemon refused
+  the prefix and the helper only `lockdown=none`, so a direct call could set a
+  lockdown mode the daemon refused. Both now accept only `integrity` and
+  `confidentiality`. (GHSA-8rx7-g2jg-5pxg)
 
 - **`scheduled-job-edit` checks the whole systemd unit load path.** It looked
   for collisions in `/etc/systemd/system` alone, so a job named `daemon` could
@@ -184,7 +181,7 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   `/usr/lib/sysknife/action-steps`. The verb builds the rpm-ostree argv itself
   and accepts no option. It validates each package with the daemon's rule,
   which refuses a path, a URL and a local `.rpm`; screens each kernel argument
-  with the denylists `grub-kargs-edit` applies; and refuses a rebase target
+  with the allowlist `grub-kargs-edit` applies; and refuses a rebase target
   that reads from the host, such as a local repository or an `oci:` image
   directory. `RebaseSystem` refuses those targets in the daemon too, and both
   copies of every rule check `tests/data/rpm-ostree-parity.txt`.

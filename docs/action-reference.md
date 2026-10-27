@@ -21,7 +21,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `RebootSystem` | `sudo systemctl reboot` | High | All | ✓ | – | reboot the machine into the current or staged deployment |
 | `RollbackDeployment` | `sudo rpm-ostree rollback` | High | Fedora | ✓ | – | roll back to the previous booted deployment |
 | `GetKernelArguments` | `rpm-ostree kargs` | Low | Fedora | – | – | list current kernel command-line arguments (kargs) |
-| `SetKernelArguments` | `sudo /usr/lib/sysknife/action-steps rpm-ostree kargs` | High | Fedora | ✓ | ✓ | add/remove kernel command-line args — params: add (string\[\]), remove (string\[\]) — either may be \[\]; both lists are screened: no weakening arg may be added, and no protective one (lockdown=, module.sig_enforce=1, pti=on, mitigations=, selinux=1, slab_nomerge, …) removed |
+| `SetKernelArguments` | `sudo /usr/lib/sysknife/action-steps rpm-ostree kargs` | High | Fedora | ✓ | ✓ | add/remove kernel command-line args from a fixed list — params: add (string\[\]), remove (string\[\]) — either may be \[\]; add accepts only the flags quiet, splash, rhgb, nomodeset, nowatchdog, threadirqs, nosmt, slab_nomerge; any value for console, video, resume, resume_offset, loglevel, hugepages, hugepagesz, default_hugepagesz, nvme_core.default_ps_max_latency_us, usbcore.autosuspend, rd.driver.blacklist, nvidia_drm.modeset, nvidia_drm.fbdev, i915.enable_psr, amdgpu.dc, acpi_backlight, mem_sleep_default, pcie_aspm, transparent_hugepage, zswap.enabled, systemd.show_status, plymouth.enable; and only the hardening values lockdown=integrity\|confidentiality, module.sig_enforce=1, intel_iommu=on, amd_iommu=on, init_on_alloc=1, init_on_free=1, page_alloc.shuffle=1, randomize_kstack_offset=on, mitigations=auto\|auto,nosmt, pti=on, vsyscall=none, debugfs=off; remove accepts the non-hardening keys above and known downgrades such as mitigations=off; anything else is refused |
 
 ## Package layering (rpm-ostree)
 
@@ -366,7 +366,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GrubGetKargs` | `grep -E ^GRUB_CMDLINE_LINUX /etc/default/grub` | Low | Ubuntu | – | – | read current GRUB_CMDLINE_LINUX from /etc/default/grub — no params; read-only |
-| `GrubSetKargs` | `sudo /usr/lib/sysknife/grub-kargs-edit --append quiet --delete splash` | High | Ubuntu | ✓ | – | modify GRUB kernel arguments and run update-grub — params: append (list), delete (list), bare tokens only (no '='); both lists are screened for boot-security downgrades; High risk; requires reboot |
+| `GrubSetKargs` | `sudo /usr/lib/sysknife/grub-kargs-edit --append quiet --delete splash` | High | Ubuntu | ✓ | – | modify GRUB kernel arguments and run update-grub — params: append (list), delete (list), bare tokens only (no '='); append accepts only quiet, splash, rhgb, nomodeset, nowatchdog, threadirqs, nosmt, slab_nomerge; delete accepts the first six, the bare ordinary keys SetKernelArguments lists (console, loglevel, …) and known downgrades such as single or nokaslr; anything else is refused; High risk; requires reboot |
 
 ## Ubuntu release upgrade
 

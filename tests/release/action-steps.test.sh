@@ -910,7 +910,7 @@ class RpmOstreeVerb(unittest.TestCase):
             ['rpm-ostree', 'kargs', 'append', 'emergency'],
             ['rpm-ostree', 'kargs', 'append', '3'],
             ['rpm-ostree', 'kargs', 'append', 'selinux=0'],
-            ['rpm-ostree', 'kargs', 'append', 'lockdown=integrity'],
+            ['rpm-ostree', 'kargs', 'append', 'lockdown=none'],
             ['rpm-ostree', 'kargs', 'append', 'mitigations=off'],
             ['rpm-ostree', 'kargs', 'append', 'module.sig_enforce=0'],
             ['rpm-ostree', 'kargs', 'append', 'nokaslr'],
@@ -924,6 +924,13 @@ class RpmOstreeVerb(unittest.TestCase):
             ['rpm-ostree', 'kargs', 'append', 'rd.shell'], ['rpm-ostree', 'kargs', 'append', 'audit=0'],
             ['rpm-ostree', 'kargs', 'append', 'nopti'], ['rpm-ostree', 'kargs', 'append', 'lsm=landlock'],
             ['rpm-ostree', 'kargs', 'append', 'systemd.mask=auditd.service'],
+            # The allowlist: anything not named is refused, whatever its spelling.
+            ['rpm-ostree', 'kargs', 'append', 'foo=bar'], ['rpm-ostree', 'kargs', 'append', 'mitigations=of'],
+            ['rpm-ostree', 'kargs', 'append', 'nopku'], ['rpm-ostree', 'kargs', 'append', 'spectre-v2=off'],
+            ['rpm-ostree', 'kargs', 'append', 'audit=off'], ['rpm-ostree', 'kargs', 'append', 'lsm=landlock'],
+            ['rpm-ostree', 'kargs', 'append', 'spectre_v2_user=off'], ['rpm-ostree', 'kargs', 'append', 'quiet=1'],
+            ['rpm-ostree', 'kargs', 'delete', 'module.sig_enforce'], ['rpm-ostree', 'kargs', 'delete', 'foo=bar'],
+            ['rpm-ostree', 'kargs', 'delete', 'nosmt'], ['rpm-ostree', 'kargs', 'delete', 'vsyscall=none'],
             ['rpm-ostree', 'kargs', 'append', '-b'], ['rpm-ostree', 'kargs', 'append', ''],
             ['rpm-ostree', 'kargs', 'append', 'quiet\n'], ['rpm-ostree', 'kargs', 'append', 'a' * 255],
             ['rpm-ostree', 'kargs', 'append', 'quiet"'], ['rpm-ostree', 'kargs', 'append', 'quiet\tinit=/bin/sh'],
@@ -1052,23 +1059,28 @@ class RpmOstreeVerb(unittest.TestCase):
         loader.exec_module(module)
         return module
 
-    def test_kargs_denylists_are_the_grub_helpers_element_by_element(self):
-        # One policy, two copies: grub-kargs-edit screens GrubSetKargs and this verb
-        # screens SetKernelArguments. tests/release/grub-kargs-edit.test.sh holds the
-        # grub copy to the daemon's lists; this holds this copy to the grub one.
+    def test_kargs_allowlist_is_the_same_in_all_three_copies(self):
+        # One allowlist, three copies: executor.rs screens both actions in the
+        # daemon, grub-kargs-edit screens GrubSetKargs and this verb screens
+        # SetKernelArguments. Compare this copy with the other two element by element.
         grub = self.grub()
-        for mine, theirs in [('KARG_DENY_APPEND_PREFIXES', 'DENY_APPEND_PREFIXES'),
-                             ('KARG_DENY_APPEND_EXACT', 'DENY_APPEND_EXACT'),
-                             ('ROOT_SHELL_UNITS', 'DENY_UNIT_TARGETS'),
-                             ('KARG_DENY_DELETE_PREFIXES', 'DENY_DELETE_PREFIXES'),
-                             ('KARG_DENY_DELETE_EXACT', 'DENY_DELETE_EXACT'),
-                             ('KARG_WEAKENING', 'WEAKENING_KARGS'),
-                             ('KARG_OFF_SWITCH_KEYS', 'OFF_SWITCH_KEYS'),
-                             ('KARG_OFF_VALUES', 'OFF_VALUES')]:
-            with self.subTest(list=mine):
-                theirs_value = getattr(grub, theirs)
-                self.assertTrue(theirs_value, f'grub-kargs-edit has an empty {theirs}')
-                self.assertEqual(sorted(helper[mine]), sorted(theirs_value))
+        rust = Path('crates/sysknife-daemon/src/executor.rs').read_text(encoding='utf-8')
+        for name in ('KARG_FLAGS', 'KARG_HARDENING_FLAGS', 'KARG_VALUE_KEYS', 'KARG_WEAKENING'):
+            with self.subTest(list=name):
+                decl = re.search(rf'const {name}:\s*&\[&str\]\s*=\s*&\[(.*?)\];', rust, re.S)
+                self.assertIsNotNone(decl, f'{name} not found in executor.rs')
+                daemon = sorted(re.findall(r'"([^"]+)"', decl.group(1)))
+                self.assertTrue(daemon, f'{name} parsed empty; this check inspected nothing')
+                self.assertEqual(sorted(helper[name]), daemon)
+                self.assertEqual(sorted(getattr(grub, name)), daemon)
+        decl = re.search(r'const KARG_HARDENING_VALUES:\s*&\[\(&str, &\[&str\]\)\]\s*=\s*&\[(.*?)\n\];',
+                         rust, re.S)
+        self.assertIsNotNone(decl, 'KARG_HARDENING_VALUES not found in executor.rs')
+        daemon = {k: sorted(re.findall(r'"([^"]+)"', v)) for k, v in
+                  re.findall(r'\(\s*"([^"]+)",\s*&\[(.*?)\]\s*,?\s*\)', decl.group(1), re.S)}
+        self.assertGreaterEqual(len(daemon), 10, 'KARG_HARDENING_VALUES parsed short')
+        self.assertEqual({k: sorted(v) for k, v in helper['KARG_HARDENING_VALUES'].items()}, daemon)
+        self.assertEqual({k: sorted(v) for k, v in grub.KARG_HARDENING_VALUES.items()}, daemon)
 
     def test_kargs_screens_decide_like_the_grub_helper(self):
         # Equal lists are not equal decisions: the screens around them could differ.
@@ -1112,7 +1124,15 @@ class RpmOstreeVerb(unittest.TestCase):
                   'gather_data_sampling=force', 'reg_file_data_sampling=off',
                   'reg_file_data_sampling=on', 'module.sig_enforce=no', 'init_on_free=false',
                   'nospec_store_bypass_disable', 'nospectre_bhb', 'spec_store_bypass_disable=on',
-                  'apparmor=01', 'debugfs=on', 'iommu=off', 'lockdown=none', '_b']
+                  'apparmor=01', 'debugfs=on', 'iommu=off', 'lockdown=none', '_b',
+                  # The allowlist and the spellings the denylists missed.
+                  'foo=bar', 'foo', 'mitigations=of', 'nopku', 'spectre_v2_user=off', 'kpti=0',
+                  'its=off', 'tsa=off', 'vmscape=off', 'noibrs', 'noibpb', 'audit=f', 'quiet=1',
+                  'console=', 'splash', 'rhgb', 'nowatchdog', 'threadirqs', 'slab_nomerge',
+                  'rd.driver.blacklist=nouveau', 'nvidia-drm.modeset=1', 'lockdown=integrity',
+                  'module.sig_enforce=1', 'intel_iommu=on', 'amd_iommu=on', 'init_on_free=1',
+                  'page_alloc.shuffle=1', 'randomize_kstack_offset=on', 'mitigations=auto',
+                  'mitigations=auto,nosmt', 'pti=on', 'vsyscall=none', 'debugfs=off', 'root=/dev/sdb1']
 
         def grub_refuses(screen, token):
             try:
@@ -1163,11 +1183,8 @@ class RpmOstreeVerb(unittest.TestCase):
                 parts = line.split(' ', 2)
                 self.assertEqual(len(parts), 3, f'corpus line {number} does not parse: {line!r}')
                 kind, verdict, operand = parts
-                self.assertIn(verdict, ('ok', 'refuse', 'helper-only'), f'corpus line {number}')
+                self.assertIn(verdict, ('ok', 'refuse'), f'corpus line {number}')
                 self.assertIn(kind, argv_for, f'corpus line {number}')
-                if verdict == 'helper-only':
-                    # The daemon accepts these on add and the helper refuses them.
-                    self.assertEqual(kind, 'append', f'corpus line {number}')
                 runner.reset_mock()
                 with self.subTest(line=number, kind=kind, operand=operand):
                     if verdict == 'ok':

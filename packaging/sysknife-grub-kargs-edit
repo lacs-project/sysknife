@@ -20,7 +20,7 @@
 #
 # Behaviour:
 #   1. Validates every karg token against the allowed-character pattern, and
-#      rejects dangerous --append tokens (denylist mirrors the daemon).
+#      accepts only the kernel arguments on the allowlist below (the daemon's).
 #   2. Backs up /etc/default/grub to /etc/default/grub.sysknife.bak.
 #   3. Edits GRUB_CMDLINE_LINUX_DEFAULT="..." in-place.
 #   4. Calls /usr/sbin/update-grub. On failure, restores the backup and exits
@@ -51,118 +51,61 @@ GRUB_BACKUP = "/etc/default/grub.sysknife.bak"
 # validator because a comma or an '=' there would let a caller inject extra
 # tokens into the comma-separated list this helper receives — see the
 # charset-check comment at the GrubSetKargs branch in executor.rs. The
-# daemon screens every token before invoking the helper, and the denylist
+# daemon screens every token before invoking the helper, and the allowlist
 # below enforces the boot-security policy independently of it.
 KARG_PATTERN = re.compile(r"^[A-Za-z0-9_.+@:/=-]+$")
 
-# Defense-in-depth denylist — mirrors validated_safe_kernel_arg in executor.rs.
-# The daemon already rejects these before invoking the helper, but the helper is
-# directly sudo-invocable via the wildcard NOPASSWD grant, so it must enforce the
-# same policy independently. Blocks args that bypass boot security (init=,
-# selinux=0, enforcing=0, security=, module_blacklist=) or drop to a single-user
-# root shell (bare single/s/1, or systemd.unit= pointing at emergency/rescue/
-# single).
+# The kernel arguments that may be added, in normal form (see normalized()
+# below): lowercase, `-` read as `_` in the key. Anything not named here is
+# refused. Documentation/admin-guide/kernel-parameters.txt and
+# kernel-command-line(7) describe each key. This is an allowlist because four
+# review rounds of the denylists it replaced each found another spelling past
+# them: a hyphen in the key, a kstrtobool prefix such as `mitigations=of`, a
+# mitigation switch nobody had listed. One list, three copies:
+# crates/sysknife-daemon/src/executor.rs, packaging/sysknife-grub-kargs-edit and
+# packaging/sysknife-action-steps. tests/release/grub-kargs-edit.test.sh and
+# tests/release/action-steps.test.sh compare them element by element.
 #
-# systemd.debug_shell is the same root shell reached by a different name:
-# systemd-debug-generator pulls debug-shell.service into the boot transaction
-# and spawns a root shell on tty9 with no login, so screening only
-# systemd.unit=debug-shell.service left the front door open. Underscore is the
-# real spelling per systemd-debug-generator(8), and rd.* covers the
-# initrd-honoured variant.
-DENY_APPEND_PREFIXES = (
-    "init=", "selinux=0", "enforcing=0", "security=", "module_blacklist=",
-    # Any lockdown mode, as the daemon refuses it: WEAKENING_KARGS below names
-    # only `lockdown=none`, so `lockdown=integrity` passed a direct call.
-    "lockdown=",
-    # Prefixes in the executor too, so `apparmor=01` is refused here as there.
-    "apparmor=0",
-    # The hyphen spellings need no entry: normalized() reads them as these.
-    "systemd.debug_shell", "rd.systemd.debug_shell",
-    # systemd.run= runs a command as a root service once boot completes, and
-    # covers systemd.run_success_action= and systemd.run_failure_action= too.
-    # rdinit= is the initramfs twin of init=; rd.break and break stop the boot
-    # in an initramfs root shell.
-    "systemd.run", "rdinit=", "rd.break", "break",
-    # lsm= picks the LSM stack like security=; modprobe.blacklist= is
-    # module_blacklist= by another name; rd.shell opens an initramfs shell;
-    # systemd.mask= masks a unit for the boot. audit=0 and the mitigation
-    # switches are OFF_SWITCH_KEYS below.
-    "lsm=", "modprobe.blacklist=", "rd.shell", "systemd.mask=", "rd.systemd.mask=",
+# Ordinary switches with no value; removable.
+KARG_FLAGS = ("quiet", "splash", "rhgb", "nomodeset", "nowatchdog", "threadirqs")
+# Hardening switches with no value; added, never removed.
+KARG_HARDENING_FLAGS = ("nosmt", "slab_nomerge")
+# Ordinary keys that take any value of the one-token character set; removable.
+KARG_VALUE_KEYS = (
+    "console", "video", "resume", "resume_offset", "loglevel", "hugepages", "hugepagesz",
+    "default_hugepagesz", "nvme_core.default_ps_max_latency_us", "usbcore.autosuspend",
+    "rd.driver.blacklist", "nvidia_drm.modeset", "nvidia_drm.fbdev", "i915.enable_psr",
+    "amdgpu.dc", "acpi_backlight", "mem_sleep_default", "pcie_aspm", "transparent_hugepage",
+    "zswap.enabled", "systemd.show_status", "plymouth.enable",
 )
-# nosmap/nosmep disable SMAP/SMEP enforcement; they are in the executor's
-# BLOCKED_EXACT and were missing here. emergency, rescue, -b and the runlevels
-# 2-5 pick the boot target the way single and 1 do (kernel-command-line(7)).
-DENY_APPEND_EXACT = (
-    "single", "s", "1", "nosmap", "nosmep",
-    "emergency", "rescue", "_b", "rd.emergency", "rd.rescue", "2", "3", "4", "5",
-    "nopti", "nospectre_v1", "nospectre_v2", "nospec_store_bypass_disable",
-    "nospectre_bhb", "nokaslr",
+# Hardening keys with the only values that may be added; never removed.
+KARG_HARDENING_VALUES = {
+    "lockdown": ("integrity", "confidentiality"),
+    "module.sig_enforce": ("1",),
+    "intel_iommu": ("on",),
+    "amd_iommu": ("on",),
+    "init_on_alloc": ("1",),
+    "init_on_free": ("1",),
+    "page_alloc.shuffle": ("1",),
+    "randomize_kstack_offset": ("on",),
+    "mitigations": ("auto", "auto,nosmt"),
+    "pti": ("on",),
+    "vsyscall": ("none",),
+    "debugfs": ("off",),
+}
+# Exact downgrades, in normal form. Removing one hardens the host, so it is
+# allowed although its key is not an ordinary one; none of them can be added.
+KARG_WEAKENING = (
+    "selinux=0", "enforcing=0", "apparmor=0", "lockdown=none", "debugfs=on", "iommu=off",
+    "intel_iommu=off", "nokaslr", "nopti", "nosmap", "nosmep", "nospectre_v1",
+    "nospectre_v2", "nospec_store_bypass_disable", "nospectre_bhb", "single", "emergency",
+    "rescue", "rd.break", "rd.shell", "systemd.debug_shell", "init=/bin/sh", "init=/bin/bash",
+    "mitigations=off", "pti=off", "audit=0", "module.sig_enforce=0", "init_on_alloc=0",
+    "init_on_free=0", "page_alloc.shuffle=0", "randomize_kstack_offset=off", "spectre_v2=off",
+    "spec_store_bypass_disable=off", "mds=off", "tsx_async_abort=off", "mmio_stale_data=off",
+    "retbleed=off", "srbds=off", "l1tf=off", "spectre_bhi=off", "gather_data_sampling=off",
+    "reg_file_data_sampling=off",
 )
-# Mirrors ROOT_SHELL_UNITS in crates/sysknife-daemon/src/actions/validate.rs.
-# The helper is directly sudo-invocable through the wildcard grant, so the
-# daemon refusing these is not enough. It held three of the five, so
-# `systemd.unit=debug-shell.service` and `systemd.unit=runlevel1.target`
-# reached the boot line through a direct call: systemd-debug-generator pulls
-# debug-shell.service into the boot transaction, giving a root shell on tty9
-# with no login prompt, across reboots, with no preview, no approval receipt
-# and no row in the signed chain. tests/release/grub-kargs-edit.test.sh now
-# derives the daemon list from that Rust source and fails on any gap, so the
-# two cannot drift again.
-DENY_UNIT_TARGETS = ("debug-shell", "emergency", "rescue", "runlevel1", "single")
-
-# --delete is screened too. "Removing an arg is always safe" was the premise for
-# leaving it open, and it inverts the risk: the dangerous move is removing a
-# PROTECTIVE arg. Deleting `module.sig_enforce=1` reaches the same next-boot
-# state as appending an unsigned-module loader, which DENY_APPEND already
-# refuses — so an unscreened --delete handed back every guarantee --append buys.
-# Mirrors validated_safe_kernel_arg_removal in executor.rs; the prefixes are the
-# KSPP-recommended boot parameters plus the LSM selectors.
-DENY_DELETE_PREFIXES = (
-    "lockdown=", "module.sig_enforce=", "security=", "selinux=", "enforcing=",
-    "apparmor=", "pti=", "mitigations=", "init_on_alloc=", "init_on_free=",
-    "page_alloc.shuffle=", "randomize_kstack_offset=", "slub_debug=",
-    "page_poison=", "vsyscall=", "debugfs=", "iommu=", "intel_iommu=",
-    "amd_iommu=", "lsm=", "audit=",
-    # The mitigation switches of OFF_SWITCH_KEYS not listed above.
-    "spectre_v2=", "spec_store_bypass_disable=", "mds=", "tsx_async_abort=",
-    "mmio_stale_data=", "retbleed=", "srbds=", "l1tf=", "spectre_bhi=",
-    "gather_data_sampling=", "reg_file_data_sampling=",
-)
-DENY_DELETE_EXACT = ("slab_nomerge", "nosmt", "kaslr")
-
-# One list, read in both directions. Each of these IS the downgrade, which
-# settles both screens at once:
-#
-#   --delete X  → ALLOWED. Removing the downgrade hardens the host. Without this
-#                 escape hatch the delete screen collapses into "no deletions at
-#                 all" and SysKnife could never undo `mitigations=off` on a host
-#                 that already boots with it.
-#   --append X  → REFUSED. Adding the downgrade weakens the next boot, and it is
-#                 the exact end state the delete screen exists to protect.
-#
-# Deriving the append refusal from this set rather than retyping it is the whole
-# point. The two screens were written separately and drifted: --delete knew
-# about apparmor=, mitigations=, pti= and module.sig_enforce=, --append did not,
-# so `--append apparmor=0` silently disabled Ubuntu's MAC on the next boot while
-# `--delete apparmor=1` was correctly refused. A token added here now lands on
-# both screens or neither.
-WEAKENING_KARGS = (
-    "selinux=0", "enforcing=0", "apparmor=0", "lockdown=none", "debugfs=on",
-    "iommu=off", "intel_iommu=off", "nokaslr",
-)
-# Switches the kernel reads as a boolean or as `off`, each a protection any
-# spelling in OFF_VALUES turns off (Documentation/admin-guide/
-# kernel-parameters.txt). key=<off> is refused on append and, being the
-# downgrade, allowed on delete. Mirrors KARG_OFF_SWITCH_KEYS and KARG_OFF_VALUES
-# in crates/sysknife-daemon/src/executor.rs; tests/release/grub-kargs-edit.test.sh
-# compares them.
-OFF_SWITCH_KEYS = (
-    "audit", "mitigations", "pti", "spectre_v2", "spec_store_bypass_disable", "mds",
-    "tsx_async_abort", "mmio_stale_data", "retbleed", "srbds", "l1tf", "spectre_bhi",
-    "gather_data_sampling", "reg_file_data_sampling", "module.sig_enforce",
-    "init_on_alloc", "init_on_free", "page_alloc.shuffle", "randomize_kstack_offset",
-)
-OFF_VALUES = ("0", "off", "n", "no", "false")
 
 UPDATE_GRUB = "/usr/sbin/update-grub"
 
@@ -189,70 +132,37 @@ def normalized(tok: str) -> str:
 
     The kernel's parameq() (kernel/params.c) and systemd's
     proc_cmdline_key_streq() treat the two as one character in a parameter
-    name, so `spectre-v2=off` is `spectre_v2=off`. Unit names in a value keep
-    their hyphens. Every list entry above is written in this form. Mirrors
-    normalized_kernel_arg in crates/sysknife-daemon/src/executor.rs.
+    name. Mirrors normalized_kernel_arg in crates/sysknife-daemon/src/executor.rs.
     """
     key, eq, rest = tok.lower().partition("=")
     return key.replace("-", "_") + eq + rest
 
 
-def off_switch(lower: str) -> bool:
-    """Whether a normalised argument switches one of OFF_SWITCH_KEYS off."""
-    key, eq, rest = lower.partition("=")
-    return bool(eq) and key in OFF_SWITCH_KEYS and rest in OFF_VALUES
-
-
 def reject_dangerous_append(tokens: list[str]) -> None:
-    """Raise SystemExit(1) if any --append token could compromise boot security."""
+    """Raise SystemExit(1) unless every --append token is on the allowlist."""
     for tok in tokens:
-        lower = normalized(tok)
-        base = lower.split("=", 1)[0]
-        # rd.systemd.unit= is the same choice made in the initramfs, and
-        # systemd.wants= pulls the unit into the boot instead of targeting it.
-        unit_val = next(
-            (lower[len(p):] for p in ("systemd.unit=", "rd.systemd.unit=",
-                                      "systemd.wants=", "rd.systemd.wants=")
-             if lower.startswith(p)),
-            "",
-        )
-        blocked = (
-            any(lower.startswith(p) for p in DENY_APPEND_PREFIXES)
-            or lower in DENY_APPEND_EXACT
-            or base in DENY_APPEND_EXACT
-            or any(unit_val.startswith(u) for u in DENY_UNIT_TARGETS)
-            # Adding a known downgrade is the end state the --delete screen
-            # exists to prevent; see WEAKENING_KARGS.
-            or lower in WEAKENING_KARGS
-            or off_switch(lower)
-        )
-        if blocked:
+        key, eq, rest = normalized(tok).partition("=")
+        allowed = (key in KARG_FLAGS + KARG_HARDENING_FLAGS if not eq
+                   else (rest and key in KARG_VALUE_KEYS)
+                   or rest in KARG_HARDENING_VALUES.get(key, ()))
+        if not allowed:
             print(
-                f"sysknife-grub-kargs-edit: refusing dangerous --append karg {tok!r} "
-                "(would bypass boot security or drop to a single-user root shell)",
+                f"sysknife-grub-kargs-edit: refusing --append karg {tok!r} "
+                "(it is not on the kernel-argument allowlist)",
                 file=sys.stderr,
             )
             sys.exit(1)
 
 
 def reject_dangerous_delete(tokens: list[str]) -> None:
-    """Raise SystemExit(1) if removing any --delete token would weaken the boot."""
+    """Raise SystemExit(1) unless every --delete token is ordinary or a known downgrade."""
     for tok in tokens:
         lower = normalized(tok)
-        if lower in WEAKENING_KARGS or off_switch(lower):
-            continue
-        # A bare key deletes the key's only value (libostree's
-        # ostree_kernel_args_delete), so `lockdown` is screened as `lockdown=`.
         key = lower.split("=", 1)[0]
-        blocked = (
-            any(lower.startswith(p) or (key + "=").startswith(p) for p in DENY_DELETE_PREFIXES)
-            or lower in DENY_DELETE_EXACT
-            or key in DENY_DELETE_EXACT
-        )
-        if blocked:
+        if not (lower in KARG_WEAKENING or key in KARG_FLAGS or key in KARG_VALUE_KEYS):
             print(
                 f"sysknife-grub-kargs-edit: refusing to --delete karg {tok!r} "
-                "(it is a boot-security protection; removing it weakens the next boot)",
+                "(it is a boot-security protection or not on the allowlist)",
                 file=sys.stderr,
             )
             sys.exit(1)

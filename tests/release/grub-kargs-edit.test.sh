@@ -135,7 +135,7 @@ for tok in WEAKENING:
         )
 
 # 3c. The debug shell, by its own name rather than through systemd.unit=.
-#     `systemd.unit=debug-shell.service` is refused via DENY_UNIT_TARGETS, but
+#     `systemd.unit=debug-shell.service` is refused like any unlisted key, but
 #     systemd-debug-generator also honours systemd.debug_shell, which reaches
 #     the identical end state: debug-shell.service pulled into the boot
 #     transaction, root shell on tty9, no login. Underscore is the real spelling
@@ -152,12 +152,12 @@ for tok in DEBUG_SHELL:
     if not refused_append(tok):
         failures.append(f"--append {tok!r} was accepted; it boots into a root shell on tty9")
 
-# 3c'. Any lockdown= value. validated_safe_kernel_arg refuses `lockdown=` by
-#     prefix, and this screen refused only the literal `lockdown=none`, so a
-#     direct call could set a lockdown mode the daemon would not.
-for tok in ["lockdown=integrity", "lockdown=confidentiality", "lockdown=", "LOCKDOWN=none"]:
+# 3c'. lockdown= takes only its two hardening values. The denylist refused every
+#     lockdown= value; the allowlist accepts `integrity` and `confidentiality`,
+#     which raise the lockdown level, and nothing else.
+for tok in ["lockdown=none", "lockdown=", "LOCKDOWN=none", "lockdown=integrityx", "lockdown"]:
     if not refused_append(tok):
-        failures.append(f"--append {tok!r} was accepted; the daemon refuses every lockdown= value")
+        failures.append(f"--append {tok!r} was accepted; only lockdown=integrity and =confidentiality are")
 
 # 3c''. Boot-mode and run tokens systemd(1) and kernel-command-line(7) honour.
 #     `emergency`, `rescue`, `-b` and runlevels 2-5 pick the boot target the way
@@ -177,10 +177,9 @@ for tok in BOOT_MODE:
     if not refused_append(tok):
         failures.append(f"--append {tok!r} was accepted; it boots into a root shell or command")
 
-# 3c'''. PARITY with validated_safe_kernel_arg, read out of executor.rs. Every
-#     token the daemon refuses on the add path, the helper refuses on --append.
-#     The two lists agreed with each other while both missed systemd.run=, so
-#     this checks containment and the behaviour, not the comment above them.
+# 3c'''. The denylists these screens used before the allowlist, kept as refuse
+#     cases: every token they named, and each prefix with a value after it, must
+#     still be refused on --append.
 repo_root = os.path.dirname(os.path.dirname(os.path.abspath(script_path)))
 exec_rs = os.path.join(repo_root, "crates/sysknife-daemon/src/executor.rs")
 try:
@@ -188,28 +187,71 @@ try:
 except OSError as exc:
     failures.append(f"cannot read {exec_rs}: {exc}; the parity check inspected nothing")
     exec_src = ""
-fn = re.search(r"fn validated_safe_kernel_arg\(.*?\n\}\n", exec_src, re.S)
-fn_src = fn.group(0) if fn else ""
-for const, helper_attr in (("BLOCKED_PREFIXES", "DENY_APPEND_PREFIXES"),
-                           ("BLOCKED_EXACT", "DENY_APPEND_EXACT")):
-    decl = re.search(rf"const {const}:\s*&\[&str\]\s*=\s*&\[(.*?)\];", fn_src, re.S)
-    daemon = set(re.findall(r'"([^"]+)"', decl.group(1))) if decl else set()
-    if not daemon:
-        failures.append(f"{const} not found or empty in validated_safe_kernel_arg; compared nothing")
-        continue
-    missing = sorted(daemon - set(getattr(mod, helper_attr, ())))
-    if missing:
-        failures.append(f"{helper_attr} is missing {missing}, which the daemon's {const} refuses")
-    for tok in sorted(daemon):
-        for spelling in (tok, tok + "1") if const == "BLOCKED_PREFIXES" else (tok,):
-            if not refused_append(spelling):
-                failures.append(f"--append {spelling!r} was accepted; the daemon refuses it")
-if "rd.systemd.unit=" not in fn_src:
-    failures.append("validated_safe_kernel_arg does not screen rd.systemd.unit=")
+FORMER_PREFIXES = [
+    "init=", "selinux=0", "enforcing=0", "security=", "module_blacklist=", "apparmor=0",
+    "mitigations=off", "lockdown=", "pti=off", "systemd.debug_shell", "systemd.debug-shell",
+    "rd.systemd.debug_shell", "rd.systemd.debug-shell", "systemd.run", "rdinit=", "rd.break",
+    "break", "lsm=", "modprobe.blacklist=", "rd.shell", "systemd.mask=", "rd.systemd.mask=",
+    "audit=0", "spectre_v2=off", "spec_store_bypass_disable=off",
+]
+FORMER_EXACT = [
+    "single", "s", "1", "nosmap", "nosmep", "emergency", "rescue", "-b", "_b", "rd.emergency",
+    "rd.rescue", "2", "3", "4", "5", "nopti", "nospectre_v1", "nospectre_v2",
+    "nospec_store_bypass_disable", "nospectre_bhb", "nokaslr",
+]
+for tok in FORMER_PREFIXES:
+    for spelling in (tok, tok + "1"):
+        if not refused_append(spelling):
+            failures.append(f"--append {spelling!r} was accepted; the former denylist refused it")
+for tok in FORMER_EXACT:
+    if not refused_append(tok):
+        failures.append(f"--append {tok!r} was accepted; the former denylist refused it")
 
-for spelling in ("systemd.wants=", "rd.systemd.wants="):
-    if spelling not in fn_src:
-        failures.append(f"validated_safe_kernel_arg does not screen {spelling}")
+# 3l. The allowlist. Anything not named is refused, so a spelling nobody
+#     thought of (`mitigations=of`, which kstrtobool reads as off; `nopku`;
+#     `spectre_v2_user=off`) fails closed. The three copies (executor.rs, this
+#     helper, action-steps) must hold the same lists; this compares this helper
+#     with executor.rs, and tests/release/action-steps.test.sh compares
+#     action-steps with this helper and with executor.rs.
+for tok in ["spectre-v2=off", "audit=off", "systemd.wants=debug-shell.service", "lsm=landlock",
+            "mitigations=of", "nopku", "spectre_v2_user=off", "kpti=0", "its=off", "tsa=off",
+            "vmscape=off", "noibrs", "noibpb", "audit=f", "foo=bar", "foo", "root=/dev/sdb1",
+            "quiet=1", "console=", "lockdown=none", "mitigations=auto,nosmt,foo"]:
+    if not refused_append(tok):
+        failures.append(f"--append {tok!r} was accepted; it is not on the allowlist")
+for tok in ["lockdown", "module.sig_enforce", "lockdown=integrity", "nosmt", "slab_nomerge",
+            "vsyscall=none", "mitigations=auto", "foo=bar", "foo", "mitigations=of"]:
+    if not refused(tok):
+        failures.append(f"--delete {tok!r} was accepted; it is a hardening key or an unknown one")
+for tok in ["quiet", "splash", "rhgb", "nomodeset", "nowatchdog", "threadirqs", "nosmt",
+            "slab_nomerge", "console=ttyS0", "rd.driver.blacklist=nouveau",
+            "transparent_hugepage=madvise", "lockdown=integrity", "lockdown=confidentiality",
+            "module.sig_enforce=1", "intel_iommu=on", "amd_iommu=on", "init_on_alloc=1",
+            "init_on_free=1", "page_alloc.shuffle=1", "randomize_kstack_offset=on",
+            "mitigations=auto", "pti=on", "vsyscall=none", "debugfs=off"]:
+    if refused_append(tok):
+        failures.append(f"--append {tok!r} was refused, but it is on the allowlist")
+
+
+def rust_list(const):
+    decl = re.search(rf"const {const}:\s*&\[&str\]\s*=\s*&\[(.*?)\];", exec_src, re.S)
+    return re.findall(r'"([^"]+)"', decl.group(1)) if decl else []
+
+
+for const in ("KARG_FLAGS", "KARG_HARDENING_FLAGS", "KARG_VALUE_KEYS", "KARG_WEAKENING"):
+    daemon = rust_list(const)
+    if not daemon:
+        failures.append(f"{const} not found or empty in executor.rs; compared nothing")
+    elif sorted(daemon) != sorted(getattr(mod, const, ())):
+        failures.append(f"{const} differs between executor.rs and this helper")
+decl = re.search(r"const KARG_HARDENING_VALUES:\s*&\[\(&str, &\[&str\]\)\]\s*=\s*&\[(.*?)\n\];",
+                 exec_src, re.S)
+daemon_values = {k: sorted(re.findall(r'"([^"]+)"', v)) for k, v in
+                 re.findall(r'\(\s*"([^"]+)",\s*&\[(.*?)\]\s*,?\s*\)', decl.group(1), re.S)} if decl else {}
+if not daemon_values:
+    failures.append("KARG_HARDENING_VALUES not found or empty in executor.rs; compared nothing")
+elif daemon_values != {k: sorted(v) for k, v in getattr(mod, "KARG_HARDENING_VALUES", {}).items()}:
+    failures.append("KARG_HARDENING_VALUES differs between executor.rs and this helper")
 
 # 3f. A bare key deletes the key's only value. libostree's
 #     ostree_kernel_args_delete removes `lockdown=confidentiality` when asked for
@@ -235,27 +277,8 @@ for tok in ["systemd.wants=debug-shell.service", "rd.systemd.wants=emergency.tar
     if not refused_append(tok):
         failures.append(f"--append {tok!r} was accepted; it weakens the next boot")
 for tok in ["systemd.wants=sshd.service", "audit=1", "spectre_v2=on"]:
-    if refused_append(tok):
-        failures.append(f"--append {tok!r} was refused, but it weakens nothing")
-
-# 3h. PARITY with validated_safe_kernel_arg_removal, read out of executor.rs.
-#     The delete screen's lists are copies of the daemon's, so compare them.
-rm_fn = re.search(r"fn validated_safe_kernel_arg_removal\(.*?\n\}\n", exec_src, re.S)
-rm_src = rm_fn.group(0) if rm_fn else ""
-for const, helper_attr, relation in (("PROTECTIVE_PREFIXES", "DENY_DELETE_PREFIXES", "equal"),
-                                     ("PROTECTIVE_EXACT", "DENY_DELETE_EXACT", "equal"),
-                                     ("WEAKENING", "WEAKENING_KARGS", "subset")):
-    decl = re.search(rf"const {const}:\s*&\[&str\]\s*=\s*&\[(.*?)\];", rm_src, re.S)
-    daemon = set(re.findall(r'"([^"]+)"', decl.group(1))) if decl else set()
-    if not daemon:
-        failures.append(f"{const} not found or empty in validated_safe_kernel_arg_removal; compared nothing")
-        continue
-    helper_set = set(getattr(mod, helper_attr, ()))
-    if relation == "equal" and daemon != helper_set:
-        failures.append(f"{helper_attr} differs from the daemon's {const}: "
-                        f"daemon only {sorted(daemon - helper_set)}, helper only {sorted(helper_set - daemon)}")
-    if relation == "subset" and not daemon <= helper_set:
-        failures.append(f"{helper_attr} is missing {sorted(daemon - helper_set)} from the daemon's {const}")
+    if not refused_append(tok):
+        failures.append(f"--append {tok!r} was accepted; it is not on the allowlist")
 
 # 3i. `-` and `_` are one character in a parameter NAME: the kernel's parameq()
 #     (kernel/params.c) and systemd's proc_cmdline_key_streq() compare them as
@@ -273,10 +296,10 @@ for tok in ["module.sig-enforce=1", "init-on-alloc=1", "randomize-kstack-offset=
 for tok in ["init-on-alloc=0", "module.sig-enforce=0"]:
     if refused(tok):
         failures.append(f"--delete {tok!r} was refused, but it is a weakening")
-if refused_append("systemd.wants=foo-bar.service"):
-    failures.append("--append systemd.wants=foo-bar.service was refused; the value must not be normalised")
-for attr in ("DENY_APPEND_PREFIXES", "DENY_APPEND_EXACT", "DENY_DELETE_PREFIXES",
-             "DENY_DELETE_EXACT", "WEAKENING_KARGS", "OFF_SWITCH_KEYS"):
+for attr in ("KARG_FLAGS", "KARG_HARDENING_FLAGS", "KARG_VALUE_KEYS", "KARG_WEAKENING",
+             "KARG_HARDENING_VALUES"):
+    if not getattr(mod, attr, ()):
+        failures.append(f"{attr} is missing or empty; the normal-form check inspected nothing")
     for entry in getattr(mod, attr, ()):
         key = entry.split("=", 1)[0]
         if "-" in key or entry != entry.lower():
@@ -293,26 +316,20 @@ for tok in ["audit=off", "audit=0", "audit=n", "audit=no", "audit=false", "AUDIT
     if not refused_append(tok):
         failures.append(f"--append {tok!r} was accepted; it switches a protection off")
 for tok in ["mds=full", "retbleed=auto", "l1tf=flush", "spectre_bhi=on", "gather_data_sampling=force"]:
-    if refused_append(tok):
-        failures.append(f"--append {tok!r} was refused, but it switches nothing off")
+    if not refused_append(tok):
+        failures.append(f"--append {tok!r} was accepted; it is not on the allowlist")
 for tok in ["mds=full", "mds", "tsx_async_abort=full", "mmio_stale_data=full", "retbleed=auto",
             "srbds=on", "l1tf=flush", "spectre_bhi=on", "gather_data_sampling=force",
             "reg_file_data_sampling=on", "spectre_v2=on", "spec_store_bypass_disable=on"]:
     if not refused(tok):
         failures.append(f"--delete {tok!r} was accepted; it removes a mitigation")
-for tok in ["mds=off", "retbleed=off", "audit=false", "pti=no", "spectre_v2=off"]:
+for tok in ["mds=off", "retbleed=off", "spectre_v2=off"]:
     if refused(tok):
         failures.append(f"--delete {tok!r} was refused, but it is a weakening")
-
-# 3k. PARITY of the off-switch lists with executor.rs, which holds them once,
-#     at module level, for both of its screens.
-for const, helper_attr in (("KARG_OFF_SWITCH_KEYS", "OFF_SWITCH_KEYS"), ("KARG_OFF_VALUES", "OFF_VALUES")):
-    decl = re.search(rf"const {const}:\s*&\[&str\]\s*=\s*&\[(.*?)\];", exec_src, re.S)
-    daemon = set(re.findall(r'"([^"]+)"', decl.group(1))) if decl else set()
-    if not daemon:
-        failures.append(f"{const} not found or empty in executor.rs; compared nothing")
-    elif daemon != set(getattr(mod, helper_attr, ())):
-        failures.append(f"{helper_attr} differs from the daemon's {const}")
+# Only the spellings in KARG_WEAKENING are known downgrades; any other key is refused.
+for tok in ["audit=false", "pti=no"]:
+    if not refused(tok):
+        failures.append(f"--delete {tok!r} was accepted; it is not in KARG_WEAKENING")
 
 # 3d. Ordinary appends must survive, or the screen has eaten the feature.
 for tok in ["quiet", "splash", "nomodeset", "console=ttyS0", "transparent_hugepage=madvise"]:
@@ -347,13 +364,7 @@ else:
     daemon_units = set(re.findall(r'"([^"]+)"', decl.group(1)))
     if not daemon_units:
         failures.append("ROOT_SHELL_UNITS parsed as empty; refusing to compare against nothing")
-    helper_units = set(getattr(mod, "DENY_UNIT_TARGETS", ()))
-    missing = sorted(daemon_units - helper_units)
-    if missing:
-        failures.append(
-            f"DENY_UNIT_TARGETS is missing {missing}, which the daemon's ROOT_SHELL_UNITS "
-            "refuses; a direct sudo call to this helper bypasses the daemon entirely")
-    # And prove it behaviourally, so the lists agreeing is not the only evidence.
+    # The allowlist names no systemd.unit= at all; prove each unit is refused.
     for unit in sorted(daemon_units):
         for spelling in (f"systemd.unit={unit}.service", f"systemd.unit={unit}.target"):
             if not refused_append(spelling):

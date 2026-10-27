@@ -54,60 +54,57 @@ RPM_OSTREE_VERBS = ("install", "uninstall", "replace", "override-remove", "rebas
 # image the caller placed on disk is an OS the next boot runs.
 LOCAL_IMAGE_TRANSPORTS = ("oci", "oci-archive", "dir", "docker-archive", "docker-daemon",
                           "containers-storage", "ostree", "sif", "tarball", "file")
-# The kernel-argument screens. Copies of the lists in
-# packaging/sysknife-grub-kargs-edit, which screens GrubSetKargs with the same
-# policy; tests/release/action-steps.test.sh compares the two element by element
-# and feeds both screens the same tokens, and tests/release/grub-kargs-edit.test.sh
-# holds the grub copy to validated_safe_kernel_arg and
-# validated_safe_kernel_arg_removal. The root-shell unit check uses
-# ROOT_SHELL_UNITS below, which is that helper's DENY_UNIT_TARGETS.
-KARG_DENY_APPEND_PREFIXES = (
-    "init=", "selinux=0", "enforcing=0", "security=", "module_blacklist=",
-    "lockdown=", "apparmor=0",
-    "systemd.debug_shell", "rd.systemd.debug_shell",
-    "systemd.run", "rdinit=", "rd.break", "break",
-    # lsm= picks the LSM stack like security=; modprobe.blacklist= is
-    # module_blacklist= by another name; rd.shell opens an initramfs shell;
-    # systemd.mask= masks a unit for the boot. audit=0 and the mitigation
-    # switches are OFF_SWITCH_KEYS below.
-    "lsm=", "modprobe.blacklist=", "rd.shell", "systemd.mask=", "rd.systemd.mask=",
+# The kernel arguments that may be added, in normal form (see the normaliser
+# below): lowercase, `-` read as `_` in the key. Anything not named here is
+# refused. Documentation/admin-guide/kernel-parameters.txt and
+# kernel-command-line(7) describe each key. This is an allowlist because four
+# review rounds of the denylists it replaced each found another spelling past
+# them: a hyphen in the key, a kstrtobool prefix such as `mitigations=of`, a
+# mitigation switch nobody had listed. One list, three copies:
+# crates/sysknife-daemon/src/executor.rs, packaging/sysknife-grub-kargs-edit and
+# packaging/sysknife-action-steps. tests/release/grub-kargs-edit.test.sh and
+# tests/release/action-steps.test.sh compare them element by element.
+#
+# Ordinary switches with no value; removable.
+KARG_FLAGS = ("quiet", "splash", "rhgb", "nomodeset", "nowatchdog", "threadirqs")
+# Hardening switches with no value; added, never removed.
+KARG_HARDENING_FLAGS = ("nosmt", "slab_nomerge")
+# Ordinary keys that take any value of the one-token character set; removable.
+KARG_VALUE_KEYS = (
+    "console", "video", "resume", "resume_offset", "loglevel", "hugepages", "hugepagesz",
+    "default_hugepagesz", "nvme_core.default_ps_max_latency_us", "usbcore.autosuspend",
+    "rd.driver.blacklist", "nvidia_drm.modeset", "nvidia_drm.fbdev", "i915.enable_psr",
+    "amdgpu.dc", "acpi_backlight", "mem_sleep_default", "pcie_aspm", "transparent_hugepage",
+    "zswap.enabled", "systemd.show_status", "plymouth.enable",
 )
-KARG_DENY_APPEND_EXACT = (
-    "single", "s", "1", "nosmap", "nosmep",
-    "emergency", "rescue", "_b", "rd.emergency", "rd.rescue", "2", "3", "4", "5",
-    "nopti", "nospectre_v1", "nospectre_v2", "nospec_store_bypass_disable",
-    "nospectre_bhb", "nokaslr",
-)
-KARG_DENY_DELETE_PREFIXES = (
-    "lockdown=", "module.sig_enforce=", "security=", "selinux=", "enforcing=",
-    "apparmor=", "pti=", "mitigations=", "init_on_alloc=", "init_on_free=",
-    "page_alloc.shuffle=", "randomize_kstack_offset=", "slub_debug=",
-    "page_poison=", "vsyscall=", "debugfs=", "iommu=", "intel_iommu=",
-    "amd_iommu=", "lsm=", "audit=",
-    # The mitigation switches of OFF_SWITCH_KEYS not listed above.
-    "spectre_v2=", "spec_store_bypass_disable=", "mds=", "tsx_async_abort=",
-    "mmio_stale_data=", "retbleed=", "srbds=", "l1tf=", "spectre_bhi=",
-    "gather_data_sampling=", "reg_file_data_sampling=",
-)
-KARG_DENY_DELETE_EXACT = ("slab_nomerge", "nosmt", "kaslr")
-# Each of these IS a downgrade: appending one is refused, deleting one is allowed.
+# Hardening keys with the only values that may be added; never removed.
+KARG_HARDENING_VALUES = {
+    "lockdown": ("integrity", "confidentiality"),
+    "module.sig_enforce": ("1",),
+    "intel_iommu": ("on",),
+    "amd_iommu": ("on",),
+    "init_on_alloc": ("1",),
+    "init_on_free": ("1",),
+    "page_alloc.shuffle": ("1",),
+    "randomize_kstack_offset": ("on",),
+    "mitigations": ("auto", "auto,nosmt"),
+    "pti": ("on",),
+    "vsyscall": ("none",),
+    "debugfs": ("off",),
+}
+# Exact downgrades, in normal form. Removing one hardens the host, so it is
+# allowed although its key is not an ordinary one; none of them can be added.
 KARG_WEAKENING = (
-    "selinux=0", "enforcing=0", "apparmor=0", "lockdown=none", "debugfs=on",
-    "iommu=off", "intel_iommu=off", "nokaslr",
+    "selinux=0", "enforcing=0", "apparmor=0", "lockdown=none", "debugfs=on", "iommu=off",
+    "intel_iommu=off", "nokaslr", "nopti", "nosmap", "nosmep", "nospectre_v1",
+    "nospectre_v2", "nospec_store_bypass_disable", "nospectre_bhb", "single", "emergency",
+    "rescue", "rd.break", "rd.shell", "systemd.debug_shell", "init=/bin/sh", "init=/bin/bash",
+    "mitigations=off", "pti=off", "audit=0", "module.sig_enforce=0", "init_on_alloc=0",
+    "init_on_free=0", "page_alloc.shuffle=0", "randomize_kstack_offset=off", "spectre_v2=off",
+    "spec_store_bypass_disable=off", "mds=off", "tsx_async_abort=off", "mmio_stale_data=off",
+    "retbleed=off", "srbds=off", "l1tf=off", "spectre_bhi=off", "gather_data_sampling=off",
+    "reg_file_data_sampling=off",
 )
-# Switches the kernel reads as a boolean or as `off`, each a protection any
-# spelling in KARG_OFF_VALUES turns off (Documentation/admin-guide/
-# kernel-parameters.txt). key=<off> is refused on append and, being the
-# downgrade, allowed on delete. Mirrors KARG_OFF_SWITCH_KEYS and KARG_OFF_VALUES
-# in crates/sysknife-daemon/src/executor.rs; tests/release/grub-kargs-edit.test.sh
-# compares them.
-KARG_OFF_SWITCH_KEYS = (
-    "audit", "mitigations", "pti", "spectre_v2", "spec_store_bypass_disable", "mds",
-    "tsx_async_abort", "mmio_stale_data", "retbleed", "srbds", "l1tf", "spectre_bhi",
-    "gather_data_sampling", "reg_file_data_sampling", "module.sig_enforce",
-    "init_on_alloc", "init_on_free", "page_alloc.shuffle", "randomize_kstack_offset",
-)
-KARG_OFF_VALUES = ("0", "off", "n", "no", "false")
 
 # Mirrors ROOT_SHELL_UNITS in crates/sysknife-daemon/src/actions/validate.rs.
 #
@@ -364,47 +361,28 @@ def karg_normalized(value):
 
     The kernel's parameq() (kernel/params.c) and systemd's
     proc_cmdline_key_streq() treat the two as one character in a parameter
-    name, so `spectre-v2=off` is `spectre_v2=off`. Unit names in a value keep
-    their hyphens. Every list entry above is written in this form. Mirrors
-    normalized_kernel_arg in crates/sysknife-daemon/src/executor.rs.
+    name. Mirrors normalized_kernel_arg in crates/sysknife-daemon/src/executor.rs.
     """
     key, eq, rest = value.lower().partition("=")
     return key.replace("-", "_") + eq + rest
 
 
-def karg_off_switch(lower):
-    """Whether a normalised argument switches one of KARG_OFF_SWITCH_KEYS off."""
-    key, eq, rest = lower.partition("=")
-    return bool(eq) and key in KARG_OFF_SWITCH_KEYS and rest in KARG_OFF_VALUES
-
-
 def karg_append(value):
-    """grub-kargs-edit's reject_dangerous_append, on top of karg_token."""
-    lower = karg_normalized(karg_token(value))
-    base = lower.split("=", 1)[0]
-    unit = next((lower[len(p):] for p in ("systemd.unit=", "rd.systemd.unit=",
-                                          "systemd.wants=", "rd.systemd.wants=")
-                 if lower.startswith(p)), "")
-    if (lower.startswith(KARG_DENY_APPEND_PREFIXES) or lower in KARG_DENY_APPEND_EXACT
-            or base in KARG_DENY_APPEND_EXACT or lower in KARG_WEAKENING
-            or karg_off_switch(lower)
-            or any(unit.startswith(u) for u in ROOT_SHELL_UNITS)):
-        raise ValueError("refusing a kernel argument that weakens the boot or opens a root shell")
+    """Mirrors validated_safe_kernel_arg: karg_token, then the allowlist."""
+    key, eq, rest = karg_normalized(karg_token(value)).partition("=")
+    if not (key in KARG_FLAGS + KARG_HARDENING_FLAGS if not eq
+            else (rest and key in KARG_VALUE_KEYS)
+            or rest in KARG_HARDENING_VALUES.get(key, ())):
+        raise ValueError("that kernel argument is not on the allowlist")
     return value
 
 
 def karg_delete(value):
-    """grub-kargs-edit's reject_dangerous_delete, on top of karg_token."""
+    """Mirrors validated_safe_kernel_arg_removal: an ordinary key or a known downgrade."""
     lower = karg_normalized(karg_token(value))
-    # A bare key deletes the key's only value (libostree's
-    # ostree_kernel_args_delete), so `lockdown` is screened as `lockdown=`.
     key = lower.split("=", 1)[0]
-    weakening = lower in KARG_WEAKENING or karg_off_switch(lower)
-    if not weakening and (lower.startswith(KARG_DENY_DELETE_PREFIXES)
-                                        or (key + "=").startswith(KARG_DENY_DELETE_PREFIXES)
-                                        or lower in KARG_DENY_DELETE_EXACT
-                                        or key in KARG_DENY_DELETE_EXACT):
-        raise ValueError("refusing to delete a kernel argument that protects the boot")
+    if not (lower in KARG_WEAKENING or key in KARG_FLAGS or key in KARG_VALUE_KEYS):
+        raise ValueError("refusing to delete a hardening or unknown kernel argument")
     return value
 
 
