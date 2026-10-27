@@ -40,6 +40,54 @@ APT_EXACT_NAMES = ["-o", "APT::Cmd::Pattern-Only=1"]
 APT_CACHE = "/usr/bin/apt-cache"
 DPKG_QUERY = "/usr/bin/dpkg-query"
 
+# The rpm-ostree verbs, and the only ones. The daemon sends
+# `action-steps rpm-ostree <verb> <operand>...` for every rpm-ostree call that
+# takes an operand; the four fixed argvs (upgrade, rollback,
+# `cleanup --rollback --pending`, `override reset --all`) keep exact sudoers
+# lines of their own. tests/release/action-steps.test.sh reads the verbs
+# layering.rs and deployment.rs send out of the Rust source and fails if these
+# differ.
+RPM_OSTREE = "/usr/bin/rpm-ostree"
+RPM_OSTREE_VERBS = ("install", "uninstall", "replace", "override-remove", "rebase", "kargs")
+# Mirrors LOCAL_IMAGE_TRANSPORTS in validate.rs, and the release test compares
+# them: the containers-image transports that read an image from this host. An
+# image the caller placed on disk is an OS the next boot runs.
+LOCAL_IMAGE_TRANSPORTS = ("oci", "oci-archive", "dir", "docker-archive", "docker-daemon",
+                          "containers-storage", "ostree", "sif", "tarball", "file")
+# The kernel-argument screens. Copies of the lists in
+# packaging/sysknife-grub-kargs-edit, which screens GrubSetKargs with the same
+# policy; tests/release/action-steps.test.sh compares the two element by element
+# and feeds both screens the same tokens, and tests/release/grub-kargs-edit.test.sh
+# holds the grub copy to validated_safe_kernel_arg and
+# validated_safe_kernel_arg_removal. The root-shell unit check uses
+# ROOT_SHELL_UNITS below, which is that helper's DENY_UNIT_TARGETS.
+KARG_DENY_APPEND_PREFIXES = (
+    "init=", "selinux=0", "enforcing=0", "security=", "module_blacklist=",
+    "lockdown=", "apparmor=0", "mitigations=off", "pti=off",
+    "systemd.debug_shell", "systemd.debug-shell",
+    "rd.systemd.debug_shell", "rd.systemd.debug-shell",
+    "systemd.run", "rdinit=", "rd.break", "break",
+)
+KARG_DENY_APPEND_EXACT = (
+    "single", "s", "1", "nosmap", "nosmep",
+    "emergency", "rescue", "-b", "rd.emergency", "rd.rescue", "2", "3", "4", "5",
+)
+KARG_DENY_DELETE_PREFIXES = (
+    "lockdown=", "module.sig_enforce=", "security=", "selinux=", "enforcing=",
+    "apparmor=", "pti=", "mitigations=", "init_on_alloc=", "init_on_free=",
+    "page_alloc.shuffle=", "randomize_kstack_offset=", "slub_debug=",
+    "page_poison=", "vsyscall=", "debugfs=", "iommu=", "intel_iommu=",
+    "amd_iommu=",
+)
+KARG_DENY_DELETE_EXACT = ("slab_nomerge", "nosmt", "kaslr")
+# Each of these IS a downgrade: appending one is refused, deleting one is allowed.
+KARG_WEAKENING = (
+    "selinux=0", "enforcing=0", "apparmor=0", "mitigations=off", "pti=off",
+    "lockdown=none", "debugfs=on", "iommu=off", "intel_iommu=off",
+    "module.sig_enforce=0", "init_on_alloc=0", "init_on_free=0",
+    "randomize_kstack_offset=off", "page_alloc.shuffle=0", "nokaslr",
+)
+
 # Mirrors ROOT_SHELL_UNITS in crates/sysknife-daemon/src/actions/validate.rs.
 #
 # This helper is reachable directly through its wildcard NOPASSWD grant, which
@@ -243,6 +291,110 @@ def exact_package(verb, package):
         found = out.split()
     if code != 0 or not found or any(f != name for f in found):
         raise ValueError("that is not exactly one existing package")
+
+
+def rpm_package(value):
+    """Mirrors validated_install_package, which every layering action applies.
+
+    The rule is apt_package's for `install`: a leading letter or digit (no
+    option), no `/` (no local path or URL), no `.rpm` or `.deb` suffix (no local
+    file), no trailing `-`. rpm-ostree installs a local `.rpm` and runs its
+    scriptlets as root in the next deployment, so a path is the whole risk.
+    tests/release/action-steps.test.sh runs the daemon's corpus,
+    crates/sysknife-daemon/tests/data/rpm-ostree-parity.txt, through this.
+    """
+    return apt_package(value, "install")
+
+
+def rebase_ref(value):
+    """Mirrors validated_rebase_ref: validated_safe_arg, and no local source.
+
+    A rebase target is an ostree `remote:ref` or a registry image. Split on `:`,
+    no part may be a local image transport (`oci:/path`, `dir:/path`, ...), start
+    with `.`, or start with `/` unless it is the `//` of `docker://`. `..` and
+    `@/` (an ostree transport's repository path) are refused anywhere.
+    """
+    safe(value)
+    previous = ""
+    for part in value.split(":"):
+        lower = part.lower()
+        if (lower in LOCAL_IMAGE_TRANSPORTS or part.startswith(".")
+                or (part.startswith("/") and not (previous == "docker" and part.startswith("//")))):
+            raise ValueError("a rebase target must be a remote ref or a registry image")
+        previous = lower
+    if ".." in value or "@/" in value:
+        raise ValueError("a rebase target must be a remote ref or a registry image")
+    return value
+
+
+def karg_token(value):
+    """Mirrors validated_kernel_arg_token: one boot-line token, no leading `-`.
+
+    The boot line is split on whitespace, so a space, tab, newline or quote
+    would carry a second, unscreened token behind the first.
+    """
+    if len(value) > 254 or not re.fullmatch(r"[A-Za-z0-9._:/+@=,][A-Za-z0-9._:/+@=,-]*", value):
+        raise ValueError("invalid kernel argument")
+    return value
+
+
+def karg_append(value):
+    """grub-kargs-edit's reject_dangerous_append, on top of karg_token."""
+    lower = karg_token(value).lower()
+    base = lower.split("=", 1)[0]
+    unit = next((lower[len(p):] for p in ("systemd.unit=", "rd.systemd.unit=")
+                 if lower.startswith(p)), "")
+    if (lower.startswith(KARG_DENY_APPEND_PREFIXES) or lower in KARG_DENY_APPEND_EXACT
+            or base in KARG_DENY_APPEND_EXACT or lower in KARG_WEAKENING
+            or any(unit.startswith(u) for u in ROOT_SHELL_UNITS)):
+        raise ValueError("refusing a kernel argument that weakens the boot or opens a root shell")
+    return value
+
+
+def karg_delete(value):
+    """grub-kargs-edit's reject_dangerous_delete, on top of karg_token."""
+    lower = karg_token(value).lower()
+    if lower not in KARG_WEAKENING and (lower.startswith(KARG_DENY_DELETE_PREFIXES)
+                                        or lower in KARG_DENY_DELETE_EXACT):
+        raise ValueError("refusing to delete a kernel argument that protects the boot")
+    return value
+
+
+def rpm_ostree_argv(values):
+    """The rpm-ostree argv for `rpm-ostree <verb> <operand>...`, and nothing else.
+
+    `/usr/bin/rpm-ostree <subcommand> *` grants took rpm-ostree's own options and
+    any operand: `kargs --append=init=/bin/sh`, `install /path/to/local.rpm`,
+    `rebase <any image>`, `override replace <local rpm>`, as root with no
+    preview, no approval receipt and no audit row. sudoers cannot say "and no
+    options", so the verbs are an allowlist, every operand is validated, and the
+    only options in the argv are the ones written here.
+    """
+    if not values or values[0] not in RPM_OSTREE_VERBS:
+        raise ValueError("unsupported rpm-ostree operation")
+    verb, operands = values[0], values[1:]
+    if verb == "install" and operands:
+        return [RPM_OSTREE, "install", "--idempotent", *map(rpm_package, operands)]
+    if verb == "uninstall" and operands:
+        return [RPM_OSTREE, "uninstall", *map(rpm_package, operands)]
+    if verb == "replace" and len(operands) == 2:
+        old, new = map(rpm_package, operands)
+        return [RPM_OSTREE, "install", new, "--uninstall", old]
+    if verb == "override-remove" and len(operands) == 1:
+        return [RPM_OSTREE, "override", "remove", rpm_package(operands[0])]
+    if verb == "rebase" and len(operands) == 1:
+        return [RPM_OSTREE, "rebase", rebase_ref(operands[0])]
+    if verb == "kargs" and len(operands) % 2 == 0:
+        argv = [RPM_OSTREE, "kargs"]
+        for op, token in zip(operands[::2], operands[1::2]):
+            if op == "append":
+                argv.append("--append=" + karg_append(token))
+            elif op == "delete":
+                argv.append("--delete=" + karg_delete(token))
+            else:
+                raise ValueError("invalid kernel argument operation")
+        return argv
+    raise ValueError("unsupported rpm-ostree operation or argument count")
 
 
 def safe(value):
@@ -498,6 +650,8 @@ def main(args):
         if len(values) == 2:
             exact_package(values[0], values[1])
         run(argv, env=APT_ENV)
+    elif op == "rpm-ostree":
+        run(rpm_ostree_argv(values))
     elif op in ("group-add", "group-remove") and len(values) == 2:
         name, group = map(username, values)
         ensure_local_group(group)

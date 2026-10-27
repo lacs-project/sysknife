@@ -1,0 +1,181 @@
+# One rpm-ostree operand per line, and what each validator must say about it.
+#
+#   <kind> <ok|refuse> <operand>
+#
+# The daemon validates these operands in crates/sysknife-daemon/src/executor.rs and
+# crates/sysknife-daemon/src/actions/validate.rs, and the root-owned helper
+# packaging/sysknife-action-steps validates them again, because the helper is reachable
+# through sudo without the daemon. Two copies of a rule drift, so both read THIS file and
+# must give the same answer for every line:
+#
+#   * the Rust unit test `rpm_ostree_parity_corpus_agrees_with_the_daemon_validators`
+#   * tests/release/action-steps.test.sh, class RpmOstreeVerb
+#
+# Kinds map to validators:
+#
+#   package  validated_install_package      (every layering action; helper rpm_package)
+#   ref      validated_rebase_ref           (RebaseSystem; helper rebase_ref)
+#   append   validated_safe_kernel_arg      (SetKernelArguments add; helper karg_append)
+#   delete   validated_safe_kernel_arg_removal (SetKernelArguments remove; helper karg_delete)
+#
+# The helper's append screen is grub-kargs-edit's, which also refuses the downgrades the
+# delete screen protects (nokaslr, debugfs=on, iommu=off, ...). The daemon's add screen does
+# not, so those tokens are left out of this file: the helper refuses them and the daemon
+# would hand them on. tests/release/action-steps.test.sh pins that list to grub-kargs-edit.
+#
+# The operand is everything after the second space, so it may contain spaces. Lines that
+# start with `#` and blank lines are skipped. Any other line that does not parse fails the
+# test, so a typo cannot silently drop a case.
+
+# --- package: names, versions, arches ---
+package ok podman
+package ok vim-enhanced
+package ok python3.12
+package ok g++
+package ok libstdc++
+package ok kernel-devel-6.11.4-301.fc41.x86_64
+package ok podman:x86_64
+package ok podman=5.2.3
+package ok 0ad
+package ok abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+# --- package: options, local files, URLs, globs, whitespace ---
+package refuse -A
+package refuse --apply-live
+package refuse --uninstall=bash
+package refuse -
+package refuse /tmp/x.rpm
+package refuse ./x.rpm
+package refuse x.rpm
+package refuse x.deb
+package refuse ../x
+package refuse https://203.0.113.7/x.rpm
+package refuse file:///tmp/x.rpm
+package refuse tmp/x
+package refuse .hidden
+package refuse _x
+package refuse podman-
+package refuse pod*
+package refuse pod?
+package refuse pod man
+package refuse podman;id
+package refuse podman$x
+package refuse ubuntu-desktop^
+package refuse abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+# --- ref: ostree refs and registry images ---
+ref ok fedora/41/x86_64/silverblue
+ref ok fedora:fedora/41/x86_64/silverblue
+ref ok fedora:fedora/41/x86_64/kinoite
+ref ok ostree-unverified-registry:quay.io/fedora/fedora-silverblue:41
+ref ok ostree-image-signed:docker://quay.io/fedora/fedora-silverblue:41
+ref ok ostree-remote-image:fedora:docker://quay.io/fedora/fedora-kinoite:41
+ref ok ostree-unverified-registry:ghcr.io/ublue-os/bluefin@sha256:0123456789abcdef
+ref ok fedora-stable
+# --- ref: options and local sources ---
+ref refuse -b
+ref refuse --experimental
+ref refuse /tmp/repo
+ref refuse ./repo
+ref refuse ../repo
+ref refuse .repo
+ref refuse fedora:../../tmp/x
+ref refuse x:/tmp/repo
+ref refuse file:///tmp/repo
+ref refuse ostree-unverified-image:oci:/tmp/img
+ref refuse ostree-unverified-image:OCI:/tmp/img
+ref refuse ostree-unverified-image:oci-archive:/tmp/img.tar
+ref refuse ostree-unverified-image:dir:/tmp/img
+ref refuse ostree-unverified-image:docker-archive:/tmp/img.tar
+ref refuse ostree-unverified-image:docker-daemon:x
+ref refuse ostree-unverified-image:containers-storage:localhost/x
+ref refuse ostree-unverified-image:ostree:x@/tmp/repo
+ref refuse ostree-unverified-image:sif:/tmp/x.sif
+ref refuse ostree-unverified-image:tarball:/tmp/x.tar
+ref refuse ostree-unverified-image:docker:/tmp/x
+ref refuse fedora 41
+ref refuse fedora;id
+ref refuse fedora=41
+
+# --- append: ordinary arguments ---
+append ok quiet
+append ok nomodeset
+append ok console=ttyS0,115200
+append ok rd.luks.uuid=luks-0123
+append ok systemd.unit=multi-user.target
+append ok intel_iommu=on
+append ok mitigations=auto
+append refuse breakfast
+# --- append: one token only, and no leading `-` ---
+append refuse quiet init=/bin/sh
+append refuse -b
+append refuse --append=quiet
+append refuse quiet"
+append refuse quiet'
+append refuse quiet;id
+# --- append: root shells and weaker boots ---
+append refuse init=/bin/sh
+append refuse INIT=/bin/sh
+append refuse rdinit=/bin/sh
+append refuse single
+append refuse SINGLE
+append refuse s
+append refuse 1
+append refuse 3
+append refuse emergency
+append refuse rescue
+append refuse rd.emergency
+append refuse rd.rescue
+append refuse emergency=1
+append refuse systemd.unit=debug-shell.service
+append refuse systemd.unit=emergency.target
+append refuse systemd.unit=rescue.target
+append refuse systemd.unit=runlevel1.target
+append refuse rd.systemd.unit=emergency.target
+append refuse systemd.debug_shell
+append refuse systemd.debug-shell=1
+append refuse rd.systemd.debug_shell
+append refuse systemd.run=/tmp/x
+append refuse systemd.run_success_action=reboot
+append refuse rd.break
+append refuse rd.break=pre-mount
+append refuse break
+append refuse selinux=0
+append refuse enforcing=0
+append refuse security=none
+append refuse apparmor=0
+append refuse lockdown=none
+append refuse lockdown=integrity
+append refuse mitigations=off
+append refuse pti=off
+append refuse nosmap
+append refuse nosmep
+append refuse module_blacklist=x
+
+# --- delete: ordinary arguments, and downgrades (removing one hardens the host) ---
+delete ok quiet
+delete ok rhgb
+delete ok nomodeset
+delete ok mitigations=off
+delete ok selinux=0
+delete ok lockdown=none
+delete ok module.sig_enforce=0
+delete ok nokaslr
+delete ok init=/bin/sh
+# --- delete: one token only, and protections ---
+delete refuse quiet rhgb
+delete refuse -b
+delete refuse lockdown=confidentiality
+delete refuse LOCKDOWN=integrity
+delete refuse module.sig_enforce=1
+delete refuse selinux=1
+delete refuse enforcing=1
+delete refuse security=selinux
+delete refuse apparmor=1
+delete refuse pti=on
+delete refuse mitigations=auto,nosmt
+delete refuse init_on_alloc=1
+delete refuse slab_nomerge
+delete refuse nosmt
+delete refuse kaslr
+delete refuse iommu=force
+delete refuse intel_iommu=on
