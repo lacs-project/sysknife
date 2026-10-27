@@ -1,0 +1,54 @@
+---
+# ClusterFuzzLite: fuzzes the daemon's trust boundary on pull requests. The
+# targets live in fuzz/ (cargo-fuzz); .clusterfuzzlite/ builds them. See
+# docs/contributing/fuzzing.md to run one locally.
+#
+# A crash fails this run and prints the offending input. Whether the check is
+# required is a branch-protection setting, not something this file decides.
+
+name: cflite
+
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "fuzz/**"
+      - ".clusterfuzzlite/**"
+      - ".dockerignore"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/cflite_pr.yml"
+
+# The action clones the repository with this token, which needs read access to
+# contents and nothing else.
+permissions:
+  contents: read
+
+concurrency:
+  group: cflite-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    # The cold build of the daemon's dependency tree dominates; the fuzzing
+    # window below adds five minutes on top of it.
+    timeout-minutes: 45
+    steps:
+      # google/clusterfuzzlite publishes a single moving tag, v1, and no
+      # patch releases, so the SHA is what pins the action.
+      - name: Build fuzzers
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          language: rust
+          sanitizer: address
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run fuzzers
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # Five minutes in total, shared between the targets.
+          fuzz-seconds: 300
+          mode: code-change
+          sanitizer: address

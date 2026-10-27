@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-default_roots=(tests/e2e tests/release scripts assets/demo .githooks)
+default_roots=(tests/e2e tests/release scripts assets/demo .githooks .clusterfuzzlite)
 
 if [[ "${1:-}" == "--print-roots" ]]; then
     printf '%s\0' "${default_roots[@]}"

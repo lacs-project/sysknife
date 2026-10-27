@@ -1,0 +1,2 @@
+# ClusterFuzzLite project metadata. Rust supports one sanitizer, `address`.
+language: rust

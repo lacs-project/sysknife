@@ -9,3 +9,14 @@
 !apps/sysknife-shell/
 !apps/sysknife-shell/src-tauri/
 !apps/sysknife-shell/src-tauri/**
+# The ClusterFuzzLite image (.clusterfuzzlite/Dockerfile) is built from this same
+# context and copies the whole of it, so the fuzz crate and its build script have
+# to be let through. The root Dockerfile copies named paths only, so nothing here
+# reaches the Glama image. Fuzzer build output stays out.
+!fuzz/
+!fuzz/**
+fuzz/target
+fuzz/artifacts
+fuzz/coverage
+!.clusterfuzzlite/
+!.clusterfuzzlite/**
