@@ -36,14 +36,20 @@ jobs:
       - name: Firewall backend reporter fixtures
         run: python tests/test_firewall_state.py
 
-      # Pinned, because this job holds the workflow token: an unpinned global
+      # Pinned by hash, because this job holds the workflow token: an unpinned
       # install lets a compromised release of any of these tools run arbitrary
-      # code on the trusted side of the build. Bump deliberately.
+      # code on the trusted side of the build. `npm ci` verifies the integrity
+      # entry of every package in tools/ci-node/package-lock.json, transitive
+      # ones included, and `pip --require-hashes` refuses anything that
+      # tools/ci-python/requirements.txt does not list with a sha256. pip itself
+      # is not upgraded: the upgrade fetched an unpinned release before the hash
+      # list could apply. Bump deliberately, and keep the tool versions in
+      # docs/developer-guide.md in step.
       - name: Install lint tools
         run: |
-          npm install --global markdownlint-cli2@0.23.2 markdown-link-check@3.15.0
-          python -m pip install --upgrade pip
-          pip install yamllint==1.38.0 PyYAML==6.0.2
+          npm ci --prefix tools/ci-node
+          echo "${GITHUB_WORKSPACE}/tools/ci-node/node_modules/.bin" >> "$GITHUB_PATH"
+          pip install --require-hashes -r tools/ci-python/requirements.txt
 
       - name: Test action pin comment verification
         run: bash tests/release/action-pin-comments.test.sh
@@ -124,6 +130,9 @@ jobs:
 
       - name: Check no workflow pins an end-of-life Node release
         run: bash tests/release/node-eol.test.sh
+
+      - name: Check every CI install is pinned by a hash
+        run: bash tests/release/pinned-dependencies.test.sh
 
       - name: Check npm audit stays off the pull-request path
         run: bash tests/release/npm-audit-off-pr-path.test.sh

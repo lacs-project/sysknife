@@ -195,11 +195,10 @@ run_rust_group() {
 
 frontend_install() (
     cd "$repo_root/apps/sysknife-shell" || exit 1
-    if npm ci; then
-        exit 0
-    fi
-    printf 'ci-local: npm ci failed -- retrying with npm install (offline/lockfile-mismatch fallback)\n' >&2
-    npm install
+    # Lockfile only. A fallback to `npm install` resolved whatever the registry
+    # served that day when the lockfile disagreed with package.json, which is
+    # the case CI's `npm ci` exists to refuse, so the mirror of CI refuses it too.
+    npm ci
 )
 
 frontend_audit() (
@@ -226,11 +225,11 @@ run_frontend_group() {
         return
     fi
 
-    printf '\n==> frontend: npm ci (falls back to npm install)\n'
+    printf '\n==> frontend: npm ci\n'
     if frontend_install; then
-        record PASS 'frontend: npm ci (falls back to npm install)'
+        record PASS 'frontend: npm ci'
     else
-        record FAIL 'frontend: npm ci (falls back to npm install)'
+        record FAIL 'frontend: npm ci'
         record SKIP 'frontend: npm audit / tsc / vitest -- SKIPPED (dependency install failed)'
         return
     fi
@@ -346,19 +345,19 @@ run_hygiene_group() {
     if have markdownlint-cli2; then
         run_step 'hygiene: markdownlint-cli2' hygiene_markdownlint
     else
-        record_missing_ci_tool markdownlint-cli2 'hygiene: markdownlint-cli2 -- SKIPPED (not found; install: npm install --global markdownlint-cli2)'
+        record_missing_ci_tool markdownlint-cli2 'hygiene: markdownlint-cli2 -- SKIPPED (not found; install: npm ci --prefix tools/ci-node, then put tools/ci-node/node_modules/.bin on PATH)'
     fi
 
     if have markdown-link-check; then
         run_step 'hygiene: markdown-link-check' hygiene_markdown_link_check
     else
-        record_missing_ci_tool markdown-link-check 'hygiene: markdown-link-check -- SKIPPED (not found; install: npm install --global markdown-link-check)'
+        record_missing_ci_tool markdown-link-check 'hygiene: markdown-link-check -- SKIPPED (not found; install: npm ci --prefix tools/ci-node, then put tools/ci-node/node_modules/.bin on PATH)'
     fi
 
     if have yamllint; then
         run_step 'hygiene: yamllint' hygiene_yamllint
     else
-        record_missing_ci_tool yamllint 'hygiene: yamllint -- SKIPPED (not found; install: pip install yamllint)'
+        record_missing_ci_tool yamllint 'hygiene: yamllint -- SKIPPED (not found; install: pip install --require-hashes -r tools/ci-python/requirements.txt)'
     fi
 
     if have shellcheck; then
