@@ -7,17 +7,18 @@ use crate::actions::{
     validate::{
         shell_equivalent_sudo_command, validated_activatable_unit, validated_apparmor_profile,
         validated_apt_package, validated_apt_pin_expr, validated_apt_pin_name,
-        validated_audit_path, validated_audit_perms, validated_cpu_quota, validated_domain,
-        validated_email, validated_fstype, validated_group, validated_group_not_critical,
-        validated_home_dir, validated_hostname, validated_install_package, validated_journal_grep,
-        validated_journal_priority, validated_journal_time, validated_locale, validated_log_path,
-        validated_log_rotation, validated_lvm_name, validated_lvm_size, validated_memory_limit,
-        validated_mount_device, validated_mount_options, validated_mount_point,
-        validated_port_or_service, validated_ppa_name, validated_pro_service,
-        validated_resource_limit_unit, validated_safe_arg, validated_stoppable_unit,
-        validated_sudo_commands, validated_sudoers_name, validated_swap_path, validated_sysctl_key,
-        validated_sysctl_value, validated_syslog_host, validated_tasks_max, validated_timezone,
-        validated_unit_name, validated_username, validated_username_not_critical,
+        validated_apt_show_package, validated_audit_path, validated_audit_perms,
+        validated_cpu_quota, validated_domain, validated_email, validated_fstype, validated_group,
+        validated_group_not_critical, validated_home_dir, validated_hostname,
+        validated_install_package, validated_journal_grep, validated_journal_priority,
+        validated_journal_time, validated_locale, validated_log_path, validated_log_rotation,
+        validated_lvm_name, validated_lvm_size, validated_memory_limit, validated_mount_device,
+        validated_mount_options, validated_mount_point, validated_port_or_service,
+        validated_ppa_name, validated_pro_service, validated_resource_limit_unit,
+        validated_safe_arg, validated_stoppable_unit, validated_sudo_commands,
+        validated_sudoers_name, validated_swap_path, validated_sysctl_key, validated_sysctl_value,
+        validated_syslog_host, validated_tasks_max, validated_timezone, validated_unit_name,
+        validated_unmodified_package, validated_username, validated_username_not_critical,
     },
     ActionMechanism, ActionSpec,
 };
@@ -1654,20 +1655,20 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             Ok(apt::apt_install(&package))
         }
         "AptRemove" => {
-            let package = validated_install_package(require_str(params, "package")?, "package")?;
+            let package = validated_unmodified_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_remove(&package))
         }
         "AptPurge" => {
-            let package = validated_install_package(require_str(params, "package")?, "package")?;
+            let package = validated_unmodified_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_purge(&package))
         }
         "AptAutoremove" => Ok(apt::apt_autoremove()),
         "AptHold" => {
-            let package = validated_install_package(require_str(params, "package")?, "package")?;
+            let package = validated_unmodified_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_hold(&package))
         }
         "AptUnhold" => {
-            let package = validated_install_package(require_str(params, "package")?, "package")?;
+            let package = validated_unmodified_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_unhold(&package))
         }
         "AptSearch" => {
@@ -1676,7 +1677,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         }
         "AptListInstalled" => Ok(apt::apt_list_installed()),
         "AptShow" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_apt_show_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_show(&package))
         }
         "AptListUpgradable" => Ok(apt::apt_list_upgradable()),
@@ -3716,6 +3717,55 @@ mod tests {
             assert!(
                 build_action_spec(action, params).is_ok(),
                 "{action} must accept a real package spec: {params}"
+            );
+        }
+    }
+
+    /// apt-get reads the last character of an operand: `pkg-` on `install` removes
+    /// the package, and `pkg+` on `remove` or `purge` installs it. The validators
+    /// refuse both; only this proves every apt arm actually calls the right one,
+    /// so an arm that goes back to the install validator fails here.
+    #[test]
+    fn apt_package_actions_refuse_a_trailing_modifier() {
+        let reject: &[(&str, &str)] = &[
+            ("AptInstall", "linux-image-generic-"),
+            ("AptInstall", "nginx-"),
+            ("AptRemove", "nginx-"),
+            ("AptRemove", "nginx+"),
+            ("AptRemove", "g++"),
+            ("AptPurge", "nginx-"),
+            ("AptPurge", "linux-image-generic+"),
+            ("AptHold", "nginx-"),
+            ("AptHold", "nginx+"),
+            ("AptUnhold", "nginx-"),
+            ("AptUnhold", "nginx+"),
+            ("AptShow", "nginx-"),
+        ];
+        for (action, package) in reject {
+            let result = build_action_spec(action, &json!({ "package": package }));
+            assert!(
+                matches!(result, Err(ExecutorError::InvalidParam("package"))),
+                "{action} {package:?} must be refused, got {result:?}"
+            );
+        }
+        // Positive twins, so the table above cannot pass for a validator that
+        // refuses everything. `g++` and `libstdc++6` must stay installable.
+        let accept: &[(&str, &str)] = &[
+            ("AptInstall", "g++"),
+            ("AptInstall", "libstdc++6"),
+            ("AptInstall", "nginx+"),
+            ("AptRemove", "libstdc++6"),
+            ("AptRemove", "g++:amd64"),
+            ("AptPurge", "g++:amd64"),
+            ("AptHold", "libstdc++6"),
+            ("AptUnhold", "libstdc++6"),
+            ("AptShow", "g++"),
+            ("AptShow", "nginx/noble"),
+        ];
+        for (action, package) in accept {
+            assert!(
+                build_action_spec(action, &json!({ "package": package })).is_ok(),
+                "{action} {package:?} must be accepted"
             );
         }
     }

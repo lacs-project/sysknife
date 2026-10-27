@@ -1176,7 +1176,15 @@ pub fn validated_syslog_host(s: &str, param: &'static str) -> Result<String, Exe
 /// - no `.deb`/`.rpm` suffix (apt treats a bare `foo.deb` in the cwd as a file),
 /// - no `*`/`?` (an install is never a glob),
 /// - charset `[A-Za-z0-9+._:=~^-]`, which covers `name`, `name=version`,
-///   `name:arch`, and rpm epoch/version punctuation.
+///   `name:arch`, and rpm epoch/version punctuation,
+/// - no trailing `-`: apt-get reads `pkg-` on `install` as "remove pkg", so an
+///   approved `AptInstall` of `linux-image-generic-` removed the kernel
+///   metapackage. A trailing `+` stays legal here because `g++` and
+///   `libstdc++6` are real packages and `install pkg+` is an explicit install.
+///
+/// Remove, purge, hold and unhold take [`validated_unmodified_package`], which
+/// also refuses the trailing `+`. `packaging/sysknife-action-steps` repeats this
+/// rule for the `apt` verb, and both read `tests/data/apt-package-parity.txt`.
 pub fn validated_install_package(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     let first_ok = s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
     let charset_ok = s.chars().all(|c| {
@@ -1189,10 +1197,41 @@ pub fn validated_install_package(s: &str, param: &'static str) -> Result<String,
         || s.contains('/')
         || s.ends_with(".deb")
         || s.ends_with(".rpm")
+        || s.ends_with('-')
     {
         return Err(ExecutorError::InvalidParam(param));
     }
     Ok(s.to_string())
+}
+
+/// Validate a package operand for apt `remove`, `purge`, `hold` and `unhold`:
+/// everything [`validated_install_package`] requires, and no trailing `+` either.
+///
+/// apt-get reads `pkg+` on `remove` or `purge` as "install pkg", so an approved
+/// `AptRemove` installed the package it was previewed as removing. `apt-mark`
+/// strips the `+` and acts on the shorter name, so the previewed name is not the
+/// one held. A package whose real name ends in `+` (`g++`) is removed, held or
+/// unheld by its arch-qualified spelling (`g++:amd64`), which stays valid.
+pub fn validated_unmodified_package(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    let package = validated_install_package(s, param)?;
+    if package.ends_with('+') {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(package)
+}
+
+/// Validate the operand of `apt-cache show`: [`validated_safe_arg`], which keeps
+/// the `pkg/release` selector `show` accepts, and no trailing `-`.
+///
+/// `apt-cache show` does not invert anything (`show pkg-` answers "No packages
+/// found"). The refusal keeps one rule for every apt action that takes a
+/// package: none accepts a trailing `-`.
+pub fn validated_apt_show_package(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    let package = validated_safe_arg(s, param)?;
+    if package.ends_with('-') {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(package)
 }
 
 /// Validate an apt package-name glob (`[A-Za-z0-9.+*?_:-]`, 1..=128).
@@ -1734,6 +1773,186 @@ mod tests {
                 validated_install_package(ok, "package").is_ok(),
                 "{ok:?} is a legitimate package spec and must be accepted"
             );
+        }
+    }
+
+    /// What apt-get does with the last character of an operand. A trailing `-` on
+    /// `install` is "remove this package", so an approved `AptInstall` of
+    /// `linux-image-generic-` removed the kernel metapackage while the preview
+    /// said "install". A trailing `+` on `remove` or `purge` is "install this
+    /// package", the same inversion the other way. Checked against apt 3.2.0
+    /// (`apt-get -s install have-me-` prints `Remv have-me`; `apt-get -s remove
+    /// avail-me+` prints `Inst avail-me`).
+    #[test]
+    fn install_package_refuses_a_trailing_minus() {
+        for evil in [
+            "linux-image-generic-",
+            "linux-generic-hwe-24.04-",
+            "nginx-",
+            "a-",
+            "nginx=1.0-",
+            "nginx:amd64-",
+        ] {
+            assert!(
+                validated_install_package(evil, "package").is_err(),
+                "{evil:?} would make apt-get install REMOVE a package and must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn install_package_keeps_names_that_end_in_plus() {
+        // g++ and libstdc++6 are real packages, and `apt-get install pkg+` is an
+        // explicit install, so a trailing `+` stays legal on the install path.
+        for ok in [
+            "g++",
+            "libstdc++6",
+            "gcc-c++",
+            "libc++-dev",
+            "clang++",
+            "nginx+",
+        ] {
+            assert!(
+                validated_install_package(ok, "package").is_ok(),
+                "{ok:?} must stay installable"
+            );
+        }
+    }
+
+    #[test]
+    fn unmodified_package_refuses_either_trailing_modifier() {
+        for evil in [
+            "g++",
+            "clang++",
+            "nginx+",
+            "linux-image-generic+",
+            "nginx=1.0+",
+            "nginx-",
+            "linux-image-generic-",
+            "nginx=1.0-",
+        ] {
+            assert!(
+                validated_unmodified_package(evil, "package").is_err(),
+                "{evil:?} would let apt-get remove, purge, hold or unhold do the opposite \
+                 operation or act on a different name, and must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn unmodified_package_keeps_every_install_rule() {
+        for evil in [
+            "",
+            "-nginx",
+            "-oAPT::Update::Pre-Invoke::=/bin/sh",
+            "/tmp/x.deb",
+            "./x.deb",
+            "x.deb",
+            "x.rpm",
+            ".nginx",
+            "nginx/noble",
+            "ng*",
+            "ng inx",
+            "nginx\n",
+        ] {
+            assert!(
+                validated_unmodified_package(evil, "package").is_err(),
+                "{evil:?} must be refused"
+            );
+        }
+        for ok in [
+            "nginx",
+            "python3-pip",
+            "libstdc++6",
+            "nginx=1.24.0-1",
+            "nginx:amd64",
+            "g++:amd64",
+        ] {
+            assert!(
+                validated_unmodified_package(ok, "package").is_ok(),
+                "{ok:?} must stay accepted; `g++:amd64` is how a `+` package is removed"
+            );
+        }
+    }
+
+    #[test]
+    fn apt_package_length_limit_is_128_for_both_validators() {
+        let longest = "a".repeat(128);
+        let too_long = "a".repeat(129);
+        assert!(validated_install_package(&longest, "package").is_ok());
+        assert!(validated_unmodified_package(&longest, "package").is_ok());
+        assert!(validated_install_package(&too_long, "package").is_err());
+        assert!(validated_unmodified_package(&too_long, "package").is_err());
+    }
+
+    #[test]
+    fn show_package_refuses_a_trailing_minus_and_keeps_the_release_selector() {
+        assert!(validated_apt_show_package("nginx-", "package").is_err());
+        assert!(validated_apt_show_package("linux-image-generic-", "package").is_err());
+        // `apt-cache show` takes `pkg/release`, `pkg:arch` and a trailing `+`;
+        // none of them changes anything on the host.
+        for ok in ["nginx", "nginx/noble", "nginx:amd64", "g++", "libstdc++6"] {
+            assert!(
+                validated_apt_show_package(ok, "package").is_ok(),
+                "{ok:?} must stay readable"
+            );
+        }
+        assert!(validated_apt_show_package("-nginx", "package").is_err());
+        assert!(validated_apt_show_package("", "package").is_err());
+    }
+
+    /// The root-owned helper `packaging/sysknife-action-steps` validates the same
+    /// operand again, because it is reachable through sudo without the daemon.
+    /// Both copies read `tests/data/apt-package-parity.txt`; the helper's side is
+    /// `class AptVerb` in `tests/release/action-steps.test.sh`.
+    #[test]
+    fn apt_package_parity_corpus_agrees_with_the_daemon_validators() {
+        let corpus = include_str!("../../tests/data/apt-package-parity.txt");
+        let mut seen: std::collections::BTreeSet<(String, String)> = Default::default();
+        let mut checked = 0;
+        for (index, line) in corpus.lines().enumerate() {
+            let number = index + 1;
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut parts = line.splitn(3, ' ');
+            let (Some(verb), Some(verdict), Some(operand)) =
+                (parts.next(), parts.next(), parts.next())
+            else {
+                panic!("corpus line {number} is not `<verb> <ok|refuse> <operand>`: {line:?}");
+            };
+            let result = match verb {
+                "install" => validated_install_package(operand, "package"),
+                "remove" | "purge" | "hold" | "unhold" => {
+                    validated_unmodified_package(operand, "package")
+                }
+                other => panic!("corpus line {number}: unknown verb {other:?}"),
+            };
+            match verdict {
+                "ok" => assert!(
+                    result.is_ok(),
+                    "corpus line {number}: `{verb} {operand}` must be accepted"
+                ),
+                "refuse" => assert!(
+                    result.is_err(),
+                    "corpus line {number}: `{verb} {operand}` must be refused"
+                ),
+                other => panic!("corpus line {number}: unknown verdict {other:?}"),
+            }
+            seen.insert((verb.to_string(), verdict.to_string()));
+            checked += 1;
+        }
+        assert!(
+            checked >= 60,
+            "only {checked} corpus lines were checked; the corpus was truncated or not parsed"
+        );
+        for verb in ["install", "remove", "purge", "hold", "unhold"] {
+            for verdict in ["ok", "refuse"] {
+                assert!(
+                    seen.contains(&(verb.to_string(), verdict.to_string())),
+                    "the corpus has no `{verb} {verdict}` line, so that half is unchecked"
+                );
+            }
         }
     }
 

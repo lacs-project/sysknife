@@ -1,0 +1,121 @@
+# One package operand per line, and what each validator must say about it.
+#
+#   <verb> <ok|refuse> <operand>
+#
+# The daemon validates an apt package operand in crates/sysknife-daemon/src/actions/validate.rs
+# and the root-owned helper packaging/sysknife-action-steps validates it again, because the
+# helper is reachable through sudo without the daemon. Two copies of a rule drift, so both
+# read THIS file and must give the same answer for every line:
+#
+#   * the Rust unit test `apt_package_parity_corpus_agrees_with_the_daemon_validators`
+#   * tests/release/action-steps.test.sh, class AptVerb, which runs each install, remove
+#     and purge line through the helper
+#
+# Verbs map to validators. install is validated_install_package. remove, purge, hold and
+# unhold are validated_unmodified_package. hold and unhold have no helper verb (apt-mark has
+# its own grants), so only the Rust test reads those lines.
+#
+# apt-get reads a trailing `-` on an operand as "remove this package" and a trailing `+` as
+# "install this package". A package whose real name ends in `+` (g++, libstdc++ spellings)
+# stays installable, and is removed through its arch-qualified name (g++:amd64).
+#
+# The operand is everything after the second space, so it may contain spaces. Lines that
+# start with `#` and blank lines are skipped. Any other line that does not parse fails the
+# test, so a typo cannot silently drop a case.
+
+# --- install: ordinary names, and names that end in `+` ---
+install ok nginx
+install ok python3-pip
+install ok lib32-glibc
+install ok g++
+install ok libstdc++6
+install ok gcc-c++
+install ok libc++-dev
+install ok clang++
+install ok nginx+
+install ok nginx=1.24.0-1
+install ok nginx:amd64
+install ok 2:openssl
+install ok task-xfce^
+install ok a
+install ok Z9
+
+# --- install: a trailing `-` removes the package instead ---
+install refuse nginx-
+install refuse linux-image-generic-
+install refuse linux-generic-hwe-24.04-
+install refuse a-
+install refuse nginx=1.0-
+install refuse nginx:amd64-
+
+# --- install: option injection, paths, local files, globs, shell text ---
+install refuse -nginx
+install refuse -oAPT::Update::Pre-Invoke::=/bin/sh
+install refuse --reinstall
+install refuse /tmp/x.deb
+install refuse ./x.deb
+install refuse x.deb
+install refuse x.rpm
+install refuse .nginx
+install refuse _nginx
+install refuse nginx/noble
+install refuse ng inx
+install refuse ng*
+install refuse ng?
+install refuse pkg;id
+install refuse pkg$IFS
+install refuse pkg`id`
+install refuse pkg|id
+install refuse pkg&id
+
+# --- install: only ASCII letters and digits pass the character class ---
+install refuse nginxé
+install refuse ｎginx
+install refuse nginx٣
+
+# --- remove: the same names, but neither trailing modifier ---
+remove ok nginx
+remove ok python3-pip
+remove ok libstdc++6
+remove ok nginx=1.24.0-1
+remove ok nginx:amd64
+remove ok g++:amd64
+remove ok a
+remove refuse g++
+remove refuse clang++
+remove refuse nginx+
+remove refuse linux-image-generic+
+remove refuse nginx=1.0+
+remove refuse nginx-
+remove refuse linux-image-generic-
+remove refuse -nginx
+remove refuse /tmp/x.deb
+remove refuse x.deb
+remove refuse nginx/noble
+remove refuse ng*
+remove refuse nginxé
+
+# --- purge: identical to remove ---
+purge ok nginx
+purge ok libstdc++6
+purge ok g++:amd64
+purge refuse g++
+purge refuse nginx+
+purge refuse nginx-
+purge refuse -nginx
+purge refuse ./x.deb
+
+# --- hold and unhold: apt-mark strips a trailing `+`, so the previewed name is not the held one ---
+hold ok nginx
+hold ok libstdc++6
+hold ok g++:amd64
+hold refuse g++
+hold refuse nginx+
+hold refuse nginx-
+hold refuse -nginx
+unhold ok nginx
+unhold ok g++:amd64
+unhold refuse g++
+unhold refuse nginx+
+unhold refuse nginx-
+unhold refuse -nginx
