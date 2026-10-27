@@ -18,10 +18,11 @@
 #   append   validated_safe_kernel_arg      (SetKernelArguments add; helper karg_append)
 #   delete   validated_safe_kernel_arg_removal (SetKernelArguments remove; helper karg_delete)
 #
-# The helper's append screen is grub-kargs-edit's, which also refuses the downgrades the
-# delete screen protects (nokaslr, debugfs=on, iommu=off, ...). The daemon's add screen does
-# not, so those tokens are left out of this file: the helper refuses them and the daemon
-# would hand them on. tests/release/action-steps.test.sh pins that list to grub-kargs-edit.
+# The helper's append screen is grub-kargs-edit's, which also refuses every downgrade in
+# WEAKENING_KARGS (debugfs=on, iommu=off, init_on_alloc=0, ...). The daemon's add screen
+# refuses only the ones in its own lists, so the others are left out of this file: the helper
+# refuses them and the daemon would hand them on. tests/release/action-steps.test.sh pins the
+# helper's lists to grub-kargs-edit.
 #
 # The operand is everything after the second space, so it may contain spaces. Lines that
 # start with `#` and blank lines are skipped. Any other line that does not parse fails the
@@ -179,3 +180,42 @@ delete refuse nosmt
 delete refuse kaslr
 delete refuse iommu=force
 delete refuse intel_iommu=on
+
+# --- delete: a bare key removes the key's only value (ostree_kernel_args_delete) ---
+delete refuse lockdown
+delete refuse module.sig_enforce
+delete refuse selinux
+delete refuse enforcing
+delete refuse apparmor
+delete refuse security
+delete refuse iommu
+delete refuse mitigations
+delete refuse init_on_alloc
+delete refuse lsm
+delete refuse audit
+delete refuse kaslr=1
+delete refuse lsm=landlock,lockdown,yama
+delete refuse audit=1
+delete ok audit=0
+delete ok rhgb=1
+# --- append: units pulled in with wants, and the remaining weakenings ---
+append refuse systemd.wants=debug-shell.service
+append refuse rd.systemd.wants=emergency.target
+append ok systemd.wants=sshd.service
+append refuse lsm=landlock
+append refuse rd.shell
+append refuse systemd.mask=auditd.service
+append refuse rd.systemd.mask=auditd.service
+append refuse modprobe.blacklist=apparmor
+append refuse audit=0
+append refuse nopti
+append refuse nospectre_v1
+append refuse nospectre_v2
+append refuse spectre_v2=off
+append refuse spec_store_bypass_disable=off
+append refuse nokaslr
+append ok audit=1
+append ok spectre_v2=on
+# --- rebase: `..` and `@/` where no other rule sees them ---
+ref refuse fedora/../../tmp/x
+ref refuse ostree-unverified-registry:x@/tmp/repo

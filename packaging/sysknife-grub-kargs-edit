@@ -83,6 +83,11 @@ DENY_APPEND_PREFIXES = (
     # rdinit= is the initramfs twin of init=; rd.break and break stop the boot
     # in an initramfs root shell.
     "systemd.run", "rdinit=", "rd.break", "break",
+    # lsm= picks the LSM stack like security=; modprobe.blacklist= is
+    # module_blacklist= by another name; rd.shell opens an initramfs shell;
+    # systemd.mask= masks a unit for the boot; audit=0 turns auditing off.
+    "lsm=", "modprobe.blacklist=", "rd.shell", "systemd.mask=", "rd.systemd.mask=",
+    "audit=0", "spectre_v2=off", "spec_store_bypass_disable=off",
 )
 # nosmap/nosmep disable SMAP/SMEP enforcement; they are in the executor's
 # BLOCKED_EXACT and were missing here. emergency, rescue, -b and the runlevels
@@ -90,6 +95,7 @@ DENY_APPEND_PREFIXES = (
 DENY_APPEND_EXACT = (
     "single", "s", "1", "nosmap", "nosmep",
     "emergency", "rescue", "-b", "rd.emergency", "rd.rescue", "2", "3", "4", "5",
+    "nopti", "nospectre_v1", "nospectre_v2", "nokaslr",
 )
 # Mirrors ROOT_SHELL_UNITS in crates/sysknife-daemon/src/actions/validate.rs.
 # The helper is directly sudo-invocable through the wildcard grant, so the
@@ -115,7 +121,7 @@ DENY_DELETE_PREFIXES = (
     "apparmor=", "pti=", "mitigations=", "init_on_alloc=", "init_on_free=",
     "page_alloc.shuffle=", "randomize_kstack_offset=", "slub_debug=",
     "page_poison=", "vsyscall=", "debugfs=", "iommu=", "intel_iommu=",
-    "amd_iommu=",
+    "amd_iommu=", "lsm=", "audit=",
 )
 DENY_DELETE_EXACT = ("slab_nomerge", "nosmt", "kaslr")
 
@@ -139,7 +145,7 @@ WEAKENING_KARGS = (
     "selinux=0", "enforcing=0", "apparmor=0", "mitigations=off", "pti=off",
     "lockdown=none", "debugfs=on", "iommu=off", "intel_iommu=off",
     "module.sig_enforce=0", "init_on_alloc=0", "init_on_free=0",
-    "randomize_kstack_offset=off", "page_alloc.shuffle=0", "nokaslr",
+    "randomize_kstack_offset=off", "page_alloc.shuffle=0", "nokaslr", "audit=0",
 )
 
 UPDATE_GRUB = "/usr/sbin/update-grub"
@@ -167,9 +173,12 @@ def reject_dangerous_append(tokens: list[str]) -> None:
     for tok in tokens:
         lower = tok.lower()
         base = lower.split("=", 1)[0]
-        # rd.systemd.unit= is the same choice made in the initramfs.
+        # rd.systemd.unit= is the same choice made in the initramfs, and
+        # systemd.wants= pulls the unit into the boot instead of targeting it.
         unit_val = next(
-            (lower[len(p):] for p in ("systemd.unit=", "rd.systemd.unit=") if lower.startswith(p)),
+            (lower[len(p):] for p in ("systemd.unit=", "rd.systemd.unit=",
+                                      "systemd.wants=", "rd.systemd.wants=")
+             if lower.startswith(p)),
             "",
         )
         blocked = (
@@ -196,9 +205,13 @@ def reject_dangerous_delete(tokens: list[str]) -> None:
         lower = tok.lower()
         if lower in WEAKENING_KARGS:
             continue
+        # A bare key deletes the key's only value (libostree's
+        # ostree_kernel_args_delete), so `lockdown` is screened as `lockdown=`.
+        key = lower.split("=", 1)[0]
         blocked = (
-            any(lower.startswith(p) for p in DENY_DELETE_PREFIXES)
+            any(lower.startswith(p) or (key + "=").startswith(p) for p in DENY_DELETE_PREFIXES)
             or lower in DENY_DELETE_EXACT
+            or key in DENY_DELETE_EXACT
         )
         if blocked:
             print(

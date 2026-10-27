@@ -78,7 +78,13 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   runlevels 2 to 5 and their `rd.` forms. The daemon's copy also requires each
   `SetKernelArguments` value to be one boot-line token from the helper's
   character set plus `,`, so whitespace, quotes and control bytes no longer
-  carry a second argument past the screen. The `action-steps` helper now refuses
+  carry a second argument past the screen. Every copy now refuses to remove a
+  protective argument by its bare key, such as `lockdown`, which libostree reads
+  as removing `lockdown=confidentiality`. The add screens also refuse a
+  root-shell unit pulled in with `systemd.wants=`, and `lsm=`, `rd.shell`,
+  `systemd.mask=`, `modprobe.blacklist=`, `audit=0`, `nokaslr`, `nopti`,
+  `nospectre_v1`, `nospectre_v2`, `spectre_v2=off` and
+  `spec_store_bypass_disable=off`. The `action-steps` helper now refuses
   to lock or unlock `root`, `daemon`, `bin`, `sys`, `sudo` and `adm`, as the
   daemon does, and `UnlockUserAccount` applies the same list. The helper also
   refuses account names that start with `.` or contain `..`, as the daemon

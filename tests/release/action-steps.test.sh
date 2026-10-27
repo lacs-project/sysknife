@@ -918,6 +918,12 @@ class RpmOstreeVerb(unittest.TestCase):
             ['rpm-ostree', 'kargs', 'delete', 'module.sig_enforce=1'],
             ['rpm-ostree', 'kargs', 'delete', 'selinux=1'],
             ['rpm-ostree', 'kargs', 'delete', 'kaslr'],
+            ['rpm-ostree', 'kargs', 'delete', 'lockdown'], ['rpm-ostree', 'kargs', 'delete', 'mitigations'],
+            ['rpm-ostree', 'kargs', 'delete', 'lsm=landlock,lockdown'], ['rpm-ostree', 'kargs', 'delete', 'audit=1'],
+            ['rpm-ostree', 'kargs', 'append', 'systemd.wants=debug-shell.service'],
+            ['rpm-ostree', 'kargs', 'append', 'rd.shell'], ['rpm-ostree', 'kargs', 'append', 'audit=0'],
+            ['rpm-ostree', 'kargs', 'append', 'nopti'], ['rpm-ostree', 'kargs', 'append', 'lsm=landlock'],
+            ['rpm-ostree', 'kargs', 'append', 'systemd.mask=auditd.service'],
             ['rpm-ostree', 'kargs', 'append', '-b'], ['rpm-ostree', 'kargs', 'append', ''],
             ['rpm-ostree', 'kargs', 'append', 'quiet\n'], ['rpm-ostree', 'kargs', 'append', 'a' * 255],
             ['rpm-ostree', 'kargs', 'append', 'quiet"'], ['rpm-ostree', 'kargs', 'append', 'quiet\tinit=/bin/sh'],
@@ -1079,7 +1085,18 @@ class RpmOstreeVerb(unittest.TestCase):
                   'init_on_alloc=0', 'init_on_free=1', 'slab_nomerge', 'nosmt', 'debugfs=on',
                   'debugfs=off', 'iommu=off', 'intel_iommu=on', 'amd_iommu=force_isolation',
                   'vsyscall=none', 'slub_debug=FZP', 'page_poison=1', 'page_alloc.shuffle=0',
-                  'randomize_kstack_offset=off', 'single=1', 'emergency=1']
+                  'randomize_kstack_offset=off', 'single=1', 'emergency=1',
+                  # A bare key deletes the key's only value (ostree_kernel_args_delete).
+                  'lockdown', 'module.sig_enforce', 'selinux', 'enforcing', 'apparmor',
+                  'security', 'iommu', 'mitigations', 'init_on_alloc', 'lsm', 'audit',
+                  'kaslr=1', 'quiet=1',
+                  # Units pulled in with wants, and the remaining weakenings.
+                  'systemd.wants=debug-shell.service', 'rd.systemd.wants=emergency.target',
+                  'systemd.wants=sshd.service', 'lsm=landlock', 'rd.shell', 'rd.shell=0',
+                  'systemd.mask=auditd.service', 'rd.systemd.mask=auditd.service',
+                  'modprobe.blacklist=apparmor', 'audit=0', 'audit=1', 'nopti',
+                  'nospectre_v1', 'nospectre_v2', 'spectre_v2=off', 'spectre_v2=on',
+                  'spec_store_bypass_disable=off']
 
         def grub_refuses(screen, token):
             try:

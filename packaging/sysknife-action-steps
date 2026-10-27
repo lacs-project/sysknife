@@ -67,17 +67,23 @@ KARG_DENY_APPEND_PREFIXES = (
     "systemd.debug_shell", "systemd.debug-shell",
     "rd.systemd.debug_shell", "rd.systemd.debug-shell",
     "systemd.run", "rdinit=", "rd.break", "break",
+    # lsm= picks the LSM stack like security=; modprobe.blacklist= is
+    # module_blacklist= by another name; rd.shell opens an initramfs shell;
+    # systemd.mask= masks a unit for the boot; audit=0 turns auditing off.
+    "lsm=", "modprobe.blacklist=", "rd.shell", "systemd.mask=", "rd.systemd.mask=",
+    "audit=0", "spectre_v2=off", "spec_store_bypass_disable=off",
 )
 KARG_DENY_APPEND_EXACT = (
     "single", "s", "1", "nosmap", "nosmep",
     "emergency", "rescue", "-b", "rd.emergency", "rd.rescue", "2", "3", "4", "5",
+    "nopti", "nospectre_v1", "nospectre_v2", "nokaslr",
 )
 KARG_DENY_DELETE_PREFIXES = (
     "lockdown=", "module.sig_enforce=", "security=", "selinux=", "enforcing=",
     "apparmor=", "pti=", "mitigations=", "init_on_alloc=", "init_on_free=",
     "page_alloc.shuffle=", "randomize_kstack_offset=", "slub_debug=",
     "page_poison=", "vsyscall=", "debugfs=", "iommu=", "intel_iommu=",
-    "amd_iommu=",
+    "amd_iommu=", "lsm=", "audit=",
 )
 KARG_DENY_DELETE_EXACT = ("slab_nomerge", "nosmt", "kaslr")
 # Each of these IS a downgrade: appending one is refused, deleting one is allowed.
@@ -85,7 +91,7 @@ KARG_WEAKENING = (
     "selinux=0", "enforcing=0", "apparmor=0", "mitigations=off", "pti=off",
     "lockdown=none", "debugfs=on", "iommu=off", "intel_iommu=off",
     "module.sig_enforce=0", "init_on_alloc=0", "init_on_free=0",
-    "randomize_kstack_offset=off", "page_alloc.shuffle=0", "nokaslr",
+    "randomize_kstack_offset=off", "page_alloc.shuffle=0", "nokaslr", "audit=0",
 )
 
 # Mirrors ROOT_SHELL_UNITS in crates/sysknife-daemon/src/actions/validate.rs.
@@ -342,7 +348,8 @@ def karg_append(value):
     """grub-kargs-edit's reject_dangerous_append, on top of karg_token."""
     lower = karg_token(value).lower()
     base = lower.split("=", 1)[0]
-    unit = next((lower[len(p):] for p in ("systemd.unit=", "rd.systemd.unit=")
+    unit = next((lower[len(p):] for p in ("systemd.unit=", "rd.systemd.unit=",
+                                          "systemd.wants=", "rd.systemd.wants=")
                  if lower.startswith(p)), "")
     if (lower.startswith(KARG_DENY_APPEND_PREFIXES) or lower in KARG_DENY_APPEND_EXACT
             or base in KARG_DENY_APPEND_EXACT or lower in KARG_WEAKENING
@@ -354,8 +361,13 @@ def karg_append(value):
 def karg_delete(value):
     """grub-kargs-edit's reject_dangerous_delete, on top of karg_token."""
     lower = karg_token(value).lower()
+    # A bare key deletes the key's only value (libostree's
+    # ostree_kernel_args_delete), so `lockdown` is screened as `lockdown=`.
+    key = lower.split("=", 1)[0]
     if lower not in KARG_WEAKENING and (lower.startswith(KARG_DENY_DELETE_PREFIXES)
-                                        or lower in KARG_DENY_DELETE_EXACT):
+                                        or (key + "=").startswith(KARG_DENY_DELETE_PREFIXES)
+                                        or lower in KARG_DENY_DELETE_EXACT
+                                        or key in KARG_DENY_DELETE_EXACT):
         raise ValueError("refusing to delete a kernel argument that protects the boot")
     return value
 

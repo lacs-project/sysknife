@@ -207,6 +207,56 @@ for const, helper_attr in (("BLOCKED_PREFIXES", "DENY_APPEND_PREFIXES"),
 if "rd.systemd.unit=" not in fn_src:
     failures.append("validated_safe_kernel_arg does not screen rd.systemd.unit=")
 
+for spelling in ("systemd.wants=", "rd.systemd.wants="):
+    if spelling not in fn_src:
+        failures.append(f"validated_safe_kernel_arg does not screen {spelling}")
+
+# 3f. A bare key deletes the key's only value. libostree's
+#     ostree_kernel_args_delete removes `lockdown=confidentiality` when asked for
+#     `lockdown`, and the prefix screen `lockdown=` never matched the bare key.
+#     The daemon refuses these; a direct call must not get further.
+for tok in ["lockdown", "module.sig_enforce", "selinux", "enforcing", "apparmor",
+            "security", "iommu", "mitigations", "init_on_alloc", "lsm", "audit",
+            "LOCKDOWN", "kaslr=1", "lsm=landlock,lockdown,yama", "audit=1"]:
+    if not refused(tok):
+        failures.append(f"--delete {tok!r} was accepted; it removes a boot protection")
+for tok in ["mitigations=off", "selinux=0", "audit=0", "rhgb"]:
+    if refused(tok):
+        failures.append(f"--delete {tok!r} was refused, but removing it is safe")
+
+# 3g. A root-shell unit pulled in with systemd.wants= is the same shell as
+#     systemd.unit= makes the target, and these twins and switches weaken the boot
+#     the way the tokens above them do.
+for tok in ["systemd.wants=debug-shell.service", "rd.systemd.wants=emergency.target",
+            "SYSTEMD.WANTS=Rescue.target", "lsm=landlock", "rd.shell", "rd.shell=1",
+            "systemd.mask=auditd.service", "rd.systemd.mask=auditd.service",
+            "modprobe.blacklist=apparmor", "audit=0", "nopti", "nospectre_v1",
+            "nospectre_v2", "spectre_v2=off", "spec_store_bypass_disable=off", "nokaslr"]:
+    if not refused_append(tok):
+        failures.append(f"--append {tok!r} was accepted; it weakens the next boot")
+for tok in ["systemd.wants=sshd.service", "audit=1", "spectre_v2=on"]:
+    if refused_append(tok):
+        failures.append(f"--append {tok!r} was refused, but it weakens nothing")
+
+# 3h. PARITY with validated_safe_kernel_arg_removal, read out of executor.rs.
+#     The delete screen's lists are copies of the daemon's, so compare them.
+rm_fn = re.search(r"fn validated_safe_kernel_arg_removal\(.*?\n\}\n", exec_src, re.S)
+rm_src = rm_fn.group(0) if rm_fn else ""
+for const, helper_attr, relation in (("PROTECTIVE_PREFIXES", "DENY_DELETE_PREFIXES", "equal"),
+                                     ("PROTECTIVE_EXACT", "DENY_DELETE_EXACT", "equal"),
+                                     ("WEAKENING", "WEAKENING_KARGS", "subset")):
+    decl = re.search(rf"const {const}:\s*&\[&str\]\s*=\s*&\[(.*?)\];", rm_src, re.S)
+    daemon = set(re.findall(r'"([^"]+)"', decl.group(1))) if decl else set()
+    if not daemon:
+        failures.append(f"{const} not found or empty in validated_safe_kernel_arg_removal; compared nothing")
+        continue
+    helper_set = set(getattr(mod, helper_attr, ()))
+    if relation == "equal" and daemon != helper_set:
+        failures.append(f"{helper_attr} differs from the daemon's {const}: "
+                        f"daemon only {sorted(daemon - helper_set)}, helper only {sorted(helper_set - daemon)}")
+    if relation == "subset" and not daemon <= helper_set:
+        failures.append(f"{helper_attr} is missing {sorted(daemon - helper_set)} from the daemon's {const}")
+
 # 3d. Ordinary appends must survive, or the screen has eaten the feature.
 for tok in ["quiet", "splash", "nomodeset", "console=ttyS0", "transparent_hugepage=madvise"]:
     if refused_append(tok):

@@ -2447,6 +2447,20 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
         "rdinit=",
         "rd.break",
         "break",
+        // `lsm=` picks the LSM stack the way `security=` does, and
+        // `modprobe.blacklist=` is modprobe's spelling of `module_blacklist=`.
+        // `rd.shell` opens a dracut shell in the initramfs, and
+        // `systemd.mask=` masks a unit (auditd, the journal) for the boot.
+        // `audit=0` turns kernel auditing off; the last two switch off one
+        // speculative-execution mitigation each.
+        "lsm=",
+        "modprobe.blacklist=",
+        "rd.shell",
+        "systemd.mask=",
+        "rd.systemd.mask=",
+        "audit=0",
+        "spectre_v2=off",
+        "spec_store_bypass_disable=off",
     ];
     // `emergency`, `rescue`, `-b` and the runlevels 2-5 pick the boot target
     // the way `single` and `1` do (kernel-command-line(7)).
@@ -2465,6 +2479,10 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
         "3",
         "4",
         "5",
+        "nopti",
+        "nospectre_v1",
+        "nospectre_v2",
+        "nokaslr",
     ];
     // Shared with `validated_activatable_unit`, deliberately: these two screens
     // encode the same idea from opposite directions — one refuses to START a
@@ -2485,10 +2503,17 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
         return Err(ExecutorError::InvalidParam(param));
     }
     // Block systemd.unit= pointing to emergency/rescue/single targets, and
-    // rd.systemd.unit=, the same choice made in the initramfs.
-    if let Some(unit_val) = lower
-        .strip_prefix("systemd.unit=")
-        .or_else(|| lower.strip_prefix("rd.systemd.unit="))
+    // rd.systemd.unit=, the same choice made in the initramfs. systemd.wants=
+    // and rd.systemd.wants= pull the unit into the boot transaction instead of
+    // making it the target, which starts the same root shell.
+    if let Some(unit_val) = [
+        "systemd.unit=",
+        "rd.systemd.unit=",
+        "systemd.wants=",
+        "rd.systemd.wants=",
+    ]
+    .iter()
+    .find_map(|p| lower.strip_prefix(p))
     {
         if BLOCKED_UNIT_PREFIXES
             .iter()
@@ -2561,6 +2586,7 @@ fn validated_safe_kernel_arg_removal(arg: &str, param: &'static str) -> Result<(
         "init_on_free=0",
         "randomize_kstack_offset=off",
         "page_alloc.shuffle=0",
+        "audit=0",
     ];
     const PROTECTIVE_PREFIXES: &[&str] = &[
         "lockdown=",
@@ -2582,6 +2608,10 @@ fn validated_safe_kernel_arg_removal(arg: &str, param: &'static str) -> Result<(
         "iommu=",
         "intel_iommu=",
         "amd_iommu=",
+        // `lsm=` selects the LSM stack like `security=`; `audit=1` turns kernel
+        // auditing on.
+        "lsm=",
+        "audit=",
     ];
     const PROTECTIVE_EXACT: &[&str] = &["slab_nomerge", "nosmt", "kaslr"];
 
@@ -2590,10 +2620,20 @@ fn validated_safe_kernel_arg_removal(arg: &str, param: &'static str) -> Result<(
     if WEAKENING.contains(&lower.as_str()) {
         return Ok(());
     }
+    // A bare key deletes the key's only value: libostree's
+    // `ostree_kernel_args_delete` removes `lockdown=confidentiality` when asked
+    // for `lockdown`, which no prefix ending in `=` matches. So the key is
+    // screened as `key=` too, and an exact protective token with a value
+    // (`kaslr=1`) by its key.
+    let key = lower.split('=').next().unwrap_or(&lower);
+    let key_eq = format!("{key}=");
     // Protective wins over the add-path inversion below. `security=` is refused
     // by BOTH screens: adding it picks an LSM, removing it drops the one in use.
-    if PROTECTIVE_PREFIXES.iter().any(|p| lower.starts_with(p))
+    if PROTECTIVE_PREFIXES
+        .iter()
+        .any(|p| lower.starts_with(p) || key_eq.starts_with(p))
         || PROTECTIVE_EXACT.contains(&lower.as_str())
+        || PROTECTIVE_EXACT.contains(&key)
     {
         return Err(ExecutorError::InvalidParam(param));
     }
@@ -4225,6 +4265,114 @@ mod tests {
                     Err(ExecutorError::InvalidParam("remove"))
                 ),
                 "removing {arg} is a boot-security downgrade and must be refused"
+            );
+        }
+    }
+
+    /// libostree deletes a key's only value when asked for the bare key
+    /// (`ostree_kernel_args_delete`, "for input arg with a single key ... the
+    /// key/value pair will be deleted if there is only one value"), so
+    /// `--delete=lockdown` removes `lockdown=confidentiality`. The prefix screen
+    /// `lockdown=` never matched the bare `lockdown`.
+    #[test]
+    fn kernel_arg_removal_refuses_a_protective_bare_key() {
+        for arg in [
+            "lockdown",
+            "module.sig_enforce",
+            "selinux",
+            "enforcing",
+            "apparmor",
+            "security",
+            "iommu",
+            "mitigations",
+            "init_on_alloc",
+            "lsm",
+            "audit",
+            "LOCKDOWN",
+            "kaslr=1",
+        ] {
+            assert!(
+                matches!(
+                    validated_safe_kernel_arg_removal(arg, "remove"),
+                    Err(ExecutorError::InvalidParam("remove"))
+                ),
+                "removing the bare key {arg} removes its protective value and must be refused"
+            );
+        }
+        // The full weakening token stays removable, and so does an ordinary key.
+        for arg in ["mitigations=off", "selinux=0", "audit=0", "quiet", "rhgb"] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_ok(),
+                "{arg} must stay removable"
+            );
+        }
+    }
+
+    /// `lsm=` picks the LSM stack as `security=` does, and `audit=1` is what
+    /// turns kernel auditing on, so dropping either weakens the next boot.
+    #[test]
+    fn kernel_arg_removal_refuses_the_lsm_and_audit_selectors() {
+        for arg in ["lsm=landlock,lockdown,yama,apparmor", "audit=1", "Audit=1"] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_err(),
+                "removing {arg} weakens the boot and must be refused"
+            );
+        }
+    }
+
+    /// `systemd.wants=` pulls a unit into the boot transaction as surely as
+    /// `systemd.unit=` makes it the target: `systemd.wants=debug-shell.service`
+    /// is the same root shell on tty9.
+    #[test]
+    fn kernel_arg_blocks_root_shell_units_pulled_in_by_wants() {
+        for arg in [
+            "systemd.wants=debug-shell.service",
+            "systemd.wants=emergency.service",
+            "rd.systemd.wants=rescue.target",
+            "rd.systemd.wants=debug-shell.service",
+            "SYSTEMD.WANTS=Debug-Shell.service",
+        ] {
+            assert!(
+                validated_safe_kernel_arg(arg, "add").is_err(),
+                "{arg} boots into a root shell and must be refused"
+            );
+        }
+        assert!(validated_safe_kernel_arg("systemd.wants=sshd.service", "add").is_ok());
+    }
+
+    /// Weakenings the add screen missed: twins of arguments it already refused
+    /// (`lsm=` for `security=`, `modprobe.blacklist=` for `module_blacklist=`), the
+    /// initramfs shell, masking a unit at boot, and the per-mitigation switches.
+    #[test]
+    fn kernel_arg_blocks_the_remaining_weakenings() {
+        for arg in [
+            "lsm=landlock",
+            "rd.shell",
+            "rd.shell=1",
+            "systemd.mask=auditd.service",
+            "rd.systemd.mask=systemd-journald.service",
+            "modprobe.blacklist=apparmor",
+            "audit=0",
+            "nopti",
+            "nospectre_v1",
+            "nospectre_v2",
+            "spectre_v2=off",
+            "spec_store_bypass_disable=off",
+            "nokaslr",
+            "NOPTI",
+        ] {
+            assert!(
+                matches!(
+                    validated_safe_kernel_arg(arg, "add"),
+                    Err(ExecutorError::InvalidParam("add"))
+                ),
+                "{arg} weakens the next boot and must be refused"
+            );
+        }
+        for arg in ["spectre_v2=on", "audit=1", "quiet"] {
+            assert!(
+                validated_safe_kernel_arg(arg, "add").is_ok(),
+                "{arg} must stay valid"
             );
         }
     }
