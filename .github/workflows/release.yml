@@ -252,7 +252,7 @@ jobs:
               if ((status != 1)); then
                 exit "$status"
               fi
-              cargo publish -p "$crate" --locked --token "$CARGO_REGISTRY_TOKEN"
+              cargo publish -p "$crate" --locked
               wait_for_crate_version "$crate" "$VERSION"
             fi
           done

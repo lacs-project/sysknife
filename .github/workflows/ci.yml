@@ -86,6 +86,9 @@ jobs:
       - name: Check npm publishes only after crates.io
         run: bash tests/release/release-publish-order.test.sh
 
+      - name: Check release workflow keeps registry tokens off the command line
+        run: python3 tests/release/release-token-argv.test.py
+
       - name: Test internal dependency pin coverage
         run: bash tests/release/release-version-pins.test.sh
 
