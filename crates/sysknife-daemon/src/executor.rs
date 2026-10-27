@@ -2472,6 +2472,7 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
     // and reachable on the other.
     use crate::actions::validate::ROOT_SHELL_UNITS as BLOCKED_UNIT_PREFIXES;
 
+    validated_kernel_arg_token(arg, param)?;
     let lower = arg.to_lowercase();
     // Strip optional value (e.g. "quiet=1" → "quiet") for exact matches.
     let base = lower.split('=').next().unwrap_or(&lower);
@@ -2497,6 +2498,30 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
     }
     // Guard against the base arg matching dangerous exact values even with =.
     if BLOCKED_EXACT.contains(&base) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(())
+}
+
+/// Require `arg` to be exactly one token of the kernel command line.
+///
+/// Both kargs screens match on the start of the value. The boot line is split
+/// on whitespace, so a value carrying a second token behind a space, tab or
+/// newline (or a quote that groups one) would land that token on the boot line
+/// unscreened: `quiet init=/bin/sh` passes a prefix check for `init=`. The
+/// character set is `validated_safe_arg`'s plus `=` and `,`, which real
+/// arguments need (`console=ttyS0,115200`), and the leading `-` stays refused.
+fn validated_kernel_arg_token(arg: &str, param: &'static str) -> Result<(), ExecutorError> {
+    if arg.is_empty() || arg.len() > crate::actions::validate::SAFE_ARG_MAX_BYTES {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if arg.starts_with('-') {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if !arg.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(c, '.' | '_' | ':' | '/' | '+' | '@' | '-' | '=' | ',')
+    }) {
         return Err(ExecutorError::InvalidParam(param));
     }
     Ok(())
@@ -2559,6 +2584,7 @@ fn validated_safe_kernel_arg_removal(arg: &str, param: &'static str) -> Result<(
     ];
     const PROTECTIVE_EXACT: &[&str] = &["slab_nomerge", "nosmt", "kaslr"];
 
+    validated_kernel_arg_token(arg, param)?;
     let lower = arg.to_lowercase();
     if WEAKENING.contains(&lower.as_str()) {
         return Ok(());
@@ -4120,6 +4146,68 @@ mod tests {
                 validated_safe_kernel_arg_removal(arg, "remove").is_ok(),
                 "{arg} carries no boot-security meaning and must stay removable"
             );
+        }
+    }
+
+    // A kernel argument is one token of the boot line. The denylists above read
+    // the start of the value, so a value that carries a second token behind a
+    // space, a tab or a newline would reach the boot line with that token
+    // unscreened. NUL and other control bytes have no place in a boot argument.
+    const NOT_ONE_KERNEL_TOKEN: &[&str] = &[
+        "quiet init=/bin/sh",
+        "x selinux=0",
+        "quiet\tmitigations=off",
+        "quiet\ninit=/bin/sh",
+        "quiet\rsingle",
+        "\u{0}nomodeset",
+        "nomodeset\u{0}",
+        "quiet\u{7f}",
+        "quiet\u{a0}single",
+        "console=\"ttyS0 init=/bin/sh\"",
+        "quiet'",
+        "quiet\\",
+        "-b",
+        "-quiet",
+        "",
+    ];
+
+    #[test]
+    fn set_kernel_arguments_refuses_a_value_that_is_not_one_token() {
+        for arg in NOT_ONE_KERNEL_TOKEN {
+            for key in ["add", "remove"] {
+                assert!(
+                    build_action_spec("SetKernelArguments", &json!({ key: [arg] })).is_err(),
+                    "SetKernelArguments must refuse {key} {arg:?}"
+                );
+            }
+        }
+        let too_long = "a".repeat(crate::actions::validate::SAFE_ARG_MAX_BYTES + 1);
+        for key in ["add", "remove"] {
+            assert!(
+                build_action_spec("SetKernelArguments", &json!({ key: [too_long] })).is_err(),
+                "SetKernelArguments must refuse an over-long {key} value"
+            );
+        }
+    }
+
+    #[test]
+    fn set_kernel_arguments_keeps_ordinary_tokens() {
+        for arg in [
+            "quiet",
+            "nomodeset",
+            "console=ttyS0,115200",
+            "rd.driver.blacklist=nouveau",
+            "root=UUID=0b1c-77aa",
+            "resume=/dev/mapper/luks-swap",
+            "video=HDMI-A-1:1920x1080@60",
+            "nvidia-drm.modeset=1",
+        ] {
+            for key in ["add", "remove"] {
+                assert!(
+                    build_action_spec("SetKernelArguments", &json!({ key: [arg] })).is_ok(),
+                    "SetKernelArguments must keep accepting {key} {arg:?}"
+                );
+            }
         }
     }
 

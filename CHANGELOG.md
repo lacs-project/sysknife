@@ -75,7 +75,10 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   `user-lock` refuses critical accounts.** Both copies accepted `systemd.run=`,
   `emergency`, `rescue`, `rdinit=`, `rd.break` and `rd.systemd.unit=`, each a
   root shell or a root command at the next boot. They now refuse those, `-b`,
-  runlevels 2 to 5 and their `rd.` forms. The `action-steps` helper now refuses
+  runlevels 2 to 5 and their `rd.` forms. The daemon's copy also requires each
+  `SetKernelArguments` value to be one boot-line token from the helper's
+  character set plus `,`, so whitespace, quotes and control bytes no longer
+  carry a second argument past the screen. The `action-steps` helper now refuses
   to lock or unlock `root`, `daemon`, `bin`, `sys`, `sudo` and `adm`, as the
   daemon does, and `UnlockUserAccount` applies the same list. The helper also
   refuses account names that start with `.` or contain `..`, as the daemon
