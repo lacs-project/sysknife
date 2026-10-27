@@ -159,6 +159,28 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   `AptRemove`, `AptPurge`, `AptHold` and `AptUnhold` refuse a package dpkg has
   no record of.
 
+- **The `rpm-ostree` sudoers grants no longer take arguments.** The `sysknife`
+  account held `/usr/bin/rpm-ostree <subcommand> *` grants for `install`,
+  `uninstall`, `override`, `rebase`, `kargs`, `cleanup`, `upgrade` and
+  `status`. A trailing `*` takes rpm-ostree's own options as readily as an
+  operand, so a holder of the account could change the next boot as root with
+  no preview, approval receipt or audit row. `InstallPackages`,
+  `AddLayeredPackage`, `RemovePackages`, `RemoveLayeredPackage`,
+  `ReplaceLayeredPackage`, `RemoveBasePackage`, `RebaseSystem` and
+  `SetKernelArguments` now go through a new `rpm-ostree` verb of
+  `/usr/lib/sysknife/action-steps`. The verb builds the rpm-ostree argv itself
+  and accepts no option. It validates each package with the daemon's rule,
+  which refuses a path, a URL and a local `.rpm`; screens each kernel argument
+  with the denylists `grub-kargs-edit` applies; and refuses a rebase target
+  that reads from the host, such as a local repository or an `oci:` image
+  directory. `RebaseSystem` refuses those targets in the daemon too, and both
+  copies of every rule check `tests/data/rpm-ostree-parity.txt`.
+  `UpdateSystem`, `RollbackDeployment`, `CleanupDeployments` and
+  `ResetLayeredPackageOverride` keep exact grants. `rpm-ostree cancel`, which
+  the action-timeout reaper runs, gets an exact grant as well: it had none, so
+  sudo refused the reaper and a timed-out rpm-ostree transaction ran on.
+  (GHSA-32wv-3c2p-qp95)
+
 ## [0.27.0] — 2026-10-27
 
 ### Added
