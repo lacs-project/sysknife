@@ -61,6 +61,14 @@ if ! python3 "$script_dir/check_evidence_claims.py" "$repo_root"; then
     printf 'Invalid public claim: a published figure does not derive from evidence\n' >&2
     exit 1
 fi
+# Every figure marker must render from its source. check_evidence_claims.py has
+# already refused a figure outside a marker; this refuses a marker whose value
+# is stale, unknown, malformed or inside a code fence. Run on the same tree, with
+# no pipe, so its exit status is the one tested here.
+if ! python3 "$script_dir/render_figures.py" --check "$repo_root"; then
+    printf 'Invalid public claim: a figure marker does not render from its source\n' >&2
+    exit 1
+fi
 reject_pattern 'until npm publish lands|publish[- ]pending' \
     'setup package is documented as unpublished' "${claim_files[@]}"
 # SECURITY.md once said every enforcement layer is independent and a bypass of

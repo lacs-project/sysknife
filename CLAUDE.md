@@ -178,8 +178,8 @@ just because the intent mentions two things.
 Use `query_*` tools ONLY when the intent is genuinely ambiguous and you need
 information to DECIDE between two or more possible plans (e.g. "install vim"
 on a Fedora host → query layered packages to check if it is already there
-before proposing `AddLayeredPackage`; on Ubuntu → check `dpkg` status before
-proposing `AptInstall`).
+before proposing `AddLayeredPackage`; on Ubuntu → do not query installed
+packages, propose `AptInstall` and let APT report whether it is already there).
 
 ### Never weaken story assertions to hide model misbehavior
 

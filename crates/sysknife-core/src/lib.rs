@@ -107,6 +107,26 @@ pub fn choose_audit_store(
     per_user_exists: bool,
     system_exists: bool,
 ) -> AuditStoreChoice {
+    choose_audit_store_with_paths(
+        explicit,
+        per_user,
+        per_user_exists,
+        PathBuf::from(PRODUCTION_DATABASE_PATH),
+        system_exists,
+    )
+}
+
+/// Apply the audit-store precedence when the system store path is supplied by
+/// the caller. The production resolver uses [`PRODUCTION_DATABASE_PATH`]; the
+/// explicit path parameter also lets tests model that fallback without writing
+/// under `/var/lib`.
+pub fn choose_audit_store_with_paths(
+    explicit: Option<PathBuf>,
+    per_user: PathBuf,
+    per_user_exists: bool,
+    system_path: PathBuf,
+    system_exists: bool,
+) -> AuditStoreChoice {
     if let Some(path) = explicit {
         return AuditStoreChoice::Explicit(path);
     }
@@ -114,7 +134,7 @@ pub fn choose_audit_store(
         return AuditStoreChoice::PerUser(per_user);
     }
     if system_exists {
-        return AuditStoreChoice::System(PathBuf::from(PRODUCTION_DATABASE_PATH));
+        return AuditStoreChoice::System(system_path);
     }
     // Nothing exists anywhere: keep the per-user path so the diagnostic names
     // the location a user-mode daemon would have created.
@@ -150,9 +170,21 @@ pub fn resolve_audit_store() -> AuditStoreChoice {
     let explicit = std::env::var_os("SYSKNIFE_DATABASE_PATH").map(PathBuf::from);
     let per_user = default_database_path();
     let system = PathBuf::from(PRODUCTION_DATABASE_PATH);
+    resolve_audit_store_from(explicit, per_user, system)
+}
+
+/// Resolve the audit store with an explicit system path. The production entry
+/// point supplies [`PRODUCTION_DATABASE_PATH`]; tests can supply a temporary
+/// file to exercise the packaged-install fallback without writing under
+/// `/var/lib`.
+pub fn resolve_audit_store_from(
+    explicit: Option<PathBuf>,
+    per_user: PathBuf,
+    system: PathBuf,
+) -> AuditStoreChoice {
     let per_user_exists = path_is_present(&per_user);
     let system_exists = path_is_present(&system);
-    choose_audit_store(explicit, per_user, per_user_exists, system_exists)
+    choose_audit_store_with_paths(explicit, per_user, per_user_exists, system, system_exists)
 }
 
 /// Read the current process's real UID from `/proc/self/status`.
@@ -335,6 +367,15 @@ mod tests {
             note.contains(super::PRODUCTION_DATABASE_PATH),
             "note names the store: {note}"
         );
+    }
+
+    #[test]
+    fn a_supplied_system_store_path_is_used_when_the_per_user_store_is_absent() {
+        let per_user = PathBuf::from("/home/u/.local/state/sysknife/daemon.sqlite");
+        let system = PathBuf::from("/tmp/system/daemon.sqlite");
+        let choice =
+            super::choose_audit_store_with_paths(None, per_user, false, system.clone(), true);
+        assert_eq!(choice, super::AuditStoreChoice::System(system));
     }
 
     #[test]

@@ -7,9 +7,9 @@ Supported Ubuntu LTSes:
 
 | Release | Codename | SSH port | Live suite | Status |
 |---|---|---|---|---|
-| 22.04 | jammy | 2222 | 79/79 | validated |
-| 24.04 | noble | 2223 | 79/79 | validated (default) |
-| 26.04 | resolute | 2224 | 79/79 | validated |
+| 22.04 | jammy | 2222 | <!-- fig:story_run:ubuntu-22.04-gpt-oss-120b -->79/79<!-- /fig --> | validated |
+| 24.04 | noble | 2223 | <!-- fig:story_run:ubuntu-24.04-gpt-oss-120b -->79/79<!-- /fig --> | validated (default) |
+| 26.04 | resolute | 2224 | <!-- fig:story_run:ubuntu-26.04-gpt-oss-120b -->79/79<!-- /fig --> | validated |
 
 Each release has a record run and a `.replay.json` twin in
 `tests/evidence/story-runs/`, and `tests/release/cassette-replay-parity.test.sh`

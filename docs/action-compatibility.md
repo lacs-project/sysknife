@@ -22,6 +22,14 @@ hosts must not reach approval for mutations the daemon will refuse. This
 conservative client gate withholds portable reads too; it does not restrict
 portable tools on eligible Ubuntu or Fedora Atomic hosts.
 
+For a detected `other` family (for example Arch, openSUSE or Alpine), the
+planner prompt names only actions offered by that host's plan schema. Neither
+OS snapshot action is offered, so the prompt instructs the planner to refuse
+an unsupported OS/hardware overview request explicitly. It directs history
+queries and preference-only requests to finish with a read-only
+`ListJobHistory` step. With no distro hint at all, the existing
+generic prompt and unfiltered non-credential action catalogue are retained.
+
 At the daemon, portable Observer reads such as `UfwStatus` and `SnapList` no
 longer require distro detection after leaving the hard lists. This widens
 read-only inspection; mutations still require an eligible host, and the

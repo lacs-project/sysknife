@@ -47,6 +47,7 @@ jobs:
   publish:
     name: Publish to the MCP Registry
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       # The only credential this workflow needs. Without it `login github-oidc`
       # has no token to exchange.

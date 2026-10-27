@@ -68,7 +68,7 @@ SysKnife gives you:
 | Component | Privilege | Job |
 |---|---|---|
 | **brain** | none | Talks to the LLM, proposes a typed plan |
-| **approval gate** | user | Shows you the plan, collects your approval: `sysknife approve` in a terminal (the paused Tauri shell is a second implementation) |
+| **approval gate** | user | Shows you the plan and collects your approval: `sysknife approve` in a terminal for an MCP plan, the CLI's own prompt (or `--yes` up to `--max-risk`) for a CLI run. The paused Tauri shell is a third implementation |
 | **daemon** | `sysknife` system user, with scoped sudo and polkit grants | Executes approved actions, writes the audit log |
 
 The brain proposes but **cannot touch the system**. The daemon executes but
@@ -106,10 +106,10 @@ SysKnife, not an afterthought.
 
 > **ℹ️ Distro support**
 >
-> The current suite is 99 Ubuntu stories. All three Ubuntu LTS releases have a
-> committed live-VM run covering 79 of those Ubuntu stories, in
+> The current suite is <!-- fig:stories_ubuntu floor=10 -->90+<!-- /fig --> Ubuntu stories. All three Ubuntu LTS releases have a
+> committed live-VM run covering <!-- fig:lts_story_total -->79<!-- /fig --> of those Ubuntu stories, in
 > `tests/evidence/story-runs/`:
-> 22.04, 24.04 and 26.04 all at 79/79. The twenty additional stories are not yet
+> 22.04, 24.04 and 26.04 all at <!-- fig:lts_story_rate -->79/79<!-- /fig -->. The <!-- fig:stories_ubuntu_unrecorded floor=10 -->20+<!-- /fig --> additional stories are not yet
 > included in a committed live-VM run. Each run has a replay twin that
 > reproduces it, serving every call with zero misses.
 > Every Debian-only action has a story.
@@ -146,7 +146,7 @@ flow.
 
 ## Status
 
-192 typed actions · 2,046 Rust tests + 72 frontend tests · MIT
+<!-- fig:typed_actions floor=10 -->190+<!-- /fig --> typed actions · <!-- fig:rust_tests floor=1000 -->2,000+<!-- /fig --> Rust tests + <!-- fig:frontend_tests floor=10 -->70+<!-- /fig --> frontend tests · MIT
 
 SysKnife is the reference implementation of the
 [LACS specification](https://github.com/lacs-project/specification) — a

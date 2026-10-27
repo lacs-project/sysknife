@@ -631,11 +631,17 @@ chained to the previous one.
   short reference version of this file.
 - [`docs/testing/user-stories.md`](docs/testing/user-stories.md) — the
   20 worked Atomic scenarios and their pass criteria (the atomic family itself
-  is 54 stories; the Ubuntu family is a further 99).
+  is <!-- fig:stories_atomic floor=10 -->50+<!-- /fig --> stories; the Ubuntu family is a further <!-- fig:stories_ubuntu floor=10 -->90+<!-- /fig -->).
 - [`tests/e2e/atomic-vm.sh help`](tests/e2e/atomic-vm.sh) — the
   subcommand reference, kept in sync with the script itself.
 
 ## 17. Adding a new action
+
+Published figures (the action count, test counts, story-set sizes) are never typed:
+they are `fig` markers rendered by `scripts/render_figures.py`. After adding an
+action or a story, run `UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh` and commit
+the evidence file and whatever it re-rendered. Syntax:
+[docs/contributing/testing.md](docs/contributing/testing.md#published-figures).
 
 An "action" is a named operation the daemon can perform — `GetDiskUsage`,
 `AddLayeredPackage`, `CreateUser`, etc. Action names are string literals

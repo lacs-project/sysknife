@@ -395,27 +395,27 @@ fn unattended_marker_present(warnings: &[String]) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// since_to_hours
+// since_to_cutoff
 // ---------------------------------------------------------------------------
 
-/// Parse an ISO-8601 datetime or calendar date and return the number of
-/// whole hours that have elapsed since that moment.
+/// Parse an ISO-8601 datetime or calendar date into the exact history cutoff
+/// sent to the daemon, normalised to an RFC 3339 UTC timestamp.
 ///
 /// Datetimes may use Z or an explicit UTC offset. A bare YYYY-MM-DD is
 /// interpreted as midnight UTC on that date.
 ///
-/// Returns None when the value is invalid, in the future, or too large to
-/// fit in u32.
-pub fn since_to_hours(s: &str) -> Option<u32> {
+/// The cutoff is kept to the second rather than rounded to whole hours: a
+/// whole-hour count turned "30 minutes ago" into zero hours and matched
+/// nothing (#567).
+///
+/// Returns None when the value is invalid or in the future.
+pub fn since_to_cutoff(s: &str) -> Option<String> {
     let epoch = iso8601_to_unix(s)?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs() as i64;
-    if epoch > now {
+    if epoch > chrono::Utc::now().timestamp() {
         return None;
     }
-    u32::try_from((now - epoch) / 3600).ok()
+    let cutoff = chrono::DateTime::<chrono::Utc>::from_timestamp(epoch, 0)?;
+    Some(cutoff.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
 }
 
 fn iso8601_to_unix(s: &str) -> Option<i64> {
@@ -908,7 +908,7 @@ pub(crate) fn build_history_params(
     limit: u32,
     status: Option<&str>,
     action: Option<&str>,
-    since_hours: Option<u32>,
+    since: Option<&str>,
 ) -> Value {
     let mut params = json!({ "limit": limit });
     if let Some(s) = status {
@@ -917,8 +917,8 @@ pub(crate) fn build_history_params(
     if let Some(a) = action {
         params["action_filter"] = json!(a);
     }
-    if let Some(h) = since_hours {
-        params["since_hours"] = json!(h);
+    if let Some(cutoff) = since {
+        params["since"] = json!(cutoff);
     }
     params
 }
@@ -1004,20 +1004,27 @@ pub async fn run_doctor(
     let socket_label = socket.label();
     let client = DaemonClient::new(socket);
 
-    // Detect the running distro once; failure is non-fatal for doctor.
-    let distro_label = match sysknife_core::distro::detect() {
-        Ok(d) => d.to_string(),
-        Err(e) => format!("unknown ({})", e),
-    };
-
     // `curated_state` is a blocking sync call; use spawn_blocking so the
     // multi-threaded runtime is not blocked on one thread indefinitely.
-    let state_result = tokio::task::spawn_blocking(move || client.curated_state())
+    let state_result = tokio::task::spawn_blocking(move || client.state_with_distro())
         .await
         .map_err(|e| CliError::ConfigOrDaemon(format!("join: {e}")))?;
 
+    let target = crate::client::TargetDistro::resolve(
+        state_result
+            .as_ref()
+            .ok()
+            .and_then(|(_, distro)| distro.clone()),
+    );
+    let distro_label = target.label();
+    if !json_out {
+        log.print_stderr(&format!("distro source: {}", target.source));
+        if let Some(warning) = target.warning() {
+            log.print_stderr(&format!("warning: {warning}"));
+        }
+    }
     match state_result {
-        Ok(state) => {
+        Ok((state, _)) => {
             if json_out {
                 let out = json!({
                     "ok": true,
@@ -1026,6 +1033,8 @@ pub async fn run_doctor(
                     "provider": config.provider_name(),
                     "model": config.model_name(),
                     "distro": distro_label,
+                    "distro_source": target.source,
+                    "warnings": target.warning().into_iter().collect::<Vec<_>>(),
                 });
                 log.println(&serde_json::to_string(&out).expect("static JSON"));
             } else {
@@ -1043,7 +1052,9 @@ pub async fn run_doctor(
         Err(e) => {
             if json_out {
                 // Scripts need to know which socket failed, not just that one did.
-                let out = json!({ "ok": false, "socket": socket_label, "error": e.to_string() });
+                let out = json!({ "ok": false, "socket": socket_label, "error": e.to_string(),
+                    "distro": distro_label, "distro_source": target.source,
+                    "warnings": target.warning().into_iter().collect::<Vec<_>>() });
                 log.println(&serde_json::to_string(&out).expect("static JSON"));
             } else {
                 crate::render::print_doctor_fail(&socket_label, &e.to_string());
@@ -1066,7 +1077,7 @@ pub async fn run_history(
     socket: SocketTarget,
     log: &Logger,
 ) -> Result<(), CliError> {
-    let since_hours = match args.since.as_deref() {
+    let since = match args.since.as_deref() {
         None => None,
         Some(s) => {
             // Distinguish the two failure modes so the user knows how to fix each.
@@ -1076,8 +1087,8 @@ pub async fn run_history(
                      (accepted formats: 2026-01-15, 2026-01-15T10:30:00Z, or 2026-01-15T12:30:00+02:00)"
                 )));
             }
-            match since_to_hours(s) {
-                Some(h) => Some(h),
+            match since_to_cutoff(s) {
+                Some(cutoff) => Some(cutoff),
                 None => {
                     return Err(CliError::ConfigOrDaemon(format!(
                         "--since: {s:?} is in the future"
@@ -1091,7 +1102,7 @@ pub async fn run_history(
         args.limit,
         args.status.as_deref(),
         args.action.as_deref(),
-        since_hours,
+        since.as_deref(),
     );
 
     let client = DaemonClient::new(socket);
@@ -1234,20 +1245,21 @@ pub async fn run_audit_export(args: AuditExportArgs, log: &Logger) -> Result<(),
 /// tampered — the result is unknown until the operator resolves the
 /// underlying access problem.
 pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(), CliError> {
-    use sysknife_core::config::LacsConfig;
-    use sysknife_daemon::audit_chain::AuditKey;
-
-    // Honour the same `[storage]` config the daemon uses, so `sysknife audit
-    // verify` works against whichever backend is in production. Without this,
-    // a Postgres-backed deployment can never verify its chain from the CLI.
-    let lacs_config = LacsConfig::load();
-
-    // A system-installed daemon keeps its chain in /var/lib/sysknife, but that
-    // path reaches it through the unit's own Environment= lines, which a CLI run
-    // by an operator never sees. Resolving only the per-user path therefore made
-    // `audit verify` read an absent store and report the chain as unverifiable
-    // on a perfectly healthy install.
+    let lacs_config = sysknife_core::config::LacsConfig::load();
     let store = sysknife_core::resolve_audit_store();
+    run_audit_verify_with_store(args, log, &lacs_config, &store).await
+}
+
+/// Verify with a store selection supplied by the caller. Keeping this path
+/// shared lets tests compare the CLI and MCP readers for a simulated system
+/// store without writing under `/var/lib`.
+pub(crate) async fn run_audit_verify_with_store(
+    args: AuditVerifyArgs,
+    log: &Logger,
+    lacs_config: &sysknife_core::config::LacsConfig,
+    store: &sysknife_core::AuditStoreChoice,
+) -> Result<(), CliError> {
+    use sysknife_daemon::audit_chain::AuditKey;
 
     let label_for_diag = match lacs_config.storage.as_ref() {
         Some(s) if s.backend.eq_ignore_ascii_case("postgres") => "postgres".to_string(),
@@ -1342,7 +1354,7 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
     // deleted still verifies. Only a previously anchored tip catches that, and
     // this command used to report `audit_anchor: {configured: true}` without
     // ever reading the anchor — implying a check it did not perform.
-    let anchor = verify_configured_anchor(&lacs_config, &db_path, &verifier).await;
+    let anchor = verify_configured_anchor(lacs_config, &db_path, &verifier).await;
     let exit_code = combined_verification_exit_code(&outcome, anchor.as_ref());
     emit_verification(&args, log, &outcome, &label_for_diag, anchor.as_ref());
     if exit_code == 0 {
@@ -1358,7 +1370,7 @@ pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(),
 /// local chain detectable.
 pub async fn run_audit_checkpoint(
     args: crate::cli::AuditCheckpointArgs,
-    _log: &Logger,
+    log: &Logger,
 ) -> Result<(), CliError> {
     use sysknife_daemon::audit_chain::{
         checkpoint_outcome_to_exit_code, outcome_to_exit_code, AuditKey,
@@ -1383,19 +1395,24 @@ pub async fn run_audit_checkpoint(
         }
     };
 
-    let db_path = sysknife_core::default_database_path();
+    let resolved_store = sysknife_core::resolve_audit_store();
+    if let Some(note) = resolved_store.note() {
+        log.print_stderr(&format!("note: {note}"));
+    }
+    let db_path = resolved_store.path();
+    let system_store = db_path == std::path::Path::new(sysknife_core::PRODUCTION_DATABASE_PATH);
 
     // Load the private signing key (same location rules as `verify`).
-    let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(&db_path);
-    require_exists(&key_path, "audit key")?;
+    let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(db_path);
+    require_exists(&key_path, "audit key", system_store)?;
     let key = AuditKey::load_or_generate(&key_path).map_err(|e| {
         eprintln!("audit key load failed: {e}");
         CliError::Exit(2)
     })?;
 
     // Read the current chain tip from the local sqlite store.
-    require_exists(&db_path, "audit database")?;
-    let store = TransactionStore::open_read_only(&db_path).map_err(|e| {
+    require_exists(db_path, "audit database", system_store)?;
+    let store = TransactionStore::open_read_only(db_path).map_err(|e| {
         eprintln!("opening audit database failed: {e}");
         CliError::Exit(2)
     })?;
@@ -2090,10 +2107,9 @@ fn gate_action(decision: ApprovalDecision, highest: &PlanRiskLevel) -> GateActio
 pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<(), CliError> {
     let config = BrainConfig::from_env().map_err(|e| CliError::ConfigOrDaemon(e.to_string()))?;
 
-    // Detect the running distro once at intent startup.
-    // Failure is non-fatal: routing checks are skipped when detection fails
-    // (the daemon will produce its own error at execution time).
-    let distro = sysknife_core::distro::detect().ok();
+    // The daemon may be remote: plan and route against its distribution.
+    let plan_client = DaemonClient::new(opts.socket.clone());
+    let distro = plan_client.target_distro().distro;
 
     // Captured before `config` is moved into the planner below.
     let provider_label = config.provider_name().to_string();
@@ -2104,8 +2120,6 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     if let Some(notice) = config.provider_guess_notice() {
         eprintln!("! {notice}");
     }
-
-    let plan_client = DaemonClient::new(opts.socket.clone());
 
     // Layer 3: planning event channel — planner emits PlanEvent as it works;
     // the CLI subscribes and updates the spinner message in real time.
@@ -2693,14 +2707,36 @@ fn finish_spinner(spinner: &Option<indicatif::ProgressBar>) {
     }
 }
 
-/// Check that `path` exists; if not, print `"{what} not found at <path>"` to
-/// stderr and fail with exit code 2 (used by `run_audit_checkpoint`, which
-/// checks both the audit key file and the audit database file this way).
-fn require_exists(path: &std::path::Path, what: &str) -> Result<(), CliError> {
+/// Explain a missing checkpoint input. An EACCES probe on the packaged store
+/// means `Path::exists()` returned false for a root-owned 0700 directory, so
+/// tell the operator how to reach the actual audit chain.
+fn checkpoint_missing_path_message(
+    path: &std::path::Path,
+    what: &str,
+    inaccessible_system_store: bool,
+) -> String {
+    if inaccessible_system_store {
+        format!(
+            "{what} not found or not readable at {}; the system daemon's store is root-owned, so run this command under sudo",
+            path.display()
+        )
+    } else {
+        format!("{what} not found at {}", path.display())
+    }
+}
+
+/// Check that `path` exists; if not, print a diagnosis to stderr and fail with
+/// exit code 2. `system_store` enables the sudo hint when EACCES hides the
+/// packaged database or key path.
+fn require_exists(path: &std::path::Path, what: &str, system_store: bool) -> Result<(), CliError> {
     if path.exists() {
         Ok(())
     } else {
-        eprintln!("{what} not found at {}", path.display());
+        let inaccessible_system_store = system_store && sysknife_core::path_is_present(path);
+        eprintln!(
+            "{}",
+            checkpoint_missing_path_message(path, what, inaccessible_system_store)
+        );
         Err(CliError::Exit(2))
     }
 }
@@ -2845,6 +2881,17 @@ mod approval_view_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkpoint_reports_when_the_system_store_needs_sudo() {
+        let path = std::path::Path::new("/var/lib/sysknife/daemon.audit-key");
+        let inaccessible = checkpoint_missing_path_message(path, "audit key", true);
+        assert!(inaccessible.contains("run this command under sudo"));
+        assert!(inaccessible.contains(path.to_str().unwrap()));
+
+        let missing = checkpoint_missing_path_message(path, "audit key", false);
+        assert!(!missing.contains("sudo"));
+    }
 
     #[cfg(unix)]
     mod intent_preview_failure_tests {
@@ -4687,41 +4734,53 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // since_to_hours
+    // since_to_cutoff
     // -----------------------------------------------------------------------
 
     #[test]
-    fn since_to_hours_y2k_is_many_hours_ago() {
-        // Y2K was well over 200_000 hours ago (as of 2026).
-        let h = since_to_hours("2000-01-01T00:00:00Z").expect("should parse");
-        assert!(h > 200_000, "expected >200000 hours, got {h}");
+    fn since_to_cutoff_keeps_utc_datetime() {
+        assert_eq!(
+            since_to_cutoff("2000-01-01T00:00:00Z").as_deref(),
+            Some("2000-01-01T00:00:00Z")
+        );
     }
 
     #[test]
-    fn since_to_hours_far_future_returns_none() {
+    fn since_to_cutoff_normalises_offset_to_utc() {
+        assert_eq!(
+            since_to_cutoff("2026-01-15T12:30:00+02:00").as_deref(),
+            Some("2026-01-15T10:30:00Z")
+        );
+    }
+
+    #[test]
+    fn since_to_cutoff_bare_date_is_midnight_utc() {
+        assert_eq!(
+            since_to_cutoff("2026-01-15").as_deref(),
+            Some("2026-01-15T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn since_to_cutoff_far_future_returns_none() {
         // Year 9999 is in the future.
-        assert!(since_to_hours("9999-12-31T23:59:59Z").is_none());
+        assert!(since_to_cutoff("9999-12-31T23:59:59Z").is_none());
     }
 
     #[test]
-    fn since_to_hours_garbage_returns_none() {
-        assert!(since_to_hours("not-a-date").is_none());
+    fn since_to_cutoff_garbage_returns_none() {
+        assert!(since_to_cutoff("not-a-date").is_none());
     }
 
     #[test]
-    fn since_to_hours_epoch_returns_many_hours() {
-        // Unix epoch (1970-01-01) is always ≥ 486000 hours ago (as of 2026).
-        let h = since_to_hours("1970-01-01T00:00:00Z").expect("should parse");
-        assert!(h > 486_000, "expected >486000, got {h}");
-    }
-
-    #[test]
-    fn since_to_hours_integer_division_not_modulo() {
-        // Two timestamps exactly 1 hour apart must differ by 1 in since_to_hours.
-        // A `% 3600` regression would produce wildly different results for these.
-        let h0 = since_to_hours("1970-01-01T00:00:00Z").unwrap();
-        let h1 = since_to_hours("1970-01-01T01:00:00Z").unwrap();
-        assert_eq!(h0, h1 + 1, "timestamps 1 h apart must differ by exactly 1");
+    fn since_to_cutoff_keeps_sub_hour_precision() {
+        // Regression for #567: 30 and 90 minutes ago used to become 0 and 1
+        // whole hours. The cutoff must carry the exact instant instead.
+        for minutes in [30, 90] {
+            let at = chrono::Utc::now() - chrono::Duration::minutes(minutes);
+            let input = at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+            assert_eq!(since_to_cutoff(&input), Some(input.clone()));
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -5087,16 +5146,22 @@ mod tests {
         assert_eq!(p["limit"], json!(20));
         assert!(p.get("status_filter").is_none());
         assert!(p.get("action_filter").is_none());
-        assert!(p.get("since_hours").is_none());
+        assert!(p.get("since").is_none());
     }
 
     #[test]
     fn build_history_params_all_fields() {
-        let p = build_history_params(5, Some("succeeded"), Some("InstallPackages"), Some(48));
+        let p = build_history_params(
+            5,
+            Some("succeeded"),
+            Some("InstallPackages"),
+            Some("2026-01-15T10:30:00Z"),
+        );
         assert_eq!(p["limit"], json!(5));
         assert_eq!(p["status_filter"], json!("succeeded"));
         assert_eq!(p["action_filter"], json!("InstallPackages"));
-        assert_eq!(p["since_hours"], json!(48));
+        assert_eq!(p["since"], json!("2026-01-15T10:30:00Z"));
+        assert!(p.get("since_hours").is_none());
     }
 
     #[test]
@@ -5105,7 +5170,7 @@ mod tests {
         assert_eq!(p["limit"], json!(10));
         assert_eq!(p["status_filter"], json!("failed"));
         assert!(p.get("action_filter").is_none());
-        assert!(p.get("since_hours").is_none());
+        assert!(p.get("since").is_none());
     }
 
     // -----------------------------------------------------------------------

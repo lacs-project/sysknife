@@ -30,6 +30,7 @@ jobs:
     # resumes automatically on the public flip.
     if: github.event.repository.visibility == 'public'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       id-token: write  # OIDC, required by publish_results
     steps:

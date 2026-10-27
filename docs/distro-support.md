@@ -56,9 +56,9 @@ tracked separately in [#239](https://github.com/lacs-project/sysknife/issues/239
 
 | Distro | Action backend | Evidence | Launch tier |
 |---|---|---|---|
-| **Ubuntu 24.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, **79/79**, recorded in `ubuntu-24.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — zero misses, `cassette_audit.verdict` `ok` | **Validated** |
-| **Ubuntu 22.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, **79/79**, recorded in `ubuntu-22.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — zero misses, `cassette_audit.verdict` `ok`. This is the release whose twin exercises the recorded-rejection path: story 101's first call was refused by the provider (`tool_use_failed`), and the replay serves the refusal, the correction and the answer, 81 calls for 79 stories | **Validated** |
-| **Ubuntu 26.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, **79/79**, recorded in `ubuntu-26.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — zero misses, `cassette_audit.verdict` `ok`; plus sudo-rs sudoers verification (26.04 ships sudo-rs 0.2.x; `visudo -cf` parses the SysKnife sudoers and every grant — including the trailing-`*` wildcard grants — is honoured) | **Validated** |
+| **Ubuntu 24.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, **<!-- fig:story_run:ubuntu-24.04-gpt-oss-120b -->79/79<!-- /fig -->**, recorded in `ubuntu-24.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — zero misses, `cassette_audit.verdict` `ok` | **Validated** |
+| **Ubuntu 22.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, **<!-- fig:story_run:ubuntu-22.04-gpt-oss-120b -->79/79<!-- /fig -->**, recorded in `ubuntu-22.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — zero misses, `cassette_audit.verdict` `ok`. This is the release whose twin exercises the recorded-rejection path: story 101's first call was refused by the provider (`tool_use_failed`), and the replay serves the refusal, the correction and the answer, <!-- fig:story_run_served:ubuntu-22.04-gpt-oss-120b.replay -->81<!-- /fig --> calls for <!-- fig:story_run_total:ubuntu-22.04-gpt-oss-120b -->79<!-- /fig --> stories | **Validated** |
+| **Ubuntu 26.04 LTS** | apt, ufw, netplan, snap, AppArmor, systemd, containers | live-VM story suite, **<!-- fig:story_run:ubuntu-26.04-gpt-oss-120b -->79/79<!-- /fig -->**, recorded in `ubuntu-26.04-gpt-oss-120b.json` and fully reproduced by its `.replay.json` twin — zero misses, `cassette_audit.verdict` `ok`; plus sudo-rs sudoers verification (26.04 ships sudo-rs 0.2.x; `visudo -cf` parses the SysKnife sudoers and every grant — including the trailing-`*` wildcard grants — is honoured) | **Validated** |
 | **Every other Ubuntu 20.04+ release** (20.04, 20.10, 21.x, 23.x, 25.x, 26.10, …) | Ubuntu/apt family | Eligible by release family; no per-release VM run | **Smoke-tested** |
 | **Fedora Silverblue 44** | rpm-ostree, Flatpak, toolbox, firewalld, systemd, containers | Harness and fixture coverage; no live-VM run on this release | **Blocked** (`make install` does not complete on rpm-ostree, [#301](https://github.com/lacs-project/sysknife/issues/301)) |
 | **Other Fedora Atomic 41+ variants** | rpm-ostree family | Detection and shared action tests, plus a live VM run on Fedora 43 Silverblue (2026-08-24) that provisioned and then stopped at `make install` | **Blocked** (`make install` does not complete on rpm-ostree, [#301](https://github.com/lacs-project/sysknife/issues/301)) |
@@ -94,7 +94,7 @@ family and the atomic story family are implemented and covered by the workspace
 suite. What is missing is a way to put the helpers somewhere the daemon's own
 grants already point.
 
-The deterministic workspace baseline is 2,046 Rust tests plus 72 frontend
+The deterministic workspace baseline is <!-- fig:rust_tests floor=1000 -->2,000+<!-- /fig --> Rust tests plus <!-- fig:frontend_tests floor=10 -->70+<!-- /fig --> frontend
 tests. Those tests verify action construction, policy, approval, storage, and
 UI behavior, but they do not replace a real distribution VM run.
 

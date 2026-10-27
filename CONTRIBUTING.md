@@ -65,10 +65,10 @@ table below.
 
 | Area | Why it matters | Difficulty |
 |---|---|---|
-| **Ubuntu LTS support** | The current suite is 99 Ubuntu stories. Committed live-VM evidence covers 79 of those Ubuntu stories on each LTS release, with a committed replay twin that reproduces each run: 22.04, 24.04 and 26.04 all at 79/79. The twenty additional stories are not yet included in a committed live-VM run. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: story coverage for the cross-family actions, and every Debian-only action has a story. | medium |
+| **Ubuntu LTS support** | The current suite is <!-- fig:stories_ubuntu floor=10 -->90+<!-- /fig --> Ubuntu stories. Committed live-VM evidence covers <!-- fig:lts_story_total -->79<!-- /fig --> of those Ubuntu stories on each LTS release, with a committed replay twin that reproduces each run: 22.04, 24.04 and 26.04 all at <!-- fig:lts_story_rate -->79/79<!-- /fig -->. The <!-- fig:stories_ubuntu_unrecorded floor=10 -->20+<!-- /fig --> additional stories are not yet included in a committed live-VM run. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: story coverage for the cross-family actions, and every Debian-only action has a story. | medium |
 | **Distro detection coverage** | Robust `/etc/os-release` parsing for every release we claim to support. Pure-function tests against real fixture files, no integration mocks. The existing fixtures at the bottom of `crates/sysknife-core/src/distro.rs` show the shape. | easy |
 | **Action catalogue gaps** | Add a typed action (for example `EnableFirewallZone`). Small and isolated, and every PR carries the policy entry, the risk level and the tests. | easy |
-| **E2E story coverage** | Real prompts, real LLM, real daemon. The suite is 153 stories: 54 atomic + 99 Ubuntu. What is left is the cross-family middle: of the action names available on both families, 46 are still untouched by any story, plus 10 Fedora-only and 0 Ubuntu-only ones. See #233 for the clustered map. | medium |
+| **E2E story coverage** | Real prompts, real LLM, real daemon. The suite is <!-- fig:stories_total floor=10 -->150+<!-- /fig --> stories: <!-- fig:stories_atomic floor=10 -->50+<!-- /fig --> atomic + <!-- fig:stories_ubuntu floor=10 -->90+<!-- /fig --> Ubuntu. What is left is the cross-family middle: of the action names available on both families, <!-- fig:uncovered_all -->46<!-- /fig --> are still untouched by any story, plus <!-- fig:uncovered_fedora -->10<!-- /fig --> Fedora-only and <!-- fig:uncovered_ubuntu -->0<!-- /fig --> Ubuntu-only ones. See #233 for the clustered map. | medium |
 | **Fedora Atomic validation** | The action families exist and `DistroId::is_supported()` returns true for Atomic 41 and up. Nobody has run `tests/e2e/atomic-vm.sh` against a current release. Needs Fedora Atomic hardware or a VM host. | tedious |
 | **Demo recording on real hardware** | Replace the bundled demo GIF with a 30-second recording on real Ubuntu 26.04 with rollback visible. | easy |
 
@@ -168,15 +168,20 @@ manifests. A per-crate run like
 `cargo test -p sysknife-types` never touches those, so a green crate is not a
 green board.
 
-**Adding or removing a Rust test moves a published figure.** The suite size lives
-in `tests/evidence/workspace-tests.json`, and `README.md`,
-`docs/introduction.md` and `docs/distro-support.md` state it in prose. Regenerate
-the artifact and update those three files in the same commit:
+**Never type a figure.** Test counts, the action count, story-set sizes and
+story pass rates are rendered by `scripts/render_figures.py` from the artifact or
+source that produces them, and a number the claim checks match outside a marker
+fails the build. Add your tests, run the command below, and commit the evidence
+file together with whatever it re-rendered:
 
 ```sh
 UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh
-grep -rn 'Rust tests' README.md docs/introduction.md docs/distro-support.md
 ```
+
+Figures that routine pull requests move are rounded floors ("2,000+"), so most
+PRs re-render nothing. The exact Rust and frontend counts are the README badges,
+read from the evidence file. The marker syntax is explained once, in
+[docs/contributing/testing.md](docs/contributing/testing.md#published-figures).
 
 `workspace-tests.json` stores the expected count for each suite and the canonical
 command that measures it. Verification re-runs the suite on the current

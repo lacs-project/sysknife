@@ -31,6 +31,7 @@ jobs:
   preflight:
     name: Validate release inputs
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -61,6 +62,7 @@ jobs:
     name: Build ${{ matrix.target }}
     needs: preflight
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
@@ -153,8 +155,9 @@ jobs:
 
   publish-npm:
     name: Publish sysknife-setup to npm
-    needs: [preflight, build]
+    needs: [preflight, build, publish-crates]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
@@ -190,6 +193,7 @@ jobs:
     name: Publish to crates.io
     needs: [preflight, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -235,6 +239,7 @@ jobs:
     name: Create GitHub release
     needs: [build, publish-npm, publish-crates]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write  # gh release create/upload
 
@@ -317,6 +322,7 @@ jobs:
     # never shipped is worse than no checklist.
     needs: [release]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read  # gh release download
       issues: write  # gh issue create
@@ -387,7 +393,33 @@ jobs:
           - Close this issue once both are done.
           EOF
 
-          gh issue create --repo "$REPO" \
-            --title "Post-release manual steps for ${VERSION}" \
-            --body-file body.md \
-            --assignee "$ACTOR"
+          # A failed later job can rerun this step for the same tag. Keep that
+          # tag's issue, but close older checklists that point at stale artifacts.
+          checklist_prefix="Post-release manual steps for "
+          checklist_title="${checklist_prefix}${VERSION}"
+          open_checklists="$(gh issue list --repo "$REPO" --state open \
+            --search 'in:title "Post-release manual steps for"' \
+            --limit 1000 --json number,title \
+            --jq '.[] | [.number, .title] | @tsv')"
+          current_issue=""
+          while IFS=$'\t' read -r number title; do
+            [[ -n "$number" ]] || continue
+            [[ "$title" == "$checklist_prefix"* ]] || continue
+            if [[ "$title" == "$checklist_title" ]]; then
+              current_issue="$number"
+              continue
+            fi
+            gh issue close "$number" --repo "$REPO" \
+              --comment "Superseded by ${VERSION}."
+          done <<< "$open_checklists"
+
+          if [[ -z "$current_issue" ]]; then
+            gh issue create --repo "$REPO" \
+              --title "$checklist_title" \
+              --body-file body.md \
+              --assignee "$ACTOR" \
+              --label documentation \
+              --label maintainer-only
+          else
+            echo "Checklist for ${VERSION} already exists as #${current_issue}; skipping creation"
+          fi

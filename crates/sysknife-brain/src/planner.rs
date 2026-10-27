@@ -19,7 +19,7 @@ use crate::audit::SafetyAuditLog;
 use crate::config::{BrainConfig, ProviderConfig};
 use crate::planning_tools::get_state::get_state_tool_def;
 use crate::planning_tools::propose_plan::{parse_proposed_plan, propose_plan_tool_def};
-use crate::planning_tools::query_tools::query_tools;
+use crate::planning_tools::query_tools::query_tools_for_distro;
 use crate::prompt::build_system_prompt;
 use std::time::Duration;
 
@@ -704,7 +704,7 @@ impl LlmPlanner {
     /// after [`Self::new`] — see the type-level note on `LlmPlanner`.
     fn tool_defs(&self) -> Vec<ToolDefinition> {
         let mut t = vec![get_state_tool_def()];
-        t.extend(query_tools());
+        t.extend(query_tools_for_distro(self.distro_hint.as_ref()));
         t.push(crate::planning_tools::preferences::remember_tool_def());
         t.push(crate::planning_tools::preferences::forget_tool_def());
         t.push(propose_plan_tool_def(self.distro_hint.as_ref()));
@@ -1631,12 +1631,50 @@ mod tests {
     /// this test pins that the production constructor actually attaches the
     /// log without mutating process-global path configuration.
     #[test]
-    fn configured_planner_attaches_audit_log() {
+    fn configured_planner_attaches_audit_log_and_matches_distro_query_prompts() {
         let planner = ollama_planner();
         assert!(
             planner.audit_log.is_some(),
             "from_config must attach the safety audit log"
         );
+
+        for (id, family) in [
+            ("ubuntu", sysknife_types::DISTRO_FAMILY_DEBIAN),
+            ("fedora", sysknife_types::DISTRO_FAMILY_FEDORA),
+        ] {
+            let hint = DistroHint {
+                id: id.to_string(),
+                family,
+                version: None,
+            };
+            let prompt = build_system_prompt(None, Some(&hint));
+            let planner = ollama_planner().with_distro(hint);
+            let offered: std::collections::HashSet<String> = planner
+                .tool_defs()
+                .into_iter()
+                .filter(|tool| tool.name.starts_with("query_"))
+                .map(|tool| tool.name)
+                .collect();
+            let mentioned: std::collections::HashSet<String> = prompt
+                .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+                .filter(|name| name.starts_with("query_") && name.len() > "query_".len())
+                .map(str::to_owned)
+                .collect();
+
+            assert_eq!(
+                mentioned, offered,
+                "{id} prompt and planner must expose the same query tools"
+            );
+            assert!(
+                offered.contains("query_current_user"),
+                "{id} must keep the planner-local current-user query"
+            );
+            assert_eq!(
+                offered.contains("query_packages"),
+                id == "fedora",
+                "query_packages must only be offered on Fedora"
+            );
+        }
     }
 
     #[test]

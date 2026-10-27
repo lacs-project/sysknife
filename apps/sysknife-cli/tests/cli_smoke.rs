@@ -447,6 +447,32 @@ fn audit_checkpoint_without_a_database_is_a_configuration_error() {
             "no checkpoint database configured",
         ))
         .stdout(predicate::str::is_empty());
+
+    // Once an external checkpoint database is configured, checkpointing must
+    // read the same selected audit store as verify/export before connecting to
+    // the sink. The deliberately invalid sink URL lets the test distinguish a
+    // local-store lookup failure from reaching the external connection step.
+    let db_path = dir.path().join("system-daemon.sqlite");
+    let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(&db_path);
+    let key = AuditKey::load_or_generate(&key_path).expect("create selected audit key");
+    drop(
+        TransactionStore::open_with_key(&db_path, Arc::new(key))
+            .expect("create selected audit database"),
+    );
+    cli()
+        .env_clear()
+        .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+        .env("SYSKNIFE_DATABASE_PATH", &db_path)
+        .env("SYSKNIFE_CHECKPOINT_DB", "not-a-postgres-url")
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("XDG_DATA_HOME", dir.path())
+        .env("HOME", dir.path())
+        .args(["audit", "checkpoint"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "connecting to checkpoint database failed",
+        ));
 }
 
 /// An empty intent fails inside the planner before any provider request, so

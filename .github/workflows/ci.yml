@@ -18,6 +18,7 @@ concurrency:
 jobs:
   docs-and-hygiene:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -64,11 +65,20 @@ jobs:
       - name: Check release version consistency
         run: bash scripts/check_release_versions.sh
 
+      - name: Test atomic release version bumps
+        run: bash tests/release/release-version-bump.test.sh
+
+      - name: Test generated release version consistency
+        run: bash tests/release/release-version-check.test.sh
+
       - name: Check the release waits for crates.io to index each crate
         run: bash tests/release/crates-index-poll.test.sh
 
       - name: Check GitHub release creation is safe to re-run
         run: bash tests/release/release-create-rerun.test.sh
+
+      - name: Check npm publishes only after crates.io
+        run: bash tests/release/release-publish-order.test.sh
 
       - name: Test internal dependency pin coverage
         run: bash tests/release/release-version-pins.test.sh
@@ -120,6 +130,9 @@ jobs:
 
       - name: Check scheduled Cargo audit workflow
         run: bash tests/release/cargo-audit-schedule.test.sh
+
+      - name: Check every timeout-capable workflow job has a timeout
+        run: bash tests/release/workflow-timeouts.test.sh
 
       - name: Check tracked files use portable line endings
         run: bash tests/release/tracked-eol.test.sh
@@ -269,6 +282,7 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: apps/sysknife-shell
@@ -300,6 +314,7 @@ jobs:
 
   rust:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       CARGO_TERM_COLOR: always
       CARGO_HOME: /home/runner/.cargo
@@ -362,6 +377,7 @@ jobs:
 
   postgres-contract:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     services:
       postgres:
         image: postgres:17-alpine
@@ -402,6 +418,7 @@ jobs:
 
   security-audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -428,6 +445,7 @@ jobs:
   dependency-review:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:

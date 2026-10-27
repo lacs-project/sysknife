@@ -1,6 +1,6 @@
 [package]
 name = "sysknife-daemon"
-version = "0.26.1"
+version = "0.27.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -17,8 +17,8 @@ categories = ["command-line-utilities", "os::linux-apis"]
 test-support = []
 
 [dependencies]
-sysknife-core = { path = "../sysknife-core", version = "0.26.1" }
-sysknife-types = { path = "../sysknife-types", version = "0.26.1" }
+sysknife-core = { path = "../sysknife-core", version = "0.27.0" }
+sysknife-types = { path = "../sysknife-types", version = "0.27.0" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -27,6 +27,8 @@ async-trait = "0.1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 sha2 = "0.11"
+hmac = "0.13"
+hkdf = "0.13"
 ed25519-dalek = { version = "3", features = ["zeroize"] }
 hex = "0.4"
 subtle = "2"
@@ -61,7 +63,7 @@ sqlx-postgres = { version = "0.9", default-features = false, features = [
 chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
-sysknife-brain = { path = "../sysknife-brain", version = "0.26.1" }
+sysknife-brain = { path = "../sysknife-brain", version = "0.27.0" }
 # `test-util` provides the paused test clock, so deadline tests assert on the
 # timer firing instead of sleeping for the real duration.
 tokio = { version = "1", features = ["test-util"] }

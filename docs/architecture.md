@@ -72,7 +72,7 @@ component uses the same resolution order.
 
 Privileged. The only component that touches the system. Provides:
 
-- 192 typed actions (rpm-ostree, systemd, firewall, users, containers,
+- <!-- fig:typed_actions floor=10 -->190+<!-- /fig --> typed actions (rpm-ostree, systemd, firewall, users, containers,
   flatpak, toolbox, SSH, kernel args, …)
 - Role-based authorization (`Observer` → `Dev` → `Admin`, plus `Boot`)
 - Policy enforcement: stale-approval detection, request hash validation

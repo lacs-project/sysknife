@@ -24,8 +24,9 @@ is single-threaded.
 
 > The system daemon is configured by its unit, not by this file. `Environment=`
 > lines in `packaging/sysknife-daemon.service` reach only the daemon's own
-> process, which is why `sysknife audit verify` resolves the system audit store
-> explicitly rather than expecting to inherit `SYSKNIFE_DATABASE_PATH`.
+> process, so the CLI and MCP audit readers cannot expect to inherit
+> `SYSKNIFE_DATABASE_PATH`. They prefer an existing per-user store and fall back
+> to the system daemon's store when no per-user store exists.
 
 ```toml
 # ─── [daemon] ────────────────────────────────────────────────────────

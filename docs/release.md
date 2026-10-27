@@ -146,6 +146,12 @@ the rehearsal failed with `cannot update the lock file`. The script never edits
 a lockfile as text; `cargo` regenerates it and the script refuses if any
 package outside the workspace moved.
 
+The bump prepares manifest, JSON, lockfile and changelog changes in a temporary
+copy, then installs them only after every step succeeds. A failed lock refresh
+leaves the original release tree untouched. The consistency check also verifies
+each workspace package in `Cargo.lock` and the latest release heading in
+`CHANGELOG.md`; an already-current version is accepted only when those agree.
+
 The version check requires every internal path dependency to carry an inline
 `version` matching the workspace release. Removing that field is an error even
 when all remaining visible pins match.
@@ -178,7 +184,11 @@ unverifiable tag on a published release is worse than an unsigned one.
 One directory listing cannot be updated from CI, so the release workflow files a
 checklist issue titled `Post-release manual steps for <tag>` and assigns it to
 whoever pushed the tag. It carries the exact commands and the real checksum read
-from that release's `sha256sums-linux-x86_64.txt`.
+from that release's `sha256sums-linux-x86_64.txt`. New checklists carry the
+`documentation` and `maintainer-only` labels. If the release job is rerun for the
+same tag, it keeps the existing checklist instead of creating a duplicate; when
+a later release runs, older open checklists are closed with a comment naming the
+superseding tag.
 
 - **Glama build spec.** The admin form is browser-only. Only the build steps
   change per release, to the new binary URL and checksum. Leave the

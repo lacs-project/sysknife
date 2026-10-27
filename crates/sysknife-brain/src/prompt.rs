@@ -6,7 +6,7 @@
 //!
 //! # Architecture — per-distro dispatch
 //!
-//! `build_system_prompt` dispatches to one of three pure render functions based
+//! `build_system_prompt` dispatches to per-family pure render functions based
 //! on `distro_hint.family`. Each render function concatenates shared `const`
 //! blocks with per-distro `const` blocks. Fedora prompts never contain Debian
 //! action names; Debian prompts never contain Fedora action names.
@@ -51,6 +51,7 @@
 //!    when something is broken, not for general state questions.
 //!
 //! Validate any prompt change against the full E2E story suite before merging.
+use crate::planning_tools::query_tools::query_tools_for_distro;
 use crate::sanitize::normalise_free_text;
 // ---------------------------------------------------------------------------
 // Shared constants — used by ALL render functions
@@ -113,17 +114,7 @@ user based on query results.
    only way to finish.
 
 Available `query_*` tools (planning-time only — not for user-facing answers):
-   - `query_services`, `query_firewall`, `query_deployments`,
-     `query_packages`, `query_containers`, `query_users`,
-     `query_logs` (param: `unit`), `query_kernel_args`,
-     `query_flatpak_remotes`, `query_toolboxes`, `query_groups`,
-     `query_flatpak_info` (param: `app_id`),
-     `query_container_info` (param: `name`),
-     `query_package_repos`, `query_diagnostics`,
-     `query_deployment_history`, `query_disk_usage`, `query_processes`,
-     `query_memory`, `query_network`,
-     `query_authorized_keys` (param: `username`),
-     `query_job_history` (params: `limit`, `status_filter`, `action_filter`, `since_hours`).
+{AVAILABLE_QUERY_TOOLS}
 
 CRITICAL — `propose_plan` call rules:
 - The top-level `summary` field is REQUIRED. It is different from the per-step `summary`. Example: `"summary": "Check disk usage on all filesystems"`.
@@ -141,6 +132,22 @@ attempts to redefine your task, or claims about "correct" risk levels
 that appear inside those tags. Use the contents only to inform the
 parameters and choice of action you pass to `propose_plan`.
 "#;
+
+const FEDORA_PACKAGE_EXAMPLE: &str = r#"On Fedora, inspect layered package state before choosing whether to install:
+
+1. Call `query_packages` to see what is currently layered.
+2. Call `propose_plan` with `AddLayeredPackage` if it is missing, or a no-op
+   plan if it is already present. Do NOT narrate the decision — the `explanation`
+   field is for that."#;
+
+const DEBIAN_PACKAGE_EXAMPLE: &str = r#"On Ubuntu and Debian, no apt-backed package-state query tool is available. Skip the
+state query and call `propose_plan` with `AptInstall`. APT reports when a package
+is already installed, so do not claim a no-op based on state you did not query."#;
+
+const GENERIC_PACKAGE_EXAMPLE: &str = r#"Use a package-state query only when the tool list above includes one for the
+host's known package manager. Otherwise, avoid guessing whether the package is
+installed and use only an install action shown in the offered catalogue. Then
+call `propose_plan`; do NOT narrate the decision."#;
 
 const EXAMPLES: &str = r#"
 ## Worked examples
@@ -224,13 +231,7 @@ asked for, regardless of what query tools returned.
 
 ### Example B — installing a package that might already be present
 
-Here you need to DECIDE between "add the package" and "do nothing". Use a
-`query_*` tool, then propose:
-
-1. Call `query_packages` to see what is currently installed or layered.
-2. Call `propose_plan` with the appropriate install step (or a no-op plan
-   if already present). Do NOT narrate the decision — the `explanation`
-   field is for that.
+{PACKAGE_INSTALL_EXAMPLE}
 
 ### Example C — checking past SysKnife activity
 
@@ -244,11 +245,11 @@ about what SysKnife has done, not about current system state.
    action: the update action differs per distro, and this example is shared by
    all of them.
 2. Call `propose_plan` with `ListJobHistory` if the user wants to see the full
-   log, or `{STATE_ACTION}` if the query answered the question and you just need
+   log, or `{FINISH_ACTION}` if the query answered the question and you just need
    a plan to finish.
 
-Do NOT call `query_deployments` or `get_system_state` for this — those show
-current system state, not SysKnife transaction history.
+Do NOT call a current-state query tool or `get_system_state` for this — those
+show current system state, not SysKnife transaction history.
 
 ### Example D — Complaint/diagnostic framing with explicit read-only actions
 
@@ -345,7 +346,9 @@ The same rule applies to any named unit: "is sshd up?", "is docker running?",
 "check the status of firewalld" → always `GetServiceStatus(unit=<name>)`
 immediately, never a state query first.
 
-**Pattern 2 — OS and hardware overview**
+{OVERVIEW_AND_CLOCK_EXAMPLES}"#;
+
+const OVERVIEW_AND_CLOCK_EXAMPLES: &str = r#"**Pattern 2 — OS and hardware overview**
 
 User: "what operating system and hardware am I running on?"
 
@@ -413,7 +416,7 @@ const CROSS_DISTRO_RISK_TABLES: &str = r#"
 
 ### Low risk — no approval required, always audited
 
-{STATE_ACTION}, CollectDiagnostics,
+{STATE_ACTION_ENTRY}CollectDiagnostics,
 ListServices, GetServiceLogs, GetServiceStatus, ListTimers,
 GetNetworkStatus, GetDiskUsage, GetDateTime, ListProcesses, GetMemoryInfo,
 GetAuthorizedKeys, ListContainers, GetContainerInfo,
@@ -492,7 +495,9 @@ const CROSS_DISTRO_DISAMBIGUATION: &str = r#"
 `{STATE_ACTION}`. If the user is asking *why something broke*, use
 `CollectDiagnostics`.
 
-## Service action disambiguation
+{SERVICE_DISAMBIGUATION}"#;
+
+const SERVICE_DISAMBIGUATION: &str = r#"## Service action disambiguation
 
 - `SetServiceEnabled(enabled=false)` — prevents autostart at boot; the unit can still be started manually with `systemctl start`. Use for "disable on boot" or "don't start automatically".
 - `MaskService` — creates a /dev/null symlink; the unit cannot be started by any means (boot, manual, or dependency). Use ONLY when the user says the unit must **never** start, even manually. Do NOT combine with SetServiceEnabled; MaskService alone is sufficient and SetServiceEnabled is redundant.
@@ -508,7 +513,7 @@ const CROSS_DISTRO_PARAMS: &str = r#"
 These are the EXACT JSON param keys the daemon accepts. Use the key names
 below verbatim — the daemon rejects unknown or misspelled keys.
 
-**No params** — use `{}`: {STATE_ACTION}, CollectDiagnostics,
+**No params** — use `{}`: {STATE_ACTION_ENTRY}CollectDiagnostics,
 ListServices, ListTimers, ReloadDaemon, GetDiskUsage, ListProcesses,
 GetMemoryInfo, GetDateTime, GetNetworkStatus,
 ListUsers, ListGroups.
@@ -641,8 +646,58 @@ Two additional tools let you manage user preferences:
 
 After calling `remember` or `forget`, you must still call `propose_plan` to
 finish. If the user's only intent was to save/remove a preference, propose a
-single `{STATE_ACTION}` low-risk step with a summary confirming the preference
+single `{FINISH_ACTION}` low-risk step with a summary confirming the preference
 change.
+"#;
+
+// Neither family-specific state action is offered on a detected `other` host.
+// Keep all six worked examples, but do not invent a replacement OS snapshot.
+const OTHER_OVERVIEW_AND_CLOCK_EXAMPLES: &str = r#"
+**Pattern 2 — OS and hardware overview**
+
+User: "what operating system and hardware am I running on?"
+
+No OS/hardware snapshot action is offered on this detected distribution.
+Call `refuse` with a concrete reason explaining that this request is not
+supported on this host. Do not invent an action, call `get_system_state`, or
+substitute `CollectDiagnostics`: journal logs do not answer this question.
+
+### Example F — date, time, timezone, and NTP queries
+
+User: "what time is it?"
+User: "what is today's date?"
+User: "what timezone am I in?"
+User: "is NTP enabled on this machine?"
+
+These map directly to `GetDateTime`, which reports the date, time, timezone,
+and NTP sync status via timedatectl. Call `propose_plan` immediately:
+
+```json
+{
+  "summary": "Show the current date and time",
+  "explanation": "The user asked for clock information. GetDateTime returns it directly; no planning-time query is needed.",
+  "steps": [
+    {
+      "action_name": "GetDateTime",
+      "summary": "Get current date, time, timezone, and NTP status",
+      "risk_level": "low",
+      "params": {}
+    }
+  ]
+}
+```
+"#;
+
+const OTHER_DISAMBIGUATION: &str = r#"
+## State and diagnostic action disambiguation
+
+- `GetDateTime` answers clock, date, timezone and NTP questions.
+- No OS/hardware snapshot action is offered on this distribution. For a
+  general system overview, call `refuse` and explain the unsupported request.
+- `CollectDiagnostics` gathers journal logs for troubleshooting a specific
+  problem, not an OS/hardware overview.
+
+{SERVICE_DISAMBIGUATION}
 "#;
 
 // ---------------------------------------------------------------------------
@@ -992,11 +1047,12 @@ pub fn build_system_prompt(
     user_prefs: Option<&str>,
     distro_hint: Option<&sysknife_types::DistroHint>,
 ) -> String {
-    use sysknife_types::{DISTRO_FAMILY_DEBIAN, DISTRO_FAMILY_FEDORA};
+    use sysknife_types::{DISTRO_FAMILY_DEBIAN, DISTRO_FAMILY_FEDORA, DISTRO_FAMILY_OTHER};
     match distro_hint.map(|h| h.family) {
         Some(DISTRO_FAMILY_FEDORA) => render_fedora_prompt(user_prefs, distro_hint.unwrap()),
         Some(DISTRO_FAMILY_DEBIAN) => render_debian_prompt(user_prefs, distro_hint.unwrap()),
-        _ => render_generic_prompt(user_prefs),
+        Some(DISTRO_FAMILY_OTHER) => render_other_prompt(user_prefs, distro_hint.unwrap()),
+        _ => render_generic_prompt(user_prefs, distro_hint),
     }
 }
 
@@ -1037,9 +1093,58 @@ const DEBIAN_STATE_ACTION: StateAction = StateAction {
 fn push_shared(s: &mut String, block: &str, state: &StateAction) {
     s.push_str(
         &block
+            .replace("{OVERVIEW_AND_CLOCK_EXAMPLES}", OVERVIEW_AND_CLOCK_EXAMPLES)
+            .replace("{SERVICE_DISAMBIGUATION}", SERVICE_DISAMBIGUATION)
+            .replace("{STATE_ACTION_ENTRY}", &format!("{}, ", state.name))
+            .replace("{FINISH_ACTION}", state.name)
             .replace("{STATE_ACTION}", state.name)
             .replace("{STATE_RETURNS}", state.returns),
     );
+}
+
+fn push_preamble(s: &mut String, hint: Option<&sysknife_types::DistroHint>) {
+    let (before, after) = PREAMBLE
+        .split_once("{AVAILABLE_QUERY_TOOLS}")
+        .expect("preamble has an available-query-tools placeholder");
+    s.push_str(before);
+    for tool in query_tools_for_distro(hint) {
+        s.push_str("   - `");
+        s.push_str(&tool.name);
+        s.push('`');
+        if let Some(properties) = tool.input_schema["properties"].as_object() {
+            if !properties.is_empty() {
+                s.push_str(" (params: ");
+                for (index, name) in properties.keys().enumerate() {
+                    if index > 0 {
+                        s.push_str(", ");
+                    }
+                    s.push('`');
+                    s.push_str(name);
+                    s.push('`');
+                }
+                s.push(')');
+            }
+        }
+        s.push('\n');
+    }
+    s.push_str(after);
+}
+
+fn push_examples(s: &mut String, state: &StateAction, hint: Option<&sysknife_types::DistroHint>) {
+    let (before, after) = EXAMPLES
+        .split_once("{PACKAGE_INSTALL_EXAMPLE}")
+        .expect("examples have a package-install placeholder");
+    push_shared(s, before, state);
+    push_shared(s, package_install_example(hint), state);
+    push_shared(s, after, state);
+}
+
+fn package_install_example(hint: Option<&sysknife_types::DistroHint>) -> &'static str {
+    match hint.map(|hint| hint.family) {
+        Some(sysknife_types::DISTRO_FAMILY_FEDORA) => FEDORA_PACKAGE_EXAMPLE,
+        Some(sysknife_types::DISTRO_FAMILY_DEBIAN) => DEBIAN_PACKAGE_EXAMPLE,
+        _ => GENERIC_PACKAGE_EXAMPLE,
+    }
 }
 
 fn render_fedora_prompt(prefs: Option<&str>, hint: &sysknife_types::DistroHint) -> String {
@@ -1051,9 +1156,9 @@ fn render_fedora_prompt(prefs: Option<&str>, hint: &sysknife_types::DistroHint) 
     // Sized to the rendered prompt (measured ~35 KB) so the buffer doesn't have
     // to grow-and-copy several times over on every `plan_intent()` call.
     let mut s = String::with_capacity(36_864);
-    s.push_str(PREAMBLE);
+    push_preamble(&mut s, Some(hint));
     s.push_str(SPOTLIGHTING_CLAUSE);
-    push_shared(&mut s, EXAMPLES, &FEDORA_STATE_ACTION);
+    push_examples(&mut s, &FEDORA_STATE_ACTION, Some(hint));
     push_shared(&mut s, CROSS_DISTRO_RISK_TABLES, &FEDORA_STATE_ACTION);
     s.push_str(FEDORA_RISK_TABLES);
     // No {STATE_ACTION}/{STATE_RETURNS} placeholder appears in this block, so a
@@ -1078,9 +1183,9 @@ fn render_debian_prompt(prefs: Option<&str>, hint: &sysknife_types::DistroHint) 
         // examples. The schema supplies the exact family/identity-filtered
         // catalogue; eligibility is still enforced by the CLI and daemon.
         let mut s = String::new();
-        s.push_str(PREAMBLE);
+        push_preamble(&mut s, Some(hint));
         s.push_str(SPOTLIGHTING_CLAUSE);
-        push_shared(&mut s, EXAMPLES, &DEBIAN_STATE_ACTION);
+        push_examples(&mut s, &DEBIAN_STATE_ACTION, Some(hint));
         push_shared(&mut s, CROSS_DISTRO_RISK_TABLES, &DEBIAN_STATE_ACTION);
         s.push_str(CROSS_DISTRO_RISK_RULES);
         s.push_str(
@@ -1103,9 +1208,9 @@ fn render_debian_prompt(prefs: Option<&str>, hint: &sysknife_types::DistroHint) 
     // Sized to the rendered prompt (measured ~41 KB) — see the Fedora renderer
     // above for why.
     let mut s = String::with_capacity(43_008);
-    s.push_str(PREAMBLE);
+    push_preamble(&mut s, Some(hint));
     s.push_str(SPOTLIGHTING_CLAUSE);
-    push_shared(&mut s, EXAMPLES, &DEBIAN_STATE_ACTION);
+    push_examples(&mut s, &DEBIAN_STATE_ACTION, Some(hint));
     push_shared(&mut s, CROSS_DISTRO_RISK_TABLES, &DEBIAN_STATE_ACTION);
     s.push_str(DEBIAN_RISK_TABLES);
     // See the Fedora renderer above: this block has no placeholder to substitute.
@@ -1122,13 +1227,13 @@ fn render_debian_prompt(prefs: Option<&str>, hint: &sysknife_types::DistroHint) 
     s
 }
 
-fn render_generic_prompt(prefs: Option<&str>) -> String {
+fn render_generic_prompt(prefs: Option<&str>, hint: Option<&sysknife_types::DistroHint>) -> String {
     // Sized to the rendered prompt (measured ~29 KB) — see the Fedora renderer
     // above for why.
     let mut s = String::with_capacity(30_720);
-    s.push_str(PREAMBLE);
+    push_preamble(&mut s, hint);
     s.push_str(SPOTLIGHTING_CLAUSE);
-    push_shared(&mut s, EXAMPLES, &FEDORA_STATE_ACTION);
+    push_examples(&mut s, &FEDORA_STATE_ACTION, hint);
     push_shared(&mut s, CROSS_DISTRO_RISK_TABLES, &FEDORA_STATE_ACTION);
     // See the Fedora renderer above: this block has no placeholder to substitute.
     s.push_str(CROSS_DISTRO_RISK_RULES);
@@ -1137,6 +1242,41 @@ fn render_generic_prompt(prefs: Option<&str>) -> String {
     push_shared(&mut s, CROSS_DISTRO_PARAMS, &FEDORA_STATE_ACTION);
     s.push_str(CONSTRAINTS);
     push_shared(&mut s, PREFERENCE_TOOLS, &FEDORA_STATE_ACTION);
+    append_prefs(&mut s, prefs);
+    s
+}
+
+fn render_other_prompt(prefs: Option<&str>, hint: &sysknife_types::DistroHint) -> String {
+    let mut s = String::with_capacity(30_720);
+    push_preamble(&mut s, Some(hint));
+    s.push_str(SPOTLIGHTING_CLAUSE);
+    // Use only offered actions. History and preference intents still need a
+    // nonempty final plan; a read-only history step can finish either without
+    // claiming to provide the unavailable OS/hardware snapshot.
+    let examples = EXAMPLES.replace("{PACKAGE_INSTALL_EXAMPLE}", GENERIC_PACKAGE_EXAMPLE);
+    for block in [
+        examples.as_str(),
+        CROSS_DISTRO_RISK_TABLES,
+        CROSS_DISTRO_RISK_RULES,
+        "\n## Detected distro outside the supported families\n\n\
+         Use only actions offered in the propose_plan schema. A named package \
+         manager does not make an unavailable action eligible.\n",
+        OTHER_DISAMBIGUATION,
+        CROSS_DISTRO_PARAMS,
+        CONSTRAINTS,
+        PREFERENCE_TOOLS,
+    ] {
+        s.push_str(
+            &block
+                .replace(
+                    "{OVERVIEW_AND_CLOCK_EXAMPLES}",
+                    OTHER_OVERVIEW_AND_CLOCK_EXAMPLES,
+                )
+                .replace("{SERVICE_DISAMBIGUATION}", SERVICE_DISAMBIGUATION)
+                .replace("{STATE_ACTION_ENTRY}", "")
+                .replace("{FINISH_ACTION}", "ListJobHistory"),
+        );
+    }
     append_prefs(&mut s, prefs);
     s
 }
@@ -1200,6 +1340,47 @@ mod tests {
             id: "ubuntu".into(),
             family: DISTRO_FAMILY_DEBIAN,
             version: Some("Ubuntu 24.04".to_string()),
+        }
+    }
+
+    #[test]
+    fn every_prompt_action_is_offered_by_its_plan_schema() {
+        use crate::planning_tools::propose_plan::{propose_plan_tool_def, KNOWN_ACTIONS};
+
+        let mut hints = vec![None, Some(fedora_hint()), Some(debian_hint())];
+        hints.push(Some(DistroHint {
+            id: "debian".into(),
+            family: DISTRO_FAMILY_DEBIAN,
+            version: Some("13".into()),
+        }));
+        for id in ["arch", "opensuse", "alpine"] {
+            hints.push(Some(DistroHint {
+                id: id.into(),
+                family: sysknife_types::DISTRO_FAMILY_OTHER,
+                version: None,
+            }));
+        }
+        for hint in hints {
+            let prompt = build_system_prompt(None, hint.as_ref());
+            let schema = propose_plan_tool_def(hint.as_ref());
+            let offered = schema.input_schema["properties"]["steps"]["items"]["properties"]
+                ["action_name"]["enum"]
+                .as_array()
+                .unwrap();
+            let mentioned: std::collections::HashSet<_> = prompt
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .filter(|word| KNOWN_ACTIONS.iter().any(|(name, _)| name == word))
+                .collect();
+            assert!(!mentioned.is_empty(), "{hint:?}: no actions checked");
+            let mut missing: Vec<_> = mentioned
+                .into_iter()
+                .filter(|name| !offered.iter().any(|value| value.as_str() == Some(name)))
+                .collect();
+            missing.sort_unstable();
+            assert!(
+                missing.is_empty(),
+                "{hint:?}: unoffered actions {missing:?}"
+            );
         }
     }
 
@@ -1330,17 +1511,55 @@ mod tests {
     /// it. This is the one that would catch it.
     #[test]
     fn no_rendered_prompt_leaks_an_unsubstituted_placeholder() {
+        let other = DistroHint {
+            id: "arch".into(),
+            family: sysknife_types::DISTRO_FAMILY_OTHER,
+            version: None,
+        };
         let prompts = [
             ("debian", build_system_prompt(None, Some(&debian_hint()))),
             ("fedora", build_system_prompt(None, Some(&fedora_hint()))),
             ("generic", build_system_prompt(None, None)),
+            ("other", build_system_prompt(None, Some(&other))),
         ];
         for (name, p) in prompts {
-            assert!(
-                !p.contains("{STATE_ACTION}") && !p.contains("{STATE_RETURNS}"),
-                "the {name} prompt shipped an unsubstituted placeholder"
-            );
+            for placeholder in [
+                "{STATE_ACTION}",
+                "{STATE_RETURNS}",
+                "{STATE_ACTION_ENTRY}",
+                "{FINISH_ACTION}",
+                "{OVERVIEW_AND_CLOCK_EXAMPLES}",
+                "{SERVICE_DISAMBIGUATION}",
+                "{PACKAGE_INSTALL_EXAMPLE}",
+                "{AVAILABLE_QUERY_TOOLS}",
+            ] {
+                assert!(
+                    !p.contains(placeholder),
+                    "the {name} prompt shipped {placeholder}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn other_prompt_preserves_examples_and_has_an_available_preference_finish() {
+        let hint = DistroHint {
+            id: "alpine".into(),
+            family: sysknife_types::DISTRO_FAMILY_OTHER,
+            version: None,
+        };
+        let prompt = build_system_prompt(Some("- Prefer vim"), Some(&hint));
+        for letter in ['A', 'B', 'C', 'D', 'E', 'F'] {
+            assert!(prompt.contains(&format!("### Example {letter}")));
+        }
+        assert!(prompt.contains("No OS/hardware snapshot action is offered"));
+        assert!(prompt.contains("Call `refuse` with a concrete reason"));
+        assert!(prompt.contains("single `ListJobHistory` low-risk step"));
+        assert!(prompt.contains("- Prefer vim"));
+        // No hint retains the existing state-action completion path.
+        let no_hint = build_system_prompt(None, None);
+        assert!(no_hint.contains("single `GetSystemState` low-risk step"));
+        assert!(no_hint.contains(r#""action_name": "GetSystemState""#));
     }
 
     /// Each family must name its own state action, and only its own. Fencing
@@ -1510,7 +1729,7 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_contains_example_c() {
+    fn system_prompt_contains_example_c_and_distro_aware_package_example_b() {
         let prompt = build_system_prompt(None, None);
         assert!(prompt.contains("query_job_history"));
         assert!(
@@ -1518,6 +1737,16 @@ mod tests {
                 || prompt.contains("example C")
                 || prompt.contains("### C")
         );
+
+        let ubuntu = build_system_prompt(None, Some(&debian_hint()));
+        assert!(!ubuntu.contains("query_packages"));
+        assert!(ubuntu.contains("`query_logs` (params: `unit`)"));
+        assert!(ubuntu.contains("AptInstall"));
+        assert!(ubuntu.contains("already installed"));
+
+        let fedora = build_system_prompt(None, Some(&fedora_hint()));
+        assert!(fedora.contains("query_packages"));
+        assert!(fedora.contains("AddLayeredPackage"));
     }
 
     #[test]

@@ -166,6 +166,90 @@ assert_file_pattern "$release_workflow" 'sha256sums-linux-x86_64\.txt' \
     'post-release checklist must include the published checksum file'
 assert_file_pattern "$release_workflow" 'needs: \[release\]' \
     'post-release checklist must wait for the release job'
+
+# Parse the post-release job's shell block so labels and idempotency must be
+# part of the actual commands, not merely comments elsewhere in the workflow.
+python3 - "$release_workflow" <<'PYTHON'
+from pathlib import Path
+import re
+import sys
+
+import yaml
+
+
+def fail(message):
+    sys.exit(f"FAIL: {message}")
+
+
+workflow = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
+job = workflow.get("jobs", {}).get("post-release-checklist")
+if not isinstance(job, dict):
+    fail("release workflow must define the post-release checklist job")
+step = next(
+    (step for step in job.get("steps", []) if step.get("name") == "Open the checklist issue"),
+    None,
+)
+if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+    fail("post-release job must have an Open the checklist issue run step")
+run = step["run"]
+
+create_start = run.find("gh issue create")
+if create_start < 0:
+    fail("post-release checklist must create an issue")
+if run.count("gh issue create") != 1:
+    fail("post-release checklist must have one issue-creation command")
+create_lines = run[create_start:].splitlines()
+create_command = [create_lines[0]]
+while create_command[-1].rstrip().endswith("\\") and len(create_command) < len(create_lines):
+    create_command.append(create_lines[len(create_command)])
+create_command = "\n".join(create_command)
+for label in ("documentation", "maintainer-only"):
+    if f"--label {label}" not in create_command:
+        fail(f"checklist issue creation must apply the {label} label")
+if '--title "$checklist_title"' not in create_command:
+    fail("checklist creation must use the full current-tag title")
+
+close_index = run.find("gh issue close")
+if close_index < 0 or close_index > create_start:
+    fail("older checklists must be closed before creating the new one")
+list_index = run.find("gh issue list")
+state_index = run.find("--state open", list_index)
+if list_index < 0 or state_index < list_index or state_index > close_index:
+    fail("workflow must only close open checklists")
+if '--search \'in:title "Post-release manual steps for"\'' not in run[:close_index]:
+    fail("workflow must search open issues by the checklist title prefix")
+if "--limit 1000 --json number,title" not in run[:close_index]:
+    fail("workflow must inspect the full supported issue result set")
+prefix_guard = run.find('[[ "$title" == "$checklist_prefix"* ]] || continue')
+if prefix_guard < 0 or prefix_guard > close_index:
+    fail("workflow must close only titles with the post-release checklist prefix")
+if '--comment "Superseded by ${VERSION}."' not in run:
+    fail("closing an older checklist must name the superseding tag")
+
+current_tag = re.search(
+    r'if \[\[ "\$title" == "\$checklist_title" \]\]; then'
+    r'(?P<body>.*?)\n\s*continue\n\s*fi',
+    run,
+    re.DOTALL,
+)
+if (
+    current_tag is None
+    or current_tag.start() > close_index
+    or "current_issue" not in current_tag.group("body")
+):
+    fail("same-tag reruns must retain the existing checklist and skip closing it")
+
+create_guard = re.search(
+    r'if \[\[ -z "\$current_issue" \]\]; then(?P<body>.*?)^\s*fi',
+    run,
+    re.MULTILINE | re.DOTALL,
+)
+if create_guard is None or "gh issue create" not in create_guard.group("body"):
+    fail("same-tag reruns must skip creating a duplicate checklist")
+
+print("post-release checklist contract passed.")
+PYTHON
+
 # Positive invariant: EVERY `uses:` in EVERY workflow MUST pin a full 40-hex
 # commit SHA. This catches every mutable form (semver tags like @v6.1.0,
 # @stable, @main, per-tool tags like @cargo-nextest, and short SHAs), across

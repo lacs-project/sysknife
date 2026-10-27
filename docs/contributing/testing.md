@@ -13,7 +13,7 @@ validation before a release.
 | Integration (Rust) | Daemon IPC, safety fence, policy | <10s | Every commit, every CI run |
 | **Dev stories (local, no VM)** | LLM plan structure for read-only stories; runs on any Linux host | 1-3 min | After brain/prompt changes |
 | CI smoke (container) | Daemon + Ollama + read-only stories in a Linux runner | 5-10 min | Opt-in (manual `workflow_dispatch` only) |
-| E2E Atomic VM | **Real Silverblue** in QEMU/KVM, full stack, all 54 stories | 15-30 min first boot; 2-3 min subsequent | Local / pre-release |
+| E2E Atomic VM | **Real Silverblue** in QEMU/KVM, full stack, all <!-- fig:stories_atomic floor=10 -->50+<!-- /fig --> stories | 15-30 min first boot; 2-3 min subsequent | Local / pre-release |
 | **E2E Ubuntu VM** | **Ubuntu 24.04** cloud image, full story suite (pass rate in `tests/evidence/story-runs/`) | ~15 min first boot; ~2 min subsequent | After Ubuntu action changes |
 | Manual QA | Real Silverblue/Kinoite hardware, destructive actions, GUI | 30-60 min | Before releases + demo video |
 
@@ -275,7 +275,7 @@ sudo chmod +r /boot/vmlinuz-*
 # Run the read-only stories (non-destructive default)
 ./tests/e2e/atomic-vm.sh run
 
-# Run ALL 54 stories including destructive — restore the baseline afterwards.
+# Run ALL stories including destructive — restore the baseline afterwards.
 SYSKNIFE_ALLOW_DESTRUCTIVE=1 ./tests/e2e/atomic-vm.sh run
 
 # Roll back to the clean baseline so the next run is fast
@@ -376,12 +376,43 @@ sudo -E tests/e2e/run-stories.sh 1 4 7
 
 Per-story logs are written to `tests/e2e/logs/story-N.log`.
 
+## Published figures
+
+Never type a figure. A count the README or the docs state about the project
+(tests, actions, story-set sizes, recorded pass rates) is rendered from its
+source by `scripts/render_figures.py`, and `scripts/check_evidence_claims.py`
+refuses one that sits outside a marker. After you add tests, run
+`UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh` (add `--frontend` for the
+vitest suite), then commit the evidence file and whatever it re-rendered.
+
+A marker is an HTML comment pair around the value, invisible on GitHub and in
+mdBook:
+
+- `<!-- fig:NAME -->VALUE<!-- /fig -->` renders the exact value with thousands
+  separators. Story pass rates read from a recorded run are exact.
+- `<!-- fig:NAME floor=K -->VALUE<!-- /fig -->` renders the value rounded down to
+  a multiple of `K` with a trailing plus. A figure a routine PR moves is a
+  floor, so most PRs change no prose. `render_figures.py` refuses a floor above
+  the value.
+
+`NAME` is a key in the registry at the top of `scripts/render_figures.py`; each
+one reads its source through a function from `check_evidence_claims.py`. A
+marker sits on one line, cannot nest, and cannot sit inside a fenced code
+block. Inline code spans are ignored, which is how this section shows the
+syntax. `scripts/render_figures.py --check` names the file and line of every
+stale, unknown or malformed marker, and `--write` fixes the stale ones.
+
+The exact Rust and frontend test counts are the two README badges, which read
+`tests/evidence/workspace-tests.json` from `main`.
+
 ## Before opening a PR
 
 1. `cargo nextest run --workspace && npm test --prefix apps/sysknife-shell` — required, fast
 2. `cargo clippy --workspace --all-features --all-targets --locked -- -D warnings`
 3. `cargo fmt --all --check`
-4. For changes to the brain, daemon, IPC, or action catalogue:
+4. If you added or removed tests, `UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh`
+   and commit what it changed (see [Published figures](#published-figures))
+5. For changes to the brain, daemon, IPC, or action catalogue:
    - Run the VM tests locally (`atomic-vm.sh` flow)
    - Optionally run the CI smoke test by dispatching the `e2e` workflow
 
@@ -393,7 +424,7 @@ The maintainer runs these in order:
 2. VM tests (at least Silverblue + one other atomic variant) pass locally
 3. Manual QA on real Silverblue hardware using
    [docs/testing/user-stories.md](../testing/user-stories.md) as the
-   checklist — all 54 stories including destructive ones
+   checklist — all <!-- fig:stories_atomic floor=10 -->50+<!-- /fig --> stories including destructive ones
 4. Record the demo video on real hardware (issue #32)
 
 ## Troubleshooting

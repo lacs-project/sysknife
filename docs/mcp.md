@@ -143,7 +143,9 @@ quick audit-chain status. This tool is read-only.
 
 Verify the Ed25519-signed audit chain and report `intact`, `broken`, or
 `cannot_verify`, including the first offending row when verification fails.
-This tool is read-only.
+This tool is read-only. On packaged installs, when no per-user audit store
+exists, it reads the system daemon's store and includes an `audit_store_note`
+field explaining the fallback and naming the selected path.
 
 ### Direct read-only action tools
 

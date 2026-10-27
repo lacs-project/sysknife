@@ -182,12 +182,13 @@ fn redact_argv(action_name: &str, params: &Value, args: &[String]) -> Vec<String
 }
 
 use crate::{
+    audit_chain::RequestHashKey,
     auth::{highest_role_from_groups, CallerAttribution},
     executor::{build_action_spec, rollback_spec_for, ActionExecutor},
     preview::preview_action,
     state::DaemonState,
     state_collector::{collect_state, CollectedState, CommandRunner},
-    transactions::NewTransaction,
+    transactions::{HistorySince, NewTransaction},
     transport::framing::{FramedStream, FramingError},
 };
 
@@ -300,6 +301,9 @@ enum DaemonRequest {
         status_filter: Option<String>,
         action_filter: Option<String>,
         since_hours: Option<u32>,
+        /// Exact RFC 3339 lower bound on `created_at` (the CLI's `--since`).
+        /// Mutually exclusive with `since_hours`.
+        since: Option<String>,
     },
     Describe {
         request_id: String,
@@ -1003,25 +1007,22 @@ fn validate_action_platform(state: &DaemonState, action_name: &str) -> Result<()
 // Request hash
 // ---------------------------------------------------------------------------
 
-/// Compute `SHA-256(action_name || "\x00" || canonical_json(params))`,
-/// hex-encoded.
+/// Compute `HMAC-SHA256(key, action_name || "\x00" || canonical_json(params))`,
+/// hex-encoded, where `key` is derived from the audit key (#268).
 ///
 /// Canonical JSON serialises object keys in sorted order (recursively),
 /// ensuring identical logical params always produce the same hash regardless
 /// of insertion order.
-pub fn compute_request_hash(action_name: &str, params: &Value) -> String {
+///
+/// This was a bare SHA-256 until `chain_version = 4`. The column is signed
+/// into every audit row and exported verbatim, and the preimage is the
+/// *unredacted* request, so an unsalted hash let any holder of an export
+/// brute-force low-entropy parameters offline. Keying it with material that
+/// never leaves the host removes that attack while keeping the
+/// preview/execute binding this function exists for.
+pub fn compute_request_hash(key: &RequestHashKey, action_name: &str, params: &Value) -> String {
     let canonical = canonical_json(params);
-    let mut hasher = Sha256::new();
-    hasher.update(action_name.as_bytes());
-    hasher.update(b"\x00");
-    hasher.update(canonical.as_bytes());
-    let bytes = hasher.finalize();
-    bytes.iter().fold(String::with_capacity(64), |mut s, b| {
-        use std::fmt::Write;
-        // Writing to String via fmt::Write is infallible.
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    key.request_hash(action_name, &canonical)
 }
 
 /// Key under which a previewed `AptAutoremove` records the exact set of packages
@@ -1492,7 +1493,13 @@ async fn dispatch_loop<S>(
 
         let result = match &request {
             DaemonRequest::QueryState { request_id } => {
-                handle_query_state(framed, Arc::clone(&runner), request_id).await
+                handle_query_state(
+                    framed,
+                    Arc::clone(&runner),
+                    state.host_distro.clone(),
+                    request_id,
+                )
+                .await
             }
             DaemonRequest::Preview {
                 request_id,
@@ -1571,6 +1578,7 @@ async fn dispatch_loop<S>(
                 status_filter,
                 action_filter,
                 since_hours,
+                since,
             } => {
                 handle_query_history(
                     framed,
@@ -1580,6 +1588,7 @@ async fn dispatch_loop<S>(
                     status_filter.clone(),
                     action_filter.clone(),
                     *since_hours,
+                    since.as_deref(),
                 )
                 .await
             }
@@ -1781,6 +1790,7 @@ async fn handle_approval_details(
 async fn handle_query_state(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     runner: Arc<dyn CommandRunner + Send + Sync>,
+    host_distro: Option<sysknife_core::distro::DistroId>,
     request_id: &str,
 ) -> Result<(), HandlerError> {
     // collect_state uses std::process::Command (blocking). Offload to the
@@ -1788,12 +1798,13 @@ async fn handle_query_state(
     let join_result = tokio::task::spawn_blocking(move || collect_state(&*runner))
         .await
         .map_err(|e| HandlerError::Internal(format!("collect_state task failed: {e}")))?;
-    let collected = match join_result {
+    let mut collected = match join_result {
         Ok(s) => s,
         Err(e) => {
             return send_error(framed, request_id, "state_collection_failed", e.to_string()).await;
         }
     };
+    collected.host_distro = host_distro;
     send_response(
         framed,
         &DaemonResponse::StateResponse {
@@ -1862,6 +1873,25 @@ async fn handle_cancel(
     }
 }
 
+/// Turn the two wire spellings of a history lower bound into the store's
+/// [`HistorySince`]. `since_hours` is the planner's whole-hour window; `since`
+/// is an exact RFC 3339 instant (normalised to UTC) so a sub-hour cutoff is not
+/// rounded away. Supplying both is ambiguous and rejected.
+fn resolve_history_since(
+    since_hours: Option<u32>,
+    since: Option<&str>,
+) -> Result<Option<HistorySince>, String> {
+    match (since_hours, since) {
+        (Some(_), Some(_)) => Err("'since' and 'since_hours' are mutually exclusive".to_string()),
+        (Some(hours), None) => Ok(Some(HistorySince::Hours(hours))),
+        (None, Some(raw)) => chrono::DateTime::parse_from_rfc3339(raw)
+            .map(|at| Some(HistorySince::Cutoff(at.with_timezone(&chrono::Utc))))
+            .map_err(|e| format!("'since' must be an RFC 3339 datetime, got {raw:?}: {e}")),
+        (None, None) => Ok(None),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn handle_query_history(
     framed: &mut FramedStream<impl AsyncRead + AsyncWrite + Unpin>,
     state: &DaemonState,
@@ -1870,6 +1900,7 @@ async fn handle_query_history(
     status_filter: Option<String>,
     action_filter: Option<String>,
     since_hours: Option<u32>,
+    since: Option<&str>,
 ) -> Result<(), HandlerError> {
     // Honour the SAME `[policy.risk_overrides]` gate as the `ListJobHistory`
     // action (see handle_query_action): if an operator raised history above
@@ -1899,13 +1930,20 @@ async fn handle_query_history(
         }
     }
 
+    let since = match resolve_history_since(since_hours, since) {
+        Ok(since) => since,
+        Err(message) => {
+            return send_error(framed, request_id, "validation_failure", message).await;
+        }
+    };
+
     let entries = match state
         .audit
         .list_history(
             limit.unwrap_or(DEFAULT_HISTORY_LIMIT),
             status_filter.as_deref(),
             action_filter.as_deref(),
-            since_hours,
+            since,
         )
         .await
     {
@@ -2041,13 +2079,34 @@ async fn handle_query_action(
             },
             None => None,
         };
+        let since_cutoff = match params.get("since") {
+            Some(v) => match v.as_str() {
+                Some(s) => Some(s),
+                None => {
+                    return send_error(
+                        framed,
+                        request_id,
+                        "validation_failure",
+                        format!("'since' must be an RFC 3339 datetime string, got: {v}"),
+                    )
+                    .await;
+                }
+            },
+            None => None,
+        };
+        let since = match resolve_history_since(since_hours, since_cutoff) {
+            Ok(since) => since,
+            Err(message) => {
+                return send_error(framed, request_id, "validation_failure", message).await;
+            }
+        };
 
         let records = match audit
             .list_transactions(
                 limit,
                 status_filter.as_deref(),
                 action_filter.as_deref(),
-                since_hours,
+                since,
             )
             .await
         {
@@ -2074,6 +2133,9 @@ async fn handle_query_action(
             }
             if let Some(h) = since_hours {
                 filters.push(format!("since_hours={h}"));
+            }
+            if let Some(c) = since_cutoff {
+                filters.push(format!("since={c}"));
             }
             if !filters.is_empty() {
                 msg.push_str(&format!(" (filters: {})", filters.join(", ")));
@@ -2312,7 +2374,7 @@ async fn handle_preview(
         return send_error(framed, request_id, "unsupported_platform", message).await;
     }
 
-    let request_hash = compute_request_hash(action_name, params);
+    let request_hash = compute_request_hash(&state.request_hash_key, action_name, params);
 
     // Snapshot current state for the preview. collect_state uses
     // std::process::Command (blocking), so offload to the blocking thread pool.
@@ -2719,7 +2781,7 @@ async fn handle_execute(
         return send_error(framed, request_id, "unsupported_platform", message).await;
     }
 
-    let submitted_hash = compute_request_hash(action_name, params);
+    let submitted_hash = compute_request_hash(&state.request_hash_key, action_name, params);
     let prior_tx = match state.audit.get(transaction_id).await {
         Ok(tx) => tx,
         Err(e) => {
@@ -4657,6 +4719,134 @@ mod tests {
         );
     }
 
+    /// Seed one audit row created 75 minutes ago and one created 20 minutes
+    /// ago, then return a framed connection to a daemon over that store.
+    async fn history_daemon_with_20_and_75_minute_rows(
+        dir: &tempfile::TempDir,
+    ) -> FramedStream<tokio::net::UnixStream> {
+        let state = test_state(dir);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            unix_connection_handler(
+                server,
+                state,
+                runner(),
+                uid_caller_with(1000, CallerRole::Observer),
+            )
+            .await;
+        });
+        let mut framed = FramedStream::new(client);
+        let db = rusqlite::Connection::open(dir.path().join("sysknife-test.db")).unwrap();
+        for (i, minutes_ago) in [75, 20].into_iter().enumerate() {
+            framed
+                .send(
+                    &serde_json::to_vec(&json!({
+                        "type": "preview",
+                        "request_id": format!("preview-since-{i}"),
+                        "action_name": "GetMemoryInfo",
+                        "params": {},
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let _ = framed.recv().await.unwrap();
+            // Only the row just written is newer than five minutes.
+            db.execute(
+                "UPDATE transactions \
+                 SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1) \
+                 WHERE julianday(created_at) > julianday('now', '-5 minutes')",
+                rusqlite::params![format!("-{minutes_ago} minutes")],
+            )
+            .unwrap();
+        }
+        framed
+    }
+
+    fn minutes_ago_rfc3339(minutes: i64) -> String {
+        (chrono::Utc::now() - chrono::Duration::minutes(minutes))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    }
+
+    #[test]
+    fn resolve_history_since_parses_and_rejects_ambiguity() {
+        assert_eq!(resolve_history_since(None, None), Ok(None));
+        assert_eq!(
+            resolve_history_since(Some(24), None),
+            Ok(Some(HistorySince::Hours(24)))
+        );
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-01-15T10:30:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            resolve_history_since(None, Some("2026-01-15T12:30:00+02:00")),
+            Ok(Some(HistorySince::Cutoff(expected)))
+        );
+        assert!(resolve_history_since(None, Some("yesterday")).is_err());
+        assert!(resolve_history_since(Some(1), Some("2026-01-15T10:30:00Z")).is_err());
+    }
+
+    #[tokio::test]
+    async fn query_history_since_keeps_sub_hour_precision() {
+        // Regression for #567: `--since` used to be rounded down to whole
+        // hours, so a cutoff 30 minutes ago became `since_hours = 0` (nothing
+        // returned) and 90 minutes ago became `since_hours = 1` (the 75-minute
+        // row was lost). The exact cutoff must reach the store.
+        let dir = tempdir().unwrap();
+        let mut framed = history_daemon_with_20_and_75_minute_rows(&dir).await;
+
+        for (cutoff_minutes, expected) in [(30, 1), (90, 2), (10, 0)] {
+            framed
+                .send(
+                    &serde_json::to_vec(&json!({
+                        "type": "query_history",
+                        "request_id": format!("hist-since-{cutoff_minutes}"),
+                        "since": minutes_ago_rfc3339(cutoff_minutes),
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let response: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+            assert_eq!(response["type"], "history_response", "{response}");
+            let entries = response["entries"].as_array().expect("entries array");
+            assert_eq!(
+                entries.len(),
+                expected,
+                "cutoff {cutoff_minutes} minutes ago: {response}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn list_job_history_since_keeps_sub_hour_precision() {
+        // Same regression through the text `ListJobHistory` query path.
+        let dir = tempdir().unwrap();
+        let mut framed = history_daemon_with_20_and_75_minute_rows(&dir).await;
+
+        for (cutoff_minutes, expect_rows) in [(30, true), (10, false)] {
+            framed
+                .send(
+                    &serde_json::to_vec(&json!({
+                        "type": "query_action",
+                        "request_id": format!("ljh-since-{cutoff_minutes}"),
+                        "action_name": "ListJobHistory",
+                        "params": { "since": minutes_ago_rfc3339(cutoff_minutes) },
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let response: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+            let output = response["output"].as_str().expect("output text");
+            assert_eq!(
+                !output.starts_with("No transactions found"),
+                expect_rows,
+                "cutoff {cutoff_minutes} minutes ago: {output}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn query_history_honours_policy_override_raising_history_above_observer() {
         // Authorization consistency: if an operator raises ListJobHistory above
@@ -4669,11 +4859,18 @@ mod tests {
         let overrides =
             std::collections::HashMap::from([("ListJobHistory".to_string(), "high".to_string())]);
         let policy = crate::policy::PolicyTable::from_overrides(&overrides).unwrap();
+        // Same key file `test_state` loaded: the derived HMAC key must match
+        // the one behind `real.audit` so hashes compare equal.
+        let audit_key = crate::audit_chain::AuditKey::load_or_generate(
+            &crate::audit_chain::resolve_audit_key_path(&dir.path().join("sysknife-test.db")),
+        )
+        .unwrap();
         let state = crate::state::DaemonState::open_with_audit(
             real.config.clone(),
             policy,
             None,
             real.audit.clone(),
+            &audit_key,
         );
 
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
@@ -4987,7 +5184,12 @@ mod tests {
     #[tokio::test]
     async fn query_state_returns_state_response() {
         let dir = tempdir().unwrap();
-        let state = test_state(&dir);
+        let mut state = test_state(&dir);
+        let distro = sysknife_core::distro::DistroId::Ubuntu {
+            major: 24,
+            minor: 4,
+        };
+        state.host_distro = Some(distro.clone());
 
         let resps = exchange(
             state,
@@ -5000,6 +5202,10 @@ mod tests {
         assert_eq!(resps[0]["type"], "state_response");
         assert_eq!(resps[0]["request_id"], "r1");
         assert_eq!(resps[0]["state"]["host_name"], "testhost");
+        assert_eq!(
+            resps[0]["state"]["host_distro"],
+            json!({"Ubuntu": {"major": 24, "minor": 4}})
+        );
     }
 
     // ------------------------------------------------------------------
@@ -5193,14 +5399,67 @@ mod tests {
         );
     }
 
+    /// The live path must be *keyed*, not merely deterministic. The tests
+    /// above check that the same request hashes the same way and that object
+    /// keys sort; a bare `sha256(action || \0 || canonical)` satisfies both,
+    /// so a refactor that drops the key would reopen #268 with this suite
+    /// green. This drives a real preview over the socket and pins the
+    /// response hash to the HMAC under `state.request_hash_key` — revert
+    /// `compute_request_hash` to the old body and it fails.
+    #[tokio::test]
+    async fn preview_request_hash_is_keyed_not_a_bare_sha256() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let key = state.request_hash_key.clone();
+
+        let resps = exchange(
+            state,
+            CallerRole::Observer,
+            vec![json!({
+                "type": "preview",
+                "request_id": "r1",
+                "action_name": "GetMemoryInfo",
+                "params": {}
+            })],
+            1,
+        )
+        .await;
+
+        assert_eq!(resps[0]["type"], "preview_response", "{:?}", resps[0]);
+        let hash = resps[0]["preview"]["request_hash"].as_str().unwrap();
+
+        // Exactly what the dispatcher must have computed: HMAC under the
+        // state's derived key over the canonical framing.
+        let expected = key.request_hash("GetMemoryInfo", &canonical_json(&json!({})));
+        assert_eq!(
+            hash, expected,
+            "the live preview hash must be the HMAC under the daemon's \
+             request_hash_key"
+        );
+
+        // And not what it was before chain_version 4.
+        let mut hasher = Sha256::new();
+        hasher.update(b"GetMemoryInfo");
+        hasher.update(b"\x00");
+        hasher.update(canonical_json(&json!({})).as_bytes());
+        let unsalted = hex::encode(hasher.finalize());
+        assert_ne!(
+            hash, unsalted,
+            "the live path returned the unsalted SHA-256; #268 is open again"
+        );
+    }
+
     #[tokio::test]
     async fn preview_hash_is_deterministic() {
         // The same action + params must always produce the same hash.
+        let key = crate::audit_chain::AuditKey::from_bytes(vec![0x42; 32]).request_hash_key();
         let hash1 = compute_request_hash(
+            &key,
             "InstallFlatpak",
             &json!({"app_id": "org.gnome.Builder", "remote": "flathub"}),
         );
         let hash2 = compute_request_hash(
+            &key,
             "InstallFlatpak",
             &json!({"remote": "flathub", "app_id": "org.gnome.Builder"}),
         );
@@ -5212,10 +5471,17 @@ mod tests {
         // Objects nested inside arrays must also have sorted keys so that
         // {"packages": [{"b": 1, "a": 2}]} and {"packages": [{"a": 2, "b": 1}]}
         // produce the same hash.
-        let hash1 =
-            compute_request_hash("InstallPackages", &json!({"packages": [{"b": 1, "a": 2}]}));
-        let hash2 =
-            compute_request_hash("InstallPackages", &json!({"packages": [{"a": 2, "b": 1}]}));
+        let key = crate::audit_chain::AuditKey::from_bytes(vec![0x42; 32]).request_hash_key();
+        let hash1 = compute_request_hash(
+            &key,
+            "InstallPackages",
+            &json!({"packages": [{"b": 1, "a": 2}]}),
+        );
+        let hash2 = compute_request_hash(
+            &key,
+            "InstallPackages",
+            &json!({"packages": [{"a": 2, "b": 1}]}),
+        );
         assert_eq!(hash1, hash2, "nested object keys in arrays must be sorted");
     }
 
@@ -5223,8 +5489,9 @@ mod tests {
     fn canonical_json_preserves_array_element_order() {
         // Array element order is semantically significant ("install a then b"
         // is different from "install b then a"), so it must be preserved.
-        let hash1 = compute_request_hash("Op", &json!({"items": ["a", "b"]}));
-        let hash2 = compute_request_hash("Op", &json!({"items": ["b", "a"]}));
+        let key = crate::audit_chain::AuditKey::from_bytes(vec![0x42; 32]).request_hash_key();
+        let hash1 = compute_request_hash(&key, "Op", &json!({"items": ["a", "b"]}));
+        let hash2 = compute_request_hash(&key, "Op", &json!({"items": ["b", "a"]}));
         assert_ne!(hash1, hash2, "array element order must be preserved");
     }
 
@@ -6028,7 +6295,7 @@ mod tests {
                 limit: u32,
                 status: Option<&str>,
                 action: Option<&str>,
-                since: Option<u32>,
+                since: Option<HistorySince>,
             ) -> Result<Vec<TransactionRecord>, TransactionStoreError> {
                 self.0.list_transactions(limit, status, action, since).await
             }
@@ -6037,7 +6304,7 @@ mod tests {
                 limit: u32,
                 status: Option<&str>,
                 action: Option<&str>,
-                since: Option<u32>,
+                since: Option<HistorySince>,
             ) -> Result<Vec<crate::transactions::JobHistoryEntry>, TransactionStoreError>
             {
                 self.0.list_history(limit, status, action, since).await
@@ -6070,11 +6337,16 @@ mod tests {
         let faulty: std::sync::Arc<dyn AuditStore> =
             std::sync::Arc::new(UpdateStatusFails(real.audit.clone()));
         let cfg = real.config.clone();
+        let audit_key = crate::audit_chain::AuditKey::load_or_generate(
+            &crate::audit_chain::resolve_audit_key_path(&dir.path().join("sysknife-test.db")),
+        )
+        .unwrap();
         let state = crate::state::DaemonState::open_with_audit(
             cfg,
             crate::policy::PolicyTable::empty(),
             None,
             faulty,
+            &audit_key,
         );
 
         let (client, server) = tokio::net::UnixStream::pair().unwrap();

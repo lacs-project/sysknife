@@ -504,7 +504,7 @@ fn forbidden_credential_param(action: &str, params: &serde_json::Value) -> Optio
 ///
 /// No hint at all still offers every action that does not require credential
 /// entry — without a detected family there is no basis for a distro exclusion.
-fn available_on(action: &str, hint: Option<&sysknife_types::DistroHint>) -> bool {
+pub(super) fn available_on(action: &str, hint: Option<&sysknife_types::DistroHint>) -> bool {
     if requires_unavailable_credential_entry(action) {
         return false;
     }

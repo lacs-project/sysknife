@@ -156,6 +156,131 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   `AptRemove`, `AptPurge`, `AptHold` and `AptUnhold` refuse a package dpkg has
   no record of.
 
+## [0.27.0] — 2026-10-27
+
+### Added
+
+- **A weekly `cargo audit` run on `main`.** ([#640](https://github.com/lacs-project/sysknife/pull/640))
+  `cargo-audit.yml` checks the lockfile against the RustSec database on a
+  schedule, so an advisory published between pull requests surfaces without
+  waiting for the next change (closes
+  [#622](https://github.com/lacs-project/sysknife/issues/622)). Thanks to
+  [@Humerous](https://github.com/Humerous).
+
+### Changed
+
+- **Published figures are rendered from their sources, never typed.**
+  `scripts/render_figures.py` rewrites every `<!-- fig:NAME -->` marker in the
+  README and docs (test counts, action counts, story-set sizes, recorded pass
+  rates), and `scripts/check_evidence_claims.py` now refuses a figure outside a
+  marker. Figures that routine PRs move are rounded floors ("2,000+"); recorded
+  story pass rates stay exact. `UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh`
+  records the evidence and re-renders the docs in one step, and
+  `scripts/check_public_claims.sh` runs `render_figures.py --check`. The README
+  shows the exact Rust and frontend test counts as live badges read from
+  `tests/evidence/workspace-tests.json`. The README line that said the Ubuntu
+  suite "has since grown to 96" was already stale (it holds 99) and is now a
+  derived figure.
+
+- **Every workflow job has a time limit.** ([#662](https://github.com/lacs-project/sysknife/pull/662))
+  A hung job used to hold a runner for GitHub's six-hour default. Each job now
+  carries a `timeout-minutes` set from its slowest observed run, and
+  `tests/release/workflow-timeouts.test.sh` fails when a job loses its limit or
+  gets a blank, zero, negative or non-numeric one (closes
+  [#629](https://github.com/lacs-project/sysknife/issues/629)). Thanks to
+  [@dannyward630](https://github.com/dannyward630).
+
+### Fixed
+
+- **The planner sees only what exists on the host's distribution.**
+  ([#656](https://github.com/lacs-project/sysknife/pull/656),
+  [#658](https://github.com/lacs-project/sysknife/pull/658)) The Ubuntu prompt
+  and the `propose_plan` examples no longer show Fedora layering or repository
+  parameters, and the query tools offered to the model are the ones the host's
+  family has, so an Ubuntu prompt no longer advertises `query_packages` (closes
+  [#648](https://github.com/lacs-project/sysknife/issues/648) and
+  [#657](https://github.com/lacs-project/sysknife/issues/657)). Thanks to
+  [@dannyward630](https://github.com/dannyward630).
+- **Planning, routing, MCP tool discovery and `doctor` use the daemon's
+  distribution.** ([#626](https://github.com/lacs-project/sysknife/pull/626))
+  A Fedora controller driving an Ubuntu daemon built the planner prompt from its
+  own `/etc/os-release`. `QueryState` now carries an optional `host_distro`, and
+  the CLI falls back to local detection, with a warning, for an older or
+  unreachable daemon; `doctor` reports where the distribution came from (closes
+  [#618](https://github.com/lacs-project/sysknife/issues/618)). Thanks to
+  [@QinXi-ai](https://github.com/QinXi-ai).
+- **On a distribution outside the supported families the prompt stays within
+  the action schema.** ([#684](https://github.com/lacs-project/sysknife/pull/684))
+  On Arch, openSUSE or Alpine the prompt named `GetSystemState`, which
+  `propose_plan` does not offer there. An OS overview request is now refused,
+  and history or preference-only intents finish with `ListJobHistory`. A test
+  checks every action each prompt names against its plan schema (closes
+  [#672](https://github.com/lacs-project/sysknife/issues/672)). Thanks to
+  [@QinXi-ai](https://github.com/QinXi-ai).
+- **`sysknife audit checkpoint` and the MCP audit tools read the same store as
+  `audit verify`.** ([#636](https://github.com/lacs-project/sysknife/pull/636))
+  On a packaged install they resolved a per-user path that does not exist while
+  `audit verify` read `/var/lib/sysknife`. All of them now go through the shared
+  resolver, checkpoint tells a non-root operator to use sudo when the system
+  store is root-owned, and a test fails if either reader bypasses the resolver
+  (closes [#557](https://github.com/lacs-project/sysknife/issues/557) and
+  [#479](https://github.com/lacs-project/sysknife/issues/479)). Thanks to
+  [@dannyward630](https://github.com/dannyward630).
+- **`sysknife history --since` keeps the exact cutoff.**
+  ([#639](https://github.com/lacs-project/sysknife/pull/639)) The CLI rounded
+  the cutoff to whole hours, so "30 minutes ago" meant "now". It now sends the
+  exact instant, and SQLite and Postgres both compare it as a timestamp rather
+  than as text (closes [#567](https://github.com/lacs-project/sysknife/issues/567)).
+  A CLI newer than the daemon is refused by the daemon's parameter allowlist;
+  upgrade both together. Thanks to [@anyingiit](https://github.com/anyingiit).
+- **A failed version bump no longer leaves half-written manifests.**
+  ([#637](https://github.com/lacs-project/sysknife/pull/637))
+  `scripts/bump_version.sh` prepares the bump in a copy of the tracked files and
+  installs it only after the lock refresh and the full version check pass
+  (closes [#630](https://github.com/lacs-project/sysknife/issues/630)). Thanks
+  to [@dannyward630](https://github.com/dannyward630).
+- **The release publishes to npm only after crates.io.**
+  ([#660](https://github.com/lacs-project/sysknife/pull/660)) One registry can
+  no longer ship a version the other refused. Thanks to
+  [@Humerous](https://github.com/Humerous).
+- **The post-release checklist no longer piles up.**
+  ([#635](https://github.com/lacs-project/sysknife/pull/635)) The issue carries
+  the `documentation` and `maintainer-only` labels, a release closes older open
+  checklists with a comment naming the superseding tag, and a rerun keeps the
+  current tag's checklist instead of filing a duplicate (closes
+  [#633](https://github.com/lacs-project/sysknife/issues/633)). Thanks to
+  [@dannyward630](https://github.com/dannyward630).
+- **The README no longer says `sysknife approve` gates the CLI.**
+  ([#655](https://github.com/lacs-project/sysknife/pull/655)) An MCP plan needs
+  a receipt from `sysknife approve` in your terminal; the standalone CLI uses its
+  own prompt or `--yes` up to `--max-risk`; and an agent with a shell on your
+  account can drive the CLI by itself, so the daemon's role limits are the
+  boundary in that case (closes
+  [#560](https://github.com/lacs-project/sysknife/issues/560)). Thanks to
+  [@YuuGR1337](https://github.com/YuuGR1337).
+
+### Security
+
+- **`request_hash` is now keyed: an audit export is no longer an offline
+  cracking target.** ([#627](https://github.com/lacs-project/sysknife/pull/627),
+  closes [#268](https://github.com/lacs-project/sysknife/issues/268))
+  The column every signed chain row carries was a single unsalted SHA-256 over
+  the action name and the *unredacted* parameters, and `sysknife audit export`
+  serialises it. For a low-entropy, partly-public parameter set — `ConfigureWifi`,
+  where the SSID broadcasts and only the passphrase is unknown — any holder of
+  an export could brute-force the preimage on a GPU. The hash is now an
+  HMAC-SHA256 under a key derived (HKDF, domain-separated) from the audit key,
+  which never leaves the host; the preview/execute binding is unchanged. New
+  rows are written under `chain_version = 4`, so an auditor can tell which
+  scheme each row's hash uses. Rows written by earlier releases keep their
+  original hashes — rewriting them would break their signatures — so the fix
+  is forward-only and legacy rows in an export remain crackable;
+  `docs/the-audit-chain.md` now says so plainly.
+  After upgrading, re-preview anything still pending: a preview stored by an
+  older release carries the old unsalted hash, so its execute fails closed
+  with `stale_approval` rather than running. Thanks to
+  [@Georgefifth](https://github.com/Georgefifth).
+
 ## [0.26.1] — 2026-10-24
 
 ### Security

@@ -113,7 +113,7 @@ for rel in sorted(set(found) - registered - ignore):
 #    that a script still calls the reader or opens the registry.
 reads = {
     "scripts/bump_version.sh": 'scripts/release_versions.py" bump',
-    "scripts/check_release_versions.sh": 'scripts/release_versions.py" values',
+    "scripts/check_release_versions.sh": 'scripts/release_versions.py" check',
     "scripts/release_versions.py": 'CONFIG = ROOT / "release-versions.json"',
 }
 for script, call in reads.items():

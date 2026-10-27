@@ -1,4 +1,5 @@
 use crate::actions::ExclusiveResource;
+use crate::audit_chain::RequestHashKey;
 use crate::audit_forward::AuditForwarder;
 use crate::policy::PolicyTable;
 use crate::store::{AuditStore, SqliteStore};
@@ -32,6 +33,11 @@ pub struct DaemonState {
     /// `PostgresStore` (selected via `[storage] backend = "postgres"`).
     /// Both implement [`AuditStore`] async trait.
     pub audit: Arc<dyn AuditStore>,
+    /// HMAC key for the `request_hash` column, derived from the same audit key
+    /// material that signs the chain (#268). Preview hashes and execute-time
+    /// re-hashes both go through it, so the binding check needs the key and an
+    /// exported row is no longer offline-crackable without it.
+    pub request_hash_key: Arc<RequestHashKey>,
     pub policy: PolicyTable,
     /// Strict host identity used to enforce the documented support matrix at
     /// preview and execution boundaries.
@@ -87,6 +93,9 @@ pub enum DaemonStateError {
     Transactions(#[from] TransactionStoreError),
 
     #[error(transparent)]
+    AuditKey(#[from] crate::audit_chain::AuditKeyError),
+
+    #[error(transparent)]
     Listen(#[from] ListenTargetError),
 }
 
@@ -115,11 +124,20 @@ impl DaemonState {
         policy: PolicyTable,
         forwarder: Option<AuditForwarder>,
     ) -> Result<Self, DaemonStateError> {
-        let store = TransactionStore::open(&config.database_path)?;
+        // Load the audit key once: it both signs the chain (inside
+        // `TransactionStore`) and derives the `request_hash` HMAC key (#268).
+        // Loading twice would read the same file and, on a fresh host,
+        // generate-then-reread — one load keeps the two uses provably the
+        // same key material.
+        let key_path = crate::audit_chain::resolve_audit_key_path(&config.database_path);
+        let audit_key = Arc::new(crate::audit_chain::AuditKey::load_or_generate(&key_path)?);
+        let request_hash_key = Arc::new(audit_key.request_hash_key());
+        let store = TransactionStore::open_with_key(&config.database_path, audit_key)?;
         let audit: Arc<dyn AuditStore> = Arc::new(SqliteStore::new(store));
         Ok(Self {
             config,
             audit,
+            request_hash_key,
             policy,
             host_distro: sysknife_core::distro::detect().ok(),
             forwarder,
@@ -130,16 +148,20 @@ impl DaemonState {
     /// Open the daemon state with an explicit audit store. Used by `main.rs`
     /// when `[storage] backend = "postgres"` is configured: the Postgres
     /// `AuditStore` is constructed via `PostgresStore::connect` and passed
-    /// here as the `audit` argument.
+    /// here as the `audit` argument, together with the `AuditKey` it was
+    /// connected with — the `request_hash` HMAC key is derived from that same
+    /// key, so the two backends cannot drift.
     pub fn open_with_audit(
         config: DaemonConfig,
         policy: PolicyTable,
         forwarder: Option<AuditForwarder>,
         audit: Arc<dyn AuditStore>,
+        audit_key: &crate::audit_chain::AuditKey,
     ) -> Self {
         Self {
             config,
             audit,
+            request_hash_key: Arc::new(audit_key.request_hash_key()),
             policy,
             host_distro: sysknife_core::distro::detect().ok(),
             forwarder,
@@ -257,8 +279,13 @@ mod tests {
         let inner = TransactionStore::open(&store_path).unwrap();
         let custom_audit: Arc<dyn AuditStore> = Arc::new(SqliteStore::new(inner));
 
-        let state =
-            DaemonState::open_with_audit(cfg.clone(), PolicyTable::empty(), None, custom_audit);
+        let state = DaemonState::open_with_audit(
+            cfg.clone(),
+            PolicyTable::empty(),
+            None,
+            custom_audit,
+            &crate::audit_chain::AuditKey::from_bytes(vec![0x42; 32]),
+        );
 
         assert_eq!(state.config, cfg);
         assert!(state.forwarder.is_none());

@@ -133,6 +133,18 @@ matching decision about network-exposed listings.
 
 ### More than one host
 
+Planning and direct read-only MCP tools use the distribution reported by the
+daemon through `QueryState`. A Fedora laptop connected to an Ubuntu VM therefore
+gets the Ubuntu action family. `sysknife doctor --json` and `sysknife_doctor`
+report `distro_source` as `daemon` or `local fallback`.
+
+If the daemon is unreachable, too old to report its distribution, or cannot
+identify it, the client falls back to local detection and doctor reports a
+warning. MCP registers its tools once at startup, so it still starts with the
+local tool list when the daemon is down. Start or upgrade the daemon, then restart
+the MCP server to refresh that list. Its doctor warning retains the startup
+fallback notice even if the daemon becomes reachable later.
+
 Give each host its own local socket and its own MCP server entry. Nothing is
 shared between them, so there is no state to switch:
 

@@ -3,6 +3,7 @@
 //! These tools let the LLM gather specific system information before
 //! proposing a plan. Each maps to a Low-risk daemon action.
 
+use crate::planning_tools::propose_plan::available_on;
 use crate::provider::ToolDefinition;
 
 pub fn query_tools() -> Vec<ToolDefinition> {
@@ -201,6 +202,61 @@ pub fn query_tools() -> Vec<ToolDefinition> {
             }),
         },
     ]
+}
+
+/// Return the daemon action behind an action-backed query tool.
+///
+/// `query_current_user` is handled locally by the planner and therefore has no
+/// daemon action. Unknown names also return `None`; callers that filter the
+/// offered tools must fail closed for those names.
+pub(crate) fn query_tool_action_name(tool_name: &str) -> Option<&'static str> {
+    match tool_name {
+        "query_ufw_rules" => Some("UfwStatus"),
+        "query_services" => Some("ListServices"),
+        "query_firewall" => Some("GetFirewallBackendState"),
+        "query_deployments" => Some("ListDeployments"),
+        "query_packages" => Some("GetLayeredPackages"),
+        "query_containers" => Some("ListContainers"),
+        "query_users" => Some("ListUsers"),
+        "query_logs" => Some("GetServiceLogs"),
+        "query_kernel_args" => Some("GetKernelArguments"),
+        "query_flatpak_remotes" => Some("ListFlatpakRemotes"),
+        "query_toolboxes" => Some("ListToolboxes"),
+        "query_groups" => Some("ListGroups"),
+        "query_flatpak_info" => Some("GetFlatpakAppInfo"),
+        "query_container_info" => Some("GetContainerInfo"),
+        "query_package_repos" => Some("ListPackageRepositories"),
+        "query_diagnostics" => Some("CollectDiagnostics"),
+        "query_deployment_history" => Some("GetDeploymentHistory"),
+        "query_disk_usage" => Some("GetDiskUsage"),
+        "query_processes" => Some("ListProcesses"),
+        "query_memory" => Some("GetMemoryInfo"),
+        "query_network" => Some("GetNetworkStatus"),
+        "query_authorized_keys" => Some("GetAuthorizedKeys"),
+        "query_job_history" => Some("ListJobHistory"),
+        // `query_current_user` is resolved by the planner, not a daemon action.
+        _ => None,
+    }
+}
+
+/// Query tools that are safe and meaningful for the detected distro.
+///
+/// The mapping to daemon actions is shared with `available_on`, which also
+/// filters the `propose_plan` catalogue. `query_current_user` stays available
+/// everywhere because it is resolved locally rather than dispatched to an
+/// action.
+pub(crate) fn query_tools_for_distro(
+    hint: Option<&sysknife_types::DistroHint>,
+) -> Vec<ToolDefinition> {
+    query_tools()
+        .into_iter()
+        .filter(|tool| {
+            if tool.name == "query_current_user" {
+                return true;
+            }
+            query_tool_action_name(&tool.name).is_some_and(|action| available_on(action, hint))
+        })
+        .collect()
 }
 
 /// Map a query tool name to the corresponding daemon action name and params.
@@ -459,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn query_tools_returns_twenty_four_definitions() {
+    fn query_tools_return_twenty_four_definitions_with_action_mappings() {
         let tools = query_tools();
         assert_eq!(tools.len(), 24);
         let ufw = tools
@@ -473,6 +529,31 @@ mod tests {
             assert!(tool.name.starts_with("query_"));
             assert!(!tool.description.is_empty());
         }
+
+        for tool in tools {
+            let input = match tool.name.as_str() {
+                "query_logs" => serde_json::json!({"unit": "sshd.service"}),
+                "query_flatpak_info" => serde_json::json!({"app_id": "org.mozilla.firefox"}),
+                "query_container_info" => serde_json::json!({"name": "example"}),
+                "query_authorized_keys" => serde_json::json!({"username": "alice"}),
+                _ => empty_input(),
+            };
+            let dispatched = query_tool_to_action(&tool.name, &input).expect("valid query tool");
+            if tool.name == "query_current_user" {
+                assert_eq!(dispatched, None);
+                assert_eq!(query_tool_action_name(&tool.name), None);
+                continue;
+            }
+            let action = query_tool_action_name(&tool.name)
+                .unwrap_or_else(|| panic!("{} must map to a daemon action", tool.name));
+            assert_eq!(
+                Some(action),
+                dispatched.map(|(dispatched, _)| dispatched),
+                "action mapping drifted for {}",
+                tool.name
+            );
+        }
+        assert_eq!(query_tool_action_name("unknown"), None);
     }
 
     #[test]

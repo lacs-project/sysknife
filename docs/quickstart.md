@@ -72,7 +72,7 @@ build (measured 6m56s on Ubuntu 24.04, 11m43s on 22.04).
 > **ℹ️ Fedora / Silverblue**
 >
 > Ubuntu 22.04, 24.04 and 26.04 are each validated by a committed live-VM
-> story run (79/79) with a replay twin; other Ubuntu releases from 20.04 up are
+> story run (<!-- fig:lts_story_rate -->79/79<!-- /fig -->) with a replay twin; other Ubuntu releases from 20.04 up are
 > eligible without a per-release run. Fedora Atomic uses the rpm-ostree action
 > family and requires a current Silverblue 44 validation run for each release.
 > Plain Fedora remains experimental. See [distro support](distro-support.md).
