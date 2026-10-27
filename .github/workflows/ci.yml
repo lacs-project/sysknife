@@ -113,6 +113,9 @@ jobs:
       - name: Check release rehearsal contract
         run: bash tests/release/release-rehearsal.test.sh
 
+      - name: Check every release carries its provenance bundle
+        run: bash tests/release/release-provenance.test.sh
+
       - name: Check mount-edit refuses symlinked mountpoints
         run: bash tests/release/mount-edit.test.sh
 
