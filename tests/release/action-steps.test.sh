@@ -28,9 +28,9 @@ class ShellGrants(unittest.TestCase):
     def test_no_unrestricted_helper_grant(self):
         grants = [line for line in Path('packaging/sysknife-sudoers').read_text(encoding='utf-8').splitlines()
                   if line.startswith('sysknife ') and '/action-steps' in line]
-        self.assertEqual(len(grants), 21)
+        self.assertEqual(len(grants), 22)
         for grant in grants:
-            self.assertRegex(grant, r'/action-steps (firewall|group-add|group-remove|snap-install-hold|ssh-add|ssh-remove|flatpak|podman|toolbox|user-create|user-lock|user-unlock|unit|signal|user-delete|group-create|group-delete|password-aging|lv-extend|lv-create|lv-snapshot) \*$')
+            self.assertRegex(grant, r'/action-steps (firewall|group-add|group-remove|snap-install-hold|ssh-add|ssh-remove|flatpak|podman|toolbox|user-create|user-lock|user-unlock|unit|signal|user-delete|group-create|group-delete|password-aging|lv-extend|lv-create|lv-snapshot|apt) \*$')
 
     def test_no_useradd_usermod_or_unit_verb_grant_remains(self):
         # The escapes GHSA-j9c3-j2qr-65c4 named matched the "narrowed" grants
@@ -483,6 +483,361 @@ class ShadowAndLvmVerbs(unittest.TestCase):
             names = set(re.findall(r'"([^"]+)"', decl.group(1)))
             self.assertTrue(names, f'{rust_name} parsed empty')
             self.assertLessEqual(names, set(helper[helper_name]))
+
+
+class AptVerb(unittest.TestCase):
+    """The verb that replaced `env DEBIAN_FRONTEND=... NEEDRESTART_MODE=a
+    /usr/bin/apt-get *`. That grant took any arguments after apt-get, so
+    `apt-get -o APT::Update::Pre-Invoke::=<cmd> update` ran <cmd> as root with no
+    preview, no approval receipt and no audit row. sudoers cannot say "and no
+    options", so the helper builds the whole argv from an allowlist."""
+
+    APT_ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8',
+               'DEBIAN_FRONTEND': 'noninteractive', 'NEEDRESTART_MODE': 'a'}
+    CORPUS = 'crates/sysknife-daemon/tests/data/apt-package-parity.txt'
+    APT_GET, APT_MARK = '/usr/bin/apt-get', '/usr/bin/apt-mark'
+    # What stops apt falling back to a regular expression for an operand that is not an
+    # exact package name. Undocumented in apt.conf(5); present in apt 2.0.10 to 3.2.0.
+    PATTERN_ONLY = ['-o', 'APT::Cmd::Pattern-Only=1']
+
+    def calls_for(self, args):
+        # exact_package asks the real apt-cache or dpkg-query; its own tests are below.
+        with mock.patch.dict(helper, run=mock.Mock(), exact_package=mock.Mock()) as patched:
+            helper['main'](args)
+            return [(call.args[0], call.kwargs.get('env')) for call in patched['run'].call_args_list]
+
+    def test_builds_the_argv_the_daemon_used_to_build_itself(self):
+        APT_GET, APT_MARK, PATTERN_ONLY = self.APT_GET, self.APT_MARK, self.PATTERN_ONLY
+        for args, expected in [
+            (['apt', 'update'], [APT_GET, *PATTERN_ONLY, 'update']),
+            (['apt', 'dist-upgrade'], [APT_GET, *PATTERN_ONLY, 'dist-upgrade', '-y']),
+            (['apt', 'autoremove'], [APT_GET, *PATTERN_ONLY, 'autoremove', '-y']),
+            (['apt', 'install', 'curl'], [APT_GET, *PATTERN_ONLY, 'install', '-y', '--', 'curl']),
+            (['apt', 'install', 'g++'], [APT_GET, *PATTERN_ONLY, 'install', '-y', '--', 'g++']),
+            (['apt', 'install', 'python3.12'],
+             [APT_GET, *PATTERN_ONLY, 'install', '-y', '--', 'python3.12']),
+            (['apt', 'install', 'nginx=1.24.0-1'],
+             [APT_GET, *PATTERN_ONLY, 'install', '-y', '--', 'nginx=1.24.0-1']),
+            (['apt', 'remove', 'curl'], [APT_GET, *PATTERN_ONLY, 'remove', '-y', '--', 'curl']),
+            (['apt', 'purge', 'curl'], [APT_GET, *PATTERN_ONLY, 'purge', '-y', '--', 'curl']),
+            (['apt', 'remove', 'g++:amd64'],
+             [APT_GET, *PATTERN_ONLY, 'remove', '-y', '--', 'g++:amd64']),
+            (['apt', 'hold', 'curl'], [APT_MARK, *PATTERN_ONLY, 'hold', '--', 'curl']),
+            (['apt', 'unhold', 'curl'], [APT_MARK, *PATTERN_ONLY, 'unhold', '--', 'curl']),
+            (['apt', 'hold', 'g++:amd64'], [APT_MARK, *PATTERN_ONLY, 'hold', '--', 'g++:amd64']),
+        ]:
+            with self.subTest(args=args):
+                self.assertEqual(self.calls_for(args), [(expected, self.APT_ENV)])
+
+    def test_refuses_what_the_wildcard_grant_admitted(self):
+        bad = [
+            # `-o` and `-c` name a hook or a config file apt runs as root.
+            ['apt', 'update', '-o', 'APT::Update::Pre-Invoke::=/bin/sh'],
+            ['apt', '-o', 'APT::Update::Pre-Invoke::=/bin/sh', 'update'],
+            ['apt', 'update', '-oAPT::Update::Pre-Invoke::=/bin/sh'],
+            ['apt', '--option=APT::Update::Pre-Invoke::=/bin/sh', 'update'],
+            ['apt', 'update', '-c', '/tmp/evil.conf'],
+            ['apt', '-c', '/tmp/evil.conf', 'update'],
+            ['apt', '--config-file=/tmp/evil.conf', 'update'],
+            ['apt', 'install', '-o', 'Dir::Bin::dpkg=/tmp/x', 'curl'],
+            ['apt', 'install', 'curl', '-o', 'Dir::Bin::dpkg=/tmp/x'],
+            ['apt', 'remove', 'curl', '-c', '/tmp/evil.conf'],
+            ['apt', 'dist-upgrade', '-o', 'Dir::Bin::dpkg=/tmp/x'],
+            ['apt', 'autoremove', '-o', 'APT::Update::Post-Invoke::=/bin/sh'],
+            # No option the daemon never sends, and no flag the helper adds itself.
+            ['apt', 'install', '-y', 'curl'], ['apt', 'install', '--', 'curl'],
+            ['apt', 'dist-upgrade', '-y'], ['apt', 'autoremove', '-y'],
+            ['apt', 'install', '--reinstall', 'curl'], ['apt', 'install', '-s', 'curl'],
+            ['apt', '--version'], ['apt', '--help'], ['apt', '-y'], ['apt', '--'],
+            # Wrong argument counts.
+            ['apt'], ['apt', 'install'], ['apt', 'remove'], ['apt', 'purge'], ['apt', 'hold'], ['apt', 'unhold'],
+            ['apt', 'hold', 'curl', 'vim'], ['apt', 'unhold', 'curl', 'vim'],
+            ['apt', 'hold', '-o', 'Dir::Bin::dpkg=/tmp/x'], ['apt', 'hold', 'curl', '-o', 'Dir::Bin::dpkg=/tmp/x'],
+            ['apt', 'hold', '--', 'curl'], ['apt', 'unhold', '--', 'curl'],
+            ['apt', 'hold', '-oAPT::Update::Pre-Invoke::=/bin/sh'], ['apt', 'hold', '--reinstall'],
+            ['apt', 'hold', 'curl+'], ['apt', 'hold', 'curl-'], ['apt', 'unhold', 'curl+'], ['apt', 'unhold', 'curl-'],
+            ['apt', 'hold', '/tmp/x.deb'], ['apt', 'unhold', 'curl\n'], ['apt', 'hold', ''],
+            ['apt', 'showhold'], ['apt', 'markauto', 'curl'], ['apt', 'manual', 'curl'], ['apt', 'auto', 'curl'],
+            ['apt', 'update', 'curl'], ['apt', 'autoremove', 'curl'],
+            ['apt', 'install', 'curl', 'vim'], ['apt', 'remove', 'curl', 'vim'],
+            # apt-get subcommands the daemon never sends.
+            ['apt', 'upgrade'], ['apt', 'full-upgrade'], ['apt', 'reinstall', 'curl'],
+            ['apt', 'source', 'curl'], ['apt', 'build-dep', 'curl'], ['apt', 'download', 'curl'],
+            ['apt', 'clean'], ['apt', 'autoclean'], ['apt', 'check'], ['apt', 'satisfy', 'x'],
+            ['apt', 'dselect-upgrade'], ['apt', 'changelog', 'curl'], ['apt', 'indextargets'],
+            ['apt', 'install-deb', 'x'], ['apt', 'UPDATE'], ['apt', 'Install', 'curl'],
+            ['apt', ' update'], ['apt', 'update\n'], ['apt', ''],
+            # Package slots: an option, a path, a local file, a glob, a newline, an empty string.
+            ['apt', 'install', '-oAPT::Update::Pre-Invoke::=/bin/sh'], ['apt', 'install', '--reinstall'],
+            ['apt', 'install', '/tmp/x.deb'], ['apt', 'install', './x.deb'], ['apt', 'install', 'x.deb'],
+            ['apt', 'install', 'x.rpm'], ['apt', 'install', 'nginx/noble'], ['apt', 'install', 'ng*'],
+            ['apt', 'install', 'curl\n'], ['apt', 'install', ''], ['apt', 'install', ' curl'],
+            ['apt', 'remove', '-oAPT::Update::Pre-Invoke::=/bin/sh'], ['apt', 'purge', '/tmp/x.deb'],
+            # A trailing `^` installs a whole task.
+            ['apt', 'install', 'ubuntu-desktop^'], ['apt', 'install', 'task-xfce^'],
+            ['apt', 'remove', 'task-xfce^'], ['apt', 'purge', 'task-xfce^'],
+            ['apt', 'hold', 'task-xfce^'], ['apt', 'unhold', 'task-xfce^'], ['apt', 'install', 'a^b'],
+            # A trailing modifier inverts the operation (GHSA-8rx7 residual).
+            ['apt', 'install', 'linux-image-generic-'], ['apt', 'install', 'curl-'],
+            ['apt', 'remove', 'curl+'], ['apt', 'purge', 'curl+'],
+            ['apt', 'remove', 'curl-'], ['apt', 'purge', 'curl-'], ['apt', 'remove', 'g++'],
+        ]
+        runner = mock.Mock(side_effect=AssertionError('must not execute'))
+        # exact_package is stubbed so these refusals can only come from the grammar: with the
+        # real one behind it, a validator that let `curl-` through would still be stopped by
+        # the existence check, and this test would pass over a broken validator.
+        with mock.patch.dict(helper, run=runner, exact_package=mock.Mock()):
+            for args in bad:
+                with self.subTest(args=args), self.assertRaises(ValueError):
+                    helper['main'](args)
+        runner.assert_not_called()
+
+    def test_the_callers_environment_never_reaches_apt(self):
+        # APT_CONFIG names a config file apt runs hooks from, and LD_PRELOAD loads
+        # a library. sudo's env_reset usually drops them, but the helper has to hold
+        # without relying on that: it hands apt-get an environment of its own.
+        hostile = {'APT_CONFIG': '/tmp/evil.conf', 'LD_PRELOAD': '/tmp/evil.so',
+                   'PATH': '/tmp/bin:/usr/bin', 'DEBIAN_FRONTEND': 'readline',
+                   'NEEDRESTART_MODE': 'i', 'http_proxy': 'http://203.0.113.7:3128'}
+        completed = subprocess.CompletedProcess([], 0)
+        with mock.patch.dict(os.environ, hostile), mock.patch.dict(helper, exact_package=mock.Mock()), \
+                mock.patch.object(subprocess, 'run', return_value=completed) as ran:
+            helper['main'](['apt', 'install', 'curl'])
+        ran.assert_called_once_with(
+            ['/usr/bin/apt-get', *self.PATTERN_ONLY, 'install', '-y', '--', 'curl'],
+            check=True, env=self.APT_ENV)
+
+    def test_every_operand_argv_makes_apt_resolve_exact_names_only(self):
+        # `.` and `+` are legal in package names (python3.12, g++) and are also regular
+        # expression metacharacters, so no character class can refuse `linux-image.+` while
+        # accepting `libstdc++6`. When an operand is not an exact name, apt falls back to a
+        # regular expression and acts on every package it matches. The option below turns
+        # the fallback off; the helper, not the caller, supplies it.
+        for verb in ('install', 'remove', 'purge', 'hold', 'unhold'):
+            with self.subTest(verb=verb):
+                (argv, _), = self.calls_for(['apt', verb, 'curl'])
+                self.assertEqual(argv[1:3], self.PATTERN_ONLY, argv)
+                self.assertEqual(argv.count('-o'), 1, argv)
+                self.assertEqual(argv[-2:], ['--', 'curl'], argv)
+        # Every other apt-get argv the helper builds carries it too.
+        for verb in ('update', 'dist-upgrade', 'autoremove'):
+            with self.subTest(verb=verb):
+                (argv, _), = self.calls_for(['apt', verb])
+                self.assertEqual(argv[:3], [self.APT_GET, *self.PATTERN_ONLY], argv)
+                self.assertEqual(argv.count('-o'), 1, argv)
+
+    def test_operands_are_checked_for_an_exact_package_before_apt_runs(self):
+        # Defence in depth: the option above is undocumented, so the helper also asks apt-cache
+        # or dpkg-query whether the operand names exactly one real package, and refuses if not.
+        refuse = mock.Mock(side_effect=ValueError('not exactly one existing package'))
+        for verb in ('install', 'remove', 'purge', 'hold', 'unhold'):
+            runner = mock.Mock(side_effect=AssertionError('apt must not run'))
+            with self.subTest(verb=verb), mock.patch.dict(helper, run=runner, exact_package=refuse):
+                with self.assertRaises(ValueError):
+                    helper['main'](['apt', verb, 'curl'])
+            runner.assert_not_called()
+        for verb in ('install', 'remove', 'purge', 'hold', 'unhold'):
+            check = mock.Mock()
+            with self.subTest(verb=verb), mock.patch.dict(helper, run=mock.Mock(), exact_package=check):
+                helper['main'](['apt', verb, 'curl'])
+            check.assert_called_once_with(verb, 'curl')
+        # No operand, nothing to check.
+        for verb in ('update', 'dist-upgrade', 'autoremove'):
+            check = mock.Mock()
+            with self.subTest(verb=verb), mock.patch.dict(helper, run=mock.Mock(), exact_package=check):
+                helper['main'](['apt', verb])
+            check.assert_not_called()
+
+    def test_the_existence_queries_run_with_the_helpers_own_environment(self):
+        # apt-cache and dpkg-query read APT_CONFIG like apt-get does, so they get the same
+        # environment as the command they guard and never the caller's.
+        completed = subprocess.CompletedProcess([], 0, stdout='Package: curl\n')
+        with mock.patch.dict(os.environ, {'APT_CONFIG': '/tmp/evil.conf'}), \
+                mock.patch.object(subprocess, 'run', return_value=completed) as ran:
+            helper['exact_package']('install', 'curl')
+        ran.assert_called_once_with(['/usr/bin/apt-cache', 'show', '--no-all-versions', '--', 'curl'],
+                                    capture_output=True, text=True, env=self.APT_ENV)
+
+    def test_exact_package_accepts_only_the_package_it_was_asked_about(self):
+        def answer(code, out):
+            return mock.Mock(return_value=(code, out))
+        cache = '/usr/bin/apt-cache'
+        query = '/usr/bin/dpkg-query'
+        # install asks apt-cache, which prints one Package: line per package it selects.
+        for out in ('Package: curl\nVersion: 8.5\n\n', 'Package: nginx\nVersion: 1\n'):
+            name = 'curl' if 'curl' in out else 'nginx'
+            with mock.patch.dict(helper, capture=answer(0, out)) as patched:
+                helper['exact_package']('install', name)
+                patched['capture'].assert_called_once_with(
+                    [cache, 'show', '--no-all-versions', '--', name])
+        with mock.patch.dict(helper, capture=answer(0, 'Package: nginx\nVersion: 1\n')) as patched:
+            helper['exact_package']('install', 'nginx=1.24.0-1')
+            helper['exact_package']('install', 'nginx:amd64')
+            self.assertEqual(patched['capture'].call_args_list[0].args[0][-1], 'nginx=1.24.0-1')
+            self.assertEqual(patched['capture'].call_args_list[1].args[0][-1], 'nginx:amd64')
+        bad_install = [(0, 'Package: curl\n\nPackage: curl-doc\n'),   # a regular expression matched more
+                       (0, 'Package: curl-doc\n'),                       # or matched something else
+                       (0, ''), (100, ''), (100, 'Package: curl\n'), (1, 'Package: curl\n')]
+        for code, out in bad_install:
+            with self.subTest(code=code, out=out), mock.patch.dict(helper, capture=answer(code, out)):
+                with self.assertRaises(ValueError):
+                    helper['exact_package']('install', 'curl')
+        # remove, purge, hold and unhold ask dpkg-query, with the name and arch but not the version.
+        for verb in ('remove', 'purge', 'hold', 'unhold'):
+            with self.subTest(verb=verb):
+                with mock.patch.dict(helper, capture=answer(0, 'curl\n')) as patched:
+                    helper['exact_package'](verb, 'curl')
+                    patched['capture'].assert_called_once_with([query, '-W', '-f=${Package}\\n', '--', 'curl'])
+                with mock.patch.dict(helper, capture=answer(0, 'libc6\nlibc6\n')):
+                    helper['exact_package'](verb, 'libc6')  # one name on two architectures
+                with mock.patch.dict(helper, capture=answer(0, 'g++\n')) as patched:
+                    helper['exact_package'](verb, 'g++:amd64')
+                    self.assertEqual(patched['capture'].call_args.args[0][-1], 'g++:amd64')
+                with mock.patch.dict(helper, capture=answer(0, 'nginx\n')) as patched:
+                    helper['exact_package'](verb, 'nginx=1.24.0-1')
+                    self.assertEqual(patched['capture'].call_args.args[0][-1], 'nginx')
+                for code, out in [(0, 'curl\ncurl-doc\n'), (0, 'curl-doc\n'), (0, ''), (1, ''), (1, 'curl\n')]:
+                    with self.subTest(code=code, out=out), mock.patch.dict(helper, capture=answer(code, out)):
+                        with self.assertRaises(ValueError):
+                            helper['exact_package'](verb, 'curl')
+
+    def test_the_option_that_stops_regex_expansion_works_on_the_real_apt(self):
+        # The option is undocumented in apt.conf(5), and apt's maintainer has said it may go.
+        # An apt that ignores an unknown option would bring the regular expression fallback
+        # back with no sign of it, so this runs the helper's own argv against the real
+        # apt-get in simulate mode (-s: no lock, no change) and fails when the option stops
+        # working. Skipped where apt-get or dpkg-query is missing.
+        import shutil
+        if not (os.path.exists(self.APT_GET) and shutil.which('dpkg-query')):
+            self.skipTest('apt-get and dpkg-query are required')
+        listed = subprocess.run(['dpkg-query', '-W', '-f=${Status}|${Package}\n'],
+                                capture_output=True, text=True, check=True).stdout
+        installed = [line.split('|', 1)[1] for line in listed.splitlines()
+                     if line.split('|', 1)[0].endswith(' installed')]
+        plain = sorted(n for n in installed if re.fullmatch(r'[a-z][a-z0-9-]{4,}', n))
+        self.assertTrue(plain, 'no installed package with a plain name; this check inspected nothing')
+        regex_operand = plain[0][:-1] + '.'
+        self.assertNotIn(regex_operand, installed)
+        env = dict(helper['APT_ENV'], LANG='C')
+
+        def simulate(argv):
+            self.assertEqual(argv[0], self.APT_GET)
+            run = subprocess.run([argv[0], '-s', *argv[1:]], capture_output=True, text=True, env=env)
+            return run.returncode, run.stdout + run.stderr
+
+        # Control: without the option this apt resolves the operand as a regular expression.
+        _, out = simulate([self.APT_GET, 'remove', '-y', '--', regex_operand])
+        if 'Unable to locate package' in out:
+            self.skipTest('this apt has no regular expression fallback to turn off')
+        self.assertRegex(out, r'(?m)^(Remv|Purg) |selecting')
+        # The helper's argv must refuse the same operand.
+        for verb in ('remove', 'purge', 'install'):
+            with self.subTest(verb=verb):
+                code, out = simulate(helper['apt_argv']([verb, regex_operand]))
+                self.assertNotEqual(code, 0, out)
+                self.assertIn('Unable to locate package', out)
+                self.assertNotRegex(out, r'(?m)^(Inst|Remv|Purg) ')
+        # The exact-name check refuses the same operand without relying on the option: apt-cache,
+        # run WITHOUT the option, expands the regular expression, and the Package: names it
+        # prints are not the operand.
+        for verb in ('install', 'remove', 'purge', 'hold', 'unhold'):
+            with self.subTest(check=verb), self.assertRaises(ValueError):
+                helper['exact_package'](verb, regex_operand)
+        for verb in ('install', 'remove', 'purge', 'hold', 'unhold'):
+            with self.subTest(check=verb):
+                helper['exact_package'](verb, plain[0])
+        # Names that really contain `.` or `+` must still resolve.
+        dotted = sorted(n for n in installed if re.fullmatch(r'[a-z0-9][a-z0-9+.-]*[a-z0-9]', n)
+                        and re.search(r'[.+]', n))
+        for name in dotted[:3]:
+            with self.subTest(exact=name):
+                code, out = simulate(helper['apt_argv'](['install', name]))
+                self.assertNotIn('Unable to locate package', out)
+                self.assertNotIn('E: ', out)
+                for verb in ('install', 'remove', 'purge', 'hold', 'unhold'):
+                    helper['exact_package'](verb, name)
+
+    def test_a_failing_apt_get_stops_the_verb_with_its_exit_status(self):
+        failure = subprocess.CalledProcessError(100, ['/usr/bin/apt-get', 'update'])
+        with mock.patch.dict(helper, run=mock.Mock(side_effect=failure), exact_package=mock.Mock()):
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                helper['main'](['apt', 'update'])
+        self.assertEqual(caught.exception.returncode, 100)
+
+    def test_verbs_are_the_ones_apt_rs_sends(self):
+        # Derived from the daemon, not restated: a verb the daemon starts sending
+        # without a helper branch fails at runtime after the operator approved it,
+        # and a verb the helper accepts that the daemon never sends is dead surface.
+        rust = Path('crates/sysknife-daemon/src/actions/apt.rs').read_text(encoding='utf-8')
+        # Production code only: the unit tests below `#[cfg(test)]` spell the same
+        # argv, and reading them would hide a constructor that stopped sending a verb.
+        self.assertEqual(rust.count('#[cfg(test)]'), 1, 'apt.rs test module marker not found')
+        production = rust.split('#[cfg(test)]')[0]
+        sent = set(re.findall(r'ACTION_STEPS,\s*"apt",\s*"([a-z-]+)"', production))
+        self.assertTrue(sent, 'apt.rs sends no apt verb; this check inspected nothing')
+        accepted = set(helper['APT_BARE']) | set(helper['APT_WITH_PACKAGE'])
+        self.assertEqual(sent, accepted)
+
+    def test_package_operands_agree_with_the_daemon_corpus(self):
+        # The daemon's validated_install_package and validated_unmodified_package
+        # read the same file in validate.rs's unit tests. Two copies of a rule drift
+        # (GHSA-f8vp-j3jh-7wjx); one corpus both must satisfy is what stops that.
+        runner = mock.Mock()
+        seen, checked = set(), 0
+        lines = Path(self.CORPUS).read_text(encoding='utf-8').splitlines()
+        with mock.patch.dict(helper, run=runner, exact_package=mock.Mock()):
+            for number, line in enumerate(lines, 1):
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split(' ', 2)
+                self.assertEqual(len(parts), 3, f'corpus line {number} does not parse: {line!r}')
+                verb, verdict, operand = parts
+                self.assertIn(verdict, ('ok', 'refuse'), f'corpus line {number}')
+                self.assertIn(verb, ('install', 'remove', 'purge', 'hold', 'unhold'), f'corpus line {number}')
+                runner.reset_mock()
+                with self.subTest(line=number, verb=verb, operand=operand):
+                    if verdict == 'ok':
+                        helper['main'](['apt', verb, operand])
+                        runner.assert_called_once()
+                    else:
+                        with self.assertRaises(ValueError):
+                            helper['main'](['apt', verb, operand])
+                        runner.assert_not_called()
+                seen.add((verb, verdict))
+                checked += 1
+        self.assertGreaterEqual(checked, 50, 'the corpus was truncated or not parsed')
+        for verb in ('install', 'remove', 'purge', 'hold', 'unhold'):
+            for verdict in ('ok', 'refuse'):
+                self.assertIn((verb, verdict), seen, f'the corpus has no `{verb} {verdict}` line')
+
+    def test_package_length_limit_matches_the_daemon(self):
+        runner = mock.Mock()
+        with mock.patch.dict(helper, run=runner, exact_package=mock.Mock()):
+            helper['main'](['apt', 'install', 'a' * 128])
+            runner.assert_called_once()
+            with self.assertRaises(ValueError):
+                helper['main'](['apt', 'install', 'a' * 129])
+
+    def live_grants(self):
+        text = Path('packaging/sysknife-sudoers').read_text(encoding='utf-8')
+        return [l for l in text.splitlines() if l.startswith('sysknife ')]
+
+    def test_no_apt_get_grant_remains(self):
+        # The grant was `env DEBIAN_FRONTEND=... NEEDRESTART_MODE=a /usr/bin/apt-get *`.
+        # Pinning the env prefix did nothing against `-o`, and a sibling that keeps
+        # the old line alive would leave the escape open, so the line must be gone.
+        live = self.live_grants()
+        self.assertTrue(live, 'parsed no sudoers grants; this check inspected nothing')
+        offenders = [l for l in live if 'apt-get' in l or 'apt-mark' in l]
+        self.assertEqual(offenders, [], f'apt-get or apt-mark is granted directly again: {offenders}')
+        wildcard = [l for l in live if re.search(r'apt-(get|mark)\b.*\*\s*$', l)]
+        self.assertEqual(wildcard, [])
+        env_grants = [l for l in live if re.search(r'NOPASSWD:\s*/usr/bin/env\b', l)]
+        self.assertEqual(env_grants, [], '`env` runs any command as root; it must not be granted')
+
+    def test_apt_is_granted_only_through_the_helper(self):
+        grants = [l for l in self.live_grants() if re.search(r'/action-steps apt\b', l)]
+        self.assertEqual(grants, ['sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps apt *'])
 
 
 unittest.main(verbosity=2)

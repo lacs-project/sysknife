@@ -15,6 +15,31 @@ import sys
 
 SYSTEM_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
 
+# What `apt` runs apt-get with. apt reads its configuration from APT_CONFIG and
+# runs the hooks it names, so the caller's environment is never inherited: the
+# child gets exactly this, which is also what the old `sudo env DEBIAN_FRONTEND=...
+# NEEDRESTART_MODE=a` wrapper was there to provide.
+APT_ENV = {**SYSTEM_ENV, "DEBIAN_FRONTEND": "noninteractive", "NEEDRESTART_MODE": "a"}
+# The apt verbs, and the only ones. tests/release/action-steps.test.sh reads the
+# verbs apt.rs sends out of the Rust source and fails if these differ.
+# AptUpdate, AptUpgrade and AptAutoremove send no operand.
+APT_BARE = {"update": ["update"], "dist-upgrade": ["dist-upgrade", "-y"],
+            "autoremove": ["autoremove", "-y"]}
+# AptInstall, AptRemove, AptPurge, AptHold and AptUnhold send one validated package.
+APT_WITH_PACKAGE = ("install", "remove", "purge", "hold", "unhold")
+# `.` and `+` are legal in package names (python3.12, g++) and are also regular
+# expression metacharacters. When an operand is not an exact package name, apt
+# falls back to a regular expression and acts on EVERY package it matches, so
+# `linux-image.+` would pass any character class that accepts `libstdc++6`. This
+# option turns the fallback off. It is undocumented in apt.conf(5) and behaves the
+# same on apt 2.0.10 (Ubuntu 20.04) through 3.2.0 (Ubuntu 26.04) and Debian 12 and
+# 13; tests/release/action-steps.test.sh runs it against the real apt-get. Every
+# apt-get and apt-mark argv this helper builds carries it, and exact_package()
+# below checks the operand again without relying on it.
+APT_EXACT_NAMES = ["-o", "APT::Cmd::Pattern-Only=1"]
+APT_CACHE = "/usr/bin/apt-cache"
+DPKG_QUERY = "/usr/bin/dpkg-query"
+
 # Mirrors ROOT_SHELL_UNITS in crates/sysknife-daemon/src/actions/validate.rs.
 #
 # This helper is reachable directly through its wildcard NOPASSWD grant, which
@@ -143,6 +168,81 @@ def lvm_size(value):
     if len(value) > 32 or not re.fullmatch(r"\+?[0-9]+(\.[0-9]+)?[kKmMgGtTpP]?", value):
         raise ValueError("invalid LVM size")
     return value
+
+
+def apt_package(value, operation):
+    """Mirrors validated_install_package and validated_unmodified_package.
+
+    apt-get reads a trailing `-` on an operand as "remove this package", a
+    trailing `+` as "install this package" and a trailing `^` as "install every
+    package of this task", so `install pkg-` removes, `remove pkg+` installs and
+    `install ubuntu-desktop^` installs a task. A trailing `+` stays legal for
+    `install` (g++ and libstdc++6 are real packages); every other verb refuses it
+    and takes the arch-qualified spelling, `g++:amd64`. `^` is in no package name.
+    fullmatch, so a trailing newline is refused. Whether a name that contains `.`
+    or `+` is an exact package name is apt's to decide, with APT_EXACT_NAMES.
+    tests/release/action-steps.test.sh runs the daemon's own corpus,
+    crates/sysknife-daemon/tests/data/apt-package-parity.txt, through this.
+    """
+    if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+._:=~-]{0,127}", value)
+            or value.endswith((".deb", ".rpm", "-"))
+            or (operation != "install" and value.endswith("+"))):
+        raise ValueError("invalid package name")
+    return value
+
+
+def apt_argv(values):
+    """The apt-get argv for `apt <subcommand> [<package>]`, and nothing else.
+
+    `env DEBIAN_FRONTEND=... NEEDRESTART_MODE=a /usr/bin/apt-get *` was a sudoers
+    grant, and the trailing `*` took apt's own options: `apt-get -o
+    APT::Update::Pre-Invoke::=<cmd> update` runs <cmd> as root, with no preview,
+    no approval receipt and no audit row. sudoers cannot say "and no options", so
+    the subcommands are an allowlist, no argument is ever an option, and the
+    operand follows a literal `--`. apt-mark takes the same options as apt-get,
+    so hold and unhold are built here too instead of keeping a grant on it.
+    """
+    if len(values) == 1 and values[0] in APT_BARE:
+        return ["/usr/bin/apt-get", *APT_EXACT_NAMES, *APT_BARE[values[0]]]
+    if len(values) == 2 and values[0] in APT_WITH_PACKAGE:
+        verb, package = values[0], apt_package(values[1], values[0])
+        if verb in ("hold", "unhold"):
+            return ["/usr/bin/apt-mark", *APT_EXACT_NAMES, verb, "--", package]
+        return ["/usr/bin/apt-get", *APT_EXACT_NAMES, verb, "-y", "--", package]
+    raise ValueError("unsupported apt operation")
+
+
+def capture(argv):
+    """Run a read-only query with the helper's own environment; (exit status, stdout)."""
+    done = subprocess.run(argv, capture_output=True, text=True, env=APT_ENV)
+    return done.returncode, done.stdout
+
+
+def exact_package(verb, package):
+    """Refuse unless `package` names exactly one real package.
+
+    Defence in depth behind APT_EXACT_NAMES, which is undocumented: should an apt
+    stop honouring it, an operand like `linux-image.+` would again act on every
+    package its regular expression matches. This asks the database instead, and
+    compares the names it returns with the operand as strings, so it holds whatever
+    apt would have done with the operand.
+
+    `install` asks apt-cache, which knows the packages in the archive lists.
+    `remove`, `purge`, `hold` and `unhold` ask dpkg-query, which knows the packages
+    dpkg has a record of, and which treats `*`, `?` and `[` as globs; none of them
+    passes the character class. `name:arch` is kept, `=version` is only for apt-cache.
+    A name that is only a virtual package, or a package dpkg has never seen, is
+    refused rather than guessed at.
+    """
+    name = re.split(r"[:=]", package, maxsplit=1)[0]
+    if verb == "install":
+        code, out = capture([APT_CACHE, "show", "--no-all-versions", "--", package])
+        found = re.findall(r"(?m)^Package: (\S+)$", out)
+    else:
+        code, out = capture([DPKG_QUERY, "-W", "-f=${Package}\\n", "--", package.split("=", 1)[0]])
+        found = out.split()
+    if code != 0 or not found or any(f != name for f in found):
+        raise ValueError("that is not exactly one existing package")
 
 
 def safe(value):
@@ -284,8 +384,8 @@ def ensure_local_group(group):
         os.fsync(stream.fileno())
 
 
-def run(argv):
-    subprocess.run(argv, check=True, env=SYSTEM_ENV)
+def run(argv, env=SYSTEM_ENV):
+    subprocess.run(argv, check=True, env=env)
 
 
 def main(args):
@@ -393,6 +493,11 @@ def main(args):
         vg, origin, snapshot, size = values
         run(["/usr/sbin/lvcreate", "-s", "-L", lvm_size(size), "-n", lvm_name(snapshot),
              f"{lvm_name(vg)}/{lvm_name(origin)}"])
+    elif op == "apt":
+        argv = apt_argv(values)
+        if len(values) == 2:
+            exact_package(values[0], values[1])
+        run(argv, env=APT_ENV)
     elif op in ("group-add", "group-remove") and len(values) == 2:
         name, group = map(username, values)
         ensure_local_group(group)

@@ -1188,8 +1188,15 @@ pub fn validated_syslog_host(s: &str, param: &'static str) -> Result<String, Exe
 /// also refuses the trailing `+`. `packaging/sysknife-action-steps` repeats this
 /// rule for the `apt` verb, and both read `tests/data/apt-package-parity.txt`.
 ///
-/// `.` and `+` are legal in names (`python3.12`, `g++`), so a character class
-/// cannot tell an exact name from a regular expression such as `linux-image.+`.
+/// What no character class can refuse is a name that is also a regular
+/// expression. `.` and `+` are legal in names (`python3.12`, `g++`), and when an
+/// operand is not an exact package name apt-get falls back to a regular
+/// expression and acts on every package it matches, so `linux-image.+` passes
+/// every rule above. This function does not handle that case.
+/// `packaging/sysknife-action-steps` does: every apt-get and apt-mark argv it
+/// builds carries `-o APT::Cmd::Pattern-Only=1`, which makes apt resolve exact
+/// names only, and before it runs an operand verb it asks apt-cache or
+/// dpkg-query whether the operand names exactly one existing package.
 pub fn validated_install_package(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     let first_ok = s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
     let charset_ok = s

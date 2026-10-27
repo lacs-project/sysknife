@@ -183,26 +183,33 @@ sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps toolbox *
 # Ubuntu / Debian-family binaries
 # ─────────────────────────────────────────────────────────────────────────────
 
-# `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get …`
-# Apt actions wrap apt-get in env to set non-interactive flags past sudo's
-# default env-stripping. The grant is restricted to the exact env-var prefix
-# that apt.rs produces — no other env-var combinations or binaries are reachable.
-# (Red-team HI1 fix: previously granted unrestricted /usr/bin/env NOPASSWD.)
-sysknife ALL=(root) NOPASSWD: /usr/bin/env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get *
+# apt — AptUpdate, AptUpgrade, AptInstall, AptRemove, AptPurge, AptAutoremove,
+# AptHold and AptUnhold run `sudo action-steps apt <update|dist-upgrade|autoremove>`
+# or `sudo action-steps apt <install|remove|purge|hold|unhold> <package>`. The
+# helper runs `/usr/bin/apt-get` or `/usr/bin/apt-mark` itself, with
+# DEBIAN_FRONTEND=noninteractive and NEEDRESTART_MODE=a in an environment of its
+# own making.
+#
+# This used to be `/usr/bin/env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+# /usr/bin/apt-get *`, on the reading that pinning the env prefix pinned the
+# call. It pinned the prefix and nothing after it: the trailing `*` takes apt's
+# own options, so `apt-get -o APT::Update::Pre-Invoke::=<cmd> update` ran <cmd> as
+# root with no preview, no approval receipt and no audit row. A bare apt-get
+# grant is the same GTFOBins escape. `apt-mark hold -- *` stopped the options
+# with its `--` and left a second hole: an operand that is not an exact package
+# name is read as a regular expression, and the hold covers every package it
+# matches. sudoers has no way to say "and no options", and a grant that pinned the
+# option stopping the regular expression would have to spell its `:` and `=` with
+# backslashes (sudoers(5)), so the grammar is enforced in one place instead,
+# /usr/lib/sysknife/action-steps. It allowlists the eight subcommands, accepts no option at all, puts the package
+# after a literal `--`, passes `-o APT::Cmd::Pattern-Only=1` so a package name is
+# resolved as an exact name, asks apt-cache or dpkg-query whether the package
+# exists under exactly that name, and refuses a package that ends in `-`, `+` or
+# `^` where apt would read the last character as "remove", "install" or "install
+# a task".
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps apt *
 
-# Apt write operations:
-#   apt-mark hold/unhold -- <pkg>    → AptHold / AptUnhold
-#   apt-get install/remove/purge/…   → ONLY via the env-wrapped grant above.
-# No bare `/usr/bin/apt-get` grant: apt.rs always invokes apt-get through the
-# `env DEBIAN_FRONTEND=… apt-get *` form, and a bare apt-get NOPASSWD grant is a
-# GTFOBins root-shell escape (e.g. `apt-get -o APT::Update::Pre-Invoke=…`), so it
-# is deliberately omitted.
-# apt-mark had the same escape through its bare grant: `hold` runs dpkg, and
-# `apt-mark hold bash -o Dir::Bin::dpkg=/tmp/x` runs /tmp/x as root (apt parses
-# options after the subcommand too). apt stops option parsing at `--`, so the
-# packages follow a literal `--`.
-sysknife ALL=(root) NOPASSWD: /usr/bin/apt-mark hold -- *
-sysknife ALL=(root) NOPASSWD: /usr/bin/apt-mark unhold -- *
+# No apt-get, apt-mark or `env` grant of any kind: `env` runs any command.
 
 # add-apt-repository — provided by software-properties-common.
 # AddPpa / RemovePpa, through `--ppa`, which argparse puts in a mutually

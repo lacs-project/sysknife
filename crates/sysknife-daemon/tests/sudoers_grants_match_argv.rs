@@ -366,6 +366,35 @@ const ROOT_ESCAPES: &[(&str, &str)] = &[
         "/usr/bin/do-release-upgrade -d",
         "upgrades the host to an unreleased development series",
     ),
+    // The env-wrapped apt-get grant took any arguments after `apt-get`, and
+    // pinning the env prefix did nothing against apt's own options. apt now goes
+    // through `action-steps apt`, which builds the argv, so no apt-get argv is
+    // admitted at all. The helper's refusal of `-o`/`-c` is proved in
+    // tests/release/action-steps.test.sh.
+    (
+        "/usr/bin/env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get -o APT::Update::Pre-Invoke::=/bin/sh update",
+        "a pre-invoke hook runs a caller-chosen command as root",
+    ),
+    (
+        "/usr/bin/env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get install -y -o Dir::Bin::dpkg=/tmp/x curl",
+        "`install` runs the configured dpkg, so this runs /tmp/x as root",
+    ),
+    (
+        "/usr/bin/env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get install -y curl -o Dir::Bin::dpkg=/tmp/x",
+        "the same with the option after the operand, which apt also parses",
+    ),
+    (
+        "/usr/bin/env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get -c /tmp/evil.conf update",
+        "a config file whose hooks run as root",
+    ),
+    (
+        "/usr/bin/env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get install -y linux-image-generic-",
+        "a trailing `-` makes install remove the package",
+    ),
+    (
+        "/usr/bin/apt-get -o APT::Update::Pre-Invoke::=/bin/sh update",
+        "the bare binary, which the daemon never needed a grant for",
+    ),
     // GHSA-8rx7-g2jg-5pxg item 5: `kill -s *` admitted every target.
     (
         "/usr/bin/kill -s KILL -1",
@@ -468,6 +497,19 @@ fn the_root_shell_primitives_have_no_direct_grant() {
         (
             "/usr/sbin/lvcreate",
             "`--config` names executables LVM runs as root",
+        ),
+        (
+            "/usr/bin/apt-get",
+            "`-o APT::Update::Pre-Invoke::=<cmd>` runs <cmd> as root",
+        ),
+        (
+            "/usr/bin/env",
+            "runs any command as root; its only grant was the apt-get prefix",
+        ),
+        (
+            "/usr/bin/apt-mark",
+            "a regular expression operand holds every package it matches; \
+             `action-steps apt` passes the option that stops that",
         ),
     ] {
         let matching: Vec<&Grant> = grants.iter().filter(|g| g.tokens[0] == cmd).collect();

@@ -287,14 +287,14 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `AptUpdate` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get update` | Low | Ubuntu | – | – | refresh apt package index (apt-get update) — no params |
-| `AptUpgrade` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get dist-upgrade -y` | High | Ubuntu | – | – | upgrade all installed packages via dist-upgrade — no params; High risk |
-| `AptInstall` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get install -y curl` | Medium | Ubuntu | – | – | install a package — param: package\* (string, e.g. nginx) |
-| `AptRemove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get remove -y curl` | Medium | Ubuntu | – | – | remove a package, keep config files — param: package\* |
-| `AptPurge` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get purge -y curl` | Medium | Ubuntu | – | – | remove a package AND its config files — param: package\* |
-| `AptAutoremove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get autoremove -y` | Medium | Ubuntu | – | – | remove automatically-installed packages no longer needed — no params |
-| `AptHold` | `sudo apt-mark hold -- curl` | Medium | Ubuntu | – | – | pin a package at its current version (apt-mark hold) — param: package\* |
-| `AptUnhold` | `sudo apt-mark unhold -- curl` | Medium | Ubuntu | – | – | unpin a package to allow upgrades (apt-mark unhold) — param: package\* |
+| `AptUpdate` | `sudo /usr/lib/sysknife/action-steps apt update` | Low | Ubuntu | – | – | refresh apt package index (apt-get update) — no params |
+| `AptUpgrade` | `sudo /usr/lib/sysknife/action-steps apt dist-upgrade` | High | Ubuntu | – | – | upgrade all installed packages via dist-upgrade — no params; High risk |
+| `AptInstall` | `sudo /usr/lib/sysknife/action-steps apt install curl` | Medium | Ubuntu | – | – | install a package — param: package\* (string, e.g. nginx) |
+| `AptRemove` | `sudo /usr/lib/sysknife/action-steps apt remove curl` | Medium | Ubuntu | – | – | remove a package, keep config files — param: package\* |
+| `AptPurge` | `sudo /usr/lib/sysknife/action-steps apt purge curl` | Medium | Ubuntu | – | – | remove a package AND its config files — param: package\* |
+| `AptAutoremove` | `sudo /usr/lib/sysknife/action-steps apt autoremove` | Medium | Ubuntu | – | – | remove automatically-installed packages no longer needed — no params |
+| `AptHold` | `sudo /usr/lib/sysknife/action-steps apt hold curl` | Medium | Ubuntu | – | – | pin a package at its current version (apt-mark hold) — param: package\* |
+| `AptUnhold` | `sudo /usr/lib/sysknife/action-steps apt unhold curl` | Medium | Ubuntu | – | – | unpin a package to allow upgrades (apt-mark unhold) — param: package\* |
 | `AptSearch` | `apt-cache search curl` | Low | Ubuntu | – | – | search apt repos for packages — param: term\*; read-only |
 | `AptListInstalled` | `dpkg -l` | Low | Ubuntu | – | – | list all installed packages (dpkg -l) — no params; read-only |
 | `AptShow` | `apt-cache show curl` | Low | Ubuntu | – | – | show package details (version, deps, description) — param: package\*; read-only |

@@ -81,15 +81,22 @@ need dpkg      "dpkg -l"                      sh -c 'dpkg -l >/dev/null'
 need apt       "apt list --upgradable"        sh -c 'apt list --upgradable 2>/dev/null >/dev/null'
 
 echo "== sudoers grant actually matches the argv =="
-# The grant is the whole reason apt-get must be spelled absolutely. If the
-# sysknife user exists with the packaged sudoers installed, prove sudo accepts
-# the real invocation rather than falling through to a password prompt.
+# apt goes through the `apt` verb of /usr/lib/sysknife/action-steps, and there is
+# no apt-get grant at all: a trailing `*` on one admits `-o APT::Update::Pre-Invoke::`,
+# which runs a command as root. If the sysknife user exists with the packaged
+# sudoers installed, prove sudo admits the helper verb and refuses an apt-get argv.
+# `sudo -l <command>` asks sudo whether it would run the command, and runs nothing.
 if id sysknife >/dev/null 2>&1 && sudo test -f /etc/sudoers.d/sysknife; then
-  if sudo -u sysknife sudo -n env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a \
-      /usr/bin/apt-get --version >/dev/null 2>&1; then
-    ok "sudo accepts the env-wrapped absolute apt-get"
+  if sudo -u sysknife sudo -n -l /usr/lib/sysknife/action-steps apt update >/dev/null 2>&1; then
+    ok "sudo accepts the action-steps apt verb"
   else
-    bad "sudo accepts the env-wrapped absolute apt-get" "denied — grant and argv disagree"
+    bad "sudo accepts the action-steps apt verb" "denied — grant and argv disagree"
+  fi
+  if sudo -u sysknife sudo -n -l /usr/bin/env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a \
+      /usr/bin/apt-get -o APT::Update::Pre-Invoke::=/bin/true update >/dev/null 2>&1; then
+    bad "sudo refuses an env-wrapped apt-get argv" "the apt-get grant is back"
+  else
+    ok "sudo refuses an env-wrapped apt-get argv"
   fi
 else
   skipf "sudo grant check" "sysknife user or /etc/sudoers.d/sysknife"

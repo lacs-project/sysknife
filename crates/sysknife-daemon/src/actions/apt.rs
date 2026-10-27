@@ -1,7 +1,22 @@
 //! apt-family package management actions (Ubuntu / Debian).
 //!
-//! All apt commands run with `DEBIAN_FRONTEND=noninteractive` and
-//! `NEEDRESTART_MODE=a` so they never block waiting for a TUI prompt.
+//! The eight actions that run `apt-get` or `apt-mark` as root (`AptUpdate`,
+//! `AptUpgrade`, `AptInstall`, `AptRemove`, `AptPurge`, `AptAutoremove`,
+//! `AptHold`, `AptUnhold`) run
+//! `sudo /usr/lib/sysknife/action-steps apt <subcommand> [<package>]`. The
+//! helper builds the `apt-get` or `apt-mark` argv from an allowlist and sets
+//! `DEBIAN_FRONTEND=noninteractive` and `NEEDRESTART_MODE=a` itself, so the
+//! commands never block waiting for a TUI prompt. A direct sudoers grant on
+//! `apt-get` or `apt-mark` admitted apt's own options
+//! (`-o APT::Update::Pre-Invoke::=<cmd>` runs `<cmd>` as root), and sudoers
+//! cannot forbid the options that follow a wildcard, so neither has a grant.
+//!
+//! The package operand is validated here by `validated_install_package` and
+//! `validated_unmodified_package` (character set, and no trailing `-`, `+` or
+//! `^`), and again in the helper. A name containing `.` or `+` can still be a
+//! regular expression to apt, so the helper also passes
+//! `-o APT::Cmd::Pattern-Only=1` and refuses an operand that does not name
+//! exactly one existing package, which only the host's package database can say.
 //!
 //! ## Lock contention
 //!
@@ -24,7 +39,8 @@
 //! `NEEDRESTART_MODE=a` tells the `needrestart` post-install hook to
 //! automatically restart services instead of prompting the operator.
 //! Both are required for daemon-driven apt invocations; omitting them
-//! causes apt to hang waiting for terminal input that never arrives.
+//! causes apt to hang waiting for terminal input that never arrives. The
+//! `apt` verb of `packaging/sysknife-action-steps` provides both.
 
 use super::{command_mechanism, ActionSpec};
 use sysknife_types::RiskLevel;
@@ -33,30 +49,13 @@ use sysknife_types::RiskLevel;
 // Constants
 // ---------------------------------------------------------------------------
 
-/// apt binary path.
+/// The root-owned helper every `apt-get` and `apt-mark` action goes through.
 ///
-/// **Must stay absolute.** These actions run as
-/// `sudo env DEBIAN_FRONTEND=… NEEDRESTART_MODE=a <APT_GET> …`, and sudo
-/// PATH-resolves only its *primary* command (`env`) — every later token is
-/// matched against the sudoers rule as a literal string. The grant in
-/// `packaging/sysknife-sudoers` spells `/usr/bin/apt-get`, so a bare
-/// `apt-get` here does not match the rule and sudo falls through to
-/// "a password is required", which a non-interactive daemon can never
-/// supply. Verified on Ubuntu 24.04 with sudo 1.9.15p5: the bare form is
-/// denied, the absolute form is permitted.
-///
-/// `tests/sudoers_grants_match_argv.rs` pins this against the packaged
-/// sudoers file so the two cannot drift apart again.
-const APT_GET: &str = "/usr/bin/apt-get";
-
-/// `DEBIAN_FRONTEND` value that suppresses all debconf interactive prompts.
-/// Required for non-interactive daemon invocations.
-const DEBIAN_FRONTEND_VALUE: &str = "DEBIAN_FRONTEND=noninteractive";
-
-/// `NEEDRESTART_MODE` value that makes needrestart automatically restart
-/// services. Without this, apt post-install hooks spawn an interactive TUI
-/// that blocks the daemon indefinitely.
-const NEEDRESTART_MODE_VALUE: &str = "NEEDRESTART_MODE=a";
+/// `tests/sudoers_grants_match_argv.rs` checks that the packaged sudoers file
+/// grants exactly this verb, and `tests/release/action-steps.test.sh` reads the
+/// subcommands below out of this file and checks the helper accepts each one and
+/// nothing else.
+const ACTION_STEPS: &str = "/usr/lib/sysknife/action-steps";
 
 // ---------------------------------------------------------------------------
 // specs() — for action_consistency tests
@@ -109,129 +108,90 @@ pub fn configure_unattended_upgrades(enabled: bool) -> ActionSpec {
 // Action constructors
 // ---------------------------------------------------------------------------
 
-/// Refresh the apt package index (`apt-get update`).
+/// Refresh the apt package index (`action-steps apt update`, which runs `apt-get update`).
 ///
 /// Risk: Low. No packages are changed, no lock contention for writes.
 /// Requires network access to reach configured APT sources.
 pub fn apt_update() -> ActionSpec {
     ActionSpec {
         action_name: "AptUpdate",
-        mechanism: command_mechanism(
-            "sudo",
-            [
-                "env",
-                DEBIAN_FRONTEND_VALUE,
-                NEEDRESTART_MODE_VALUE,
-                APT_GET,
-                "update",
-            ],
-        ),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "apt", "update"]),
         risk_level: RiskLevel::Low,
         reboot_required: false,
         rollback_available: false,
     }
 }
 
-/// Upgrade all installed packages (`apt-get dist-upgrade -y`).
+/// Upgrade all installed packages (`action-steps apt dist-upgrade`, which runs
+/// `apt-get dist-upgrade -y`).
 ///
 /// Risk: High. `dist-upgrade` may remove packages to resolve dependency
 /// conflicts (unlike `upgrade`). Can trigger `needrestart` service restarts.
 pub fn apt_upgrade() -> ActionSpec {
     ActionSpec {
         action_name: "AptUpgrade",
-        mechanism: command_mechanism(
-            "sudo",
-            [
-                "env",
-                DEBIAN_FRONTEND_VALUE,
-                NEEDRESTART_MODE_VALUE,
-                APT_GET,
-                "dist-upgrade",
-                "-y",
-            ],
-        ),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "apt", "dist-upgrade"]),
         risk_level: RiskLevel::High,
         reboot_required: false,
         rollback_available: false,
     }
 }
 
-/// Install a single package (`apt-get install -y <package>`).
+/// Install a single package (`action-steps apt install <package>`, which runs
+/// `apt-get -o APT::Cmd::Pattern-Only=1 install -y -- <package>`).
+///
+/// The package name is validated by `validated_install_package`, which refuses a
+/// trailing `-` (apt-get reads `pkg-` on `install` as "remove pkg").
 ///
 /// Risk: Medium. Installs a package and its dependencies; reversible with
 /// `apt-get remove` but not transactionally atomic.
 pub fn apt_install(package: &str) -> ActionSpec {
     ActionSpec {
         action_name: "AptInstall",
-        mechanism: command_mechanism(
-            "sudo",
-            [
-                "env",
-                DEBIAN_FRONTEND_VALUE,
-                NEEDRESTART_MODE_VALUE,
-                APT_GET,
-                "install",
-                "-y",
-                package,
-            ],
-        ),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "apt", "install", package]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
     }
 }
 
-/// Remove a package but keep its configuration files (`apt-get remove -y <package>`).
+/// Remove a package but keep its configuration files
+/// (`action-steps apt remove <package>`, which runs `apt-get -o APT::Cmd::Pattern-Only=1 remove -y -- <package>`).
+///
+/// The package name is validated by `validated_unmodified_package`, which refuses
+/// a trailing `+` (apt-get reads `pkg+` on `remove` as "install pkg") and a
+/// trailing `-`.
 ///
 /// Risk: Medium. Configuration files remain in `/etc`; reversible by
 /// reinstalling the package. Use `apt_purge` to also remove config files.
 pub fn apt_remove(package: &str) -> ActionSpec {
     ActionSpec {
         action_name: "AptRemove",
-        mechanism: command_mechanism(
-            "sudo",
-            [
-                "env",
-                DEBIAN_FRONTEND_VALUE,
-                NEEDRESTART_MODE_VALUE,
-                APT_GET,
-                "remove",
-                "-y",
-                package,
-            ],
-        ),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "apt", "remove", package]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
     }
 }
 
-/// Remove a package AND its configuration files (`apt-get purge -y <package>`).
+/// Remove a package AND its configuration files (`action-steps apt purge
+/// <package>`, which runs `apt-get -o APT::Cmd::Pattern-Only=1 purge -y -- <package>`). Validated like
+/// [`apt_remove`].
 ///
 /// Risk: Medium. Configuration files are deleted; harder to reverse than
 /// `remove`. Choose `purge` when a clean reinstall is the goal.
 pub fn apt_purge(package: &str) -> ActionSpec {
     ActionSpec {
         action_name: "AptPurge",
-        mechanism: command_mechanism(
-            "sudo",
-            [
-                "env",
-                DEBIAN_FRONTEND_VALUE,
-                NEEDRESTART_MODE_VALUE,
-                APT_GET,
-                "purge",
-                "-y",
-                package,
-            ],
-        ),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "apt", "purge", package]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
     }
 }
 
-/// Remove automatically-installed packages no longer needed (`apt-get autoremove -y`).
+/// Remove automatically-installed packages no longer needed
+/// (`action-steps apt autoremove`, which runs `apt-get autoremove -y`).
 ///
 /// Risk: Medium. The set of packages actually removed is chosen by the
 /// dependency resolver at execution time, not named by the caller, so the
@@ -242,35 +202,29 @@ pub fn apt_purge(package: &str) -> ActionSpec {
 pub fn apt_autoremove() -> ActionSpec {
     ActionSpec {
         action_name: "AptAutoremove",
-        mechanism: command_mechanism(
-            "sudo",
-            [
-                "env",
-                DEBIAN_FRONTEND_VALUE,
-                NEEDRESTART_MODE_VALUE,
-                APT_GET,
-                "autoremove",
-                "-y",
-            ],
-        ),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "apt", "autoremove"]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
     }
 }
 
-/// Pin a package at its current version (`apt-mark hold -- <package>`).
+/// Pin a package at its current version (`action-steps apt hold <package>`,
+/// which runs `apt-mark -o APT::Cmd::Pattern-Only=1 hold -- <package>`).
 ///
-/// The `--` is load-bearing: apt parses options after the subcommand, and
-/// `apt-mark hold <pkg> -o Dir::Bin::dpkg=<path>` runs `<path>` as root. The
-/// sudoers grant requires the literal `--`.
+/// The helper builds the argv because `apt-mark` takes apt's own options after
+/// the subcommand (`-o Dir::Bin::dpkg=<path>` runs `<path>` as root) and, for an
+/// operand that is not an exact package name, falls back to a regular
+/// expression and holds every package it matches. The package name is validated
+/// by `validated_unmodified_package`: `apt-mark` strips a trailing `+`, so the
+/// package held would not be the one previewed.
 ///
 /// Risk: Medium. Prevents upgrades for the named package until unheld.
 /// Useful to freeze a known-good version when upstream upgrades are risky.
 pub fn apt_hold(package: &str) -> ActionSpec {
     ActionSpec {
         action_name: "AptHold",
-        mechanism: command_mechanism("sudo", ["apt-mark", "hold", "--", package]),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "apt", "hold", package]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
@@ -278,13 +232,13 @@ pub fn apt_hold(package: &str) -> ActionSpec {
 }
 
 /// Remove the hold on a package, allowing upgrades again
-/// (`apt-mark unhold -- <package>`; see [`apt_hold`] for the `--`).
+/// (`action-steps apt unhold <package>`; see [`apt_hold`]).
 ///
 /// Risk: Medium. After unholding, the next `apt upgrade` can update the package.
 pub fn apt_unhold(package: &str) -> ActionSpec {
     ActionSpec {
         action_name: "AptUnhold",
-        mechanism: command_mechanism("sudo", ["apt-mark", "unhold", "--", package]),
+        mechanism: command_mechanism("sudo", [ACTION_STEPS, "apt", "unhold", package]),
         risk_level: RiskLevel::Medium,
         reboot_required: false,
         rollback_available: false,
@@ -462,13 +416,7 @@ mod tests {
         let spec = apt_update();
         let (prog, args) = extract_args(&spec);
         assert_eq!(prog, "sudo");
-        assert!(
-            args.contains(&APT_GET),
-            "argv must carry the absolute apt-get path: {args:?}"
-        );
-        assert!(args.contains(&"update"));
-        assert!(args.contains(&DEBIAN_FRONTEND_VALUE));
-        assert!(args.contains(&NEEDRESTART_MODE_VALUE));
+        assert_eq!(args, vec![ACTION_STEPS, "apt", "update"]);
     }
 
     #[test]
@@ -495,14 +443,7 @@ mod tests {
         let spec = apt_upgrade();
         let (prog, args) = extract_args(&spec);
         assert_eq!(prog, "sudo");
-        assert!(
-            args.contains(&APT_GET),
-            "argv must carry the absolute apt-get path: {args:?}"
-        );
-        assert!(args.contains(&"dist-upgrade"));
-        assert!(args.contains(&"-y"));
-        assert!(args.contains(&DEBIAN_FRONTEND_VALUE));
-        assert!(args.contains(&NEEDRESTART_MODE_VALUE));
+        assert_eq!(args, vec![ACTION_STEPS, "apt", "dist-upgrade"]);
     }
 
     #[test]
@@ -520,12 +461,9 @@ mod tests {
     #[test]
     fn apt_install_includes_package_name() {
         let spec = apt_install("vim");
-        let (_, args) = extract_args(&spec);
-        assert!(args.contains(&"vim"));
-        assert!(args.contains(&"install"));
-        assert!(args.contains(&"-y"));
-        assert!(args.contains(&DEBIAN_FRONTEND_VALUE));
-        assert!(args.contains(&NEEDRESTART_MODE_VALUE));
+        let (prog, args) = extract_args(&spec);
+        assert_eq!(prog, "sudo");
+        assert_eq!(args, vec![ACTION_STEPS, "apt", "install", "vim"]);
     }
 
     #[test]
@@ -543,13 +481,10 @@ mod tests {
     #[test]
     fn apt_remove_argv_contains_remove_not_purge() {
         let spec = apt_remove("vim");
-        let (_, args) = extract_args(&spec);
-        assert!(args.contains(&"remove"));
-        // Must NOT contain purge — that's a different action.
-        assert!(!args.contains(&"purge"));
-        assert!(args.contains(&"vim"));
-        assert!(args.contains(&DEBIAN_FRONTEND_VALUE));
-        assert!(args.contains(&NEEDRESTART_MODE_VALUE));
+        let (prog, args) = extract_args(&spec);
+        assert_eq!(prog, "sudo");
+        // Must NOT be purge — that's a different action.
+        assert_eq!(args, vec![ACTION_STEPS, "apt", "remove", "vim"]);
     }
 
     #[test]
@@ -567,11 +502,9 @@ mod tests {
     #[test]
     fn apt_purge_argv_uses_purge_subcommand() {
         let spec = apt_purge("vim");
-        let (_, args) = extract_args(&spec);
-        assert!(args.contains(&"purge"));
-        assert!(args.contains(&"vim"));
-        assert!(args.contains(&DEBIAN_FRONTEND_VALUE));
-        assert!(args.contains(&NEEDRESTART_MODE_VALUE));
+        let (prog, args) = extract_args(&spec);
+        assert_eq!(prog, "sudo");
+        assert_eq!(args, vec![ACTION_STEPS, "apt", "purge", "vim"]);
     }
 
     #[test]
@@ -591,10 +524,7 @@ mod tests {
         let spec = apt_autoremove();
         let (prog, args) = extract_args(&spec);
         assert_eq!(prog, "sudo");
-        assert!(args.contains(&"autoremove"));
-        assert!(args.contains(&"-y"));
-        assert!(args.contains(&DEBIAN_FRONTEND_VALUE));
-        assert!(args.contains(&NEEDRESTART_MODE_VALUE));
+        assert_eq!(args, vec![ACTION_STEPS, "apt", "autoremove"]);
     }
 
     #[test]
@@ -614,7 +544,7 @@ mod tests {
         let spec = apt_hold("nginx");
         let (prog, args) = extract_args(&spec);
         assert_eq!(prog, "sudo");
-        assert_eq!(args, vec!["apt-mark", "hold", "--", "nginx"]);
+        assert_eq!(args, vec![ACTION_STEPS, "apt", "hold", "nginx"]);
     }
 
     #[test]
@@ -633,7 +563,7 @@ mod tests {
     fn apt_unhold_uses_apt_mark_unhold() {
         let spec = apt_unhold("nginx");
         let (_, args) = extract_args(&spec);
-        assert_eq!(args, vec!["apt-mark", "unhold", "--", "nginx"]);
+        assert_eq!(args, vec![ACTION_STEPS, "apt", "unhold", "nginx"]);
     }
 
     #[test]
@@ -792,28 +722,81 @@ mod tests {
         }
     }
 
-    // ── env var injection regression ─────────────────────────────────────────
+    // ── helper routing ───────────────────────────────────────────────────────
 
-    #[test]
-    fn mutating_apt_commands_carry_env_vars() {
-        let mutating = [
+    /// The eight actions that run apt-get or apt-mark as root, built with an
+    /// operand that is a legal package name, so every argv below is one the
+    /// daemon can really send.
+    fn apt_get_actions() -> Vec<ActionSpec> {
+        vec![
+            apt_update(),
             apt_upgrade(),
             apt_install("vim"),
             apt_remove("vim"),
             apt_purge("vim"),
             apt_autoremove(),
-        ];
-        for spec in &mutating {
-            let (_, args) = extract_args(spec);
-            assert!(
-                args.contains(&DEBIAN_FRONTEND_VALUE),
-                "{} missing DEBIAN_FRONTEND",
+            apt_hold("vim"),
+            apt_unhold("vim"),
+        ]
+    }
+
+    /// `env DEBIAN_FRONTEND=… NEEDRESTART_MODE=a /usr/bin/apt-get *` was a sudoers
+    /// grant, and a trailing `*` takes apt's own options: `apt-get -o
+    /// APT::Update::Pre-Invoke::=<cmd> update` runs <cmd> as root. The actions go
+    /// through `action-steps apt`, which sets the environment and builds the argv,
+    /// so nothing the daemon sends names apt-get, env or an option.
+    #[test]
+    fn apt_get_actions_go_through_the_helper_and_carry_no_option() {
+        for spec in apt_get_actions() {
+            let (prog, args) = extract_args(&spec);
+            assert_eq!(prog, "sudo", "{}", spec.action_name);
+            assert_eq!(
+                args[..2],
+                [ACTION_STEPS, "apt"],
+                "{} must go through the helper verb: {args:?}",
                 spec.action_name
             );
-            assert!(
-                args.contains(&NEEDRESTART_MODE_VALUE),
-                "{} missing NEEDRESTART_MODE",
+            for arg in &args {
+                assert!(
+                    !arg.starts_with('-'),
+                    "{} sends an option {arg:?}; the helper adds the flags itself",
+                    spec.action_name
+                );
+                assert!(
+                    !arg.contains("apt-get")
+                        && !arg.contains("apt-mark")
+                        && *arg != "env"
+                        && !arg.contains('='),
+                    "{} still builds a direct apt-get or apt-mark argv: {args:?}",
+                    spec.action_name
+                );
+            }
+        }
+    }
+
+    /// The dispatcher serialises actions on the lock named by the argv, so the
+    /// helper verb has to keep naming a tool `exclusive_resource` recognises.
+    #[test]
+    fn apt_get_actions_still_contend_for_the_dpkg_lock() {
+        for spec in apt_get_actions() {
+            assert_eq!(
+                crate::actions::exclusive_resource(&spec),
+                Some(crate::actions::ExclusiveResource::Dpkg),
+                "{} lost the dpkg lock when it moved to the helper",
                 spec.action_name
+            );
+        }
+    }
+
+    /// `apt install` of a package named like another tool (`snap`, `flatpak`)
+    /// must still resolve to dpkg: the verb comes first in the argv.
+    #[test]
+    fn a_package_named_like_another_tool_does_not_change_the_lock() {
+        for operand in ["snap", "flatpak", "rpm-ostree"] {
+            assert_eq!(
+                crate::actions::exclusive_resource(&apt_install(operand)),
+                Some(crate::actions::ExclusiveResource::Dpkg),
+                "apt install {operand} must hold the dpkg lock"
             );
         }
     }

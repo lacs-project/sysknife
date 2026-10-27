@@ -20,9 +20,11 @@
 # removed through its arch-qualified name (g++:amd64). `^` is in no package name.
 #
 # `.` and `+` are legal in names (python3.12, g++) and are also regular expression
-# metacharacters. No character class can tell an exact name from a regular expression, so
-# both validators ACCEPT such operands. The `.` and `+` lines below record that the validators
-# accept them; they do not claim apt resolves them as exact names.
+# metacharacters, which apt falls back to when an operand is not an exact package name.
+# No character class can tell the two apart, so both validators ACCEPT such operands. The `.`
+# and `+` lines below record that the validators accept them; they do not claim apt resolves
+# them as exact names. The helper decides that: it passes `-o APT::Cmd::Pattern-Only=1` to apt
+# and runs exact_package() on the operand first.
 #
 # The operand is everything after the second space, so it may contain spaces. Lines that
 # start with `#` and blank lines are skipped. Any other line that does not parse fails the
