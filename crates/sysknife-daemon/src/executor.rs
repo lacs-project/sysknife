@@ -2406,15 +2406,12 @@ const KARG_HARDENING_FLAGS: &[&str] = &["nosmt", "slab_nomerge"];
 const KARG_VALUE_KEYS: &[&str] = &[
     "console",
     "video",
-    "resume",
-    "resume_offset",
     "loglevel",
     "hugepages",
     "hugepagesz",
     "default_hugepagesz",
     "nvme_core.default_ps_max_latency_us",
     "usbcore.autosuspend",
-    "rd.driver.blacklist",
     "nvidia_drm.modeset",
     "nvidia_drm.fbdev",
     "i915.enable_psr",
@@ -2427,6 +2424,24 @@ const KARG_VALUE_KEYS: &[&str] = &[
     "systemd.show_status",
     "plymouth.enable",
 ];
+
+/// Ordinary keys whose value is a comma-separated list, each element from the
+/// key's own set; removable. `rd.driver.blacklist=` keeps a driver from loading,
+/// so it takes GPU drivers only: `tpm_crb` or `dm_crypt` there would switch off a
+/// protection. `resume=` is not on the allowlist at all: at a device the caller
+/// controls it boots a crafted hibernation image.
+const KARG_LIST_VALUES: &[(&str, &[&str])] = &[(
+    "rd.driver.blacklist",
+    &[
+        "nouveau",
+        "nvidia",
+        "nvidia_drm",
+        "nvidia_modeset",
+        "radeon",
+        "amdgpu",
+        "i915",
+    ],
+)];
 
 /// Hardening keys with the only values that may be added. A hardening key is
 /// never removed, with or without a value: libostree's
@@ -2510,7 +2525,8 @@ fn normalized_kernel_arg(arg: &str) -> String {
 /// Screen a kernel argument that is about to be **added** to the boot line
 /// (`SetKernelArguments`'s `add`, `GrubSetKargs`'s `append`): one boot-line
 /// token, and on the allowlist. A flag is accepted bare, an ordinary key with
-/// any non-empty value, a hardening key with one of its listed values. `param`
+/// any non-empty value, a list key with every element in its set, a hardening
+/// key with one of its listed values. `param`
 /// names the request field in the error.
 fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), ExecutorError> {
     validated_kernel_arg_token(arg, param)?;
@@ -2521,6 +2537,9 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
         }
         Some((key, value)) => {
             (!value.is_empty() && KARG_VALUE_KEYS.contains(&key))
+                || KARG_LIST_VALUES
+                    .iter()
+                    .any(|(k, allowed)| *k == key && value.split(',').all(|v| allowed.contains(&v)))
                 || KARG_HARDENING_VALUES
                     .iter()
                     .any(|(k, values)| *k == key && values.contains(&value))
@@ -2571,6 +2590,7 @@ fn validated_safe_kernel_arg_removal(arg: &str, param: &'static str) -> Result<(
     if KARG_WEAKENING.contains(&normal.as_str())
         || KARG_FLAGS.contains(&key)
         || KARG_VALUE_KEYS.contains(&key)
+        || KARG_LIST_VALUES.iter().any(|(k, _)| *k == key)
     {
         Ok(())
     } else {
@@ -4283,6 +4303,49 @@ mod tests {
         }
     }
 
+    /// `resume=` at a device the caller controls boots a crafted hibernation
+    /// image, so it is not on the list (this test's `resume=/dev/mapper/luks-swap`
+    /// used to be accepted as an ordinary token). `rd.driver.blacklist=` takes
+    /// only GPU drivers, each comma-separated value from its own set, so
+    /// `tpm_crb` or `dm_crypt` cannot be kept from loading.
+    #[test]
+    fn kernel_arg_add_refuses_resume_and_limits_the_driver_blacklist() {
+        for arg in [
+            "resume=/dev/sdb1",
+            "resume=/dev/mapper/luks-swap",
+            "resume_offset=1",
+            "rd.driver.blacklist=tpm_crb",
+            "rd.driver.blacklist=nouveau,dm_crypt",
+            "rd.driver.blacklist=",
+            "rd.driver.blacklist=nouveau,",
+        ] {
+            assert!(
+                matches!(
+                    validated_safe_kernel_arg(arg, "add"),
+                    Err(ExecutorError::InvalidParam("add"))
+                ),
+                "{arg} must be refused"
+            );
+        }
+        for arg in [
+            "rd.driver.blacklist=nouveau",
+            "rd.driver.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset",
+            "rd.driver.blacklist=radeon,amdgpu,i915",
+        ] {
+            assert!(
+                validated_safe_kernel_arg(arg, "add").is_ok(),
+                "{arg} must be accepted"
+            );
+        }
+        for arg in ["resume", "resume=/dev/mapper/luks-swap", "resume_offset"] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_err(),
+                "{arg} is not on the allowlist, so removing it is refused"
+            );
+        }
+        assert!(validated_safe_kernel_arg_removal("rd.driver.blacklist=nouveau", "remove").is_ok());
+    }
+
     /// Removal is allowed for the ordinary keys of the allowlist and for the
     /// exact downgrades in KARG_WEAKENING, and refused for a hardening key
     /// (bare or with a value) and for any key nobody listed.
@@ -4661,7 +4724,6 @@ mod tests {
             "nomodeset",
             "console=ttyS0,115200",
             "rd.driver.blacklist=nouveau",
-            "resume=/dev/mapper/luks-swap",
             "video=HDMI-A-1:1920x1080@60",
             "nvidia-drm.modeset=1",
         ] {

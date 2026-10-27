@@ -72,12 +72,20 @@ KARG_FLAGS = ("quiet", "splash", "rhgb", "nomodeset", "nowatchdog", "threadirqs"
 KARG_HARDENING_FLAGS = ("nosmt", "slab_nomerge")
 # Ordinary keys that take any value of the one-token character set; removable.
 KARG_VALUE_KEYS = (
-    "console", "video", "resume", "resume_offset", "loglevel", "hugepages", "hugepagesz",
+    "console", "video", "loglevel", "hugepages", "hugepagesz",
     "default_hugepagesz", "nvme_core.default_ps_max_latency_us", "usbcore.autosuspend",
-    "rd.driver.blacklist", "nvidia_drm.modeset", "nvidia_drm.fbdev", "i915.enable_psr",
+    "nvidia_drm.modeset", "nvidia_drm.fbdev", "i915.enable_psr",
     "amdgpu.dc", "acpi_backlight", "mem_sleep_default", "pcie_aspm", "transparent_hugepage",
     "zswap.enabled", "systemd.show_status", "plymouth.enable",
 )
+# Ordinary keys whose value is a comma-separated list, each element from the
+# key's own set; removable. rd.driver.blacklist= keeps a driver from loading, so
+# it takes GPU drivers only. resume= is not listed at all: at a device the caller
+# controls it boots a crafted hibernation image.
+KARG_LIST_VALUES = {
+    "rd.driver.blacklist": ("nouveau", "nvidia", "nvidia_drm", "nvidia_modeset", "radeon",
+                            "amdgpu", "i915"),
+}
 # Hardening keys with the only values that may be added; never removed.
 KARG_HARDENING_VALUES = {
     "lockdown": ("integrity", "confidentiality"),
@@ -144,6 +152,8 @@ def reject_dangerous_append(tokens: list[str]) -> None:
         key, eq, rest = normalized(tok).partition("=")
         allowed = (key in KARG_FLAGS + KARG_HARDENING_FLAGS if not eq
                    else (rest and key in KARG_VALUE_KEYS)
+                   or (key in KARG_LIST_VALUES
+                       and all(v in KARG_LIST_VALUES[key] for v in rest.split(",")))
                    or rest in KARG_HARDENING_VALUES.get(key, ()))
         if not allowed:
             print(
@@ -159,7 +169,8 @@ def reject_dangerous_delete(tokens: list[str]) -> None:
     for tok in tokens:
         lower = normalized(tok)
         key = lower.split("=", 1)[0]
-        if not (lower in KARG_WEAKENING or key in KARG_FLAGS or key in KARG_VALUE_KEYS):
+        if not (lower in KARG_WEAKENING or key in KARG_FLAGS or key in KARG_VALUE_KEYS
+                or key in KARG_LIST_VALUES):
             print(
                 f"sysknife-grub-kargs-edit: refusing to --delete karg {tok!r} "
                 "(it is a boot-security protection or not on the allowlist)",

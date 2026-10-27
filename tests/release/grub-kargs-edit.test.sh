@@ -219,8 +219,12 @@ for tok in ["spectre-v2=off", "audit=off", "systemd.wants=debug-shell.service", 
             "quiet=1", "console=", "lockdown=none", "mitigations=auto,nosmt,foo"]:
     if not refused_append(tok):
         failures.append(f"--append {tok!r} was accepted; it is not on the allowlist")
+for tok in ["resume=/dev/sdb1", "resume_offset=1", "rd.driver.blacklist=tpm_crb",
+            "rd.driver.blacklist=dm_crypt", "rd.driver.blacklist="]:
+    if not refused_append(tok):
+        failures.append(f"--append {tok!r} was accepted; resume= and non-GPU blacklists are not listed")
 for tok in ["lockdown", "module.sig_enforce", "lockdown=integrity", "nosmt", "slab_nomerge",
-            "vsyscall=none", "mitigations=auto", "foo=bar", "foo", "mitigations=of"]:
+            "vsyscall=none", "mitigations=auto", "foo=bar", "foo", "mitigations=of", "resume"]:
     if not refused(tok):
         failures.append(f"--delete {tok!r} was accepted; it is a hardening key or an unknown one")
 for tok in ["quiet", "splash", "rhgb", "nomodeset", "nowatchdog", "threadirqs", "nosmt",
@@ -252,6 +256,14 @@ if not daemon_values:
     failures.append("KARG_HARDENING_VALUES not found or empty in executor.rs; compared nothing")
 elif daemon_values != {k: sorted(v) for k, v in getattr(mod, "KARG_HARDENING_VALUES", {}).items()}:
     failures.append("KARG_HARDENING_VALUES differs between executor.rs and this helper")
+decl = re.search(r"const KARG_LIST_VALUES:\s*&\[\(&str, &\[&str\]\)\]\s*=\s*&\[(.*?)\]\s*;",
+                 exec_src, re.S)
+daemon_lists = {k: sorted(re.findall(r'"([^"]+)"', v)) for k, v in
+                re.findall(r'\(\s*"([^"]+)",\s*&\[(.*?)\]\s*,?\s*\)', decl.group(1), re.S)} if decl else {}
+if not daemon_lists:
+    failures.append("KARG_LIST_VALUES not found or empty in executor.rs; compared nothing")
+elif daemon_lists != {k: sorted(v) for k, v in getattr(mod, "KARG_LIST_VALUES", {}).items()}:
+    failures.append("KARG_LIST_VALUES differs between executor.rs and this helper")
 
 # 3f. A bare key deletes the key's only value. libostree's
 #     ostree_kernel_args_delete removes `lockdown=confidentiality` when asked for
@@ -297,7 +309,7 @@ for tok in ["init-on-alloc=0", "module.sig-enforce=0"]:
     if refused(tok):
         failures.append(f"--delete {tok!r} was refused, but it is a weakening")
 for attr in ("KARG_FLAGS", "KARG_HARDENING_FLAGS", "KARG_VALUE_KEYS", "KARG_WEAKENING",
-             "KARG_HARDENING_VALUES"):
+             "KARG_HARDENING_VALUES", "KARG_LIST_VALUES"):
     if not getattr(mod, attr, ()):
         failures.append(f"{attr} is missing or empty; the normal-form check inspected nothing")
     for entry in getattr(mod, attr, ()):

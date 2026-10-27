@@ -288,3 +288,18 @@ delete ok spectre_v2=off
 append refuse debugfs=on
 append refuse iommu=off
 append refuse intel_iommu=off
+# --- resume= boots a hibernation image; rd.driver.blacklist= takes only GPU drivers ---
+append refuse resume=/dev/sdb1
+append refuse resume_offset=1
+append refuse rd.driver.blacklist=tpm_crb
+append refuse rd.driver.blacklist=nouveau,dm_crypt
+append refuse rd.driver.blacklist=
+append refuse rd.driver.blacklist=nouveau,
+append ok rd.driver.blacklist=nouveau,nvidia
+append ok rd.driver.blacklist=radeon,amdgpu,i915
+delete refuse resume=/dev/sdb1
+delete refuse resume
+delete ok rd.driver.blacklist=nouveau
+# --- a listed key whose value carries a second boot-line token ---
+append refuse console=tty0 init=/bin/sh
+delete refuse console=tty0 lockdown=integrity

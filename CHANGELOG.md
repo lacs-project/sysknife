@@ -82,8 +82,9 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   the denylists, so all three kernel-argument screens (the daemon,
   `grub-kargs-edit` and the `rpm-ostree kargs` verb of `action-steps`) now
   accept a fixed list of keys instead: display and boot flags such as `quiet`,
-  ordinary keys such as `console=` and `rd.driver.blacklist=`, and hardening
-  keys only at their hardening values, such as `lockdown=integrity`. They read
+  ordinary keys such as `console=`, `rd.driver.blacklist=` with GPU drivers
+  only, and hardening keys only at their hardening values, such as
+  `lockdown=integrity`. `root=` and `resume=` are not on the list. They read
   `-` and `_` as one character in a key, as the kernel does. Removal is limited
   to the ordinary keys and to known downgrades such as `mitigations=off`, so a
   hardening argument cannot be dropped, by its full spelling or by its bare key.

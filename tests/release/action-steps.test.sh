@@ -931,6 +931,15 @@ class RpmOstreeVerb(unittest.TestCase):
             ['rpm-ostree', 'kargs', 'append', 'spectre_v2_user=off'], ['rpm-ostree', 'kargs', 'append', 'quiet=1'],
             ['rpm-ostree', 'kargs', 'delete', 'module.sig_enforce'], ['rpm-ostree', 'kargs', 'delete', 'foo=bar'],
             ['rpm-ostree', 'kargs', 'delete', 'nosmt'], ['rpm-ostree', 'kargs', 'delete', 'vsyscall=none'],
+            ['rpm-ostree', 'kargs', 'append', 'resume=/dev/sdb1'], ['rpm-ostree', 'kargs', 'append', 'resume_offset=1'],
+            # A listed key whose value carries a second boot-line token: only the
+            # one-token check stands between it and the boot line.
+            ['rpm-ostree', 'kargs', 'append', 'console=tty0 init=/bin/sh'],
+            ['rpm-ostree', 'kargs', 'append', 'console=tty0\tinit=/bin/sh'],
+            ['rpm-ostree', 'kargs', 'append', 'console="tty0 init=/bin/sh"'],
+            ['rpm-ostree', 'kargs', 'delete', 'console=tty0 lockdown=integrity'],
+            ['rpm-ostree', 'kargs', 'append', 'rd.driver.blacklist=tpm_crb'],
+            ['rpm-ostree', 'kargs', 'append', 'rd.driver.blacklist=nouveau,dm_crypt'],
             ['rpm-ostree', 'kargs', 'append', '-b'], ['rpm-ostree', 'kargs', 'append', ''],
             ['rpm-ostree', 'kargs', 'append', 'quiet\n'], ['rpm-ostree', 'kargs', 'append', 'a' * 255],
             ['rpm-ostree', 'kargs', 'append', 'quiet"'], ['rpm-ostree', 'kargs', 'append', 'quiet\tinit=/bin/sh'],
@@ -1081,6 +1090,14 @@ class RpmOstreeVerb(unittest.TestCase):
         self.assertGreaterEqual(len(daemon), 10, 'KARG_HARDENING_VALUES parsed short')
         self.assertEqual({k: sorted(v) for k, v in helper['KARG_HARDENING_VALUES'].items()}, daemon)
         self.assertEqual({k: sorted(v) for k, v in grub.KARG_HARDENING_VALUES.items()}, daemon)
+        decl = re.search(r'const KARG_LIST_VALUES:\s*&\[\(&str, &\[&str\]\)\]\s*=\s*&\[(.*?)\]\s*;',
+                         rust, re.S)
+        self.assertIsNotNone(decl, 'KARG_LIST_VALUES not found in executor.rs')
+        daemon = {k: sorted(re.findall(r'"([^"]+)"', v)) for k, v in
+                  re.findall(r'\(\s*"([^"]+)",\s*&\[(.*?)\]\s*,?\s*\)', decl.group(1), re.S)}
+        self.assertTrue(daemon, 'KARG_LIST_VALUES parsed empty; this check inspected nothing')
+        self.assertEqual({k: sorted(v) for k, v in helper['KARG_LIST_VALUES'].items()}, daemon)
+        self.assertEqual({k: sorted(v) for k, v in grub.KARG_LIST_VALUES.items()}, daemon)
 
     def test_kargs_screens_decide_like_the_grub_helper(self):
         # Equal lists are not equal decisions: the screens around them could differ.
@@ -1132,7 +1149,9 @@ class RpmOstreeVerb(unittest.TestCase):
                   'rd.driver.blacklist=nouveau', 'nvidia-drm.modeset=1', 'lockdown=integrity',
                   'module.sig_enforce=1', 'intel_iommu=on', 'amd_iommu=on', 'init_on_free=1',
                   'page_alloc.shuffle=1', 'randomize_kstack_offset=on', 'mitigations=auto',
-                  'mitigations=auto,nosmt', 'pti=on', 'vsyscall=none', 'debugfs=off', 'root=/dev/sdb1']
+                  'mitigations=auto,nosmt', 'pti=on', 'vsyscall=none', 'debugfs=off', 'root=/dev/sdb1',
+                  'resume=/dev/sdb1', 'resume_offset=1', 'resume', 'rd.driver.blacklist=tpm_crb',
+                  'rd.driver.blacklist=nvidia', 'rd.driver.blacklist=dm_crypt']
 
         def grub_refuses(screen, token):
             try:
