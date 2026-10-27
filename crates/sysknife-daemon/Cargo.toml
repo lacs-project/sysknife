@@ -16,6 +16,11 @@ categories = ["command-line-utilities", "os::linux-apis"]
 # is the invariant the type's private fields exist to protect.
 test-support = []
 
+[lints.rust]
+# cargo-fuzz builds with `--cfg fuzzing`; declare it so the `#[cfg(fuzzing)]`
+# fuzz hooks do not trip `unexpected_cfgs` (and `-D warnings`) in normal builds.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
 [dependencies]
 sysknife-core = { path = "../sysknife-core", version = "0.28.0" }
 sysknife-types = { path = "../sysknife-types", version = "0.28.0" }

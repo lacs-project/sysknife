@@ -18,3 +18,13 @@ pub mod transport {
     pub mod framing;
     pub mod listen;
 }
+
+/// Entry points for the cargo-fuzz targets in `fuzz/`. cargo-fuzz builds with
+/// `--cfg fuzzing`, so none of this exists in a normal or release build. The
+/// validators live in a `pub(crate)` module; a glob re-export makes every
+/// `pub fn` in it reachable here without widening the module itself.
+#[cfg(fuzzing)]
+pub mod fuzzing {
+    pub use crate::actions::validate::*;
+    pub use crate::dispatcher::fuzz_decode_request;
+}

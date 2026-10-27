@@ -312,6 +312,24 @@ enum DaemonRequest {
     },
 }
 
+/// Fuzzing entry point for the two-step request decode in the connection loop:
+/// `serde_json::from_slice` into a [`Value`], then `serde_json::from_value` into
+/// [`DaemonRequest`]. Returns whether the frame decoded to a request.
+///
+/// `DaemonRequest` is private to this module, so the `fuzz/` crate cannot name
+/// it; this function is the one door in. cargo-fuzz sets `--cfg fuzzing`, so the
+/// function does not exist in a normal or release build. It repeats the two
+/// calls rather than sharing a helper with the loop, to leave the loop's
+/// control flow untouched; if the loop's decode changes shape, change this to
+/// match.
+#[cfg(fuzzing)]
+pub fn fuzz_decode_request(raw: &[u8]) -> bool {
+    match serde_json::from_slice::<Value>(raw) {
+        Ok(msg) => serde_json::from_value::<DaemonRequest>(msg).is_ok(),
+        Err(_) => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Wire types — Daemon → Shell
 // ---------------------------------------------------------------------------
