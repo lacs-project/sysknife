@@ -129,22 +129,35 @@ sysknife ALL=(root) NOPASSWD: /usr/sbin/nft -j list ruleset
 # "a password is required" — caught by tests/sudoers_grants_match_argv.rs.
 sysknife ALL=(root) NOPASSWD: /usr/bin/nmcli device wifi connect *
 
-# OS deployment management — rpm-ostree upgrade/install/rollback/cleanup/rebase/kargs
-# communicate with rpm-ostreed via D-Bus and require root authorization.
-# rpm-ostree status/kargs (read-only) still work without root but sudo does not hurt.
-# rpm scriptlets run as root, so a bare grant reached every rpm-ostree
-# subcommand including ones that take a local package path.
-sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree cleanup *
-sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree install *
-sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree kargs
-sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree kargs *
-sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree override *
-sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree rebase *
-sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree rollback
-sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree uninstall *
+# OS deployment management — rpm-ostree talks to rpm-ostreed over D-Bus, and
+# the calls below need root authorization.
+#
+# Every rpm-ostree call that takes an operand goes through `action-steps
+# rpm-ostree <verb> ...`: InstallPackages and AddLayeredPackage (`install`),
+# RemovePackages and RemoveLayeredPackage (`uninstall`), ReplaceLayeredPackage
+# (`replace`), RemoveBasePackage (`override-remove`), RebaseSystem (`rebase`)
+# and SetKernelArguments (`kargs`). The helper validates every operand with the
+# daemon's rules and builds the rpm-ostree argv itself.
+#
+# These used to be `/usr/bin/rpm-ostree <subcommand> *`. A trailing `*` takes
+# rpm-ostree's own options as readily as an operand, so the sysknife account
+# could append any kernel argument, layer a local package whose scriptlets run
+# as root, or rebase onto a local image, as root, with no preview, no approval
+# receipt and no audit row. sudoers has no way to say "and no options", so the
+# grammar is enforced in /usr/lib/sysknife/action-steps instead.
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps rpm-ostree *
+
+# The operand-free calls keep exact grants, which admit their own argv and
+# nothing after it: UpdateSystem, RollbackDeployment, CleanupDeployments and
+# ResetLayeredPackageOverride, and `rpm-ostree cancel`, which the
+# action-timeout reaper runs (`sudo -n`) to stop a transaction that a signal
+# cannot reach because it runs in rpm-ostreed's cgroup. The read-only calls
+# (`status --json`, `kargs`, `upgrade --check`) run without sudo.
 sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree upgrade
-sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree upgrade *
-sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree status *
+sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree rollback
+sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree cleanup --rollback --pending
+sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree override reset --all
+sysknife ALL=(root) NOPASSWD: /usr/bin/rpm-ostree cancel
 
 # OSTree admin operations — pin/unpin deployments require root filesystem access.
 # only Pin/UnpinDeployment call ostree, and both go through `admin pin`.

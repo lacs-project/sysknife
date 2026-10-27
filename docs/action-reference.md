@@ -16,25 +16,25 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `UpdateSystem` | `sudo rpm-ostree upgrade` | High | Fedora | ✓ | ✓ | download and stage the latest OSTree update (does not reboot) |
 | `PinDeployment` | `sudo ostree admin pin 0` | High | Fedora | – | – | pin a deployment so it is not GC'd — param: index (u32, deployment index from ListDeployments) |
 | `UnpinDeployment` | `sudo ostree admin pin --unpin 0` | High | Fedora | – | – | unpin a previously pinned deployment — param: index (u32) |
-| `RebaseSystem` | `sudo rpm-ostree rebase fedora/41/x86_64/silverblue` | High | Fedora | ✓ | ✓ | switch to a different OSTree ref/remote — param: target_ref (string, e.g. fedora/40/x86_64/silverblue) |
+| `RebaseSystem` | `sudo /usr/lib/sysknife/action-steps rpm-ostree rebase fedora/41/x86_64/silverblue` | High | Fedora | ✓ | ✓ | switch to a different OSTree ref/remote — param: target_ref (string, e.g. fedora/40/x86_64/silverblue) |
 | `CleanupDeployments` | `sudo rpm-ostree cleanup --rollback --pending` | High | Fedora | – | – | remove old staged deployments to free disk space |
 | `RebootSystem` | `sudo systemctl reboot` | High | All | ✓ | – | reboot the machine into the current or staged deployment |
 | `RollbackDeployment` | `sudo rpm-ostree rollback` | High | Fedora | ✓ | – | roll back to the previous booted deployment |
 | `GetKernelArguments` | `rpm-ostree kargs` | Low | Fedora | – | – | list current kernel command-line arguments (kargs) |
-| `SetKernelArguments` | `sudo rpm-ostree kargs` | High | Fedora | ✓ | ✓ | add/remove kernel command-line args — params: add (string\[\]), remove (string\[\]) — either may be \[\]; both lists are screened: no weakening arg may be added, and no protective one (lockdown=, module.sig_enforce=1, pti=on, mitigations=, selinux=1, slab_nomerge, …) removed |
+| `SetKernelArguments` | `sudo /usr/lib/sysknife/action-steps rpm-ostree kargs` | High | Fedora | ✓ | ✓ | add/remove kernel command-line args — params: add (string\[\]), remove (string\[\]) — either may be \[\]; both lists are screened: no weakening arg may be added, and no protective one (lockdown=, module.sig_enforce=1, pti=on, mitigations=, selinux=1, slab_nomerge, …) removed |
 
 ## Package layering (rpm-ostree)
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `InstallPackages` | `sudo rpm-ostree install --idempotent podman` | High | Fedora | ✓ | ✓ | layer multiple RPM packages — param: packages\* (string\[\]) |
-| `RemovePackages` | `sudo rpm-ostree uninstall podman` | High | Fedora | ✓ | ✓ | remove layered RPM packages — param: packages\* (string\[\]) |
+| `InstallPackages` | `sudo /usr/lib/sysknife/action-steps rpm-ostree install podman` | High | Fedora | ✓ | ✓ | layer multiple RPM packages — param: packages\* (string\[\]) |
+| `RemovePackages` | `sudo /usr/lib/sysknife/action-steps rpm-ostree uninstall podman` | High | Fedora | ✓ | ✓ | remove layered RPM packages — param: packages\* (string\[\]) |
 | `GetLayeredPackages` | `rpm-ostree status --json` | Low | Fedora | – | – | list RPM packages layered on top of the base OS image — no params |
-| `AddLayeredPackage` | `sudo rpm-ostree install --idempotent podman` | High | Fedora | ✓ | ✓ | layer a single RPM package (requires reboot) — param: package\* (string) |
-| `RemoveLayeredPackage` | `sudo rpm-ostree uninstall podman` | High | Fedora | ✓ | ✓ | remove a single layered RPM package (requires reboot) — param: package\* (string) |
-| `ReplaceLayeredPackage` | `sudo rpm-ostree install neovim --uninstall vim` | High | Fedora | ✓ | ✓ | replace one layered package with another — params: old\* (string), new\* (string) |
+| `AddLayeredPackage` | `sudo /usr/lib/sysknife/action-steps rpm-ostree install podman` | High | Fedora | ✓ | ✓ | layer a single RPM package (requires reboot) — param: package\* (string) |
+| `RemoveLayeredPackage` | `sudo /usr/lib/sysknife/action-steps rpm-ostree uninstall podman` | High | Fedora | ✓ | ✓ | remove a single layered RPM package (requires reboot) — param: package\* (string) |
+| `ReplaceLayeredPackage` | `sudo /usr/lib/sysknife/action-steps rpm-ostree replace vim neovim` | High | Fedora | ✓ | ✓ | replace one layered package with another — params: old\* (string), new\* (string) |
 | `ResetLayeredPackageOverride` | `sudo rpm-ostree override reset --all` | High | Fedora | ✓ | ✓ | reset all rpm-ostree override changes — no params |
-| `RemoveBasePackage` | `sudo rpm-ostree override remove gedit` | High | Fedora | ✓ | ✓ | exclude a base OS package from the deployment — param: package\* (string) |
+| `RemoveBasePackage` | `sudo /usr/lib/sysknife/action-steps rpm-ostree override-remove gedit` | High | Fedora | ✓ | ✓ | exclude a base OS package from the deployment — param: package\* (string) |
 | `GetPendingUpdates` | `rpm-ostree upgrade --check` | Low | Fedora | – | – | check for a staged update and show its diff — no params |
 
 ## Filesystem

@@ -52,11 +52,12 @@ The layers are sequential gates, not independent walls. They all run inside
 one process, and that process runs as the `sysknife` service account
 (`User=sysknife` in `packaging/sysknife-daemon.service`), which is
 root-equivalent by design. That account holds `NOPASSWD` grants for
-`/usr/bin/snap install *` and `/usr/bin/rpm-ostree install *`, each of which
-reaches root on its own through the install hooks and scriptlets they run as
-root, and for the `apt` verb of `/usr/lib/sysknife/action-steps`, which
-installs packages whose maintainer scripts run as root. There is no grant on
-`apt-get` itself, because apt's own options can name a command to run. A
+`/usr/bin/snap install *`, which reaches root on its own through the install
+hooks it runs as root, and for the `apt` and `rpm-ostree` verbs of
+`/usr/lib/sysknife/action-steps`, which install packages whose maintainer
+scripts and scriptlets run as root. There is no grant on `apt-get`, and none on
+an `rpm-ostree` call that takes an operand, because their own options can name
+a command, a local package or a kernel argument. A
 compromise of the daemon process is
 therefore a compromise of root on that host. An operator sizing the blast
 radius of a daemon compromise should read the grants in

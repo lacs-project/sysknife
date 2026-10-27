@@ -226,6 +226,23 @@ fn no_grant_permits_arbitrary_arguments() {
          route the call through /usr/lib/sysknife/action-steps.",
         bare.join("\n  ")
     );
+    // A trailing `*` on rpm-ostree takes its options as readily as an operand:
+    // `kargs --append=init=/bin/sh`, `install /tmp/x.rpm`, `override replace
+    // <local rpm>`. Every rpm-ostree call that takes an operand goes through
+    // `action-steps rpm-ostree`; what stays granted directly is a fixed argv.
+    let rpm_ostree_wildcards: Vec<String> = grants
+        .iter()
+        .filter(|g| {
+            g.tokens[0] == "/usr/bin/rpm-ostree" && g.tokens.iter().any(|t| t.contains('*'))
+        })
+        .map(|g| g.tokens.join(" "))
+        .collect();
+    assert!(
+        rpm_ostree_wildcards.is_empty(),
+        "these rpm-ostree grants take any further argument:\n  {}\n\
+         Route the call through /usr/lib/sysknife/action-steps rpm-ostree.",
+        rpm_ostree_wildcards.join("\n  ")
+    );
 }
 
 /// Every escape GHSA-j9c3-j2qr-65c4 named, run through the matcher as an argv.
@@ -395,6 +412,53 @@ const ROOT_ESCAPES: &[(&str, &str)] = &[
         "/usr/bin/apt-get -o APT::Update::Pre-Invoke::=/bin/sh update",
         "the bare binary, which the daemon never needed a grant for",
     ),
+    // The `/usr/bin/rpm-ostree <subcommand> *` grants admitted rpm-ostree's own
+    // options and any operand. Operands now go through `action-steps
+    // rpm-ostree`, whose refusals are proved in tests/release/action-steps.test.sh.
+    (
+        "/usr/bin/rpm-ostree kargs --append=init=/bin/sh",
+        "a root shell at the next boot, past the daemon's kargs screens",
+    ),
+    (
+        "/usr/bin/rpm-ostree kargs --delete=lockdown=confidentiality",
+        "drops a boot protection the daemon refuses to remove",
+    ),
+    (
+        "/usr/bin/rpm-ostree kargs --editor",
+        "opens an editor as root",
+    ),
+    (
+        "/usr/bin/rpm-ostree install /tmp/x.rpm",
+        "a local package whose scriptlets run as root in the next deployment",
+    ),
+    (
+        "/usr/bin/rpm-ostree install --idempotent /tmp/x.rpm",
+        "the same behind the flag the daemon sends",
+    ),
+    (
+        "/usr/bin/rpm-ostree uninstall podman --install=/tmp/x.rpm",
+        "uninstall also takes packages to install",
+    ),
+    (
+        "/usr/bin/rpm-ostree override replace /tmp/x.rpm",
+        "replaces a base package with a local one",
+    ),
+    (
+        "/usr/bin/rpm-ostree override remove gedit --replace=/tmp/x.rpm",
+        "the same through the remove subcommand",
+    ),
+    (
+        "/usr/bin/rpm-ostree rebase ostree-unverified-image:oci:/tmp/img",
+        "boots an OS image the caller put on disk",
+    ),
+    (
+        "/usr/bin/rpm-ostree upgrade --install=/tmp/x.rpm",
+        "upgrade also takes packages to install",
+    ),
+    (
+        "/usr/bin/rpm-ostree rollback --reboot",
+        "the fixed grants admit their own argv and nothing after it",
+    ),
     // GHSA-8rx7-g2jg-5pxg item 5: `kill -s *` admitted every target.
     (
         "/usr/bin/kill -s KILL -1",
@@ -411,6 +475,11 @@ const ROOT_ESCAPES: &[(&str, &str)] = &[
 /// `every_sudo_action_is_authorised_by_a_packaged_grant` never sees it.
 /// `executor::tests::root_group_kill_argv_*` pins the daemon to this shape.
 const REAPER_ARGV: &str = "/usr/lib/sysknife/action-steps signal KILL -4242";
+
+/// The reaper's argv for a timed-out rpm-ostree action, whose transaction runs
+/// in rpm-ostreed's cgroup where a signal cannot reach it.
+/// `executor::tests::reap_command_*` pins the daemon to this shape.
+const REAPER_CANCEL_ARGV: &str = "/usr/bin/rpm-ostree cancel";
 
 #[test]
 fn no_grant_authorises_a_documented_root_escape() {
@@ -434,6 +503,16 @@ fn no_grant_authorises_a_documented_root_escape() {
         grants.iter().any(|g| grant_allows(g, &reaper)),
         "no grant admits the action-timeout reaper's `sudo {REAPER_ARGV}`, so a \
          timed-out root child would never be signalled"
+    );
+
+    let cancel: Vec<String> = REAPER_CANCEL_ARGV
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    assert!(
+        grants.iter().any(|g| grant_allows(g, &cancel)),
+        "no grant admits the action-timeout reaper's `sudo -n {REAPER_CANCEL_ARGV}`, \
+         so a timed-out rpm-ostree transaction would never be cancelled"
     );
 
     let mut admitted = Vec::new();

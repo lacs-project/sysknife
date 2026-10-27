@@ -14,11 +14,12 @@ use crate::actions::{
         validated_journal_time, validated_locale, validated_log_path, validated_log_rotation,
         validated_lvm_name, validated_lvm_size, validated_memory_limit, validated_mount_device,
         validated_mount_options, validated_mount_point, validated_port_or_service,
-        validated_ppa_name, validated_pro_service, validated_resource_limit_unit,
-        validated_safe_arg, validated_stoppable_unit, validated_sudo_commands,
-        validated_sudoers_name, validated_swap_path, validated_sysctl_key, validated_sysctl_value,
-        validated_syslog_host, validated_tasks_max, validated_timezone, validated_unit_name,
-        validated_unmodified_package, validated_username, validated_username_not_critical,
+        validated_ppa_name, validated_pro_service, validated_rebase_ref,
+        validated_resource_limit_unit, validated_safe_arg, validated_stoppable_unit,
+        validated_sudo_commands, validated_sudoers_name, validated_swap_path, validated_sysctl_key,
+        validated_sysctl_value, validated_syslog_host, validated_tasks_max, validated_timezone,
+        validated_unit_name, validated_unmodified_package, validated_username,
+        validated_username_not_critical,
     },
     ActionMechanism, ActionSpec,
 };
@@ -833,7 +834,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "UnpinDeployment" => Ok(deployment::unpin_deployment(require_u32(params, "index")?)),
         "RebaseSystem" => {
             let target_ref = require_str(params, "target_ref")?;
-            let target_ref = validated_safe_arg(target_ref, "target_ref")?;
+            let target_ref = validated_rebase_ref(target_ref, "target_ref")?;
             Ok(deployment::rebase_system(&target_ref))
         }
         "SetKernelArguments" => {
@@ -3058,6 +3059,73 @@ mod tests {
         );
     }
 
+    /// The root-owned helper `packaging/sysknife-action-steps` validates every
+    /// rpm-ostree operand again, because it is reachable through sudo without the
+    /// daemon. Both copies read `tests/data/rpm-ostree-parity.txt`; the helper's
+    /// side is `class RpmOstreeVerb` in `tests/release/action-steps.test.sh`.
+    #[test]
+    fn rpm_ostree_parity_corpus_agrees_with_the_daemon_validators() {
+        let corpus = include_str!("../tests/data/rpm-ostree-parity.txt");
+        let mut seen: std::collections::BTreeSet<(String, String)> = Default::default();
+        let mut checked = 0;
+        for (index, line) in corpus.lines().enumerate() {
+            let number = index + 1;
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut parts = line.splitn(3, ' ');
+            let (Some(kind), Some(verdict), Some(operand)) =
+                (parts.next(), parts.next(), parts.next())
+            else {
+                panic!("corpus line {number} is not `<kind> <ok|refuse> <operand>`: {line:?}");
+            };
+            let accepted = match kind {
+                "package" => validated_install_package(operand, "package").is_ok(),
+                "ref" => validated_rebase_ref(operand, "target_ref").is_ok(),
+                "append" => validated_safe_kernel_arg(operand, "add").is_ok(),
+                "delete" => validated_safe_kernel_arg_removal(operand, "remove").is_ok(),
+                other => panic!("corpus line {number}: unknown kind {other:?}"),
+            };
+            match verdict {
+                "ok" => assert!(
+                    accepted,
+                    "corpus line {number}: `{kind} {operand}` must be accepted"
+                ),
+                "refuse" => assert!(
+                    !accepted,
+                    "corpus line {number}: `{kind} {operand}` must be refused"
+                ),
+                other => panic!("corpus line {number}: unknown verdict {other:?}"),
+            }
+            seen.insert((kind.to_string(), verdict.to_string()));
+            checked += 1;
+        }
+        assert!(
+            checked >= 60,
+            "only {checked} corpus lines were checked; the corpus was truncated or not parsed"
+        );
+        for kind in ["package", "ref", "append", "delete"] {
+            for verdict in ["ok", "refuse"] {
+                assert!(
+                    seen.contains(&(kind.to_string(), verdict.to_string())),
+                    "the corpus has no `{kind} {verdict}` line, so that half is unchecked"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rebase_system_refuses_a_local_source() {
+        for target_ref in ["/tmp/repo", "ostree-unverified-image:oci:/tmp/img"] {
+            let err = build_action_spec("RebaseSystem", &json!({ "target_ref": target_ref }))
+                .unwrap_err();
+            assert!(
+                matches!(err, ExecutorError::InvalidParam("target_ref")),
+                "{target_ref:?}: expected InvalidParam(target_ref), got: {err}"
+            );
+        }
+    }
+
     #[test]
     fn build_spec_rebase_system_injects_target_ref() {
         let spec = build_action_spec(
@@ -3070,6 +3138,7 @@ mod tests {
             ActionMechanism::Command {
                 program: "sudo",
                 args: vec![
+                    "/usr/lib/sysknife/action-steps".to_string(),
                     "rpm-ostree".to_string(),
                     "rebase".to_string(),
                     "fedora/41/x86_64/silverblue".to_string(),
@@ -3090,10 +3159,13 @@ mod tests {
             ActionMechanism::Command {
                 program: "sudo",
                 args: vec![
+                    "/usr/lib/sysknife/action-steps".to_string(),
                     "rpm-ostree".to_string(),
                     "kargs".to_string(),
-                    "--append=nomodeset".to_string(),
-                    "--delete=quiet".to_string(),
+                    "append".to_string(),
+                    "nomodeset".to_string(),
+                    "delete".to_string(),
+                    "quiet".to_string(),
                 ],
             }
         );
@@ -3107,7 +3179,11 @@ mod tests {
             spec.mechanism,
             ActionMechanism::Command {
                 program: "sudo",
-                args: vec!["rpm-ostree".to_string(), "kargs".to_string()],
+                args: vec![
+                    "/usr/lib/sysknife/action-steps".to_string(),
+                    "rpm-ostree".to_string(),
+                    "kargs".to_string(),
+                ],
             }
         );
     }
@@ -3119,7 +3195,11 @@ mod tests {
             spec.mechanism,
             ActionMechanism::Command {
                 program: "sudo",
-                args: vec!["rpm-ostree".to_string(), "kargs".to_string()],
+                args: vec![
+                    "/usr/lib/sysknife/action-steps".to_string(),
+                    "rpm-ostree".to_string(),
+                    "kargs".to_string(),
+                ],
             }
         );
     }
@@ -3369,6 +3449,45 @@ mod tests {
             ),
             root_group_kill_argv("TERM", 99)
         );
+    }
+
+    /// The operand-taking rpm-ostree actions moved behind `action-steps
+    /// rpm-ostree`, and the transaction still runs in rpm-ostreed's cgroup, so a
+    /// timed-out one must still be cancelled rather than group-killed.
+    /// tests/sudoers_grants_match_argv.rs checks a grant admits the cancel argv.
+    #[test]
+    fn reap_command_still_cancels_an_rpm_ostree_action_behind_the_helper() {
+        for name in [
+            "AddLayeredPackage",
+            "InstallPackages",
+            "RemovePackages",
+            "RemoveLayeredPackage",
+            "ReplaceLayeredPackage",
+            "RemoveBasePackage",
+            "RebaseSystem",
+            "SetKernelArguments",
+        ] {
+            let params = match name {
+                "InstallPackages" | "RemovePackages" => json!({"packages": ["vim"]}),
+                "ReplaceLayeredPackage" => json!({"old": "vim", "new": "nano"}),
+                "RebaseSystem" => json!({"target_ref": "fedora:fedora/41/x86_64/silverblue"}),
+                "SetKernelArguments" => json!({"add": ["quiet"]}),
+                _ => json!({"package": "vim"}),
+            };
+            let spec = build_action_spec(name, &params).unwrap();
+            let ActionMechanism::Command { program, args } = &spec.mechanism else {
+                panic!("{name} is not a command");
+            };
+            assert_eq!(
+                args[0], "/usr/lib/sysknife/action-steps",
+                "{name}: {args:?}"
+            );
+            assert_eq!(
+                reap_command(99, program, args),
+                vec!["-n", "/usr/bin/rpm-ostree", "cancel"],
+                "{name} would be group-killed while its transaction runs on"
+            );
+        }
     }
 
     #[test]

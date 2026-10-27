@@ -28,9 +28,9 @@ class ShellGrants(unittest.TestCase):
     def test_no_unrestricted_helper_grant(self):
         grants = [line for line in Path('packaging/sysknife-sudoers').read_text(encoding='utf-8').splitlines()
                   if line.startswith('sysknife ') and '/action-steps' in line]
-        self.assertEqual(len(grants), 22)
+        self.assertEqual(len(grants), 23)
         for grant in grants:
-            self.assertRegex(grant, r'/action-steps (firewall|group-add|group-remove|snap-install-hold|ssh-add|ssh-remove|flatpak|podman|toolbox|user-create|user-lock|user-unlock|unit|signal|user-delete|group-create|group-delete|password-aging|lv-extend|lv-create|lv-snapshot|apt) \*$')
+            self.assertRegex(grant, r'/action-steps (firewall|group-add|group-remove|snap-install-hold|ssh-add|ssh-remove|flatpak|podman|toolbox|user-create|user-lock|user-unlock|unit|signal|user-delete|group-create|group-delete|password-aging|lv-extend|lv-create|lv-snapshot|apt|rpm-ostree) \*$')
 
     def test_no_useradd_usermod_or_unit_verb_grant_remains(self):
         # The escapes GHSA-j9c3-j2qr-65c4 named matched the "narrowed" grants
@@ -841,6 +841,338 @@ class AptVerb(unittest.TestCase):
     def test_apt_is_granted_only_through_the_helper(self):
         grants = [l for l in self.live_grants() if re.search(r'/action-steps apt\b', l)]
         self.assertEqual(grants, ['sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps apt *'])
+
+
+class RpmOstreeVerb(unittest.TestCase):
+    """The verb that replaced the `/usr/bin/rpm-ostree <subcommand> *` grants.
+
+    A trailing `*` takes rpm-ostree's own options and operands, so the sysknife
+    account could append any kernel argument, layer a local package whose
+    scriptlets run as root, or rebase onto any image, with no preview, no approval
+    receipt and no audit row. sudoers cannot say "and no options", so every
+    rpm-ostree call that takes an operand goes through `action-steps rpm-ostree`,
+    which rebuilds the argv from an allowlist."""
+
+    R = '/usr/bin/rpm-ostree'
+    CORPUS = 'crates/sysknife-daemon/tests/data/rpm-ostree-parity.txt'
+    SYSTEM_ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8'}
+
+    def calls_for(self, args):
+        with mock.patch.dict(helper, run=mock.Mock()) as patched:
+            helper['main'](args)
+            return [call.args[0] for call in patched['run'].call_args_list]
+
+    def test_builds_the_argv_the_daemon_used_to_build_itself(self):
+        R = self.R
+        for args, expected in [
+            (['rpm-ostree', 'install', 'podman'], [R, 'install', '--idempotent', 'podman']),
+            (['rpm-ostree', 'install', 'podman', 'vim', 'g++'],
+             [R, 'install', '--idempotent', 'podman', 'vim', 'g++']),
+            (['rpm-ostree', 'install', 'python3.12'], [R, 'install', '--idempotent', 'python3.12']),
+            (['rpm-ostree', 'uninstall', 'podman'], [R, 'uninstall', 'podman']),
+            (['rpm-ostree', 'uninstall', 'podman', 'vim'], [R, 'uninstall', 'podman', 'vim']),
+            (['rpm-ostree', 'replace', 'vim', 'neovim'], [R, 'install', 'neovim', '--uninstall', 'vim']),
+            (['rpm-ostree', 'override-remove', 'gedit'], [R, 'override', 'remove', 'gedit']),
+            (['rpm-ostree', 'rebase', 'fedora/41/x86_64/silverblue'],
+             [R, 'rebase', 'fedora/41/x86_64/silverblue']),
+            (['rpm-ostree', 'rebase', 'fedora:fedora/41/x86_64/silverblue'],
+             [R, 'rebase', 'fedora:fedora/41/x86_64/silverblue']),
+            (['rpm-ostree', 'rebase', 'ostree-unverified-registry:quay.io/fedora/fedora-silverblue:41'],
+             [R, 'rebase', 'ostree-unverified-registry:quay.io/fedora/fedora-silverblue:41']),
+            (['rpm-ostree', 'rebase', 'ostree-image-signed:docker://quay.io/fedora/fedora-silverblue:41'],
+             [R, 'rebase', 'ostree-image-signed:docker://quay.io/fedora/fedora-silverblue:41']),
+            (['rpm-ostree', 'kargs'], [R, 'kargs']),
+            (['rpm-ostree', 'kargs', 'append', 'nomodeset', 'delete', 'quiet'],
+             [R, 'kargs', '--append=nomodeset', '--delete=quiet']),
+            (['rpm-ostree', 'kargs', 'append', 'console=ttyS0,115200', 'append', 'quiet'],
+             [R, 'kargs', '--append=console=ttyS0,115200', '--append=quiet']),
+            # Removing a downgrade hardens the host, so it stays allowed.
+            (['rpm-ostree', 'kargs', 'delete', 'mitigations=off'], [R, 'kargs', '--delete=mitigations=off']),
+        ]:
+            with self.subTest(args=args):
+                self.assertEqual(self.calls_for(args), [expected])
+
+    def test_refuses_what_the_wildcard_grants_admitted(self):
+        bad = [
+            # kargs: a root shell or a weaker boot at the next start.
+            ['rpm-ostree', 'kargs', 'append', 'init=/bin/sh'],
+            ['rpm-ostree', 'kargs', '--append=init=/bin/sh'],
+            ['rpm-ostree', 'kargs', '--append', 'init=/bin/sh'],
+            ['rpm-ostree', 'kargs', 'append', 'quiet init=/bin/sh'],
+            ['rpm-ostree', 'kargs', 'append', 'INIT=/bin/sh'],
+            ['rpm-ostree', 'kargs', 'append', 'rdinit=/bin/sh'],
+            ['rpm-ostree', 'kargs', 'append', 'systemd.unit=debug-shell.service'],
+            ['rpm-ostree', 'kargs', 'append', 'rd.systemd.unit=emergency.target'],
+            ['rpm-ostree', 'kargs', 'append', 'systemd.debug_shell'],
+            ['rpm-ostree', 'kargs', 'append', 'systemd.run=/tmp/x'],
+            ['rpm-ostree', 'kargs', 'append', 'rd.break'],
+            ['rpm-ostree', 'kargs', 'append', 'single'],
+            ['rpm-ostree', 'kargs', 'append', 'emergency'],
+            ['rpm-ostree', 'kargs', 'append', '3'],
+            ['rpm-ostree', 'kargs', 'append', 'selinux=0'],
+            ['rpm-ostree', 'kargs', 'append', 'lockdown=integrity'],
+            ['rpm-ostree', 'kargs', 'append', 'mitigations=off'],
+            ['rpm-ostree', 'kargs', 'append', 'module.sig_enforce=0'],
+            ['rpm-ostree', 'kargs', 'append', 'nokaslr'],
+            ['rpm-ostree', 'kargs', 'delete', 'lockdown=confidentiality'],
+            ['rpm-ostree', 'kargs', 'delete', 'module.sig_enforce=1'],
+            ['rpm-ostree', 'kargs', 'delete', 'selinux=1'],
+            ['rpm-ostree', 'kargs', 'delete', 'kaslr'],
+            ['rpm-ostree', 'kargs', 'append', '-b'], ['rpm-ostree', 'kargs', 'append', ''],
+            ['rpm-ostree', 'kargs', 'append', 'quiet\n'], ['rpm-ostree', 'kargs', 'append', 'a' * 255],
+            ['rpm-ostree', 'kargs', 'append', 'quiet"'], ['rpm-ostree', 'kargs', 'append', 'quiet\tinit=/bin/sh'],
+            ['rpm-ostree', 'kargs', 'append'], ['rpm-ostree', 'kargs', 'delete'],
+            ['rpm-ostree', 'kargs', 'append', 'quiet', 'delete'],
+            ['rpm-ostree', 'kargs', 'prepend', 'quiet'], ['rpm-ostree', 'kargs', 'replace', 'quiet=1'],
+            ['rpm-ostree', 'kargs', 'append-if-missing', 'quiet'], ['rpm-ostree', 'kargs', 'APPEND', 'quiet'],
+            ['rpm-ostree', 'kargs', '--editor'], ['rpm-ostree', 'kargs', '--import-proc-cmdline'],
+            ['rpm-ostree', 'kargs', '--deploy-index=1', 'append', 'quiet'],
+            ['rpm-ostree', 'kargs', 'append=quiet'],
+            # install / uninstall / replace / override-remove: a local package runs its
+            # scriptlets as root in the next deployment.
+            ['rpm-ostree', 'install', '/tmp/x.rpm'], ['rpm-ostree', 'install', './x.rpm'],
+            ['rpm-ostree', 'install', 'x.rpm'], ['rpm-ostree', 'install', 'podman', '/tmp/x.rpm'],
+            ['rpm-ostree', 'install', 'https://203.0.113.7/x.rpm'],
+            ['rpm-ostree', 'install', 'file:///tmp/x.rpm'],
+            ['rpm-ostree', 'install', '--idempotent', 'podman'], ['rpm-ostree', 'install', '-A', 'podman'],
+            ['rpm-ostree', 'install', '--apply-live', 'podman'], ['rpm-ostree', 'install', 'podman', '-r'],
+            ['rpm-ostree', 'install', 'podman', '--uninstall', 'bash'],
+            ['rpm-ostree', 'install', '--', 'podman'], ['rpm-ostree', 'install', 'podman-'],
+            ['rpm-ostree', 'install', 'podman\n'], ['rpm-ostree', 'install', ''],
+            ['rpm-ostree', 'install', ' podman'], ['rpm-ostree', 'install', 'pod*'],
+            ['rpm-ostree', 'install', 'a' * 129],
+            ['rpm-ostree', 'uninstall', '--all'], ['rpm-ostree', 'uninstall', '-r', 'podman'],
+            ['rpm-ostree', 'uninstall', '/tmp/x.rpm'], ['rpm-ostree', 'uninstall', 'podman', '--install=/tmp/x.rpm'],
+            ['rpm-ostree', 'replace', 'vim', '/tmp/x.rpm'], ['rpm-ostree', 'replace', '/tmp/x.rpm', 'vim'],
+            ['rpm-ostree', 'replace', 'vim', '--uninstall'], ['rpm-ostree', 'replace', 'vim'],
+            ['rpm-ostree', 'replace', 'vim', 'neovim', 'emacs'],
+            ['rpm-ostree', 'override-remove', 'gedit', '--replace=/tmp/x.rpm'],
+            ['rpm-ostree', 'override-remove', '--replace', '/tmp/x.rpm'],
+            ['rpm-ostree', 'override-remove', 'gedit', 'vim'], ['rpm-ostree', 'override-remove'],
+            ['rpm-ostree', 'override-remove', '/tmp/x.rpm'],
+            # rebase: a local repository or a local image is an arbitrary OS image.
+            ['rpm-ostree', 'rebase', '/tmp/repo'], ['rpm-ostree', 'rebase', './repo'],
+            ['rpm-ostree', 'rebase', '../repo'], ['rpm-ostree', 'rebase', 'fedora:../../tmp/x'],
+            ['rpm-ostree', 'rebase', 'ostree-unverified-image:oci:/tmp/img'],
+            ['rpm-ostree', 'rebase', 'ostree-unverified-image:OCI:/tmp/img'],
+            ['rpm-ostree', 'rebase', 'ostree-unverified-image:oci-archive:/tmp/img.tar'],
+            ['rpm-ostree', 'rebase', 'ostree-unverified-image:dir:/tmp/img'],
+            ['rpm-ostree', 'rebase', 'ostree-unverified-image:docker-archive:/tmp/img.tar'],
+            ['rpm-ostree', 'rebase', 'ostree-unverified-image:containers-storage:localhost/x'],
+            ['rpm-ostree', 'rebase', 'ostree-unverified-image:docker-daemon:x:latest'],
+            ['rpm-ostree', 'rebase', 'ostree-unverified-image:ostree:x@/tmp/repo'],
+            ['rpm-ostree', 'rebase', 'ostree-unverified-image:sif:/tmp/x.sif'],
+            ['rpm-ostree', 'rebase', 'ostree-unverified-image:tarball:/tmp/x.tar'],
+            ['rpm-ostree', 'rebase', 'file:///tmp/repo'], ['rpm-ostree', 'rebase', 'x:/tmp/repo'],
+            ['rpm-ostree', 'rebase', '-b', 'x'], ['rpm-ostree', 'rebase', '--experimental'],
+            ['rpm-ostree', 'rebase', 'fedora', '--branch=x'], ['rpm-ostree', 'rebase', 'fedora', 'x'],
+            ['rpm-ostree', 'rebase'], ['rpm-ostree', 'rebase', ''], ['rpm-ostree', 'rebase', 'fedora\n'],
+            ['rpm-ostree', 'rebase', 'fedora 41'], ['rpm-ostree', 'rebase', 'a' * 255],
+            # Subcommands with an exact grant of their own, or none at all.
+            ['rpm-ostree'], ['rpm-ostree', ''], ['rpm-ostree', 'install'], ['rpm-ostree', 'uninstall'],
+            ['rpm-ostree', 'upgrade'], ['rpm-ostree', 'rollback'], ['rpm-ostree', 'cleanup', '--rollback'],
+            ['rpm-ostree', 'override', 'remove', 'gedit'], ['rpm-ostree', 'override', 'replace', '/tmp/x.rpm'],
+            ['rpm-ostree', 'override-replace', 'x'], ['rpm-ostree', 'override-reset', '--all'],
+            ['rpm-ostree', 'status'], ['rpm-ostree', 'deploy', 'x'], ['rpm-ostree', 'apply-live'],
+            ['rpm-ostree', 'usroverlay'], ['rpm-ostree', 'initramfs', '--enable'],
+            ['rpm-ostree', 'initramfs-etc', '--track=/etc/x'], ['rpm-ostree', 'reset'],
+            ['rpm-ostree', 'refresh-md'], ['rpm-ostree', 'compose', 'tree'], ['rpm-ostree', 'ex'],
+            ['rpm-ostree', 'cancel'], ['rpm-ostree', 'INSTALL', 'podman'], ['rpm-ostree', 'install ', 'podman'],
+            ['rpm-ostree', '--version'], ['rpm-ostree', '-h'],
+        ]
+        runner = mock.Mock(side_effect=AssertionError('must not execute'))
+        with mock.patch.dict(helper, run=runner):
+            for args in bad:
+                with self.subTest(args=args), self.assertRaises(ValueError):
+                    helper['main'](args)
+        runner.assert_not_called()
+
+    def test_the_callers_environment_never_reaches_rpm_ostree(self):
+        hostile = {'LD_PRELOAD': '/tmp/evil.so', 'PATH': '/tmp/bin:/usr/bin',
+                   'RPMOSTREE_CLIENT_ID': 'x', 'G_DEBUG': 'fatal-warnings'}
+        completed = subprocess.CompletedProcess([], 0)
+        with mock.patch.dict(os.environ, hostile), \
+                mock.patch.object(subprocess, 'run', return_value=completed) as ran:
+            helper['main'](['rpm-ostree', 'install', 'podman'])
+        ran.assert_called_once_with([self.R, 'install', '--idempotent', 'podman'],
+                                    check=True, env=self.SYSTEM_ENV)
+
+    def test_a_failing_rpm_ostree_stops_the_verb_with_its_exit_status(self):
+        failure = subprocess.CalledProcessError(77, [self.R, 'rebase', 'fedora'])
+        with mock.patch.dict(helper, run=mock.Mock(side_effect=failure)):
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                helper['main'](['rpm-ostree', 'rebase', 'fedora'])
+        self.assertEqual(caught.exception.returncode, 77)
+
+    def production_rust(self, path):
+        rust = Path(path).read_text(encoding='utf-8')
+        # The unit tests below `#[cfg(test)]` spell the same argv, and reading them
+        # would hide a constructor that stopped sending a verb.
+        self.assertEqual(rust.count('#[cfg(test)]'), 1, f'{path}: test module marker not found')
+        return rust.split('#[cfg(test)]')[0]
+
+    def test_verbs_are_the_ones_the_daemon_sends(self):
+        # Derived from the daemon, not restated. A verb the daemon sends without a
+        # helper branch fails after the operator approved it; a verb the helper
+        # accepts that the daemon never sends is surface nobody needs.
+        sent = set()
+        for path in ('crates/sysknife-daemon/src/actions/layering.rs',
+                     'crates/sysknife-daemon/src/actions/deployment.rs'):
+            sent |= set(re.findall(r'ACTION_STEPS,\s*"rpm-ostree",\s*"([a-z-]+)"', self.production_rust(path)))
+        self.assertTrue(sent, 'the daemon sends no rpm-ostree verb; this check inspected nothing')
+        self.assertEqual(sent, set(helper['RPM_OSTREE_VERBS']))
+
+    def test_no_privileged_action_builds_a_direct_rpm_ostree_argv_with_an_operand(self):
+        # Every `sudo rpm-ostree ...` left in the daemon must be one of the fixed argvs
+        # with an exact grant. Anything else needs a wildcard to be admitted.
+        fixed = {('upgrade',), ('rollback',), ('cleanup', '--rollback', '--pending'),
+                 ('override', 'reset', '--all')}
+        found = set()
+        for path in ('crates/sysknife-daemon/src/actions/layering.rs',
+                     'crates/sysknife-daemon/src/actions/deployment.rs'):
+            for body in re.findall(r'command_mechanism\(\s*"sudo",\s*\[\s*"rpm-ostree",([^\]]*)\]',
+                                   self.production_rust(path)):
+                found.add(tuple(re.findall(r'"([^"]*)"', body)))
+            self.assertNotRegex(self.production_rust(path), r'once\("rpm-ostree"\)',
+                                f'{path} still chains a direct rpm-ostree argv')
+        self.assertEqual(found, fixed)
+
+    def grub(self):
+        from importlib.machinery import SourceFileLoader
+        import importlib.util
+        loader = SourceFileLoader('grub_kargs_edit', 'packaging/sysknife-grub-kargs-edit')
+        spec = importlib.util.spec_from_loader('grub_kargs_edit', loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        return module
+
+    def test_kargs_denylists_are_the_grub_helpers_element_by_element(self):
+        # One policy, two copies: grub-kargs-edit screens GrubSetKargs and this verb
+        # screens SetKernelArguments. tests/release/grub-kargs-edit.test.sh holds the
+        # grub copy to the daemon's lists; this holds this copy to the grub one.
+        grub = self.grub()
+        for mine, theirs in [('KARG_DENY_APPEND_PREFIXES', 'DENY_APPEND_PREFIXES'),
+                             ('KARG_DENY_APPEND_EXACT', 'DENY_APPEND_EXACT'),
+                             ('ROOT_SHELL_UNITS', 'DENY_UNIT_TARGETS'),
+                             ('KARG_DENY_DELETE_PREFIXES', 'DENY_DELETE_PREFIXES'),
+                             ('KARG_DENY_DELETE_EXACT', 'DENY_DELETE_EXACT'),
+                             ('KARG_WEAKENING', 'WEAKENING_KARGS')]:
+            with self.subTest(list=mine):
+                theirs_value = getattr(grub, theirs)
+                self.assertTrue(theirs_value, f'grub-kargs-edit has an empty {theirs}')
+                self.assertEqual(sorted(helper[mine]), sorted(theirs_value))
+
+    def test_kargs_screens_decide_like_the_grub_helper(self):
+        # Equal lists are not equal decisions: the screens around them could differ.
+        grub = self.grub()
+        tokens = ['quiet', 'nomodeset', 'console=ttyS0', 'init=/bin/sh', 'INIT=/x', 'rdinit=/x',
+                  'single', 'SINGLE', 's', '1', '2', '5', '6', 'emergency', 'rescue', 'rd.emergency',
+                  'systemd.unit=debug-shell.service', 'systemd.unit=multi-user.target',
+                  'rd.systemd.unit=rescue.target', 'systemd.unit=runlevel1.target',
+                  'systemd.debug_shell', 'systemd.debug-shell=1', 'systemd.run=/x',
+                  'systemd.run_success_action=reboot', 'rd.break', 'rd.break=pre-mount', 'break',
+                  'breakfast', 'selinux=0', 'selinux=1', 'enforcing=0', 'enforcing=1',
+                  'security=none', 'apparmor=0', 'apparmor=01', 'apparmor=1', 'lockdown=none',
+                  'lockdown=integrity', 'lockdown=confidentiality', 'mitigations=off',
+                  'mitigations=auto', 'pti=off', 'pti=on', 'nosmap', 'nosmep', 'nokaslr', 'kaslr',
+                  'module.sig_enforce=0', 'module.sig_enforce=1', 'module_blacklist=x',
+                  'init_on_alloc=0', 'init_on_free=1', 'slab_nomerge', 'nosmt', 'debugfs=on',
+                  'debugfs=off', 'iommu=off', 'intel_iommu=on', 'amd_iommu=force_isolation',
+                  'vsyscall=none', 'slub_debug=FZP', 'page_poison=1', 'page_alloc.shuffle=0',
+                  'randomize_kstack_offset=off', 'single=1', 'emergency=1']
+
+        def grub_refuses(screen, token):
+            try:
+                getattr(grub, screen)([token])
+            except SystemExit as exc:
+                return exc.code != 0
+            return False
+
+        def helper_refuses(op, token):
+            with mock.patch.dict(helper, run=mock.Mock()):
+                try:
+                    helper['main'](['rpm-ostree', 'kargs', op, token])
+                except ValueError:
+                    return True
+            return False
+
+        for token in tokens:
+            with self.subTest(token=token):
+                self.assertEqual(helper_refuses('append', token), grub_refuses('reject_dangerous_append', token))
+                self.assertEqual(helper_refuses('delete', token), grub_refuses('reject_dangerous_delete', token))
+
+    def test_local_image_transports_are_the_daemons(self):
+        rust = Path('crates/sysknife-daemon/src/actions/validate.rs').read_text(encoding='utf-8')
+        block = re.search(r'pub const LOCAL_IMAGE_TRANSPORTS: &\[&str\] = &\[(.*?)\];', rust, re.S)
+        self.assertIsNotNone(block, 'LOCAL_IMAGE_TRANSPORTS not found in validate.rs')
+        daemon = re.findall(r'"([^"]+)"', block.group(1))
+        self.assertTrue(daemon, 'LOCAL_IMAGE_TRANSPORTS parsed empty; this check inspected nothing')
+        self.assertEqual(sorted(helper['LOCAL_IMAGE_TRANSPORTS']), sorted(daemon))
+
+    def test_operands_agree_with_the_daemon_corpus(self):
+        # The daemon's validated_install_package, validated_rebase_ref,
+        # validated_safe_kernel_arg and validated_safe_kernel_arg_removal read the same
+        # file in executor.rs's unit tests. Two copies of a rule drift; one corpus both
+        # must satisfy is what stops that.
+        argv_for = {
+            'package': lambda v: ['rpm-ostree', 'install', v],
+            'ref': lambda v: ['rpm-ostree', 'rebase', v],
+            'append': lambda v: ['rpm-ostree', 'kargs', 'append', v],
+            'delete': lambda v: ['rpm-ostree', 'kargs', 'delete', v],
+        }
+        runner = mock.Mock()
+        seen, checked = set(), 0
+        lines = Path(self.CORPUS).read_text(encoding='utf-8').splitlines()
+        with mock.patch.dict(helper, run=runner):
+            for number, line in enumerate(lines, 1):
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split(' ', 2)
+                self.assertEqual(len(parts), 3, f'corpus line {number} does not parse: {line!r}')
+                kind, verdict, operand = parts
+                self.assertIn(verdict, ('ok', 'refuse'), f'corpus line {number}')
+                self.assertIn(kind, argv_for, f'corpus line {number}')
+                runner.reset_mock()
+                with self.subTest(line=number, kind=kind, operand=operand):
+                    if verdict == 'ok':
+                        helper['main'](argv_for[kind](operand))
+                        runner.assert_called_once()
+                    else:
+                        with self.assertRaises(ValueError):
+                            helper['main'](argv_for[kind](operand))
+                        runner.assert_not_called()
+                seen.add((kind, verdict))
+                checked += 1
+        self.assertGreaterEqual(checked, 60, 'the corpus was truncated or not parsed')
+        for kind in argv_for:
+            for verdict in ('ok', 'refuse'):
+                self.assertIn((kind, verdict), seen, f'the corpus has no `{kind} {verdict}` line')
+        # Every package verb applies the same rule as `install`.
+        for verb in (['uninstall'], ['override-remove']):
+            with mock.patch.dict(helper, run=mock.Mock()):
+                with self.assertRaises(ValueError):
+                    helper['main'](['rpm-ostree', *verb, '/tmp/x.rpm'])
+
+    def live_grants(self):
+        text = Path('packaging/sysknife-sudoers').read_text(encoding='utf-8')
+        return [l for l in text.splitlines() if l.startswith('sysknife ')]
+
+    def test_no_rpm_ostree_grant_ends_in_a_wildcard(self):
+        live = self.live_grants()
+        self.assertTrue(live, 'parsed no sudoers grants; this check inspected nothing')
+        direct = [l for l in live if re.search(r'NOPASSWD:\s*/usr/bin/rpm-ostree\b', l)]
+        self.assertTrue(direct, 'no direct rpm-ostree grant at all; the fixed argvs need one each')
+        wildcard = [l for l in direct if '*' in l]
+        self.assertEqual(wildcard, [], f'rpm-ostree takes any argument again: {wildcard}')
+        # The fixed argvs, each granted exactly: the four actions that take no
+        # operand, and the action-timeout reaper's `rpm-ostree cancel`.
+        arguments = sorted(' '.join(l.split('NOPASSWD:', 1)[1].split()[1:]) for l in direct)
+        self.assertEqual(arguments, sorted(['upgrade', 'rollback', 'cleanup --rollback --pending',
+                                            'override reset --all', 'cancel']))
+
+    def test_rpm_ostree_operands_are_granted_only_through_the_helper(self):
+        grants = [l for l in self.live_grants() if re.search(r'/action-steps rpm-ostree\b', l)]
+        self.assertEqual(grants, ['sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps rpm-ostree *'])
 
 
 unittest.main(verbosity=2)

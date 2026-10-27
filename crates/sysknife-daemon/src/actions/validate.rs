@@ -656,6 +656,54 @@ pub fn validated_safe_arg(s: &str, param: &'static str) -> Result<String, Execut
     Ok(s.to_string())
 }
 
+/// The containers-image transports that read an image from this host rather
+/// than from a registry. `packaging/sysknife-action-steps` holds the same list,
+/// and `tests/release/action-steps.test.sh` compares the two.
+pub const LOCAL_IMAGE_TRANSPORTS: &[&str] = &[
+    "oci",
+    "oci-archive",
+    "dir",
+    "docker-archive",
+    "docker-daemon",
+    "containers-storage",
+    "ostree",
+    "sif",
+    "tarball",
+    "file",
+];
+
+/// Validate the target of `RebaseSystem`: [`validated_safe_arg`], and no local
+/// source.
+///
+/// `rpm-ostree rebase` boots whatever the target names. An ostree
+/// `remote:ref` or a registry image (`ostree-unverified-registry:quay.io/...`,
+/// `ostree-image-signed:docker://...`) is fetched from a source the host already
+/// trusts or the operator approved by name. A target that reads from this host
+/// (`ostree-unverified-image:oci:/tmp/img`, a repository path) is an OS image
+/// whoever can write a file put there, and [`validated_safe_arg`] admits it.
+///
+/// Split on `:`, no part may be one of [`LOCAL_IMAGE_TRANSPORTS`] (any case),
+/// start with `.`, or start with `/` unless it is the `//` that follows
+/// `docker`. `..` and `@/` (the repository path of the `ostree` transport) are
+/// refused anywhere. `packaging/sysknife-action-steps` repeats this rule for its
+/// `rpm-ostree rebase` verb, and both read `tests/data/rpm-ostree-parity.txt`.
+pub fn validated_rebase_ref(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    let target = validated_safe_arg(s, param)?;
+    let mut previous = String::new();
+    for part in target.split(':') {
+        let lower = part.to_ascii_lowercase();
+        let local_path = part.starts_with('/') && !(previous == "docker" && part.starts_with("//"));
+        if LOCAL_IMAGE_TRANSPORTS.contains(&lower.as_str()) || part.starts_with('.') || local_path {
+            return Err(ExecutorError::InvalidParam(param));
+        }
+        previous = lower;
+    }
+    if target.contains("..") || target.contains("@/") {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(target)
+}
+
 /// Validate an LVM volume-group / logical-volume / snapshot name.
 ///
 /// LVM permits `[a-zA-Z0-9+_.-]`; we additionally require the first character to
@@ -1936,6 +1984,46 @@ mod tests {
         }
         assert!(validated_apt_show_package("-nginx", "package").is_err());
         assert!(validated_apt_show_package("", "package").is_err());
+    }
+
+    /// `rpm-ostree rebase` boots whatever the target names. A target that reads
+    /// from this host (a repository path, `oci:/path`, `dir:/path`) is an OS image
+    /// the caller put on disk, which `validated_safe_arg` alone admits.
+    #[test]
+    fn rebase_ref_refuses_local_sources_and_keeps_remote_refs() {
+        for ok in [
+            "fedora/41/x86_64/silverblue",
+            "fedora:fedora/41/x86_64/silverblue",
+            "ostree-unverified-registry:quay.io/fedora/fedora-silverblue:41",
+            "ostree-image-signed:docker://quay.io/fedora/fedora-silverblue:41",
+        ] {
+            assert!(
+                validated_rebase_ref(ok, "target_ref").is_ok(),
+                "{ok:?} is a remote target and must stay valid"
+            );
+        }
+        for bad in [
+            "/tmp/repo",
+            "./repo",
+            "../repo",
+            "fedora:../../tmp/x",
+            "x:/tmp/repo",
+            "file:///tmp/repo",
+            "ostree-unverified-image:oci:/tmp/img",
+            "ostree-unverified-image:OCI:/tmp/img",
+            "ostree-unverified-image:dir:/tmp/img",
+            "ostree-unverified-image:containers-storage:localhost/x",
+            "ostree-unverified-image:ostree:x@/tmp/repo",
+            "ostree-unverified-image:docker:/tmp/x",
+            "-b",
+            "--experimental",
+            "",
+        ] {
+            assert!(
+                validated_rebase_ref(bad, "target_ref").is_err(),
+                "{bad:?} must be refused"
+            );
+        }
     }
 
     /// The root-owned helper `packaging/sysknife-action-steps` validates the same

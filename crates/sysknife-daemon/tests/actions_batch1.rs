@@ -182,9 +182,9 @@ fn layered_package_install_is_high_risk_and_uses_rpm_ostree() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
+                "/usr/lib/sysknife/action-steps".to_string(),
                 "rpm-ostree".to_string(),
                 "install".to_string(),
-                "--idempotent".to_string(),
                 "podman".to_string(),
             ],
         }
@@ -196,7 +196,9 @@ fn replace_layered_package_uses_install_uninstall_not_override_replace() {
     // Bug fix regression: the old command was `rpm-ostree override replace OLD NEW`
     // which is wrong (override replace takes an RPM file, not package names).
     // The correct command is `rpm-ostree install NEW --uninstall OLD` for an
-    // atomic layered-package swap in a single deployment transaction.
+    // atomic layered-package swap in a single deployment transaction. The daemon
+    // sends `action-steps rpm-ostree replace OLD NEW`, and the helper builds that
+    // argv; tests/release/action-steps.test.sh pins the helper's half.
     let spec = layering::replace_layered_package("vim", "neovim");
 
     assert_eq!(spec.action_name, "ReplaceLayeredPackage");
@@ -208,16 +210,16 @@ fn replace_layered_package_uses_install_uninstall_not_override_replace() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
+                "/usr/lib/sysknife/action-steps".to_string(),
                 "rpm-ostree".to_string(),
-                "install".to_string(),
-                "neovim".to_string(),
-                "--uninstall".to_string(),
+                "replace".to_string(),
                 "vim".to_string(),
+                "neovim".to_string(),
             ],
         }
     );
-    // Explicitly verify neither "override" nor "replace" appears — those are
-    // the wrong subcommands (rpm-ostree override replace is for local RPM files).
+    // Explicitly verify "override" does not appear: `rpm-ostree override replace`
+    // is for local RPM files.
     if let ActionMechanism::Command { args, .. } = &spec.mechanism {
         assert!(
             !args.contains(&"override".to_string()),
@@ -241,9 +243,9 @@ fn remove_base_package_uses_override_remove_not_uninstall() {
         ActionMechanism::Command {
             program: "sudo",
             args: vec![
+                "/usr/lib/sysknife/action-steps".to_string(),
                 "rpm-ostree".to_string(),
-                "override".to_string(),
-                "remove".to_string(),
+                "override-remove".to_string(),
                 "gedit".to_string(),
             ],
         }
