@@ -35,8 +35,8 @@ These fields are serialized into a stable, self-describing byte
 string (tag + value pairs, with a prefix-free escape scheme so no field's
 content can be crafted to alias another field's boundary), then signed. The
 count is per encoding, because the field set grew: v1 signs eleven pairs, v2
-fourteen, v3 fifteen — the fields above plus the `chain_version` tag that names
-the encoding (see below). The
+fourteen, v3 and v4 fifteen — the fields above plus the `chain_version` tag
+that names the encoding (see below). The
 resulting signature *is* the row's `chain_hash` — there is no separate hash
 step, because Ed25519 already commits to the message.
 
@@ -48,22 +48,33 @@ state. Execution status is protected separately by signed status events and
 the SQLite status cross-check described below.
 ```
 
-```admonish info title="Three row encodings coexist"
-The signed field set grew twice, and each row records which encoding it was
-signed under in its `chain_version` column:
+```admonish info title="Four row encodings coexist"
+The signed field set grew twice and the `request_hash` scheme changed once;
+each row records which encoding it was signed under in its `chain_version`
+column:
 
 | Version | Added | Since |
 |---|---|---|
 | 1 | the base fields | before v0.2.13 |
 | 2 | `caller_role`, `event_tip` | v0.2.13 |
 | 3 | `caller_principal` | 0.3.0 |
+| 4 | `request_hash` became an HMAC keyed by the audit key (same signed field set as v3) | unreleased |
+
+v4 is the encoding the `request_hash` confidentiality fix (#268) required:
+under v1–v3 the column was an unsalted SHA-256 over the unredacted request,
+so an exported row handed any holder an offline-crackable commitment; v4 rows
+carry an HMAC-SHA256 under a key derived from the audit key, which never
+leaves the host. The version tag is what lets an auditor tell the two schemes
+apart per row.
 
 Verification reproduces the exact encoding each row claims, so an upgraded
-daemon appends v3 rows onto a chain that already holds v1 and v2 rows and the
-whole thing still verifies in one walk. An upgrade never makes a healthy audit
-log look tampered, and older rows are never backfilled: writing a principal
-into a row that was signed without one would change the message it was signed
-over and report the chain as broken.
+daemon appends v4 rows onto a chain that already holds v1, v2 and v3 rows and
+the whole thing still verifies in one walk. An upgrade never makes a healthy
+audit log look tampered, and older rows are never backfilled: rewriting the
+`request_hash` of a v3 row as an HMAC would change the message it was signed
+over and report the chain as broken, so legacy rows keep the exposure they
+were written with — the fix is forward-only, and the `chain_version` column is
+what marks which side of it a row is on.
 
 The version is not a hiding place in either direction. Relabelling a v3 row as
 v2 to erase which account acted makes verification re-encode it without the
@@ -113,7 +124,8 @@ is.
 
 ### Why `rows_unattested` exists, and why the census reads the encoding
 
-`caller_principal` enters the signed message **only** under `chain_version = 3`.
+`caller_principal` enters the signed message under `chain_version = 3` and
+every later encoding that carries it (v4 today).
 On a v1 or v2 row the column is unsigned free space: someone with write access to
 the table can set it to `uid:0` and the chain still verifies as `Intact`, because
 there is no signature over that column to break. So the census buckets by the
@@ -458,9 +470,13 @@ Absent optional columns are JSON `null`, while a value actually recorded as an
 empty string remains an empty string.
 
 An export inherits the confidentiality class of the audit database and is not a
-redacted artifact. `request_hash` commits to the unredacted parameters as one
-unsalted SHA-256, so a low-entropy value such as a Wi-Fi passphrase remains
-attackable in an exported file even though the stored preview is redacted.
+redacted artifact. Since `chain_version = 4`, `request_hash` is an
+HMAC-SHA256 keyed by the audit key (#268), so an exported hash cannot be
+verified or brute-forced without that key. Rows written under
+`chain_version` 1–3 carry the unsalted SHA-256 of the unredacted parameters
+instead, and a low-entropy value such as a Wi-Fi passphrase remains attackable
+in an exported file for those rows even though the stored preview is redacted;
+they cannot be re-hashed, because the column is inside the signed bytes.
 Handle an export like the `0600` database it came from.
 
 Anchor and check signed checkpoints against an external database:

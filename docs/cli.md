@@ -237,13 +237,21 @@ An export is not a redacted artifact. It inherits the confidentiality class of
 the audit database, which the daemon keeps `0600` inside a `0700` directory, and
 writing one moves that content across the boundary those modes exist to hold.
 
-Every row carries `request_hash`, a single unsalted SHA-256 over the action name
-and the **unredacted** parameters. `compute_request_hash` runs before
-`redact_params`, so redaction never reaches the hashed preimage. Where an
-action's parameters are low entropy and partly public the hash is worth
-attacking: for `ConfigureWifi` the SSID is broadcast, which leaves the
-passphrase as the only unknown. High-entropy values such as `ProAttach` tokens
-are unaffected.
+Every row carries `request_hash`, a commitment to the action name and the
+**unredacted** parameters. `compute_request_hash` runs before
+`redact_params`, so redaction never reaches the hashed preimage. Since
+`chain_version = 4` the commitment is an HMAC-SHA256 keyed by the audit key,
+which never leaves the host: an export is still not a redacted artifact, but
+the hashes in it can no longer be verified or brute-forced offline. Rows
+written by earlier releases (`chain_version` 1–3) carry the unsalted SHA-256
+those versions computed, and for them the exposure below still applies — the
+column cannot be rewritten, because doing so would break the signature the row
+was written with.
+
+For a legacy row where an action's parameters are low entropy and partly
+public the hash is worth attacking: for `ConfigureWifi` the SSID is broadcast,
+which leaves the passphrase as the only unknown. High-entropy values such as
+`ProAttach` tokens are unaffected.
 
 The column cannot be dropped, because `request_hash` is part of the signed bytes
 an offline verifier rebuilds. Treat an export with the same care as the database

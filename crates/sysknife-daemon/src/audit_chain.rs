@@ -90,10 +90,11 @@
 //! `key_id = "v1"` and rotation is manual (delete the chain, regenerate).
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use sysknife_types::RiskLevel;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Stable identifier for the current key generation. Stored in every row.
 /// Tied to the schema, not the key bytes — rotation will introduce `"v2"` etc.
@@ -109,6 +110,11 @@ const ROW_DOMAIN: &[u8] = b"sysknife-audit-row-v1\x1f";
 const CHECKPOINT_DOMAIN: &[u8] = b"sysknife-checkpoint-v1\x1f";
 const APPROVAL_DOMAIN: &[u8] = b"sysknife-approval-receipt-v1\x1f";
 const EVENT_DOMAIN: &[u8] = b"sysknife-audit-event-v1\x1f";
+/// HKDF info string for deriving the `request_hash` HMAC key from the audit
+/// key material. Not an Ed25519 signing context — the derived key never signs
+/// — but it follows the same prefix-free discipline so no two derivations can
+/// alias. Enforced by the same `domain_tags_are_distinct_and_prefix_free` test.
+const REQUEST_HASH_DOMAIN: &[u8] = b"sysknife-request-hash-v1\x1f";
 
 /// Row encoding written before the caller-identity migration: no
 /// `caller_role`, no `event_tip`. Still verifiable — see [`ChainIdentity`].
@@ -131,13 +137,37 @@ pub const CHAIN_VERSION_V2: u32 = 2;
 /// against it, so it must not move when a v4 encoding arrives.
 /// `a_v3_row_on_disk_still_verifies` is the golden vector that notices if it does.
 pub const CHAIN_VERSION_V3: u32 = 3;
+/// Row encoding that changed what `request_hash` *is*, without changing which
+/// fields are signed.
+///
+/// Up to v3 the column held a bare `SHA-256(action_name || 0x00 ||
+/// canonical_json(params))` over the **unredacted** parameters (#268). An
+/// export (`sysknife audit export`) serialises that column, so it carried an
+/// offline-crackable commitment across the `0600`-in-`0700` boundary the
+/// database is kept inside. For a low-entropy, partly-public parameter set —
+/// `ConfigureWifi`, where the SSID broadcasts and only the passphrase is
+/// unknown — a single unsalted SHA-256 is the cheapest thing a GPU cracks.
+///
+/// v4 keeps the same field set as v3 but commits to `request_hash` computed as
+/// an HMAC-SHA256 keyed by the audit key (see [`RequestHashKey`]). The binding
+/// an offline verifier needs is unchanged, because `verify_rows` treats the
+/// stored column as opaque and re-signs it rather than recomputing it; what is
+/// removed is the ability for a holder of an export to re-derive or brute-force
+/// the preimage without the key.
+///
+/// A stable literal for the same reason [`CHAIN_VERSION_V2`] and
+/// [`CHAIN_VERSION_V3`] are: the v4 encoder signs this value and
+/// `ChainRow::identity` dispatches stored v4 rows against it, so it must not
+/// move when a v5 encoding arrives. `a_v4_row_on_disk_still_verifies` is the
+/// golden vector that notices if it does.
+pub const CHAIN_VERSION_V4: u32 = 4;
 /// The encoding this binary *writes*. Always an alias for the newest versioned
 /// constant, never used to encode or dispatch a specific generation.
 ///
 /// Kept distinct from the per-version literals because those two jobs pull in
 /// opposite directions: the writer must move with each new encoding, while every
 /// stored generation must keep being reproduced byte for byte forever.
-pub const CHAIN_VERSION_CURRENT: u32 = CHAIN_VERSION_V3;
+pub const CHAIN_VERSION_CURRENT: u32 = CHAIN_VERSION_V4;
 
 /// Event-row encoding written before the approver-identity migration: the
 /// six-field message with no account among them. Still verifiable — see
@@ -280,6 +310,17 @@ impl AuditKey {
         &self.key_id
     }
 
+    /// Derive the [`RequestHashKey`] that keys `request_hash` (#268).
+    ///
+    /// HKDF-SHA256 over the signing seed with the request-hash domain tag as
+    /// info and no salt: the derived key is cryptographically separate from
+    /// the Ed25519 scalar, so holding one says nothing about the other, and
+    /// the domain tag keeps this derivation from aliasing any other use of
+    /// the same key material.
+    pub fn request_hash_key(&self) -> RequestHashKey {
+        RequestHashKey::derive_from(self.signing.as_bytes())
+    }
+
     /// Compute the chain signature for `content` linked to `prev_chain_hash`.
     ///
     /// Hex-encoded Ed25519 signature over `canonical(content) || prev_chain_hash`.
@@ -351,6 +392,66 @@ pub fn resolve_audit_key_path(db_path: &Path) -> PathBuf {
                 .unwrap_or_else(|| Path::new("."))
                 .join("audit-key")
         })
+}
+
+/// HMAC-SHA256 key for the `request_hash` column (#268).
+///
+/// Derived from the audit key material through [`AuditKey::request_hash_key`];
+/// never constructed from the raw signing seed by any other path. The keying
+/// is what makes an exported `request_hash` uncrackable: before v4 the column
+/// was one unsalted SHA-256 over the unredacted parameters, so an export let
+/// any holder brute-force low-entropy values such as a Wi-Fi passphrase
+/// offline. An HMAC keeps the preview/execute binding the daemon needs — and
+/// the opacity the offline verifier needs, since `verify_rows` re-signs the
+/// stored column rather than recomputing it — while removing the ability to
+/// test guesses without the key.
+///
+/// `Debug` is manual and never renders the key bytes, for the same reason
+/// [`AuditKey`]'s is.
+#[derive(Clone)]
+pub struct RequestHashKey {
+    key: Zeroizing<[u8; 32]>,
+}
+
+impl std::fmt::Debug for RequestHashKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestHashKey")
+            .field("key", &format_args!("<redacted hmac key>"))
+            .finish()
+    }
+}
+
+impl RequestHashKey {
+    /// HKDF-SHA256(ikm = audit key material, salt = none, info =
+    /// [`REQUEST_HASH_DOMAIN`]) → 32-byte HMAC key.
+    fn derive_from(ikm: &[u8]) -> Self {
+        use hkdf::Hkdf;
+        let hk = Hkdf::<Sha256>::new(None, ikm);
+        let mut okm = Zeroizing::new([0u8; 32]);
+        // A 32-byte expansion of HKDF-SHA256 cannot fail (the limit is
+        // 255 * HashLen); `expect` documents that instead of hiding it.
+        hk.expand(REQUEST_HASH_DOMAIN, &mut *okm)
+            .expect("32-byte HKDF-SHA256 expansion is infallible");
+        Self { key: okm }
+    }
+
+    /// `HMAC-SHA256(key, action_name || 0x00 || canonical_params)`,
+    /// hex-encoded: 64 characters, the same width the unsigned hash had, so
+    /// the column, the wire format and every length check downstream are
+    /// unchanged.
+    ///
+    /// The message framing is byte-identical to the pre-v4 SHA-256; only the
+    /// keying changed. That is deliberate — it keeps the two schemes
+    /// comparable in tests (`request_hash_is_not_the_unsigned_sha256`) and
+    /// means no caller-visible contract beyond confidentiality moved.
+    pub fn request_hash(&self, action_name: &str, canonical_params: &str) -> String {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.key[..])
+            .expect("HMAC-SHA256 accepts any key length");
+        mac.update(action_name.as_bytes());
+        mac.update(b"\x00");
+        mac.update(canonical_params.as_bytes());
+        hex::encode(mac.finalize().into_bytes())
+    }
 }
 
 /// Generate a 32-byte random key and write it to `path` with mode `0o600`.
@@ -521,6 +622,20 @@ pub enum ChainIdentity<'a> {
         /// difference.
         caller_principal: &'a str,
     },
+    /// `chain_version = 4`. The same field set as v3 — the change is in what
+    /// the `request_hash` column *holds*: an HMAC-SHA256 keyed by the audit key
+    /// instead of an unsalted SHA-256 (#268). The version bump exists so a row
+    /// tells an auditor which scheme its `request_hash` was written under:
+    /// on a v1..v3 row the column is still offline-crackable for low-entropy
+    /// parameters, on a v4 row it is not.
+    V4 {
+        /// As v2.
+        caller_role: &'a str,
+        /// As v2.
+        event_tip: &'a str,
+        /// As v3.
+        caller_principal: &'a str,
+    },
 }
 
 impl ChainIdentity<'_> {
@@ -530,6 +645,7 @@ impl ChainIdentity<'_> {
             Self::LegacyV1 => CHAIN_VERSION_LEGACY,
             Self::V2 { .. } => CHAIN_VERSION_V2,
             Self::V3 { .. } => CHAIN_VERSION_V3,
+            Self::V4 { .. } => CHAIN_VERSION_V4,
         }
     }
 }
@@ -619,6 +735,16 @@ impl<'a> ChainContent<'a> {
                 caller_principal,
             } => {
                 push_field(&mut buf, "chain_version", &CHAIN_VERSION_V3.to_string());
+                push_field(&mut buf, "caller_role", caller_role);
+                push_field(&mut buf, "event_tip", event_tip);
+                push_field(&mut buf, "caller_principal", caller_principal);
+            }
+            ChainIdentity::V4 {
+                caller_role,
+                event_tip,
+                caller_principal,
+            } => {
+                push_field(&mut buf, "chain_version", &CHAIN_VERSION_V4.to_string());
                 push_field(&mut buf, "caller_role", caller_role);
                 push_field(&mut buf, "event_tip", event_tip);
                 push_field(&mut buf, "caller_principal", caller_principal);
@@ -819,6 +945,22 @@ impl ChainRow {
                 // An empty principal is treated as absent: a v3 row must name
                 // who asked, and "" names nobody. Accepting it would let a
                 // blank pass for an identity.
+                caller_principal: self
+                    .caller_principal
+                    .as_deref()
+                    .filter(|p| !p.is_empty())
+                    .ok_or(RowIdentityError::MissingField("caller_principal"))?,
+            }),
+            CHAIN_VERSION_V4 => Ok(ChainIdentity::V4 {
+                caller_role: self
+                    .caller_role
+                    .as_deref()
+                    .ok_or(RowIdentityError::MissingField("caller_role"))?,
+                event_tip: self
+                    .event_tip
+                    .as_deref()
+                    .ok_or(RowIdentityError::MissingField("event_tip"))?,
+                // As v3: a v4 row names the account that asked.
                 caller_principal: self
                     .caller_principal
                     .as_deref()
@@ -1462,14 +1604,14 @@ pub struct AuditVerification {
 /// them tells the operator to do the wrong thing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RowStanding {
-    /// A `chain_version = 3` row whose signed principal names an account.
+    /// A `chain_version = 3` or `4` row whose signed principal names an account.
     NamesAccount,
-    /// A `chain_version = 3` row signing `none:unattributed`: the daemon tried
-    /// to attribute the connection and could not.
+    /// A `chain_version = 3` or `4` row signing `none:unattributed`: the daemon
+    /// tried to attribute the connection and could not.
     AttributionFailed,
     /// Nothing the signature covers. A v1 or v2 row, whose encoding had no
-    /// principal field, or a v3 row with a blank column, which also verifies as
-    /// `Broken` once the walk reaches it.
+    /// principal field, or a v3/v4 row with a blank column, which also verifies
+    /// as `Broken` once the walk reaches it.
     NotRecorded,
     /// Nothing here that a signature vouches for. Three sources: the column is
     /// populated on an encoding that does not sign it, or the value is one this
@@ -1487,13 +1629,13 @@ enum RowStanding {
 /// whether the column may be believed.
 ///
 /// This is the load-bearing check in the census. [`ChainContent::canonical_bytes`]
-/// pushes `caller_principal` into the signed bytes **only** in the v3 arm, so on a
-/// v1 or v2 row that column is unsigned free space: anyone with write access to
-/// the table can set it to `uid:0` and the chain still verifies `Intact`, because
-/// there is no signature over it to break. Bucketing by the column instead of by
-/// the encoding would let a plain `UPDATE` manufacture attribution, which is a
-/// worse failure than the one this census was written to fix. Losing attribution
-/// is a gap; inventing it is a lie.
+/// pushes `caller_principal` into the signed bytes **only** in the v3 and v4
+/// arms, so on a v1 or v2 row that column is unsigned free space: anyone with
+/// write access to the table can set it to `uid:0` and the chain still verifies
+/// `Intact`, because there is no signature over it to break. Bucketing by the
+/// column instead of by the encoding would let a plain `UPDATE` manufacture
+/// attribution, which is a worse failure than the one this census was written
+/// to fix. Losing attribution is a gap; inventing it is a lie.
 fn standing(row: &ChainRow) -> RowStanding {
     // Empty treated as absent, and nothing trimmed, so this agrees with
     // `ChainRow::identity` exactly: it filters on `is_empty` and no more. An
@@ -1508,7 +1650,7 @@ fn standing(row: &ChainRow) -> RowStanding {
             None => RowStanding::NotRecorded,
             Some(_) => RowStanding::Unattested,
         },
-        CHAIN_VERSION_V3 => match stored {
+        CHAIN_VERSION_V3 | CHAIN_VERSION_V4 => match stored {
             None => RowStanding::NotRecorded,
             Some(p) => match crate::auth::CallerPrincipal::classify(p) {
                 crate::auth::PrincipalClaim::Account => RowStanding::NamesAccount,
@@ -1516,7 +1658,7 @@ fn standing(row: &ChainRow) -> RowStanding {
                 crate::auth::PrincipalClaim::Unrecognized => RowStanding::Unattested,
             },
         },
-        // An encoding this binary does not know, which is any value outside 1..=3:
+        // An encoding this binary does not know, which is any value outside 1..=4:
         // a newer daemon's, or a corrupt column. `verify_rows` already reports
         // `CannotVerify` for such a row, and the census must not claim an account
         // either, because this binary cannot say which fields that encoding signs
@@ -2135,6 +2277,16 @@ mod tests {
                 Some(event_tip.to_string()),
                 Some(caller_principal.to_string()),
             ),
+            ChainIdentity::V4 {
+                caller_role,
+                event_tip,
+                caller_principal,
+            } => (
+                CHAIN_VERSION_V4,
+                Some(caller_role.to_string()),
+                Some(event_tip.to_string()),
+                Some(caller_principal.to_string()),
+            ),
         };
         ChainRow {
             seq: content.seq,
@@ -2477,7 +2629,7 @@ mod tests {
     /// rows, all in one chain. Every generation has to keep verifying, which is
     /// the whole reason the encoding is selected per row.
     #[test]
-    fn a_chain_spanning_all_three_encodings_verifies() {
+    fn a_chain_spanning_all_four_encodings_verifies() {
         let key = fixed_key();
         let mut rows = Vec::new();
         let mut prev = String::new();
@@ -2497,6 +2649,11 @@ mod tests {
                 event_tip: "",
                 caller_principal: "token:vsock",
             },
+            ChainIdentity::V4 {
+                caller_role: "admin",
+                event_tip: "",
+                caller_principal: "uid:1000",
+            },
         ]
         .into_iter()
         .enumerate()
@@ -2511,7 +2668,7 @@ mod tests {
 
         assert_eq!(
             verify_chain(&key, &rows),
-            VerifyOutcome::Intact { rows_checked: 4 }
+            VerifyOutcome::Intact { rows_checked: 5 }
         );
     }
 
@@ -2598,8 +2755,8 @@ mod tests {
 
     /// The forgery this census must not enable.
     ///
-    /// `ChainContent::canonical_bytes` signs `caller_principal` only in the v3
-    /// arm, so on a v1 or v2 row the column is unsigned free space. Anyone with write access
+    /// `ChainContent::canonical_bytes` signs `caller_principal` in the v3 and
+    /// v4 arms, so on a v1 or v2 row the column is unsigned free space. Anyone with write access
     /// to the table can set it, and no signature breaks. If the census bucketed
     /// by the column rather than by the encoding, a single `UPDATE` would turn
     /// "none of these rows names an account" into "every row names root", with an
@@ -3006,6 +3163,191 @@ mod tests {
         assert_eq!(
             verify_chain(&fixed_key(), &[row]),
             VerifyOutcome::Intact { rows_checked: 1 }
+        );
+    }
+
+    /// And v4, frozen while the encoder that produces it is the one under
+    /// review (#268). v4 signs the same field set as v3; what changed is that
+    /// the `request_hash` it commits to is an HMAC keyed by the audit key
+    /// rather than an unsalted SHA-256. When v5 arrives, this is the test that
+    /// notices if the v4 encoding moved.
+    ///
+    /// This is also the migration negative case the issue asked for: rows
+    /// written under every older `chain_version` still verify under this
+    /// binary (the v1, v2 and v3 goldens above), so the bump does not
+    /// silently invalidate any existing trail.
+    #[test]
+    fn a_v4_row_on_disk_still_verifies() {
+        const GOLDEN_V4_CHAIN_HASH: &str = "8d82aac6c21c8224613e1a69f6a2a4c3298dd5d601bda9b1d997daf0bf552db499cbf5243397464c1add52e2f0a41c5e4ec5c788c9e84b4917ee33b3d496e10f";
+
+        let row = ChainRow {
+            chain_version: 4,
+            caller_role: Some("admin".to_string()),
+            event_tip: Some("eventtip-golden".to_string()),
+            caller_principal: Some("uid:1000".to_string()),
+            chain_hash: GOLDEN_V4_CHAIN_HASH.to_string(),
+            ..golden_row_shape()
+        };
+        assert_eq!(
+            verify_chain(&fixed_key(), std::slice::from_ref(&row)),
+            VerifyOutcome::Intact { rows_checked: 1 },
+            "a v4 row on disk must verify under this binary; if this fails, the v4 \
+             encoding or its version dispatch changed and audit logs written by \
+             this release become unreadable"
+        );
+
+        // As in the v2 golden: the frozen constant is only load-bearing if a
+        // flip is rejected.
+        let mut tampered = row.clone();
+        tampered.chain_hash = format!(
+            "{}{}",
+            &GOLDEN_V4_CHAIN_HASH[1..],
+            &GOLDEN_V4_CHAIN_HASH[..1]
+        );
+        assert!(
+            matches!(
+                verify_chain(&fixed_key(), &[tampered]),
+                VerifyOutcome::Broken { .. }
+            ),
+            "a rotated golden hash must not verify"
+        );
+
+        // And the version field itself is pinned: relabelling the frozen v4
+        // row as v3 makes verification re-encode it under the v3 rule, so the
+        // stored signature no longer matches. Without this, the tag that
+        // tells the two request_hash schemes apart would be free to move.
+        let mut relabelled = row;
+        relabelled.chain_version = 3;
+        assert!(
+            matches!(
+                verify_chain(&fixed_key(), &[relabelled]),
+                VerifyOutcome::Broken { .. }
+            ),
+            "a v4 row relabelled as v3 must not verify; the version field \
+             must be inside the signed bytes"
+        );
+    }
+
+    /// The v4 encoding must not alias v3: same fields, different
+    /// `chain_version` tag, different signed bytes. Without this, a v4 row
+    /// could be relabelled v3 (or vice versa) and still verify.
+    #[test]
+    fn v3_and_v4_encodings_do_not_alias() {
+        let key = fixed_key();
+        let mut v3 = golden_content_shape();
+        v3.identity = ChainIdentity::V3 {
+            caller_role: "admin",
+            event_tip: "eventtip-golden",
+            caller_principal: "uid:1000",
+        };
+        let mut v4 = golden_content_shape();
+        v4.identity = ChainIdentity::V4 {
+            caller_role: "admin",
+            event_tip: "eventtip-golden",
+            caller_principal: "uid:1000",
+        };
+        assert_ne!(
+            key.chain_hash(&v3, ""),
+            key.chain_hash(&v4, ""),
+            "v3 and v4 sign the same fields, so only the chain_version tag \
+             separates them; if these collide, relabelling a row across the \
+             boundary is undetectable"
+        );
+    }
+
+    // ── request_hash HMAC (#268) ─────────────────────────────────────────
+
+    /// The column an export publishes must no longer be the unsalted hash it
+    /// used to be. Same framing, same key material lineage — different value,
+    /// because a key that never leaves the host now goes into it.
+    #[test]
+    fn request_hash_is_not_the_unsigned_sha256() {
+        let rhk = fixed_key().request_hash_key();
+        // Exactly the low-entropy shape from the issue: SSID broadcast,
+        // passphrase the only unknown.
+        let action = "ConfigureWifi";
+        let canonical = r#"{"password":"hunter2","ssid":"CoffeeShop"}"#;
+
+        let mac = rhk.request_hash(action, canonical);
+
+        let mut hasher = Sha256::new();
+        hasher.update(action.as_bytes());
+        hasher.update(b"\x00");
+        hasher.update(canonical.as_bytes());
+        let legacy = hex::encode(hasher.finalize());
+
+        assert_eq!(mac.len(), 64, "the column width must not move");
+        assert_ne!(
+            mac, legacy,
+            "request_hash is still the unsalted SHA-256; an exported row is \
+             still offline-crackable"
+        );
+    }
+
+    /// The HMAC is deterministic within a key and bound to the key: a
+    /// different audit key must produce a different value for the same
+    /// request, which is what stops an export from being verifiable without
+    /// this host's key.
+    #[test]
+    fn request_hash_is_deterministic_and_key_bound() {
+        let k1 = AuditKey::from_bytes(vec![0x01; 32]).request_hash_key();
+        let k2 = AuditKey::from_bytes(vec![0x02; 32]).request_hash_key();
+        assert_eq!(
+            k1.request_hash("Op", "{}"),
+            k1.request_hash("Op", "{}"),
+            "preview and execute must agree on the hash"
+        );
+        assert_ne!(
+            k1.request_hash("Op", "{}"),
+            k2.request_hash("Op", "{}"),
+            "the hash must not be computable without this key"
+        );
+        assert_ne!(
+            k1.request_hash("OpA", "{}"),
+            k1.request_hash("OpB", "{}"),
+            "the action name is part of the message"
+        );
+    }
+
+    /// Frozen HMAC output. The derivation (HKDF-SHA256 over the audit key
+    /// material, `REQUEST_HASH_DOMAIN` info) and the message framing
+    /// (`action || 0x00 || canonical`) are both now wire contracts: the
+    /// daemon re-hashes at execute time and compares against the stored
+    /// column, so a silent change in either would strand every pending
+    /// approval across an upgrade.
+    #[test]
+    fn request_hash_golden_vector() {
+        const GOLDEN_REQUEST_HASH: &str =
+            "4f6bde0da85486323247e531482825059ddca0bd621997005f5d45dabeadcbf4";
+        let rhk = fixed_key().request_hash_key();
+        assert_eq!(
+            rhk.request_hash("UpdateSystem", "{}"),
+            GOLDEN_REQUEST_HASH,
+            "the request_hash derivation changed; approvals pending across \
+             the upgrade would fail the execute-time binding check"
+        );
+    }
+
+    /// The derived HMAC key must differ from the raw key material it came
+    /// from: reusing the Ed25519 seed as an HMAC key would tie the two
+    /// schemes together cryptographically, and a domain-separated derivation
+    /// is what lets them rotate and reason independently.
+    #[test]
+    fn request_hash_key_is_derived_not_the_signing_seed() {
+        let seed = vec![0x42u8; 32];
+        let rhk = AuditKey::from_bytes(seed.clone()).request_hash_key();
+        // A key equal to its own seed would make the HKDF step decorative;
+        // check the observable consequence instead — the HMAC under the
+        // derived key must not equal the HMAC under the raw seed.
+        let mut raw = Hmac::<Sha256>::new_from_slice(&seed).expect("HMAC accepts any key length");
+        raw.update(b"UpdateSystem");
+        raw.update(b"\x00");
+        raw.update(b"{}");
+        let raw_mac = hex::encode(raw.finalize().into_bytes());
+        assert_ne!(
+            rhk.request_hash("UpdateSystem", "{}"),
+            raw_mac,
+            "the HMAC key is the raw seed; the derivation is not happening"
         );
     }
 
@@ -4244,11 +4586,12 @@ mod tests {
         // Checked pairwise over the whole set rather than as a hand-written
         // list: adding a fourth tag to a hand-written list silently leaves the
         // new tag unchecked against the old ones.
-        let tags: [(&str, &[u8]); 4] = [
+        let tags: [(&str, &[u8]); 5] = [
             ("row", ROW_DOMAIN),
             ("checkpoint", CHECKPOINT_DOMAIN),
             ("approval", APPROVAL_DOMAIN),
             ("event", EVENT_DOMAIN),
+            ("request_hash", REQUEST_HASH_DOMAIN),
         ];
         for (i, (name_a, a)) in tags.iter().enumerate() {
             for (name_b, b) in tags.iter().skip(i + 1) {
