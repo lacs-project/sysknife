@@ -1175,8 +1175,10 @@ pub fn validated_syslog_host(s: &str, param: &'static str) -> Result<String, Exe
 /// - no leading `-` (option injection) or `.` (relative path),
 /// - no `.deb`/`.rpm` suffix (apt treats a bare `foo.deb` in the cwd as a file),
 /// - no `*`/`?` (an install is never a glob),
-/// - charset `[A-Za-z0-9+._:=~^-]`, which covers `name`, `name=version`,
-///   `name:arch`, and rpm epoch/version punctuation,
+/// - charset `[A-Za-z0-9+._:=~-]`, which covers `name`, `name=version`,
+///   `name:arch`, and rpm epoch/version punctuation. `^` is out: a trailing `^`
+///   is apt's task selector, so `ubuntu-desktop^` installs every package of the
+///   task, and no package name contains it,
 /// - no trailing `-`: apt-get reads `pkg-` on `install` as "remove pkg", so an
 ///   approved `AptInstall` of `linux-image-generic-` removed the kernel
 ///   metapackage. A trailing `+` stays legal here because `g++` and
@@ -1185,11 +1187,14 @@ pub fn validated_syslog_host(s: &str, param: &'static str) -> Result<String, Exe
 /// Remove, purge, hold and unhold take [`validated_unmodified_package`], which
 /// also refuses the trailing `+`. `packaging/sysknife-action-steps` repeats this
 /// rule for the `apt` verb, and both read `tests/data/apt-package-parity.txt`.
+///
+/// `.` and `+` are legal in names (`python3.12`, `g++`), so a character class
+/// cannot tell an exact name from a regular expression such as `linux-image.+`.
 pub fn validated_install_package(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     let first_ok = s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
-    let charset_ok = s.chars().all(|c| {
-        c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '_' | ':' | '=' | '~' | '^' | '-')
-    });
+    let charset_ok = s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '_' | ':' | '=' | '~' | '-'));
     if s.is_empty()
         || s.len() > MAX_APT_PACKAGE_LEN
         || !first_ok
@@ -1796,6 +1801,31 @@ mod tests {
             assert!(
                 validated_install_package(evil, "package").is_err(),
                 "{evil:?} would make apt-get install REMOVE a package and must be refused"
+            );
+        }
+    }
+
+    /// A trailing `^` is apt's task selector: `apt-get install ubuntu-desktop^`
+    /// installs every package of the task, so one approved `AptInstall` installs
+    /// dozens. No package name contains `^`, so the character is refused everywhere
+    /// in an operand, for every apt action that takes a package.
+    #[test]
+    fn apt_package_operands_refuse_the_task_selector() {
+        for evil in [
+            "ubuntu-desktop^",
+            "task-xfce^",
+            "nginx^",
+            "nginx^amd64",
+            "a^b",
+            "nginx=1.0^",
+        ] {
+            assert!(
+                validated_install_package(evil, "package").is_err(),
+                "{evil:?} installs a whole task and must be refused for install"
+            );
+            assert!(
+                validated_unmodified_package(evil, "package").is_err(),
+                "{evil:?} must be refused for remove, purge, hold and unhold"
             );
         }
     }

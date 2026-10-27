@@ -12,12 +12,17 @@
 #     and purge line through the helper
 #
 # Verbs map to validators. install is validated_install_package. remove, purge, hold and
-# unhold are validated_unmodified_package. hold and unhold have no helper verb (apt-mark has
-# its own grants), so only the Rust test reads those lines.
+# unhold are validated_unmodified_package. The helper has a verb for each of the five.
 #
 # apt-get reads a trailing `-` on an operand as "remove this package" and a trailing `+` as
-# "install this package". A package whose real name ends in `+` (g++, libstdc++ spellings)
-# stays installable, and is removed through its arch-qualified name (g++:amd64).
+# "install this package", and a trailing `^` as "install every package of this task". A
+# package whose real name ends in `+` (g++, libstdc++ spellings) stays installable, and is
+# removed through its arch-qualified name (g++:amd64). `^` is in no package name.
+#
+# `.` and `+` are legal in names (python3.12, g++) and are also regular expression
+# metacharacters. No character class can tell an exact name from a regular expression, so
+# both validators ACCEPT such operands. The `.` and `+` lines below record that the validators
+# accept them; they do not claim apt resolves them as exact names.
 #
 # The operand is everything after the second space, so it may contain spaces. Lines that
 # start with `#` and blank lines are skipped. Any other line that does not parse fails the
@@ -36,7 +41,6 @@ install ok nginx+
 install ok nginx=1.24.0-1
 install ok nginx:amd64
 install ok 2:openssl
-install ok task-xfce^
 install ok a
 install ok Z9
 
@@ -47,6 +51,22 @@ install refuse linux-generic-hwe-24.04-
 install refuse a-
 install refuse nginx=1.0-
 install refuse nginx:amd64-
+
+# --- install: a trailing `^` installs a whole task; `^` is in no package name ---
+install refuse ubuntu-desktop^
+install refuse task-xfce^
+install refuse nginx^
+install refuse nginx^amd64
+install refuse a^b
+install refuse ^nginx
+install refuse nginx=1.0^
+
+# --- install: `.` and `+` inside a name are legal ---
+install ok python3.12
+install ok libstdc++6
+install ok bash.+
+install ok linux-image.+
+install ok coreutil.
 
 # --- install: option injection, paths, local files, globs, shell text ---
 install refuse -nginx
@@ -88,6 +108,12 @@ remove refuse linux-image-generic+
 remove refuse nginx=1.0+
 remove refuse nginx-
 remove refuse linux-image-generic-
+remove ok python3.12
+remove ok bash.x1
+remove refuse bash.+
+remove refuse ubuntu-desktop^
+remove refuse nginx^
+remove refuse a^b
 remove refuse -nginx
 remove refuse /tmp/x.deb
 remove refuse x.deb
@@ -102,6 +128,9 @@ purge ok g++:amd64
 purge refuse g++
 purge refuse nginx+
 purge refuse nginx-
+purge ok python3.12
+purge refuse ubuntu-desktop^
+purge refuse nginx^
 purge refuse -nginx
 purge refuse ./x.deb
 
@@ -109,13 +138,18 @@ purge refuse ./x.deb
 hold ok nginx
 hold ok libstdc++6
 hold ok g++:amd64
+hold ok python3.12
 hold refuse g++
 hold refuse nginx+
 hold refuse nginx-
+hold refuse nginx^
+hold refuse ubuntu-desktop^
 hold refuse -nginx
 unhold ok nginx
 unhold ok g++:amd64
+unhold ok python3.12
 unhold refuse g++
 unhold refuse nginx+
 unhold refuse nginx-
+unhold refuse nginx^
 unhold refuse -nginx

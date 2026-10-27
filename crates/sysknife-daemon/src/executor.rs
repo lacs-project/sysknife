@@ -3722,9 +3722,10 @@ mod tests {
     }
 
     /// apt-get reads the last character of an operand: `pkg-` on `install` removes
-    /// the package, and `pkg+` on `remove` or `purge` installs it. The validators
-    /// refuse both; only this proves every apt arm actually calls the right one,
-    /// so an arm that goes back to the install validator fails here.
+    /// the package, `pkg+` on `remove` or `purge` installs it, and `pkg^` installs a
+    /// task. The validators refuse all three; only this proves every apt arm
+    /// actually calls the right one, so an arm that goes back to the install
+    /// validator fails here.
     #[test]
     fn apt_package_actions_refuse_a_trailing_modifier() {
         let reject: &[(&str, &str)] = &[
@@ -3740,6 +3741,13 @@ mod tests {
             ("AptUnhold", "nginx-"),
             ("AptUnhold", "nginx+"),
             ("AptShow", "nginx-"),
+            // A trailing `^` installs every package of a task.
+            ("AptInstall", "ubuntu-desktop^"),
+            ("AptRemove", "ubuntu-desktop^"),
+            ("AptPurge", "ubuntu-desktop^"),
+            ("AptHold", "ubuntu-desktop^"),
+            ("AptUnhold", "ubuntu-desktop^"),
+            ("AptShow", "ubuntu-desktop^"),
         ];
         for (action, package) in reject {
             let result = build_action_spec(action, &json!({ "package": package }));
