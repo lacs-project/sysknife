@@ -860,9 +860,7 @@ impl SysknifeMcpServer {
         if self.discovery_used_local_fallback {
             report.warnings.push("MCP tools were registered using the local distro fallback at startup; restart this MCP server after the daemon is ready to refresh its tool list.".into());
         }
-        Ok(Json(
-            sanitised(report).map_err(tool_error)?,
-        ))
+        Ok(Json(sanitised(report).map_err(tool_error)?))
     }
 
     /// Verify the audit-log hash chain.

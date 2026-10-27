@@ -753,7 +753,10 @@ class AptVerb(unittest.TestCase):
             with self.subTest(exact=name):
                 code, out = simulate(helper['apt_argv'](['install', name]))
                 self.assertNotIn('Unable to locate package', out)
-                self.assertNotIn('E: ', out)
+                # apt's errors start a line with 'E: '. A bare substring test also
+                # matches the 'NOTE: This is only a simulation!' banner apt 3.x
+                # prints to a non-root caller, which failed on every name.
+                self.assertIsNone(re.search(r'^E: ', out, re.MULTILINE), out)
                 for verb in ('install', 'remove', 'purge', 'hold', 'unhold'):
                     helper['exact_package'](verb, name)
 
