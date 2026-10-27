@@ -125,6 +125,37 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   command line over D-Bus, and no SysKnife code path used either.
   (GHSA-68v6-p23h-fwcf)
 
+- **The `apt-get` and `apt-mark` sudoers grants are gone, and a package name can
+  no longer flip an apt action or match more than one package.** The `apt-get`
+  grant ran `env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+  /usr/bin/apt-get *`. It pinned the environment prefix and left every argument
+  open, so a holder of the `sysknife` account could pass apt's own options and
+  run a command as root with no preview, approval receipt or audit row.
+  `AptUpdate`, `AptUpgrade`, `AptInstall`, `AptRemove`, `AptPurge`,
+  `AptAutoremove`, `AptHold` and `AptUnhold` now go through a new `apt` verb of
+  `/usr/lib/sysknife/action-steps`. The verb allowlists the eight subcommands,
+  accepts no option, sets `DEBIAN_FRONTEND` and `NEEDRESTART_MODE` in an
+  environment of its own, and puts the package after a literal `--`. apt reads
+  the last character of a package name as an instruction: `-` removes, `+`
+  installs and `^` installs every package of a task. An approved `AptInstall`
+  could therefore remove a package or install a whole task, and an approved
+  `AptRemove` could install one. The daemon and the helper now refuse a trailing
+  `-` or `^` on every apt action that takes a package, and a trailing `+` on
+  every one except `AptInstall`. `g++` and `libstdc++6` stay installable; remove
+  a package whose name ends in `+` by its architecture-qualified name, such as
+  `g++:amd64`. `validated_install_package` gates the rpm-ostree package actions
+  as well, and they refuse `^` now. When an operand is not an exact package
+  name, apt reads it as a regular expression and acts on every package it
+  matches, and no character class can refuse that while accepting `python3.12`.
+  The helper passes `-o APT::Cmd::Pattern-Only=1`, which makes apt resolve exact
+  names only. The option is undocumented in apt.conf(5), so
+  `tests/release/action-steps.test.sh` runs it against the real `apt-get` and
+  fails if a release stops honouring it. The helper asks `apt-cache` or
+  `dpkg-query` whether the operand names exactly one existing package. That check
+  makes `AptInstall` refuse a name that is only virtual, such as `awk`, and makes
+  `AptRemove`, `AptPurge`, `AptHold` and `AptUnhold` refuse a package dpkg has
+  no record of.
+
 ## [0.26.1] — 2026-10-24
 
 ### Security

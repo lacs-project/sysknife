@@ -67,14 +67,14 @@ SSH keys, containers, network, filesystem) are omitted — they already apply to
 
 | Action | CLI | Risk |
 |---|---|:---:|
-| `AptUpdate` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update` | Low |
-| `AptUpgrade` | `sudo env … apt-get dist-upgrade -y` | High |
-| `AptInstall` | `sudo env … apt-get install -y <pkg>` | Medium |
-| `AptRemove` | `sudo env … apt-get remove -y <pkg>` | Medium |
-| `AptPurge` | `sudo env … apt-get purge -y <pkg>` | Medium |
-| `AptAutoremove` | `sudo env … apt-get autoremove -y` | Medium |
-| `AptHold` | `sudo apt-mark hold <pkg>` | Medium |
-| `AptUnhold` | `sudo apt-mark unhold <pkg>` | Medium |
+| `AptUpdate` | `sudo action-steps apt update` (runs `apt-get update`) | Low |
+| `AptUpgrade` | `sudo action-steps apt dist-upgrade` (runs `apt-get dist-upgrade -y`) | High |
+| `AptInstall` | `sudo action-steps apt install <pkg>` (runs `apt-get -o APT::Cmd::Pattern-Only=1 install -y -- <pkg>`) | Medium |
+| `AptRemove` | `sudo action-steps apt remove <pkg>` (runs `apt-get -o APT::Cmd::Pattern-Only=1 remove -y -- <pkg>`) | Medium |
+| `AptPurge` | `sudo action-steps apt purge <pkg>` (runs `apt-get -o APT::Cmd::Pattern-Only=1 purge -y -- <pkg>`) | Medium |
+| `AptAutoremove` | `sudo action-steps apt autoremove` (runs `apt-get autoremove -y`) | Medium |
+| `AptHold` | `sudo action-steps apt hold <pkg>` (runs `apt-mark -o APT::Cmd::Pattern-Only=1 hold -- <pkg>`) | Medium |
+| `AptUnhold` | `sudo action-steps apt unhold <pkg>` (runs `apt-mark -o APT::Cmd::Pattern-Only=1 unhold -- <pkg>`) | Medium |
 | `AptSearch` | `apt-cache search <term>` | Low |
 | `AptListInstalled` | `dpkg -l` | Low |
 | `AptShow` | `apt-cache show <pkg>` | Low |

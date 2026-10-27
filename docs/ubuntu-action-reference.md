@@ -25,27 +25,55 @@ Sources consulted:
 
 ## apt (apt-get, apt-mark, apt-cache, dpkg)
 
-#> **The absolute path is load-bearing, not cosmetic.** sudo PATH-resolves only its
-> primary command; every later token is matched literally against the sudoers
-> rule, and `packaging/sysknife-sudoers` spells `/usr/bin/apt-get`. A bare
-> `apt-get` does not match and sudo falls through to asking for a password. See
-> `crates/sysknife-daemon/src/actions/apt.rs` and the
-> `sudoers_grants_match_argv` test that pins the two together.
+> **No `apt-get` or `apt-mark` sudoers grant exists.** The eight actions that run
+> them go through the `apt` verb of `/usr/lib/sysknife/action-steps`, which runs
+> `/usr/bin/apt-get` or `/usr/bin/apt-mark` itself with
+> `DEBIAN_FRONTEND=noninteractive` and `NEEDRESTART_MODE=a` set, and builds the
+> argv from an allowlist: no option, no subcommand the daemon does not send, and
+> the package after a literal `--`. A grant with a trailing `*` admits apt's own
+> options (`-o APT::Update::Pre-Invoke::=<cmd>` runs `<cmd>` as root), and sudoers
+> cannot forbid them. See `crates/sysknife-daemon/src/actions/apt.rs`,
+> `packaging/sysknife-action-steps` and the `sudoers_grants_match_argv` test that
+> pins the grant.
+>
+> A package name that ends in `-`, `+` or `^` is refused where apt would read the
+> last character as "remove", "install" or "install every package of a task"
+> (`install pkg-` removes, `remove pkg+` installs, `install ubuntu-desktop^`
+> installs a task). `g++` and `libstdc++6` stay installable; a package whose name
+> ends in `+` is removed through its arch-qualified name, `g++:amd64`.
+>
+> `.` and `+` are legal in a package name and are also regular expression
+> characters. For an operand that is not an exact package name, apt falls back to a
+> regular expression and acts on every package it matches (`remove 'linux-image.+'`).
+> The helper passes `-o APT::Cmd::Pattern-Only=1` in every `apt-get` and `apt-mark`
+> argv it builds, which turns that fallback off and keeps exact names such as
+> `python3.12` and `g++` working. The option is undocumented in apt.conf(5); it
+> behaves the same on apt 2.0.10, 2.4.14, 2.6.1, 2.8.3, 3.0.3 and 3.2.0, and
+> `tests/release/action-steps.test.sh` runs it against the real `apt-get` so a
+> release that drops it fails the test.
+>
+> The helper also checks the operand without relying on that option. For `install` it
+> runs `apt-cache show --no-all-versions -- <name>`, and for `remove`, `purge`, `hold`
+> and `unhold` it runs `dpkg-query -W -f='${Package}\n' -- <name>`, and it refuses
+> unless every package name printed equals the operand's name. Two consequences: a
+> package name that is only virtual (`awk`, `mail-transport-agent`) cannot be installed
+> through `AptInstall`, and the other four refuse a package dpkg has no record of.
 
 ## AptUpdate — Refresh package index
 
 - **Canonical**: `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update`
-- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "/usr/bin/apt-get", "update"]`
+- **SysKnife argv**: `["sudo", "/usr/lib/sysknife/action-steps", "apt", "update"]`, which runs `/usr/bin/apt-get update`
 - **Status**: ✅ matches
 - **Notes**: `DEBIAN_FRONTEND=noninteractive` suppresses all debconf prompts.
   `NEEDRESTART_MODE=a` auto-restarts services post-install without prompting.
-  The `env` wrapper is the standard way to inject these into a `sudo` invocation
-  because `sudo` strips most environment variables by default.
+  The helper sets both in the environment it hands `apt-get`, because `sudo`
+  strips most environment variables by default and a `sudo env …` wrapper would
+  need an `apt-get` grant that takes apt's own options.
 
 ### AptUpgrade — Full system upgrade
 
 - **Canonical**: `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get dist-upgrade -y`
-- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "/usr/bin/apt-get", "dist-upgrade", "-y"]`
+- **SysKnife argv**: `["sudo", "/usr/lib/sysknife/action-steps", "apt", "dist-upgrade"]`, which runs `/usr/bin/apt-get dist-upgrade -y`
 - **Status**: ✅ matches
 - **Notes**: `dist-upgrade` resolves dependency changes by removing packages where
   necessary. `upgrade` (without `dist-`) is safer but may not complete all upgrades.
@@ -57,34 +85,38 @@ Sources consulted:
 ### AptInstall — Install package
 
 - **Canonical**: `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y <pkg>`
-- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "/usr/bin/apt-get", "install", "-y", "<pkg>"]`
+- **SysKnife argv**: `["sudo", "/usr/lib/sysknife/action-steps", "apt", "install", "<pkg>"]`, which runs `/usr/bin/apt-get -o APT::Cmd::Pattern-Only=1 install -y -- <pkg>`
 - **Status**: ✅ matches
 - **Notes**: Exit code 0 = success; 100 = error (package not found, broken deps, etc.).
-  `-y` / `--assume-yes` required for non-interactive use.
+  `-y` / `--assume-yes` required for non-interactive use; the helper adds it.
+  A package name that ends in `-` is refused: `apt-get install pkg-` removes `pkg`.
 
 ### AptRemove — Remove package (keep config files)
 
 - **Canonical**: `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get remove -y <pkg>`
-- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "/usr/bin/apt-get", "remove", "-y", "<pkg>"]`
+- **SysKnife argv**: `["sudo", "/usr/lib/sysknife/action-steps", "apt", "remove", "<pkg>"]`, which runs `/usr/bin/apt-get -o APT::Cmd::Pattern-Only=1 remove -y -- <pkg>`
 - **Status**: ✅ matches
 - **Notes**: Config files in `/etc` are preserved. Use `purge` to also remove them.
+  A package name that ends in `-` or `+` is refused: `apt-get remove pkg+`
+  installs `pkg`. Name a package that really ends in `+` with its architecture,
+  `g++:amd64`.
 
 ### AptPurge — Remove package and its config files
 
 - **Canonical**: `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get purge -y <pkg>`
-- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "/usr/bin/apt-get", "purge", "-y", "<pkg>"]`
+- **SysKnife argv**: `["sudo", "/usr/lib/sysknife/action-steps", "apt", "purge", "<pkg>"]`, which runs `/usr/bin/apt-get -o APT::Cmd::Pattern-Only=1 purge -y -- <pkg>`; names are validated as for `remove`
 - **Status**: ✅ matches
 
 ### AptAutoremove — Remove orphaned dependency packages
 
 - **Canonical**: `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get autoremove -y`
-- **SysKnife argv**: `["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "/usr/bin/apt-get", "autoremove", "-y"]`
+- **SysKnife argv**: `["sudo", "/usr/lib/sysknife/action-steps", "apt", "autoremove"]`, which runs `/usr/bin/apt-get autoremove -y`
 - **Status**: ✅ matches
 
 ### AptHold — Pin package at current version
 
 - **Canonical**: `sudo apt-mark hold <pkg>`
-- **SysKnife argv**: `["sudo", "apt-mark", "hold", "--", "<pkg>"]`
+- **SysKnife argv**: `["sudo", "/usr/lib/sysknife/action-steps", "apt", "hold", "<pkg>"]`, which runs `/usr/bin/apt-mark -o APT::Cmd::Pattern-Only=1 hold -- <pkg>`
 - **Status**: ✅ matches
 - **Notes**: `apt-mark hold` does not require `DEBIAN_FRONTEND`; it only writes
   to the dpkg hold file (`/var/lib/dpkg/info/<pkg>.list`) without invoking
@@ -93,7 +125,7 @@ Sources consulted:
 ### AptUnhold — Remove version pin
 
 - **Canonical**: `sudo apt-mark unhold <pkg>`
-- **SysKnife argv**: `["sudo", "apt-mark", "unhold", "--", "<pkg>"]`
+- **SysKnife argv**: `["sudo", "/usr/lib/sysknife/action-steps", "apt", "unhold", "<pkg>"]`, which runs `/usr/bin/apt-mark -o APT::Cmd::Pattern-Only=1 unhold -- <pkg>`
 - **Status**: ✅ matches
 
 ### AptSearch — Search repositories
