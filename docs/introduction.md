@@ -68,7 +68,7 @@ SysKnife gives you:
 | Component | Privilege | Job |
 |---|---|---|
 | **brain** | none | Talks to the LLM, proposes a typed plan |
-| **approval gate** | user | Shows you the plan, collects your approval: `sysknife approve` in a terminal (the paused Tauri shell is a second implementation) |
+| **approval gate** | user | Shows you the plan and collects your approval: `sysknife approve` in a terminal for an MCP plan, the CLI's own prompt (or `--yes` up to `--max-risk`) for a CLI run. The paused Tauri shell is a third implementation |
 | **daemon** | `sysknife` system user, with scoped sudo and polkit grants | Executes approved actions, writes the audit log |
 
 The brain proposes but **cannot touch the system**. The daemon executes but
