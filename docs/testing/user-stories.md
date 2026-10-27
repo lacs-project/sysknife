@@ -5,8 +5,8 @@ Fedora Atomic Desktop (Silverblue, Kinoite, Sway Atomic, Budgie Atomic, or
 COSMIC Atomic). Run inside a QEMU/KVM VM via `tests/e2e/atomic-vm.sh`, or on
 real hardware.
 
-These twenty are a readable subset, not the suite: the atomic family is 54
-stories and the Ubuntu family a further 99 (79 of them in the recorded
+These twenty are a readable subset, not the suite: the atomic family is <!-- fig:stories_atomic floor=10 -->50+<!-- /fig -->
+stories and the Ubuntu family a further <!-- fig:stories_ubuntu floor=10 -->90+<!-- /fig --> (<!-- fig:lts_story_total -->79<!-- /fig --> of them in the recorded
 live-VM runs), all in `tests/e2e/stories/`. The
 harness runs the family; this file explains twenty of them in prose.
 
@@ -500,7 +500,7 @@ by the manual QA checklist (see `demo-script.md`):
 
 ## Running the stories
 
-### Locally (real Silverblue VM, all 54 atomic stories)
+### Locally (real Silverblue VM, all <!-- fig:stories_atomic floor=10 -->50+<!-- /fig --> atomic stories)
 
 ```sh
 # One-time: download the Fedora Silverblue ISO and install it in QEMU/KVM

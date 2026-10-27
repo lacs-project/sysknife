@@ -282,6 +282,13 @@ and the workspace test baseline. `scripts/test_baseline.sh` runs
 `cargo nextest run --workspace --locked` and checks the measured test count.
 Run `bash .githooks/pre-commit` to invoke the same gate manually.
 
+Never type a figure into the README or the docs. Add your tests, run
+`UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh`, and commit the evidence file
+and whatever it re-rendered. The command records the count and then runs
+`scripts/render_figures.py --write`, which rewrites every `fig` marker from its
+source. The marker syntax is explained in
+[docs/contributing/testing.md](contributing/testing.md#published-figures).
+
 The secret screen recognizes the credential formats of every key-bearing
 provider in the setup wizard, including OpenAI service-account and `None`
 keys, DeepSeek's hexadecimal keys, and xAI keys. Mistral's keys have no
@@ -367,7 +374,7 @@ crates/
   sysknife-brain/     LLM planner, provider adapters, safety fence
   sysknife-types/     Shared domain types (CallerRole, RiskLevel, JobState, …)
   sysknife-core/      Config loading, shared constants
-  sysknife-daemon/    Privileged executor, 191 actions with an `ActionSpec`,
+  sysknife-daemon/    Privileged executor, one `ActionSpec` per action,
                       IPC, rollback, SQLite
   sysknife-proto/     Protobuf definitions (future use)
   sysknife-daemon-test/  TAP integration harness for the daemon IPC layer (VM only)

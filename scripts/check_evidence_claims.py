@@ -18,6 +18,20 @@ So each published figure is checked against the artifact that produced it:
 A story claim additionally has to name a *full* family run. Subset runs record an
 empty `story_set`, so a four-story probe can never be quoted as the headline.
 
+Figures are not typed. Every figure these checks match in CLAIM_FILES must sit
+inside a marker that scripts/render_figures.py owns:
+
+  <!-- fig:NAME -->VALUE<!-- /fig -->            exact ("2,004")
+  <!-- fig:NAME floor=K -->VALUE<!-- /fig -->    rounded floor ("2,000+")
+
+This module refuses a matched figure outside a marker (check_unmarked_figures),
+so a hand-typed number cannot creep back, and it keeps the semantic checks
+(a story claim must name a full family run, validated tiers, ...) running on the
+rendered text, with the markers unwrapped. Freshness of the marked values is
+render_figures.py --check; `UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh`
+re-renders them. The marker grammar lives here, once, and render_figures.py
+imports it together with the value readers below.
+
 Run via scripts/check_public_claims.sh; tests/release/public-claims.test.sh
 mutates each claim and asserts this rejects it.
 """
@@ -119,6 +133,231 @@ def read_claim_files(root: Path) -> dict[str, str]:
         )
     return texts
 
+# ---------------------------------------------------------------------------
+# Figure markers. The grammar has one implementation, here; render_figures.py
+# imports it.
+#
+#   <!-- fig:NAME -->VALUE<!-- /fig -->            exact
+#   <!-- fig:NAME floor=K -->VALUE<!-- /fig -->    rounded floor, rendered "N+"
+#
+# HTML comments are invisible on GitHub and in mdBook. A marker sits on one line.
+# Markers inside a fenced code block are refused (a fence is shown literally, so
+# the comments would be visible and the value would never be read as a figure);
+# markers inside an inline code span are documentation of the syntax and are
+# ignored.
+# ---------------------------------------------------------------------------
+MARKER_START = re.compile(r"<!--\s*/?fig\b")
+MARKER_TOKEN = re.compile(r"<!--\s*(?P<close>/)?fig(?P<rest>[^>]*?)\s*-->")
+MARKER_OPEN_REST = re.compile(
+    r"^:(?P<name>[A-Za-z0-9_.:-]+)(?:\s+floor=(?P<floor>[0-9]+))?$"
+)
+CODE_FENCE = re.compile(r"^\s*(```|~~~)")
+INLINE_CODE = re.compile(r"`[^`\n]*`")
+
+
+class Marker:
+    """One well-formed marker: where it sits and what it currently says."""
+
+    __slots__ = ("name", "floor", "start", "end", "value_start", "value_end", "line", "value")
+
+    def __init__(self, name, floor, start, end, value_start, value_end, line, value):
+        self.name = name
+        self.floor = floor
+        self.start = start
+        self.end = end
+        self.value_start = value_start
+        self.value_end = value_end
+        self.line = line
+        self.value = value
+
+
+def find_markers(text: str) -> tuple[list[Marker], list[tuple[int, str]]]:
+    """Return the well-formed markers and every structural problem as (line, message).
+
+    Problems: a marker inside a code fence, an unparseable marker comment, an
+    unbalanced or nested pair, a pair split across lines, a floor of zero.
+    """
+    problems: list[tuple[int, str]] = []
+    tokens = []  # (is_close, name, floor, start, end, line)
+    in_fence = False
+    offset = 0
+    for lineno, line in enumerate(text.splitlines(keepends=True), 1):
+        line_start = offset
+        offset += len(line)
+        if CODE_FENCE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            if MARKER_START.search(line):
+                problems.append((lineno, "figure marker inside a fenced code block"))
+            continue
+        spans = [m.span() for m in INLINE_CODE.finditer(line)]
+        for start in MARKER_START.finditer(line):
+            if any(a <= start.start() < b for a, b in spans):
+                continue
+            token = MARKER_TOKEN.match(line, start.start())
+            if token is None:
+                problems.append((lineno, "malformed figure marker (no closing '-->')"))
+                continue
+            rest = token.group("rest")
+            if token.group("close"):
+                if rest.strip():
+                    problems.append((lineno, f"malformed closing marker {token.group(0)!r}"))
+                    continue
+                tokens.append((True, None, None, line_start + token.start(),
+                               line_start + token.end(), lineno))
+                continue
+            opened = MARKER_OPEN_REST.match(rest.strip())
+            if opened is None:
+                problems.append((lineno, f"malformed figure marker {token.group(0)!r}"))
+                continue
+            floor = opened.group("floor")
+            if floor is not None and int(floor) == 0:
+                problems.append((lineno, "floor=0 is not a rounding"))
+                continue
+            tokens.append((False, opened.group("name"),
+                           int(floor) if floor is not None else None,
+                           line_start + token.start(), line_start + token.end(), lineno))
+
+    markers: list[Marker] = []
+    pending = None
+    for token in tokens:
+        is_close, name, floor, start, end, lineno = token
+        if not is_close:
+            if pending is not None:
+                problems.append((lineno, f"nested figure marker inside the one opened on line {pending[5]}"))
+                pending = token
+                continue
+            pending = token
+            continue
+        if pending is None:
+            problems.append((lineno, "closing figure marker without an opening one"))
+            continue
+        _, name, floor, open_start, open_end, open_line = pending
+        pending = None
+        value = text[open_end:start]
+        if "\n" in value:
+            problems.append((open_line, "figure marker spans lines"))
+            continue
+        markers.append(Marker(name, floor, open_start, end, open_end, start, open_line, value))
+    if pending is not None:
+        problems.append((pending[5], "unbalanced figure marker: opened and never closed"))
+    return markers, problems
+
+
+def unwrap_markers(text: str) -> str:
+    """The text a reader sees: each marker replaced by its value."""
+    markers, _ = find_markers(text)
+    out, last = [], 0
+    for marker in markers:
+        out.append(text[last : marker.start])
+        out.append(marker.value)
+        last = marker.end
+    out.append(text[last:])
+    return "".join(out)
+
+
+def mask_markers(text: str) -> str:
+    """The text with every marker replaced by a placeholder, so what is left is
+    exactly the figures nothing owns."""
+    markers, _ = find_markers(text)
+    out, last = [], 0
+    for marker in markers:
+        out.append(text[last : marker.start])
+        out.append("FIG")
+        last = marker.end
+    out.append(text[last:])
+    return "".join(out)
+
+
+# The README badge URLs are not figures and need no exemption: they are
+# percent-encoded (`label=Rust%20tests`), so no shape below can match inside one.
+# The pristine tree passing with both badges present is the proof.
+# Digits followed by a floor's trailing plus ("2,000+ Rust tests"): read as the
+# bare number so the shapes below match a hand-typed floor exactly as they match
+# a hand-typed exact figure.
+FLOOR_PLUS = re.compile(r"(?<=[0-9])\+(?=[\s-])")
+
+# The shapes the checks below match. check_figure builds its pattern from these
+# nouns; the rest are the patterns of the check named beside each one.
+FIGURE_NOUNS = ("Rust tests", "frontend tests", "typed actions")
+BARE_TOTAL_RE = re.compile(r"([0-9][0-9,]*)\s+tests\b")  # check_bare_test_totals
+STORY_RATE_RE = re.compile(r"([0-9]+)\s*/\s*([0-9]+)\s+stories")  # check_story_claims
+BARE_STORY_RE = re.compile(r"(?<!/)\b([0-9]{2,})[-\s]stor(?:y|ies)\b")  # check_bare_story_counts
+FAMILY_RE = re.compile(
+    r"\b(?P<count>[0-9]{2,})\s+(?P<family>atomic|ubuntu)\b", re.IGNORECASE
+)  # check_bare_story_counts
+ACTION_BARE_RE = re.compile(r"\b([0-9]{2,})\s+(?:typed\s+)?actions\b", re.IGNORECASE)
+ACTION_SUBSET_RE = re.compile(
+    r"\b([0-9]+)\s+actions\s+(?:with|have)\s+an\s+`?ActionSpec`?\b", re.IGNORECASE
+)  # check_action_figures
+# check_story_coverage_claims reads these three counts out of one sentence; each
+# is a figure on its own.
+UNCOVERED_FIGURE_RES = (
+    re.compile(r"\b[0-9]+\s+are\s+still\s+untouched\s+by\s+any\s+story\b", re.IGNORECASE),
+    re.compile(r"\b[0-9]+\s+Fedora-only\s+and\b", re.IGNORECASE),
+    re.compile(r"\b[0-9]+\s+Ubuntu-only\s+ones\b", re.IGNORECASE),
+)
+
+
+def _figure_shapes(text: str) -> list[tuple[int, int]]:
+    """Every (start, end) span any figure check would match in `text`."""
+    hits: list[tuple[int, int]] = []
+    for noun in FIGURE_NOUNS:
+        spaced = r"\s+".join(re.escape(word) for word in noun.split())
+        for match in re.finditer(rf"([0-9][0-9,]*)\s+{spaced}", text):
+            hits.append(match.span())
+    for match in BARE_TOTAL_RE.finditer(text):
+        if int(match.group(1).replace(",", "")) >= BARE_TOTAL_FLOOR:
+            hits.append(match.span())
+    for regex in (STORY_RATE_RE, BARE_STORY_RE, FAMILY_RE, ACTION_BARE_RE, ACTION_SUBSET_RE,
+                  *UNCOVERED_FIGURE_RES):
+        for match in regex.finditer(text):
+            hits.append(match.span())
+    return hits
+
+
+def check_unmarked_figures(raw_texts: dict[str, str]) -> list[str]:
+    """Refuse a figure that the checks above would match but no marker owns.
+
+    The marked figures belong to render_figures.py --check. Without this rule a
+    hand-typed number would still be validated by the semantic checks, but it
+    would be one more number a contributor has to edit by hand, and a floor typed
+    by hand would not be validated at all (a floor is skipped by those checks, as
+    `2,000+` is not an exact count).
+    """
+    problems = []
+    for rel, text in raw_texts.items():
+        _, structural = find_markers(text)
+        for lineno, message in structural:
+            problems.append(f"{rel}:{lineno}: {message}")
+        masked = mask_markers(text)
+        scanned = FLOOR_PLUS.sub("", masked)
+        # Offsets in `scanned` map back into `masked` by adding the floor-plus
+        # characters removed before them, so a hand-typed "2,000+" is quoted as typed.
+        removed = [m.start() for m in FLOOR_PLUS.finditer(masked)]
+
+        def original(offset: int) -> int:
+            for index, position in enumerate(removed):
+                if position - index >= offset:
+                    return offset + index
+            return offset + len(removed)
+
+        seen = set()
+        for start, end in sorted(_figure_shapes(scanned)):
+            lineno = scanned.count("\n", 0, start) + 1
+            matched = masked[original(start) : original(end)]
+            key = (lineno, " ".join(matched.split()))
+            if key in seen:
+                continue
+            seen.add(key)
+            problems.append(
+                f"{rel}:{lineno}: figure {' '.join(matched.split())!r} is not inside a "
+                "<!-- fig:NAME --> marker. Do not type figures: wrap it and run "
+                "scripts/render_figures.py --write"
+            )
+    return problems
+
 
 def count_actions(root: Path) -> int:
     """Count entries in the brain's KNOWN_ACTIONS table."""
@@ -167,9 +406,8 @@ BARE_TOTAL_FLOOR = 1000
 def check_bare_test_totals(texts: dict[str, str], allowed: tuple[int, ...]) -> list[str]:
     """Flag an unqualified `<n> tests` that looks like a stale workspace total."""
     problems = []
-    pattern = re.compile(r"([0-9][0-9,]*)\s+tests\b")
     for rel, text in texts.items():
-        for match in pattern.finditer(text):
+        for match in BARE_TOTAL_RE.finditer(text):
             # Skip the qualified forms; check_figure owns those.
             preceding = text[max(0, match.start() - 12) : match.start()]
             claimed = int(match.group(1).replace(",", ""))
@@ -211,10 +449,9 @@ def story_run_has_no_unproven_results(run: dict) -> bool:
 
 def check_story_claims(texts: dict[str, str], runs: list[dict]) -> list[str]:
     problems = []
-    pattern = re.compile(r"([0-9]+)\s*/\s*([0-9]+)\s+stories")
     for rel, text in texts.items():
         for line in text.splitlines():
-            match = pattern.search(line)
+            match = STORY_RATE_RE.search(line)
             if not match:
                 continue
             passed, total = int(match.group(1)), int(match.group(2))
@@ -470,8 +707,8 @@ def check_story_coverage_claims(texts: dict[str, str], root: Path) -> list[str]:
     problems = []
 
     family_claim = re.search(
-        r"\bThe suite is\s+(?P<total>\d+)\s+stories?\s*:\s*"
-        r"(?P<atomic>\d+)\s+atomic\s*\+\s*(?P<ubuntu>\d+)\s+Ubuntu\b",
+        r"\bThe suite is\s+(?P<total>\d+\+?)\s+stories?\s*:\s*"
+        r"(?P<atomic>\d+\+?)\s+atomic\s*\+\s*(?P<ubuntu>\d+\+?)\s+Ubuntu\b",
         text,
         re.IGNORECASE,
     )
@@ -481,17 +718,19 @@ def check_story_coverage_claims(texts: dict[str, str], root: Path) -> list[str]:
             "'The suite is N stories: A atomic + U Ubuntu'"
         )
     else:
+        # A rounded floor ("150+") is owned by render_figures.py --check; only an
+        # exact count is compared here.
         published_sizes = {
-            "total": int(family_claim.group("total")),
-            "atomic": int(family_claim.group("atomic")),
-            "ubuntu": int(family_claim.group("ubuntu")),
+            label: int(family_claim.group(label))
+            for label in ("total", "atomic", "ubuntu")
+            if not family_claim.group(label).endswith("+")
         }
         derived_sizes = {
             "total": total,
             "atomic": family_sizes.get("atomic", 0),
             "ubuntu": family_sizes.get("ubuntu", 0),
         }
-        for label in ("total", "atomic", "ubuntu"):
+        for label in published_sizes:
             if published_sizes[label] != derived_sizes[label]:
                 problems.append(
                     f"{rel}: story coverage {label} count has published "
@@ -611,10 +850,8 @@ def check_bare_story_counts(
     individually legitimate sizes is not enough, since swapped labels would
     otherwise pass.
     """
-    bare = re.compile(r"(?<!/)\b([0-9]{2,})[-\s]stor(?:y|ies)\b")
-    family = re.compile(
-        r"\b(?P<count>[0-9]{2,})\s+(?P<family>atomic|ubuntu)\b", re.IGNORECASE
-    )
+    bare = BARE_STORY_RE
+    family = FAMILY_RE
 
     allowed = {
         run.get("totals", {}).get("total")
@@ -684,11 +921,8 @@ def check_action_figures(
     writable, forces it to carry its qualifier, and still catches the count
     drifting.
     """
-    bare = re.compile(r"\b([0-9]{2,})\s+(?:typed\s+)?actions\b", re.IGNORECASE)
-    subset = re.compile(
-        r"\b([0-9]+)\s+actions\s+(?:with|have)\s+an\s+`?ActionSpec`?\b",
-        re.IGNORECASE,
-    )
+    bare = ACTION_BARE_RE
+    subset = ACTION_SUBSET_RE
 
     problems = []
     for rel, text in texts.items():
@@ -814,6 +1048,90 @@ def load_test_baseline(root: Path) -> dict:
     return baseline
 
 
+LTS_RELEASES = ("22.04", "24.04", "26.04")
+
+
+def story_run_totals(root: Path, stem: str) -> dict:
+    """The totals of one recorded run, addressed by its file name stem."""
+    path = root / STORY_RUNS / f"{stem}.json"
+    if not path.is_file():
+        raise Failure(f"no recorded story run {STORY_RUNS}/{stem}.json")
+    try:
+        run = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise Failure(f"{STORY_RUNS}/{stem}.json is not readable JSON: {exc}") from exc
+    totals = run.get("totals") if isinstance(run, dict) else None
+    if not isinstance(totals, dict) or not all(
+        isinstance(totals.get(f), int) and not isinstance(totals.get(f), bool)
+        for f in ("passed", "total")
+    ):
+        raise Failure(f"{STORY_RUNS}/{stem}.json has no integer totals.passed and totals.total")
+    return totals
+
+
+def story_run_rate(root: Path, stem: str) -> str:
+    """`passed/total` of one recorded run, read from its artifact."""
+    totals = story_run_totals(root, stem)
+    return f"{totals['passed']}/{totals['total']}"
+
+
+def story_run_total(root: Path, stem: str) -> int:
+    """Stories in one recorded run, read from its artifact."""
+    return story_run_totals(root, stem)["total"]
+
+
+def story_run_served(root: Path, stem: str) -> int:
+    """Calls a replay served, from its `cassette_audit`."""
+    path = root / STORY_RUNS / f"{stem}.json"
+    story_run_totals(root, stem)  # missing or unreadable: fail with the reader's message
+    audit = json.loads(path.read_text(encoding="utf-8")).get("cassette_audit")
+    served = audit.get("served") if isinstance(audit, dict) else None
+    if not isinstance(served, int) or isinstance(served, bool):
+        raise Failure(f"{STORY_RUNS}/{stem}.json has no integer cassette_audit.served")
+    return served
+
+
+def lts_story_rates(root: Path) -> dict[str, tuple[int, int]]:
+    """`(passed, total)` of the latest full-family record run of each Ubuntu LTS."""
+    latest: dict[str, tuple[str, tuple[int, int]]] = {}
+    for run in load_story_runs(root):
+        release = str(run.get("release", ""))
+        if (
+            release in LTS_RELEASES
+            and run.get("story_set") in FULL_STORY_SETS
+            and run.get("cassette_mode") == "record"
+            and story_run_has_no_unproven_results(run)
+        ):
+            totals = run.get("totals", {})
+            key = str(run.get("ran_at", ""))
+            if release not in latest or key > latest[release][0]:
+                latest[release] = (key, (totals.get("passed"), totals.get("total")))
+    missing = [release for release in LTS_RELEASES if release not in latest]
+    if missing:
+        raise Failure(
+            "no full-family record run is committed for Ubuntu " + ", ".join(missing)
+        )
+    return {release: latest[release][1] for release in LTS_RELEASES}
+
+
+def lts_story_total(root: Path) -> int:
+    """The story count every LTS run covers. Refuses when the runs disagree."""
+    rates = lts_story_rates(root)
+    totals = {total for _, total in rates.values()}
+    if len(totals) != 1:
+        raise Failure(f"the LTS runs cover different story counts: {rates}")
+    return totals.pop()
+
+
+def lts_story_rate(root: Path) -> str:
+    """`passed/total` shared by every LTS run. Refuses when the runs disagree."""
+    rates = lts_story_rates(root)
+    if len(set(rates.values())) != 1:
+        raise Failure(f"the LTS runs do not share one pass rate: {rates}")
+    passed, total = next(iter(rates.values()))
+    return f"{passed}/{total}"
+
+
 def check_pre_commit_commands(root: Path, guide: str) -> list[str]:
     """Compare the documented gate with the executable hook, in order."""
     hook = root / ".githooks/pre-commit"
@@ -869,11 +1187,14 @@ def check_framework_commands(root: Path) -> list[str]:
 def main() -> int:
     root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     try:
-        texts = read_claim_files(root)
+        raw_texts = read_claim_files(root)
+        # The semantic checks read what a visitor reads: markers unwrapped.
+        texts = {rel: unwrap_markers(text) for rel, text in raw_texts.items()}
 
         baseline = load_test_baseline(root)
 
         problems = []
+        problems += check_unmarked_figures(raw_texts)
         problems += check_pre_commit_commands(root, texts["docs/developer-guide.md"])
         problems += check_framework_commands(root)
         problems += check_figure(texts, "Rust tests", baseline["tests"])
@@ -894,12 +1215,12 @@ def main() -> int:
         problems += check_validated_tiers(texts, root)
         problems += check_action_figures(texts, count_actions(root), count_action_specs(root))
 
-        expected_tests = f"{baseline['tests']:,} Rust tests"
         for rel in REQUIRE_TEST_COUNT:
-            if rel in texts and expected_tests not in texts[rel]:
+            names = [m.name for m in find_markers(raw_texts[rel])[0]]
+            if "rust_tests" not in names:
                 problems.append(
-                    f"{rel}: does not state the measured baseline "
-                    f"({expected_tests})"
+                    f"{rel}: does not state the measured baseline; it needs a "
+                    "<!-- fig:rust_tests floor=1000 --> marker"
                 )
 
         if problems:

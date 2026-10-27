@@ -12,6 +12,21 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Changed
+
+- **Published figures are rendered from their sources, never typed.**
+  `scripts/render_figures.py` rewrites every `<!-- fig:NAME -->` marker in the
+  README and docs (test counts, action counts, story-set sizes, recorded pass
+  rates), and `scripts/check_evidence_claims.py` now refuses a figure outside a
+  marker. Figures that routine PRs move are rounded floors ("2,000+"); recorded
+  story pass rates stay exact. `UPDATE_TEST_BASELINE=1 scripts/test_baseline.sh`
+  records the evidence and re-renders the docs in one step, and
+  `scripts/check_public_claims.sh` runs `render_figures.py --check`. The README
+  shows the exact Rust and frontend test counts as live badges read from
+  `tests/evidence/workspace-tests.json`. The README line that said the Ubuntu
+  suite "has since grown to 96" was already stale (it holds 99) and is now a
+  derived figure.
+
 ## [0.26.1] — 2026-10-24
 
 ### Security

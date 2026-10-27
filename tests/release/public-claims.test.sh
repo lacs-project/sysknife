@@ -173,6 +173,55 @@ if ! "$checker" "$fixture" >/dev/null 2>&1; then
     exit 1
 fi
 
+
+# What render_figures.py renders for one figure out of the REAL tree, so the
+# assertions below never retype a figure or its rounding.
+rendered() {
+    python3 - "$repo_root" "$@" <<'PYEOF'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1] + "/scripts")
+import render_figures
+root, name = Path(sys.argv[1]), sys.argv[2]
+floor = int(sys.argv[3]) if len(sys.argv) > 3 else None
+print(render_figures.render(render_figures.read_value(root, name, {}), floor))
+PYEOF
+}
+
+# Replace the VALUE of the first marker NAME in a file and print the old value.
+# Exits non-zero when no such marker exists, so a mutation cannot silently not
+# apply.
+set_marker_value() {
+    python3 - "$1" "$2" "$3" <<'PYEOF'
+import re
+import sys
+from pathlib import Path
+path, name, new = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+text = path.read_text(encoding="utf-8")
+pattern = re.compile(
+    r"(<!--\s*fig:" + re.escape(name) + r"(?:\s+floor=[0-9]+)?\s*-->)([^<\n]*)(<!--\s*/fig\s*-->)"
+)
+match = pattern.search(text)
+if not match:
+    raise SystemExit(f"no marker {name} in {path}")
+path.write_text(text[:match.start(2)] + new + text[match.end(2):], encoding="utf-8")
+print(match.group(2))
+PYEOF
+}
+
+# Put one named claim file back from the real tree and prove the copy is exact:
+# a restore that is not byte-identical would contaminate the next mutation.
+restore_claim_file() {
+    local rel="$1" want got
+    cp "$repo_root/$rel" "$fixture/$rel"
+    want="$(sha256sum < "$repo_root/$rel")"
+    got="$(sha256sum < "$fixture/$rel")"
+    if [[ "$want" != "$got" ]]; then
+        printf 'FAIL: restore of %s is not byte-identical\n' "$rel" >&2
+        exit 1
+    fi
+}
+
 assert_rejected_with_diagnostic() {
     local label="$1"
     shift
@@ -247,9 +296,10 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
+# The figure sits inside a <!-- fig --> marker; mutate the number, not the comment.
 pattern = re.compile(
-    r"(of the action names available on both families,\s*)(\d+)"
-    r"(\s+are still untouched by any story)"
+    r"(of the action names available on both families,\s*(?:<!--[^>]*-->)?)(\d+)"
+    r"((?:<!--[^>]*-->)?\s+are still untouched by any story)"
 )
 match = pattern.search(text)
 if not match:
@@ -266,7 +316,7 @@ if [[ -z "${derived_all:-}" || -z "${published_all:-}" ]]; then
     printf 'FAIL: story-coverage mutation produced no values\n' >&2
     exit 1
 fi
-if ! grep -Fq "$published_all are still untouched by any story" \
+if ! grep -Fq "${published_all}<!-- /fig --> are still untouched by any story" \
     "$fixture/CONTRIBUTING.md"; then
     printf 'FAIL: story-coverage mutation did not apply\n' >&2
     exit 1
@@ -707,31 +757,33 @@ assert_rejected() {
     fi
 }
 
-# Derive the baseline from the evidence artifact rather than repeating the
-# literal here. When the baseline moved, this mutation silently became a no-op:
-# the sed matched nothing, the checker legitimately passed, and the assertion
-# below then blamed the checker. A test whose mutation can stop mutating is worse
-# than no test — so every mutation below is confirmed to have applied.
+# A typed test count is refused twice over: as a figure outside a marker, and,
+# for an exact figure, because it disagrees with the evidence artifact. Derive the
+# wrong value from the artifact rather than repeating a literal; a test whose
+# mutation can stop mutating is worse than no test, so every mutation below is
+# confirmed to have applied.
 baseline="$(python3 -c "
 import json,sys
-print(f\"{json.load(open(sys.argv[1]))['tests']:,}\")
+print(f\"{json.load(open(sys.argv[1]))['tests'] + 1:,}\")
 " "$repo_root/tests/evidence/workspace-tests.json")"
 if [[ -z "$baseline" ]]; then
     printf 'FAIL: could not read the test count from the evidence artifact\n' >&2
     exit 1
 fi
-sed -i "s/${baseline} Rust tests/1,256 Rust tests/" "$fixture/README.md"
-if ! grep -q '1,256 Rust tests' "$fixture/README.md"; then
+printf '\n%s Rust tests are typed here by hand.\n' "$baseline" >> "$fixture/README.md"
+if ! grep -Fq "$baseline Rust tests are typed here" "$fixture/README.md"; then
     printf 'FAIL: baseline mutation did not apply; fixture would pass vacuously\n' >&2
     exit 1
 fi
-assert_rejected 'test count that disagrees with the evidence artifact'
+assert_rejected_with_diagnostic 'test count that disagrees with the evidence artifact' \
+    "README.md:" "claims $baseline Rust tests, evidence says" "is not inside a"
 cp "$repo_root/README.md" "$fixture/README.md"
 
 # A figure with no artifact at all behind it. This is the "65/65 stories" shape:
 # published for months, never produced by a run.
 printf '\nUbuntu 24.04 is validated with 47/50 stories on a live VM.\n' >> "$fixture/README.md"
-assert_rejected 'story pass rate with no recorded run'
+assert_rejected_with_diagnostic 'story pass rate with no recorded run' \
+    'claims 47/50 stories with no run' 'to back it'
 cp "$repo_root/README.md" "$fixture/README.md"
 
 # ...and the same claim IS accepted once a run records it. Without this the rule
@@ -757,13 +809,20 @@ write_fixture_run() {
           EV_SKIPPED=0 EV_RATELIMITED=0 \
           python3 "$repo_root/scripts/record_story_run.py"
 }
+# A story pass rate is claimed inside a marker, so the claim reaches the semantic
+# rules below with nothing else to reject it: the marker reads the run's own
+# totals, and only "does a full-family run back this" stands between the claim and
+# the checker. `fixture_claim` writes the claim line for the fixture run.
+fixture_claim() {
+    printf '\nUbuntu 24.04 is validated with <!-- fig:story_run:fixture-run -->%s<!-- /fig --> stories on a live VM.\n' "$1"
+}
 write_fixture_run ubuntu 50 47 ok
 # The writer's output must be valid JSON — the defect it replaced was not.
 python3 -m json.tool "$fixture/tests/evidence/story-runs/fixture-run.json" >/dev/null \
     || { printf 'FAIL: record_story_run.py emitted invalid JSON\n' >&2; exit 1; }
-printf '\nUbuntu 24.04 is validated with 47/50 stories on a live VM.\n' >> "$fixture/README.md"
-if ! "$checker" "$fixture" >/dev/null 2>&1; then
-    printf 'FAIL: checker rejected a story claim that its recorded run backs\n' >&2
+fixture_claim 47/50 >> "$fixture/README.md"
+if ! output="$("$checker" "$fixture" 2>&1)"; then
+    printf 'FAIL: checker rejected a story claim that its recorded run backs\n%s\n' "$output" >&2
     exit 1
 fi
 
@@ -783,7 +842,8 @@ grep -q '"skipped": 1' "$fixture/tests/evidence/story-runs/fixture-run.json" || 
     printf 'FAIL: skipped-story mutation did not apply\n' >&2
     exit 1
 }
-assert_rejected 'story pass rate backed by skipped stories'
+assert_rejected_with_diagnostic 'story pass rate backed by skipped stories' \
+    'claims 47/50 stories with no run' 'to back it'
 write_fixture_run ubuntu 50 47 ok
 
 # Rate-limited stories are a separate diagnostic, but they are just as unable
@@ -801,30 +861,34 @@ grep -q '"rate_limited": 1' "$fixture/tests/evidence/story-runs/fixture-run.json
     printf 'FAIL: rate-limited-story mutation did not apply\n' >&2
     exit 1
 }
-assert_rejected 'story pass rate backed by rate-limited stories'
+assert_rejected_with_diagnostic 'story pass rate backed by rate-limited stories' \
+    'claims 47/50 stories with no run' 'to back it'
 write_fixture_run ubuntu 50 47 ok
 
 # Backed by a run, but attributed to a model that did not produce it.
-sed -i 's|47/50 stories on a live VM.|47/50 stories on a live VM with gpt-4.1.|' "$fixture/README.md"
+sed -i 's|47/50<!-- /fig --> stories on a live VM.|47/50<!-- /fig --> stories on a live VM with gpt-4.1.|' "$fixture/README.md"
 grep -q 'gpt-4.1' "$fixture/README.md" || {
     printf 'FAIL: model-attribution mutation did not apply\n' >&2
     exit 1
 }
-assert_rejected 'story pass rate attributed to the wrong model'
+assert_rejected_with_diagnostic 'story pass rate attributed to the wrong model' \
+    'attributes 47/50 stories to gpt-4.1'
 cp "$repo_root/README.md" "$fixture/README.md"
 
 # A replay the harness declared unproven must not back a figure either. The
 # artifact used to be written before the cassette audit ran, so a run that missed
 # every call still produced a file with a healthy pass rate.
 write_fixture_run ubuntu 50 47 failed
-printf '\nUbuntu 24.04 is validated with 47/50 stories on a live VM.\n' >> "$fixture/README.md"
-assert_rejected 'story pass rate from a replay whose cassette audit failed'
+fixture_claim 47/50 >> "$fixture/README.md"
+assert_rejected_with_diagnostic 'story pass rate from a replay whose cassette audit failed' \
+    'claims 47/50 stories with no run' 'to back it'
 cp "$repo_root/README.md" "$fixture/README.md"
 
 # A subset run must never back a headline: probes record an empty story_set.
 write_fixture_run "" 4 4 ok
-printf '\nUbuntu 24.04 is validated with 4/4 stories on a live VM.\n' >> "$fixture/README.md"
-assert_rejected 'four-story probe quoted as a headline figure'
+fixture_claim 4/4 >> "$fixture/README.md"
+assert_rejected_with_diagnostic 'four-story probe quoted as a headline figure' \
+    'claims 4/4 stories with no run' 'to back it'
 cp "$repo_root/README.md" "$fixture/README.md"
 rm -f "$fixture/tests/evidence/story-runs/fixture-run.json"
 
@@ -834,32 +898,21 @@ assert_rejected 'a claim file missing from the checked surface'
 mv "$fixture/ROADMAP.held" "$fixture/ROADMAP.md"
 
 # The action count is derived from the catalogue source, so a retyped one fails.
-actions="$(grep -oE '[0-9]+ typed actions' "$fixture/docs/introduction.md" | head -1 | grep -oE '^[0-9]+' || true)"
-if [[ -z "$actions" ]]; then
-    printf 'FAIL: could not find the typed-action count in the fixture\n' >&2
+printf '\nThe catalogue holds 999 typed actions.\n' >> "$fixture/docs/introduction.md"
+if ! grep -Fq '999 typed actions' "$fixture/docs/introduction.md"; then
+    printf 'FAIL: action-count mutation did not apply\n' >&2
     exit 1
 fi
-sed -i "s/${actions} typed actions/999 typed actions/" "$fixture/docs/introduction.md"
-assert_rejected 'action count that disagrees with the catalogue source'
+assert_rejected_with_diagnostic 'action count that disagrees with the catalogue source' \
+    'docs/introduction.md' 'claims 999 typed actions, evidence says'
 cp "$repo_root/docs/introduction.md" "$fixture/docs/introduction.md"
 
 # An ActionSpec qualifier must not exempt a stale subset count from evidence.
-python3 - "$fixture/docs/developer-guide.md" <<'PYEOF'
-import re
-import sys
-from pathlib import Path
-path = Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
-updated, count = re.subn(
-    r"[0-9]+ actions with an `ActionSpec`",
-    "4 actions with an `ActionSpec`",
-    text,
-    count=1,
-)
-if count != 1:
-    raise SystemExit("could not find the ActionSpec count in the fixture")
-path.write_text(updated, encoding="utf-8")
-PYEOF
+printf '\nThe executor holds 4 actions with an `ActionSpec`.\n' >> "$fixture/docs/developer-guide.md"
+if ! grep -Fq '4 actions with an `ActionSpec`' "$fixture/docs/developer-guide.md"; then
+    printf 'FAIL: ActionSpec mutation did not apply\n' >&2
+    exit 1
+fi
 assert_rejected_with_diagnostic \
     'ActionSpec count that disagrees with the generated table' \
     'developer-guide.md' 'claims 4 actions with an ActionSpec' 'derived'
@@ -939,9 +992,10 @@ cp "$repo_root/docs/introduction.md" "$fixture/docs/introduction.md"
 
 # ...and the counterpart: a real family size must still be quotable, or the guard
 # would force every honest mention of the suite out of the docs.
-printf '\nThe atomic family is 54 stories.\n' >> "$fixture/docs/introduction.md"
-if ! "$checker" "$fixture" >/dev/null 2>&1; then
-    printf 'FAIL: checker rejected a real family size (54 stories)\n' >&2
+printf '\nThe atomic family is <!-- fig:stories_atomic floor=10 -->%s<!-- /fig --> stories.\n' \
+    "$(rendered stories_atomic 10)" >> "$fixture/docs/introduction.md"
+if ! output="$("$checker" "$fixture" 2>&1)"; then
+    printf 'FAIL: checker rejected a real, marked family size\n%s\n' "$output" >&2
     exit 1
 fi
 cp "$repo_root/docs/introduction.md" "$fixture/docs/introduction.md"
@@ -1028,5 +1082,6 @@ grep -q '"rate_limited": 1' \
     exit 1
 }
 assert_rejected 'Validated tier backed by a replay with rate-limited stories'
+
 
 printf 'Public claims contract passed.\n'

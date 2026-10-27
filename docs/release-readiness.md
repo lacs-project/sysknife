@@ -12,7 +12,7 @@ Run these on the exact candidate commit and retain the CI links:
 - [ ] `cargo fmt --all --check`
 - [ ] `cargo clippy --workspace --all-features --all-targets --locked -- -D warnings`
 - [ ] `cargo nextest run --workspace --locked`
-- [ ] frontend typecheck, 72 tests, production build, and production npm audit
+- [ ] frontend typecheck, <!-- fig:frontend_tests floor=10 -->70+<!-- /fig --> tests, production build, and production npm audit
 - [ ] live PostgreSQL migration and store contract
 - [ ] ShellCheck, YAML lint, repository completeness, release versions, public
       claims, and bootstrap contracts
