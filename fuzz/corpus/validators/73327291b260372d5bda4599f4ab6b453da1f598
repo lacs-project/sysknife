@@ -1,0 +1,1 @@
+mount options {bad:?} were accepted; suid and dev are the two that escalate

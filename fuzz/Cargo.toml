@@ -1,0 +1,50 @@
+[package]
+name = "sysknife-fuzz"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "cargo-fuzz targets for the SysKnife daemon's trust boundary"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+sysknife-daemon = { path = "../crates/sysknife-daemon" }
+sysknife-types = { path = "../crates/sysknife-types" }
+tokio = { version = "1", features = ["io-util", "rt"] }
+
+# Its own workspace root. The repository workspace never sees this crate, so the
+# root Cargo.toml and Cargo.lock stay as they are and `--workspace` builds do not
+# compile libFuzzer's C++ runtime.
+[workspace]
+
+[[bin]]
+name = "validators"
+path = "fuzz_targets/validators.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "action_spec"
+path = "fuzz_targets/action_spec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "daemon_request"
+path = "fuzz_targets/daemon_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frame_recv"
+path = "fuzz_targets/frame_recv.rs"
+test = false
+doc = false
+bench = false

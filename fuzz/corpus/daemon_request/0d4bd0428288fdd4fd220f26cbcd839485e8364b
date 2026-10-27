@@ -1,0 +1,1 @@
+{"type":"preview","request_id":"r1","action_name":"InstallFlatpak","params":{"username":"alice","app_id":"org.gnome.Builder","remote":"flathub"}}
