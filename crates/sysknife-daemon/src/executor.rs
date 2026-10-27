@@ -2376,6 +2376,61 @@ fn str_array_or_empty(params: &Value, key: &'static str) -> Result<Vec<String>, 
     }
 }
 
+/// Switches the kernel reads as a boolean or as `off`, each a protection that
+/// any spelling of [`KARG_OFF_VALUES`] turns off (Documentation/admin-guide/
+/// kernel-parameters.txt). Held once for both screens: adding `key=<off>` is
+/// refused by [`validated_safe_kernel_arg`], and removing it is allowed by
+/// [`validated_safe_kernel_arg_removal`], which also refuses removing any other
+/// value of these keys. `packaging/sysknife-grub-kargs-edit` and
+/// `packaging/sysknife-action-steps` hold the same list as `OFF_SWITCH_KEYS`,
+/// and `tests/release/grub-kargs-edit.test.sh` compares them.
+const KARG_OFF_SWITCH_KEYS: &[&str] = &[
+    "audit",
+    "mitigations",
+    "pti",
+    "spectre_v2",
+    "spec_store_bypass_disable",
+    "mds",
+    "tsx_async_abort",
+    "mmio_stale_data",
+    "retbleed",
+    "srbds",
+    "l1tf",
+    "spectre_bhi",
+    "gather_data_sampling",
+    "reg_file_data_sampling",
+    "module.sig_enforce",
+    "init_on_alloc",
+    "init_on_free",
+    "page_alloc.shuffle",
+    "randomize_kstack_offset",
+];
+
+/// Every spelling of "off" the kernel's boolean parser (`kstrtobool`) accepts,
+/// plus the literal `off` the mitigation switches compare against.
+const KARG_OFF_VALUES: &[&str] = &["0", "off", "n", "no", "false"];
+
+/// The form both kernel-argument screens match on: lowercase, with `-` read as
+/// `_` in the key. The kernel's `parameq()` (kernel/params.c) and systemd's
+/// `proc_cmdline_key_streq()` treat the two as one character in a parameter
+/// name, so `spectre-v2=off` is `spectre_v2=off`. The value keeps its spelling:
+/// `systemd.unit=debug-shell.service` names a unit, and unit names keep their
+/// hyphens. Every list entry below is written in this form.
+fn normalized_kernel_arg(arg: &str) -> String {
+    let lower = arg.to_lowercase();
+    match lower.split_once('=') {
+        Some((key, value)) => format!("{}={value}", key.replace('-', "_")),
+        None => lower.replace('-', "_"),
+    }
+}
+
+/// Whether `arg` (normalised) switches one of [`KARG_OFF_SWITCH_KEYS`] off.
+fn is_off_switch(normalized: &str) -> bool {
+    normalized.split_once('=').is_some_and(|(key, value)| {
+        KARG_OFF_SWITCH_KEYS.contains(&key) && KARG_OFF_VALUES.contains(&value)
+    })
+}
+
 /// Reject kernel command-line arguments that could bypass security mechanisms
 /// or drop to an unauthenticated root shell on next boot. Applies only to
 /// arguments being *added* (`SetKernelArguments`'s `add`, `GrubSetKargs`'s
@@ -2423,21 +2478,17 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
         "security=",
         "module_blacklist=",
         "apparmor=0",
-        "mitigations=off",
         "lockdown=",
-        "pti=off",
         // `systemd.unit=` is not the only way to ask for `debug-shell.service`.
         // systemd-debug-generator also honours `systemd.debug_shell`, which
         // pulls the unit into the boot transaction and spawns a root shell on
         // tty9 before anyone logs in — the identical end state the
         // `BLOCKED_UNIT_PREFIXES` screen below exists to prevent. Underscore is
         // the real spelling per systemd-debug-generator(8); `rd.` is the
-        // initrd-honoured variant, and the hyphen forms are listed so a
-        // near-miss cannot creep back.
+        // initrd-honoured variant. The hyphen forms need no entry:
+        // normalized_kernel_arg reads them as these.
         "systemd.debug_shell",
-        "systemd.debug-shell",
         "rd.systemd.debug_shell",
-        "rd.systemd.debug-shell",
         // `systemd.run=` runs a command as a root service once boot completes,
         // and the prefix covers `systemd.run_success_action=` and
         // `systemd.run_failure_action=` too. `rdinit=` is the initramfs twin of
@@ -2451,16 +2502,12 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
         // `modprobe.blacklist=` is modprobe's spelling of `module_blacklist=`.
         // `rd.shell` opens a dracut shell in the initramfs, and
         // `systemd.mask=` masks a unit (auditd, the journal) for the boot.
-        // `audit=0` turns kernel auditing off; the last two switch off one
-        // speculative-execution mitigation each.
+        // `audit=0` and the mitigation switches are KARG_OFF_SWITCH_KEYS.
         "lsm=",
         "modprobe.blacklist=",
         "rd.shell",
         "systemd.mask=",
         "rd.systemd.mask=",
-        "audit=0",
-        "spectre_v2=off",
-        "spec_store_bypass_disable=off",
     ];
     // `emergency`, `rescue`, `-b` and the runlevels 2-5 pick the boot target
     // the way `single` and `1` do (kernel-command-line(7)).
@@ -2472,7 +2519,8 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
         "nosmep",
         "emergency",
         "rescue",
-        "-b",
+        // `-b`, normalised.
+        "_b",
         "rd.emergency",
         "rd.rescue",
         "2",
@@ -2482,6 +2530,8 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
         "nopti",
         "nospectre_v1",
         "nospectre_v2",
+        "nospec_store_bypass_disable",
+        "nospectre_bhb",
         "nokaslr",
     ];
     // Shared with `validated_activatable_unit`, deliberately: these two screens
@@ -2492,10 +2542,13 @@ fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), Execu
     use crate::actions::validate::ROOT_SHELL_UNITS as BLOCKED_UNIT_PREFIXES;
 
     validated_kernel_arg_token(arg, param)?;
-    let lower = arg.to_lowercase();
+    let lower = normalized_kernel_arg(arg);
     // Strip optional value (e.g. "quiet=1" → "quiet") for exact matches.
     let base = lower.split('=').next().unwrap_or(&lower);
 
+    if is_off_switch(&lower) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
     if BLOCKED_PREFIXES.iter().any(|p| lower.starts_with(p)) {
         return Err(ExecutorError::InvalidParam(param));
     }
@@ -2571,22 +2624,15 @@ fn validated_kernel_arg_token(arg: &str, param: &'static str) -> Result<(), Exec
 fn validated_safe_kernel_arg_removal(arg: &str, param: &'static str) -> Result<(), ExecutorError> {
     /// Removing one of these hardens the host, so removal stays allowed even
     /// though the token matches a protective prefix below.
+    /// The `key=<off>` weakenings of KARG_OFF_SWITCH_KEYS count too.
     const WEAKENING: &[&str] = &[
         "selinux=0",
         "enforcing=0",
         "apparmor=0",
-        "mitigations=off",
-        "pti=off",
         "lockdown=none",
         "debugfs=on",
         "iommu=off",
         "intel_iommu=off",
-        "module.sig_enforce=0",
-        "init_on_alloc=0",
-        "init_on_free=0",
-        "randomize_kstack_offset=off",
-        "page_alloc.shuffle=0",
-        "audit=0",
     ];
     const PROTECTIVE_PREFIXES: &[&str] = &[
         "lockdown=",
@@ -2612,12 +2658,24 @@ fn validated_safe_kernel_arg_removal(arg: &str, param: &'static str) -> Result<(
         // auditing on.
         "lsm=",
         "audit=",
+        // The mitigation switches of KARG_OFF_SWITCH_KEYS not listed above.
+        "spectre_v2=",
+        "spec_store_bypass_disable=",
+        "mds=",
+        "tsx_async_abort=",
+        "mmio_stale_data=",
+        "retbleed=",
+        "srbds=",
+        "l1tf=",
+        "spectre_bhi=",
+        "gather_data_sampling=",
+        "reg_file_data_sampling=",
     ];
     const PROTECTIVE_EXACT: &[&str] = &["slab_nomerge", "nosmt", "kaslr"];
 
     validated_kernel_arg_token(arg, param)?;
-    let lower = arg.to_lowercase();
-    if WEAKENING.contains(&lower.as_str()) {
+    let lower = normalized_kernel_arg(arg);
+    if WEAKENING.contains(&lower.as_str()) || is_off_switch(&lower) {
         return Ok(());
     }
     // A bare key deletes the key's only value: libostree's
@@ -3134,6 +3192,14 @@ mod tests {
                 "refuse" => assert!(
                     !accepted,
                     "corpus line {number}: `{kind} {operand}` must be refused"
+                ),
+                // The helper's append screen is grub-kargs-edit's, which also
+                // refuses every downgrade in its weakening list; the daemon's
+                // add screen accepts these. Recorded so the gap is visible.
+                "helper-only" if kind == "append" => assert!(
+                    accepted,
+                    "corpus line {number}: `{kind} {operand}` is marked helper-only, \
+                     so the daemon must accept it; make it `refuse` if both refuse"
                 ),
                 other => panic!("corpus line {number}: unknown verdict {other:?}"),
             }
@@ -4265,6 +4331,136 @@ mod tests {
                     Err(ExecutorError::InvalidParam("remove"))
                 ),
                 "removing {arg} is a boot-security downgrade and must be refused"
+            );
+        }
+    }
+
+    /// The kernel's `parameq()` (kernel/params.c) and systemd's
+    /// `proc_cmdline_key_streq()` treat `-` and `_` as equal in a parameter
+    /// name, so a hyphen spelling reaches the same switch an underscore-only
+    /// list refuses. The value is not normalised: unit names keep their hyphens.
+    #[test]
+    fn kernel_arg_screens_treat_dash_and_underscore_alike_in_the_key() {
+        for arg in [
+            "spectre-v2=off",
+            "module-blacklist=apparmor",
+            "Spec-Store-Bypass-Disable=off",
+            "systemd.debug-shell=1",
+            "rd.systemd.debug-shell",
+            "nospectre-v2",
+            "nospectre-bhb",
+            "tsx-async-abort=off",
+        ] {
+            assert!(
+                validated_safe_kernel_arg(arg, "add").is_err(),
+                "{arg} is an underscore switch spelled with hyphens and must be refused"
+            );
+        }
+        for arg in [
+            "module.sig-enforce=1",
+            "init-on-alloc=1",
+            "randomize-kstack-offset=on",
+            "page-alloc.shuffle=1",
+        ] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_err(),
+                "{arg} is a protection spelled with hyphens and must not be removable"
+            );
+        }
+        for arg in ["init-on-alloc=0", "module.sig-enforce=0"] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_ok(),
+                "{arg} is a weakening spelled with hyphens and must stay removable"
+            );
+        }
+        // The value keeps its hyphens: the root-shell unit is still recognised.
+        assert!(validated_safe_kernel_arg("systemd.unit=debug-shell.service", "add").is_err());
+        assert!(validated_safe_kernel_arg("systemd.wants=foo-bar.service", "add").is_ok());
+    }
+
+    /// Where the kernel reads a switch as a boolean or as `off`, every spelling
+    /// of "off" turns it off, not only the one a list happened to name.
+    #[test]
+    fn kernel_arg_blocks_every_spelling_of_off_for_a_protection_switch() {
+        for arg in [
+            "audit=off",
+            "audit=0",
+            "audit=n",
+            "audit=no",
+            "audit=false",
+            "AUDIT=OFF",
+            "mitigations=false",
+            "pti=no",
+            "spectre_v2=n",
+            "mds=off",
+            "tsx_async_abort=off",
+            "mmio_stale_data=off",
+            "retbleed=off",
+            "srbds=off",
+            "l1tf=off",
+            "spectre_bhi=off",
+            "gather_data_sampling=off",
+            "reg_file_data_sampling=off",
+            "module.sig_enforce=no",
+            "init_on_free=false",
+            "nospec_store_bypass_disable",
+            "nospectre_bhb",
+        ] {
+            assert!(
+                matches!(
+                    validated_safe_kernel_arg(arg, "add"),
+                    Err(ExecutorError::InvalidParam("add"))
+                ),
+                "{arg} switches a protection off and must be refused"
+            );
+        }
+        for arg in [
+            "audit=1",
+            "mds=full",
+            "retbleed=auto",
+            "l1tf=flush",
+            "spectre_bhi=on",
+        ] {
+            assert!(
+                validated_safe_kernel_arg(arg, "add").is_ok(),
+                "{arg} must stay valid"
+            );
+        }
+    }
+
+    /// The mitigation switches the add screen now refuses turning off are
+    /// protections on the remove side, and their off spellings stay removable.
+    #[test]
+    fn kernel_arg_removal_protects_the_mitigation_switches() {
+        for arg in [
+            "mds=full",
+            "tsx_async_abort=full",
+            "mmio_stale_data=full",
+            "retbleed=auto",
+            "srbds=on",
+            "l1tf=flush",
+            "spectre_bhi=on",
+            "gather_data_sampling=force",
+            "reg_file_data_sampling=on",
+            "spectre_v2=on",
+            "spec_store_bypass_disable=on",
+            "mds",
+        ] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_err(),
+                "removing {arg} weakens the next boot and must be refused"
+            );
+        }
+        for arg in [
+            "mds=off",
+            "retbleed=off",
+            "audit=false",
+            "pti=no",
+            "spectre_v2=off",
+        ] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_ok(),
+                "{arg} is a weakening, so removing it must stay allowed"
             );
         }
     }

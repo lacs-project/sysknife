@@ -84,7 +84,14 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   root-shell unit pulled in with `systemd.wants=`, and `lsm=`, `rd.shell`,
   `systemd.mask=`, `modprobe.blacklist=`, `audit=0`, `nokaslr`, `nopti`,
   `nospectre_v1`, `nospectre_v2`, `spectre_v2=off` and
-  `spec_store_bypass_disable=off`. The `action-steps` helper now refuses
+  `spec_store_bypass_disable=off`. Every screen now reads `-` and `_` as one
+  character in a parameter name, as the kernel and systemd do, so
+  `spectre-v2=off` is refused like `spectre_v2=off`, and refuses every spelling
+  of off (`0`, `off`, `n`, `no`, `false`) for `audit` and the mitigation
+  switches, which now include `mds`, `tsx_async_abort`, `mmio_stale_data`,
+  `retbleed`, `srbds`, `l1tf`, `spectre_bhi`, `gather_data_sampling`,
+  `reg_file_data_sampling`, `nospec_store_bypass_disable` and `nospectre_bhb`.
+  The `action-steps` helper now refuses
   to lock or unlock `root`, `daemon`, `bin`, `sys`, `sudo` and `adm`, as the
   daemon does, and `UnlockUserAccount` applies the same list. The helper also
   refuses account names that start with `.` or contain `..`, as the daemon

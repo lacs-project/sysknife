@@ -1062,7 +1062,9 @@ class RpmOstreeVerb(unittest.TestCase):
                              ('ROOT_SHELL_UNITS', 'DENY_UNIT_TARGETS'),
                              ('KARG_DENY_DELETE_PREFIXES', 'DENY_DELETE_PREFIXES'),
                              ('KARG_DENY_DELETE_EXACT', 'DENY_DELETE_EXACT'),
-                             ('KARG_WEAKENING', 'WEAKENING_KARGS')]:
+                             ('KARG_WEAKENING', 'WEAKENING_KARGS'),
+                             ('KARG_OFF_SWITCH_KEYS', 'OFF_SWITCH_KEYS'),
+                             ('KARG_OFF_VALUES', 'OFF_VALUES')]:
             with self.subTest(list=mine):
                 theirs_value = getattr(grub, theirs)
                 self.assertTrue(theirs_value, f'grub-kargs-edit has an empty {theirs}')
@@ -1096,7 +1098,21 @@ class RpmOstreeVerb(unittest.TestCase):
                   'systemd.mask=auditd.service', 'rd.systemd.mask=auditd.service',
                   'modprobe.blacklist=apparmor', 'audit=0', 'audit=1', 'nopti',
                   'nospectre_v1', 'nospectre_v2', 'spectre_v2=off', 'spectre_v2=on',
-                  'spec_store_bypass_disable=off']
+                  'spec_store_bypass_disable=off',
+                  # `-` and `_` are one character in a parameter name (parameq()).
+                  'spectre-v2=off', 'module-blacklist=x', 'Spec-Store-Bypass-Disable=off',
+                  'rd.systemd.debug-shell', 'nospectre-bhb', 'module.sig-enforce=1',
+                  'init-on-alloc=0', 'init-on-alloc=1', 'systemd.wants=foo-bar.service',
+                  # Every spelling of off, and the remaining mitigation switches.
+                  'audit=off', 'audit=n', 'audit=no', 'audit=false', 'AUDIT=OFF',
+                  'mitigations=false', 'pti=no', 'spectre_v2=n', 'mds=off', 'mds=full', 'mds',
+                  'tsx_async_abort=off', 'tsx_async_abort=full', 'mmio_stale_data=off',
+                  'retbleed=off', 'retbleed=auto', 'srbds=off', 'srbds=on', 'l1tf=off',
+                  'l1tf=flush', 'spectre_bhi=off', 'spectre_bhi=on', 'gather_data_sampling=off',
+                  'gather_data_sampling=force', 'reg_file_data_sampling=off',
+                  'reg_file_data_sampling=on', 'module.sig_enforce=no', 'init_on_free=false',
+                  'nospec_store_bypass_disable', 'nospectre_bhb', 'spec_store_bypass_disable=on',
+                  'apparmor=01', 'debugfs=on', 'iommu=off', 'lockdown=none', '_b']
 
         def grub_refuses(screen, token):
             try:
@@ -1147,8 +1163,11 @@ class RpmOstreeVerb(unittest.TestCase):
                 parts = line.split(' ', 2)
                 self.assertEqual(len(parts), 3, f'corpus line {number} does not parse: {line!r}')
                 kind, verdict, operand = parts
-                self.assertIn(verdict, ('ok', 'refuse'), f'corpus line {number}')
+                self.assertIn(verdict, ('ok', 'refuse', 'helper-only'), f'corpus line {number}')
                 self.assertIn(kind, argv_for, f'corpus line {number}')
+                if verdict == 'helper-only':
+                    # The daemon accepts these on add and the helper refuses them.
+                    self.assertEqual(kind, 'append', f'corpus line {number}')
                 runner.reset_mock()
                 with self.subTest(line=number, kind=kind, operand=operand):
                     if verdict == 'ok':

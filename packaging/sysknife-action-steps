@@ -63,20 +63,20 @@ LOCAL_IMAGE_TRANSPORTS = ("oci", "oci-archive", "dir", "docker-archive", "docker
 # ROOT_SHELL_UNITS below, which is that helper's DENY_UNIT_TARGETS.
 KARG_DENY_APPEND_PREFIXES = (
     "init=", "selinux=0", "enforcing=0", "security=", "module_blacklist=",
-    "lockdown=", "apparmor=0", "mitigations=off", "pti=off",
-    "systemd.debug_shell", "systemd.debug-shell",
-    "rd.systemd.debug_shell", "rd.systemd.debug-shell",
+    "lockdown=", "apparmor=0",
+    "systemd.debug_shell", "rd.systemd.debug_shell",
     "systemd.run", "rdinit=", "rd.break", "break",
     # lsm= picks the LSM stack like security=; modprobe.blacklist= is
     # module_blacklist= by another name; rd.shell opens an initramfs shell;
-    # systemd.mask= masks a unit for the boot; audit=0 turns auditing off.
+    # systemd.mask= masks a unit for the boot. audit=0 and the mitigation
+    # switches are OFF_SWITCH_KEYS below.
     "lsm=", "modprobe.blacklist=", "rd.shell", "systemd.mask=", "rd.systemd.mask=",
-    "audit=0", "spectre_v2=off", "spec_store_bypass_disable=off",
 )
 KARG_DENY_APPEND_EXACT = (
     "single", "s", "1", "nosmap", "nosmep",
-    "emergency", "rescue", "-b", "rd.emergency", "rd.rescue", "2", "3", "4", "5",
-    "nopti", "nospectre_v1", "nospectre_v2", "nokaslr",
+    "emergency", "rescue", "_b", "rd.emergency", "rd.rescue", "2", "3", "4", "5",
+    "nopti", "nospectre_v1", "nospectre_v2", "nospec_store_bypass_disable",
+    "nospectre_bhb", "nokaslr",
 )
 KARG_DENY_DELETE_PREFIXES = (
     "lockdown=", "module.sig_enforce=", "security=", "selinux=", "enforcing=",
@@ -84,15 +84,30 @@ KARG_DENY_DELETE_PREFIXES = (
     "page_alloc.shuffle=", "randomize_kstack_offset=", "slub_debug=",
     "page_poison=", "vsyscall=", "debugfs=", "iommu=", "intel_iommu=",
     "amd_iommu=", "lsm=", "audit=",
+    # The mitigation switches of OFF_SWITCH_KEYS not listed above.
+    "spectre_v2=", "spec_store_bypass_disable=", "mds=", "tsx_async_abort=",
+    "mmio_stale_data=", "retbleed=", "srbds=", "l1tf=", "spectre_bhi=",
+    "gather_data_sampling=", "reg_file_data_sampling=",
 )
 KARG_DENY_DELETE_EXACT = ("slab_nomerge", "nosmt", "kaslr")
 # Each of these IS a downgrade: appending one is refused, deleting one is allowed.
 KARG_WEAKENING = (
-    "selinux=0", "enforcing=0", "apparmor=0", "mitigations=off", "pti=off",
-    "lockdown=none", "debugfs=on", "iommu=off", "intel_iommu=off",
-    "module.sig_enforce=0", "init_on_alloc=0", "init_on_free=0",
-    "randomize_kstack_offset=off", "page_alloc.shuffle=0", "nokaslr", "audit=0",
+    "selinux=0", "enforcing=0", "apparmor=0", "lockdown=none", "debugfs=on",
+    "iommu=off", "intel_iommu=off", "nokaslr",
 )
+# Switches the kernel reads as a boolean or as `off`, each a protection any
+# spelling in KARG_OFF_VALUES turns off (Documentation/admin-guide/
+# kernel-parameters.txt). key=<off> is refused on append and, being the
+# downgrade, allowed on delete. Mirrors KARG_OFF_SWITCH_KEYS and KARG_OFF_VALUES
+# in crates/sysknife-daemon/src/executor.rs; tests/release/grub-kargs-edit.test.sh
+# compares them.
+KARG_OFF_SWITCH_KEYS = (
+    "audit", "mitigations", "pti", "spectre_v2", "spec_store_bypass_disable", "mds",
+    "tsx_async_abort", "mmio_stale_data", "retbleed", "srbds", "l1tf", "spectre_bhi",
+    "gather_data_sampling", "reg_file_data_sampling", "module.sig_enforce",
+    "init_on_alloc", "init_on_free", "page_alloc.shuffle", "randomize_kstack_offset",
+)
+KARG_OFF_VALUES = ("0", "off", "n", "no", "false")
 
 # Mirrors ROOT_SHELL_UNITS in crates/sysknife-daemon/src/actions/validate.rs.
 #
@@ -344,15 +359,35 @@ def karg_token(value):
     return value
 
 
+def karg_normalized(value):
+    """Lowercase, with `-` read as `_` in the key and never in the value.
+
+    The kernel's parameq() (kernel/params.c) and systemd's
+    proc_cmdline_key_streq() treat the two as one character in a parameter
+    name, so `spectre-v2=off` is `spectre_v2=off`. Unit names in a value keep
+    their hyphens. Every list entry above is written in this form. Mirrors
+    normalized_kernel_arg in crates/sysknife-daemon/src/executor.rs.
+    """
+    key, eq, rest = value.lower().partition("=")
+    return key.replace("-", "_") + eq + rest
+
+
+def karg_off_switch(lower):
+    """Whether a normalised argument switches one of KARG_OFF_SWITCH_KEYS off."""
+    key, eq, rest = lower.partition("=")
+    return bool(eq) and key in KARG_OFF_SWITCH_KEYS and rest in KARG_OFF_VALUES
+
+
 def karg_append(value):
     """grub-kargs-edit's reject_dangerous_append, on top of karg_token."""
-    lower = karg_token(value).lower()
+    lower = karg_normalized(karg_token(value))
     base = lower.split("=", 1)[0]
     unit = next((lower[len(p):] for p in ("systemd.unit=", "rd.systemd.unit=",
                                           "systemd.wants=", "rd.systemd.wants=")
                  if lower.startswith(p)), "")
     if (lower.startswith(KARG_DENY_APPEND_PREFIXES) or lower in KARG_DENY_APPEND_EXACT
             or base in KARG_DENY_APPEND_EXACT or lower in KARG_WEAKENING
+            or karg_off_switch(lower)
             or any(unit.startswith(u) for u in ROOT_SHELL_UNITS)):
         raise ValueError("refusing a kernel argument that weakens the boot or opens a root shell")
     return value
@@ -360,11 +395,12 @@ def karg_append(value):
 
 def karg_delete(value):
     """grub-kargs-edit's reject_dangerous_delete, on top of karg_token."""
-    lower = karg_token(value).lower()
+    lower = karg_normalized(karg_token(value))
     # A bare key deletes the key's only value (libostree's
     # ostree_kernel_args_delete), so `lockdown` is screened as `lockdown=`.
     key = lower.split("=", 1)[0]
-    if lower not in KARG_WEAKENING and (lower.startswith(KARG_DENY_DELETE_PREFIXES)
+    weakening = lower in KARG_WEAKENING or karg_off_switch(lower)
+    if not weakening and (lower.startswith(KARG_DENY_DELETE_PREFIXES)
                                         or (key + "=").startswith(KARG_DENY_DELETE_PREFIXES)
                                         or lower in KARG_DENY_DELETE_EXACT
                                         or key in KARG_DENY_DELETE_EXACT):

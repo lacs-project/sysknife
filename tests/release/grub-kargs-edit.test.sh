@@ -257,6 +257,63 @@ for const, helper_attr, relation in (("PROTECTIVE_PREFIXES", "DENY_DELETE_PREFIX
     if relation == "subset" and not daemon <= helper_set:
         failures.append(f"{helper_attr} is missing {sorted(daemon - helper_set)} from the daemon's {const}")
 
+# 3i. `-` and `_` are one character in a parameter NAME: the kernel's parameq()
+#     (kernel/params.c) and systemd's proc_cmdline_key_streq() compare them as
+#     equal. The screens normalise the key before matching, and every list entry
+#     is written in that normal form, so a hyphen spelling of an entry cannot
+#     exist in the lists and does not get through.
+for tok in ["spectre-v2=off", "module-blacklist=apparmor", "Spec-Store-Bypass-Disable=off",
+            "systemd.debug-shell=1", "rd.systemd.debug-shell", "nospectre-bhb", "nospectre-v2",
+            "tsx-async-abort=off", "-b", "_b"]:
+    if not refused_append(tok):
+        failures.append(f"--append {tok!r} was accepted; `-` and `_` are equal in a parameter name")
+for tok in ["module.sig-enforce=1", "init-on-alloc=1", "randomize-kstack-offset=on", "page-alloc.shuffle=1"]:
+    if not refused(tok):
+        failures.append(f"--delete {tok!r} was accepted; `-` and `_` are equal in a parameter name")
+for tok in ["init-on-alloc=0", "module.sig-enforce=0"]:
+    if refused(tok):
+        failures.append(f"--delete {tok!r} was refused, but it is a weakening")
+if refused_append("systemd.wants=foo-bar.service"):
+    failures.append("--append systemd.wants=foo-bar.service was refused; the value must not be normalised")
+for attr in ("DENY_APPEND_PREFIXES", "DENY_APPEND_EXACT", "DENY_DELETE_PREFIXES",
+             "DENY_DELETE_EXACT", "WEAKENING_KARGS", "OFF_SWITCH_KEYS"):
+    for entry in getattr(mod, attr, ()):
+        key = entry.split("=", 1)[0]
+        if "-" in key or entry != entry.lower():
+            failures.append(f"{attr} entry {entry!r} is not in normal form (lowercase, `_` in the key)")
+
+# 3j. Every spelling of off for a switch the kernel reads as a boolean or as
+#     `off`, and the remaining mitigation switches of kernel-parameters.txt.
+for tok in ["audit=off", "audit=0", "audit=n", "audit=no", "audit=false", "AUDIT=OFF",
+            "mitigations=false", "pti=no", "spectre_v2=n", "module.sig_enforce=no",
+            "init_on_free=false", "mds=off", "tsx_async_abort=off", "mmio_stale_data=off",
+            "retbleed=off", "srbds=off", "l1tf=off", "spectre_bhi=off",
+            "gather_data_sampling=off", "reg_file_data_sampling=off",
+            "nospec_store_bypass_disable", "nospectre_bhb"]:
+    if not refused_append(tok):
+        failures.append(f"--append {tok!r} was accepted; it switches a protection off")
+for tok in ["mds=full", "retbleed=auto", "l1tf=flush", "spectre_bhi=on", "gather_data_sampling=force"]:
+    if refused_append(tok):
+        failures.append(f"--append {tok!r} was refused, but it switches nothing off")
+for tok in ["mds=full", "mds", "tsx_async_abort=full", "mmio_stale_data=full", "retbleed=auto",
+            "srbds=on", "l1tf=flush", "spectre_bhi=on", "gather_data_sampling=force",
+            "reg_file_data_sampling=on", "spectre_v2=on", "spec_store_bypass_disable=on"]:
+    if not refused(tok):
+        failures.append(f"--delete {tok!r} was accepted; it removes a mitigation")
+for tok in ["mds=off", "retbleed=off", "audit=false", "pti=no", "spectre_v2=off"]:
+    if refused(tok):
+        failures.append(f"--delete {tok!r} was refused, but it is a weakening")
+
+# 3k. PARITY of the off-switch lists with executor.rs, which holds them once,
+#     at module level, for both of its screens.
+for const, helper_attr in (("KARG_OFF_SWITCH_KEYS", "OFF_SWITCH_KEYS"), ("KARG_OFF_VALUES", "OFF_VALUES")):
+    decl = re.search(rf"const {const}:\s*&\[&str\]\s*=\s*&\[(.*?)\];", exec_src, re.S)
+    daemon = set(re.findall(r'"([^"]+)"', decl.group(1))) if decl else set()
+    if not daemon:
+        failures.append(f"{const} not found or empty in executor.rs; compared nothing")
+    elif daemon != set(getattr(mod, helper_attr, ())):
+        failures.append(f"{helper_attr} differs from the daemon's {const}")
+
 # 3d. Ordinary appends must survive, or the screen has eaten the feature.
 for tok in ["quiet", "splash", "nomodeset", "console=ttyS0", "transparent_hugepage=madvise"]:
     if refused_append(tok):

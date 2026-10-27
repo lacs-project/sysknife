@@ -1,6 +1,6 @@
 # One rpm-ostree operand per line, and what each validator must say about it.
 #
-#   <kind> <ok|refuse> <operand>
+#   <kind> <ok|refuse|helper-only> <operand>
 #
 # The daemon validates these operands in crates/sysknife-daemon/src/executor.rs and
 # crates/sysknife-daemon/src/actions/validate.rs, and the root-owned helper
@@ -19,10 +19,9 @@
 #   delete   validated_safe_kernel_arg_removal (SetKernelArguments remove; helper karg_delete)
 #
 # The helper's append screen is grub-kargs-edit's, which also refuses every downgrade in
-# WEAKENING_KARGS (debugfs=on, iommu=off, init_on_alloc=0, ...). The daemon's add screen
-# refuses only the ones in its own lists, so the others are left out of this file: the helper
-# refuses them and the daemon would hand them on. tests/release/action-steps.test.sh pins the
-# helper's lists to grub-kargs-edit.
+# WEAKENING_KARGS. The daemon's add screen refuses only the ones in its own lists. The tokens
+# where the two differ are `append helper-only` lines: the daemon accepts them and the helper
+# refuses them. tests/release/action-steps.test.sh pins the helper's lists to grub-kargs-edit.
 #
 # The operand is everything after the second space, so it may contain spaces. Lines that
 # start with `#` and blank lines are skipped. Any other line that does not parse fails the
@@ -219,3 +218,74 @@ append ok spectre_v2=on
 # --- rebase: `..` and `@/` where no other rule sees them ---
 ref refuse fedora/../../tmp/x
 ref refuse ostree-unverified-registry:x@/tmp/repo
+
+# --- `-` and `_` are one character in a parameter name (kernel parameq(), systemd
+#     proc_cmdline_key_streq()); the value keeps its own spelling ---
+append refuse spectre-v2=off
+append refuse module-blacklist=apparmor
+append refuse Spec-Store-Bypass-Disable=off
+append refuse systemd.debug-shell=1
+append refuse rd.systemd.debug-shell
+append refuse nospectre-bhb
+append refuse tsx-async-abort=off
+append refuse nospectre-v2
+append ok systemd.wants=foo-bar.service
+append refuse systemd.unit=debug-shell.service
+delete refuse module.sig-enforce=1
+delete refuse init-on-alloc=1
+delete refuse randomize-kstack-offset=on
+delete refuse page-alloc.shuffle=1
+delete ok init-on-alloc=0
+delete ok module.sig-enforce=0
+# --- every spelling of off for a switch the kernel reads as a boolean or as `off` ---
+append refuse audit=off
+append refuse audit=n
+append refuse audit=no
+append refuse audit=false
+append refuse AUDIT=OFF
+append refuse mitigations=false
+append refuse pti=no
+append refuse spectre_v2=n
+append refuse module.sig_enforce=no
+append refuse init_on_free=false
+append refuse page_alloc.shuffle=0
+append refuse randomize_kstack_offset=off
+append refuse init_on_alloc=0
+# --- the remaining mitigation switches (kernel-parameters.txt) ---
+append refuse mds=off
+append refuse tsx_async_abort=off
+append refuse mmio_stale_data=off
+append refuse retbleed=off
+append refuse srbds=off
+append refuse l1tf=off
+append refuse spectre_bhi=off
+append refuse gather_data_sampling=off
+append refuse reg_file_data_sampling=off
+append refuse nospec_store_bypass_disable
+append refuse nospectre_bhb
+append ok mds=full
+append ok retbleed=auto
+append ok l1tf=flush
+append ok spectre_bhi=on
+append ok gather_data_sampling=force
+delete refuse mds=full
+delete refuse mds
+delete refuse tsx_async_abort=full
+delete refuse mmio_stale_data=full
+delete refuse retbleed=auto
+delete refuse srbds=on
+delete refuse l1tf=flush
+delete refuse spectre_bhi=on
+delete refuse gather_data_sampling=force
+delete refuse reg_file_data_sampling=on
+delete refuse spectre_v2=on
+delete refuse spec_store_bypass_disable=on
+delete ok mds=off
+delete ok retbleed=off
+delete ok audit=false
+delete ok pti=no
+delete ok spectre_v2=off
+# --- downgrades the helper refuses on append and the daemon accepts ---
+append helper-only debugfs=on
+append helper-only iommu=off
+append helper-only intel_iommu=off
