@@ -46,6 +46,7 @@
 
 - [Developer Guide](developer-guide.md)
 - [Testing Guide](contributing/testing.md)
+- [Fuzzing](contributing/fuzzing.md)
 - [Ubuntu VM Testing](contributing/ubuntu-vm-testing.md)
 - [Contributing](contributing/CONTRIBUTING.md)
 - [Ubuntu Story Audit](contributing/ubuntu-story-audit.md)

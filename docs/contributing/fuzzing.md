@@ -66,7 +66,7 @@ cargo +nightly fuzz tmin -O --debug-assertions validators fuzz/artifacts/validat
 ```
 
 A crash in a validator can be a security issue. Report it through
-[SECURITY.md](../../SECURITY.md) and leave it out of public issues and pull
+[SECURITY.md](https://github.com/lacs-project/sysknife/blob/main/SECURITY.md) and leave it out of public issues and pull
 requests.
 
 ## How it is wired
