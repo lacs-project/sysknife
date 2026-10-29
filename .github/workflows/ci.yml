@@ -155,6 +155,9 @@ jobs:
       - name: Check the DCO check fails unsigned and unreadable ranges
         run: bash tests/release/dco.test.sh
 
+      - name: Check no workflow puts a secret on a command line
+        run: bash tests/release/secret-argv.test.sh
+
       - name: Check systemd directory modes match tmpfiles
         run: bash tests/release/systemd-directory-modes.test.sh
 
