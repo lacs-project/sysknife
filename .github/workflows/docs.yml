@@ -17,10 +17,10 @@ on:
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
+# The build job reads the repository and nothing else. Only deploy gets the
+# Pages and OIDC grants, so a step in the build cannot publish the site.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -77,6 +77,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # The two grants actions/deploy-pages documents as its minimum.
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

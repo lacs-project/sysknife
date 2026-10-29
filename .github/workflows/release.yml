@@ -252,7 +252,10 @@ jobs:
               if ((status != 1)); then
                 exit "$status"
               fi
-              cargo publish -p "$crate" --locked --token "$CARGO_REGISTRY_TOKEN"
+              # cargo reads CARGO_REGISTRY_TOKEN from the environment. Passing
+              # it as --token would put the token on the command line, where
+              # every process on the runner can read it from /proc.
+              cargo publish -p "$crate" --locked
               wait_for_crate_version "$crate" "$VERSION"
             fi
           done

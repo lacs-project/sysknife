@@ -32,6 +32,23 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   `make uninstall DESTDIR=...` removes the staged files and leaves the running
   service alone. Without `DESTDIR` the install behaves as before.
 
+### Changed
+
+- **Every commit in a pull request needs a DCO sign-off.** A new required
+  check, `dco`, runs `scripts/check_dco.sh` over the commits a pull request
+  adds and fails any without a `Signed-off-by:` trailer from its author.
+  `git commit -s` adds one; the check's output prints the commands that sign
+  off commits already pushed. CONTRIBUTING.md has the details. Merge commits
+  and Dependabot's own sign-off address are handled.
+- **The docs workflow grants Pages and OIDC write only to its deploy job.**
+  The build job, which runs mdBook and the link checker, now holds
+  `contents: read` and nothing else.
+- **The release workflow keeps the crates.io token off the command line.**
+  `cargo publish` read the token from `--token "$CARGO_REGISTRY_TOKEN"`, which
+  put it in the process's argv; cargo reads the same variable from the
+  environment, so the flag is gone. `tests/release/secret-argv.test.sh` fails
+  any workflow that expands a secret outside a `test -n` presence check.
+
 ### Fixed
 
 - **Published crates and the npm package carry the licence text.** crates.io

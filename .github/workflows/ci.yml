@@ -152,6 +152,12 @@ jobs:
       - name: Check ShellCheck covers every tracked shell file
         run: bash tests/release/shellcheck-coverage.test.sh
 
+      - name: Check the DCO check fails unsigned and unreadable ranges
+        run: bash tests/release/dco.test.sh
+
+      - name: Check no workflow puts a secret on a command line
+        run: bash tests/release/secret-argv.test.sh
+
       - name: Check systemd directory modes match tmpfiles
         run: bash tests/release/systemd-directory-modes.test.sh
 
@@ -484,3 +490,24 @@ jobs:
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
         with:
           fail-on-severity: high
+
+  dco:
+    # Every commit a pull request adds must carry its author's Signed-off-by
+    # trailer, which certifies the Developer Certificate of Origin.
+    # CONTRIBUTING.md explains how to sign off; the main ruleset requires this.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The whole history, so both ends of the pull request's range resolve.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check every commit is signed off by its author
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/check_dco.sh "$BASE_SHA" "$HEAD_SHA"

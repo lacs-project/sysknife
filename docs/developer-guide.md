@@ -22,8 +22,8 @@ environment and covers everything you need to contribute confidently.
 | Node.js | 22.22.2+ or 24 (CI uses 24) | [nodejs.org](https://nodejs.org) or your distro. `npx sysknife-setup` runs on any 22+; the frontend's test stack (jsdom 30) asks for 22.22.2+ |
 | `cargo-nextest` | latest | `cargo install cargo-nextest --locked` |
 
-**Required to reproduce the `docs-and-hygiene` job**, which is one of the five
-checks `main` requires:
+**Required to reproduce the `docs-and-hygiene` job**, which is one of the checks
+`main` requires:
 
 | Tool | Version | Install |
 |---|---|---|
@@ -113,8 +113,10 @@ on your workstation and in a Fedora Atomic VM.
 
 ## Reproducing the Required Checks
 
-`main` requires five checks. `scripts/ci-local.sh` runs most of them in one go
-and is the command to reach for first:
+`main` requires seven checks: `docs-and-hygiene`, `rust`, `frontend`,
+`security-audit`, `postgres-contract`, `dependency-review` and `dco`.
+`scripts/ci-local.sh` runs most of them in one go and is the command to reach
+for first:
 
 ```sh
 scripts/ci-local.sh          # everything it can run here
@@ -135,6 +137,20 @@ tests here set process-global environment variables, so it fails intermittently
 on `main` through no fault of your branch. `nextest` gives each test its own
 process and does not have that problem. If you have no choice, `cargo test --
 --test-threads=1` is stable.
+
+### The DCO sign-off
+
+`dco` reads every commit your pull request adds, skips merge commits, and wants
+a `Signed-off-by:` trailer whose address matches the commit's author address.
+Check a branch before you push it:
+
+```sh
+git fetch https://github.com/lacs-project/sysknife.git main
+bash scripts/check_dco.sh FETCH_HEAD HEAD
+```
+
+If it fails, `git rebase --signoff FETCH_HEAD` adds the trailer to each of
+your commits; push the result with `git push --force-with-lease`.
 
 ### The live Postgres contract
 

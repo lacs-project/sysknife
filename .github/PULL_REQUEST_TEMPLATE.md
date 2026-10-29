@@ -13,6 +13,7 @@ Link the issue or roadmap item this PR addresses.
 - [ ] Security impact considered
 - [ ] Trust boundary preserved (daemon remains the only privileged executor)
 - [ ] CI passes
+- [ ] Every commit is signed off (`git commit -s`, see CONTRIBUTING.md)
 
 ## Notes for Reviewers
 
