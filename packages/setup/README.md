@@ -18,6 +18,11 @@ root.
 Run from the root of your project. The wizard is interactive and scriptable
 via stdin redirection.
 
+If service setup is incomplete and no daemon is reachable after setup, the
+wizard prints the remaining manual steps and exits with status 3. User-mode
+service setup is complete only when the daemon binary exists and is executable
+and systemd reloads, enables, and starts the service successfully.
+
 Choose one integration interactively, or pass a flag to go straight to it:
 
 ```sh

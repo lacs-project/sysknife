@@ -5,11 +5,12 @@
  * install-daemon.js — systemd service installer for sysknife-daemon
  *
  * Contract:
- *   installDaemonService(opts) → Promise<void>
+ *   installDaemonService(opts) → Promise<{ mode: string, daemonInstalled: boolean, manualSteps: string[] }>
  *
  *   opts.ask(question, defaultVal)  — async prompt helper from index.js
  *   opts.daemonMode                 — 'system' | 'user' | 'skip'; null asks
  *   opts.daemonBinPath              — absolute path to sysknife-daemon binary
+ *   opts.spawnSync                  — optional command runner override for tests
  *
  * Two install modes:
  *
@@ -228,10 +229,21 @@ function canSudoNoPass() {
  * @param {string[]} args
  * @param {boolean}  userMode  — if true, pass --user flag
  */
-function systemctl(args, userMode = false) {
+function systemctl(args, userMode = false, runCommand = spawnSync) {
   const cmd = userMode ? ['systemctl', '--user', ...args] : ['sudo', 'systemctl', ...args];
-  const result = spawnSync(cmd[0], cmd.slice(1), { stdio: 'inherit', timeout: 10_000 });
+  const result = runCommand(cmd[0], cmd.slice(1), { stdio: 'inherit', timeout: 10_000 });
   return result.status === 0;
+}
+
+/** Return whether `filepath` names an executable regular file. */
+function isExecutableFile(filepath) {
+  try {
+    if (!fs.statSync(filepath).isFile()) return false;
+    fs.accessSync(filepath, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +318,7 @@ async function installDaemonService(opts) {
     daemonBinPath,
     daemonMode = null,
     hasSystemd: detectSystemd = hasSystemd,
+    spawnSync: runCommand = spawnSync,
   } = opts;
 
   if (!detectSystemd()) {
@@ -351,15 +364,21 @@ async function installDaemonService(opts) {
   // Default: choice === '1' or anything else → user service.
   // Migrate before the unit is written and started, so the daemon opens the
   // moved database rather than creating a fresh one beside it.
+  if (!isExecutableFile(daemonBinPath)) {
+    const manualSteps = [`Install an executable daemon binary at ${daemonBinPath}, then rerun setup.`];
+    warn(`Daemon binary is missing or not executable: ${daemonBinPath}`);
+    return { mode: 'user', daemonInstalled: false, manualSteps };
+  }
+
   const migration = migrateLegacyDatabase();
   if (migration) warn(migration);
-  await _installUserService(daemonBinPath);
+  const userService = await _installUserService(daemonBinPath, runCommand);
   warn(userModeCapabilityWarning());
-  return { mode: 'user', daemonInstalled: true, manualSteps: [] };
+  return { mode: 'user', ...userService };
 }
 
 /** Install a user-level service under ~/.config/systemd/user/. */
-async function _installUserService(daemonBinPath) {
+async function _installUserService(daemonBinPath, runCommand = spawnSync) {
   const unitPath = userUnitPath();
   const unitDir  = path.dirname(unitPath);
 
@@ -373,7 +392,7 @@ async function _installUserService(daemonBinPath) {
   ok(`Wrote ${unitPath}`);
 
   // Enable lingering so the service survives logout (best-effort).
-  const lingerResult = spawnSync('loginctl', ['enable-linger'], { stdio: 'pipe', timeout: 5000 });
+  const lingerResult = runCommand('loginctl', ['enable-linger'], { stdio: 'pipe', timeout: 5000 });
   if (lingerResult.status === 0) {
     ok('Enabled linger (service survives logout)');
   } else {
@@ -382,19 +401,25 @@ async function _installUserService(daemonBinPath) {
   }
 
   // Reload and start.
-  const daemonReloaded = systemctl(['daemon-reload'], true);
+  const daemonReloaded = systemctl(['daemon-reload'], true, runCommand);
   if (!daemonReloaded) {
     warn('systemctl --user daemon-reload failed — run it manually after starting a user session.');
-    return;
+    const manualSteps = [
+      'Run:  systemctl --user daemon-reload',
+      'Run:  systemctl --user enable --now sysknife-daemon',
+    ];
+    return { daemonInstalled: false, manualSteps };
   }
 
-  const started = systemctl(['enable', '--now', 'sysknife-daemon'], true);
+  const started = systemctl(['enable', '--now', 'sysknife-daemon'], true, runCommand);
   if (started) {
     ok('sysknife-daemon user service enabled and started.');
     step('Socket: ' + runtimeSocketPath());
+    return { daemonInstalled: true, manualSteps: [] };
   } else {
     warn('Could not enable/start user service automatically.');
-    step('Run:  systemctl --user enable --now sysknife-daemon');
+    const manualSteps = ['Run:  systemctl --user enable --now sysknife-daemon'];
+    return { daemonInstalled: false, manualSteps };
   }
 }
 
