@@ -16,7 +16,17 @@
     "0.17.0 into a version that does not exist at its recorded checksum, and the",
     "rehearsal failed with 'cannot update the lock file'. cargo owns that file.",
     "bump_version.sh runs cargo and then refuses if anything outside the",
-    "workspace moved."
+    "workspace moved.",
+    "",
+    "dependent_lockfiles are the lockfiles of side workspaces that use the release",
+    "crates by path (fuzz/, its own workspace so `--workspace` never builds",
+    "libFuzzer). They carry the path crates' versions, so a bump that skips them",
+    "leaves a `--locked` build refusing. cargo refreshes each through",
+    "--manifest-path, and every release crate they contain must be at the release",
+    "version; they need not contain all of them.",
+    "",
+    "not_a_version_site: fuzz/Cargo.toml names release crates by path only and is",
+    "never published; its own version stays 0.0.0."
   ],
   "cargo_manifests": [
     "apps/sysknife-cli/Cargo.toml",
@@ -94,5 +104,10 @@
   ],
   "changelog": "CHANGELOG.md",
   "unreleased_heading": "## [Unreleased]",
-  "not_a_version_site": []
+  "not_a_version_site": [
+    "fuzz/Cargo.toml"
+  ],
+  "dependent_lockfiles": [
+    "fuzz/Cargo.lock"
+  ]
 }

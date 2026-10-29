@@ -101,6 +101,20 @@ def internal_pins(cfg: dict, rel: str) -> list[tuple[str, str]]:
     return out
 
 
+def path_members(text: str, members: dict) -> dict[str, str]:
+    """Release crates a Cargo.lock holds as path packages (no `source`), by version."""
+    found: dict[str, str] = {}
+    for block in re.finditer(r'^\[\[package\]\]\s*\n(.*?)(?=^\[\[package\]\]\s*$|\Z)',
+                             text, re.M | re.S):
+        body = block.group(1)
+        name = re.search(r'^name\s*=\s*"([^"]+)"$', body, re.M)
+        version = re.search(r'^version\s*=\s*"([^"]+)"$', body, re.M)
+        source = re.search(r'^source\s*=', body, re.M)
+        if name and version and not source and name.group(1) in members:
+            found[name.group(1)] = version.group(1)
+    return found
+
+
 def all_values(cfg: dict) -> list[tuple[str, str]]:
     """(where, value) for every declared site, in a stable order."""
     found: list[tuple[str, str]] = []
@@ -117,21 +131,21 @@ def all_values(cfg: dict) -> list[tuple[str, str]]:
     members = {package_name(cfg, rel): package_version(cfg, rel)
                for rel in cfg["cargo_manifests"]}
     for rel in cfg["generated_lockfiles"]:
-        text = (ROOT / rel).read_text()
-        lock_members: dict[str, str] = {}
-        for block in re.finditer(r'^\[\[package\]\]\s*\n(.*?)(?=^\[\[package\]\]\s*$|\Z)',
-                                 text, re.M | re.S):
-            body = block.group(1)
-            name = re.search(r'^name\s*=\s*"([^"]+)"$', body, re.M)
-            version = re.search(r'^version\s*=\s*"([^"]+)"$', body, re.M)
-            source = re.search(r'^source\s*=', body, re.M)
-            if name and version and not source and name.group(1) in members:
-                lock_members[name.group(1)] = version.group(1)
+        lock_members = path_members((ROOT / rel).read_text(), members)
         for name, expected in members.items():
             actual = lock_members.get(name)
             if actual is None:
                 die(f"{rel}: workspace package {name} has no lockfile entry")
             found.append((f"{rel} workspace member {name}", actual))
+    # A side workspace (fuzz/) builds against some of the release crates by
+    # path. It need not hold all of them, but every one it holds is ours and
+    # must carry the release version, or its `--locked` build refuses.
+    for rel in cfg.get("dependent_lockfiles", []):
+        lock_members = path_members((ROOT / rel).read_text(), members)
+        if not lock_members:
+            die(f"{rel}: holds none of the release crates, so it is not a dependent lockfile")
+        for name, actual in sorted(lock_members.items()):
+            found.append((f"{rel} path crate {name}", actual))
     found.append((f"{cfg['changelog']} latest release heading",
                   changelog_version(cfg)))
     if not found:
@@ -208,6 +222,7 @@ def cmd_sites(cfg: dict) -> None:
     seen = list(cfg["cargo_manifests"])
     seen += [s["file"] for s in cfg["json_sites"]]
     seen += list(cfg["generated_lockfiles"])
+    seen += list(cfg.get("dependent_lockfiles", []))
     seen.append(cfg["changelog"])
     for rel in seen:
         print(rel)
@@ -217,6 +232,7 @@ def release_files(cfg: dict) -> list[str]:
     files = list(cfg["cargo_manifests"])
     files += [site["file"] for site in cfg["json_sites"]]
     files += list(cfg["generated_lockfiles"])
+    files += list(cfg.get("dependent_lockfiles", []))
     files.append(cfg["changelog"])
     return list(dict.fromkeys(files))
 
@@ -353,10 +369,12 @@ def cmd_bump_in_place(cfg: dict, target: str, when: str | None) -> None:
         written += len(site["paths"])
         print(f"  {rel}: {len(site['paths'])} path(s)")
 
-    for lock in cfg["generated_lockfiles"]:
+    locks = list(cfg["generated_lockfiles"]) + list(cfg.get("dependent_lockfiles", []))
+    for lock in locks:
         p = ROOT / lock
         before = p.read_text()
-        r = subprocess.run(["cargo", "metadata", "--offline", "--format-version", "1"],
+        r = subprocess.run(["cargo", "metadata", "--offline", "--format-version", "1",
+                            "--manifest-path", str(p.parent / "Cargo.toml")],
                            cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if r.returncode != 0:
             die(f"cargo could not refresh {lock}: "

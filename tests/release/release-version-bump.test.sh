@@ -95,10 +95,13 @@ cat >"$scratch/bin-success/cargo" <<'SH'
 #!/usr/bin/env python3
 import json
 import re
+import sys
 from pathlib import Path
 
 root = Path.cwd()
 config = json.loads((root / "release-versions.json").read_text())
+args = sys.argv[1:]
+manifest_path = Path(args[args.index("--manifest-path") + 1]) if "--manifest-path" in args else root / "Cargo.toml"
 members = {}
 for rel in config["cargo_manifests"]:
     manifest = (root / rel).read_text()
@@ -106,7 +109,7 @@ for rel in config["cargo_manifests"]:
     version = re.search(r'^version = "([^"]+)"', manifest, re.M).group(1)
     members[name] = version
 
-lock = root / "Cargo.lock"
+lock = (root / manifest_path).parent / "Cargo.lock"
 text = lock.read_text()
 changed = set()
 
@@ -121,8 +124,10 @@ def update(match):
     return "[[package]]\n" + body
 
 text = re.sub(r'^\[\[package\]\]\s*\n(.*?)(?=^\[\[package\]\]\s*$|\Z)', update, text, flags=re.M | re.S)
-if changed != set(members):
-    raise SystemExit(f"fake Cargo refreshed {sorted(changed)}, expected {sorted(members)}")
+# A dependent lockfile (fuzz/) holds only the release crates it builds against.
+expected = set(members) if lock == root / "Cargo.lock" else changed
+if not changed or changed != expected:
+    raise SystemExit(f"fake Cargo refreshed {sorted(changed)} in {lock}, expected {sorted(expected)}")
 lock.write_text(text)
 SH
 chmod +x "$scratch/bin-success/cargo"
@@ -136,6 +141,12 @@ else
     exit 1
 fi
 success_state="$(git -C "$success" status --porcelain)"
+for lock in $(python3 -c 'import json,sys;print(" ".join(json.load(open(sys.argv[1])).get("dependent_lockfiles",[])))' "$success/release-versions.json"); do
+    grep -q "^version = \"$target_version\"" "$success/$lock" || {
+        printf 'release-version-bump: the bump left %s behind at the old release version\n' "$lock" >&2
+        exit 1
+    }
+done
 collision="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["packages"]["node_modules/fixture-same-version"]["version"])' "$success/apps/sysknife-shell/package-lock.json")"
 [ "$collision" = "$current_version" ] || {
     printf 'release-version-bump: the bump rewrote a dependency at the release version (%s -> %s)\n' "$current_version" "$collision" >&2
@@ -207,6 +218,10 @@ grep -Fq 'Cargo.lock' <<<"$output" || {
 }
 grep -Fq 'CHANGELOG.md' <<<"$output" || {
     printf 'release-version-bump: stale changelog was not identified: %s\n' "$output" >&2
+    exit 1
+}
+grep -Fq 'fuzz/Cargo.lock' <<<"$output" || {
+    printf 'release-version-bump: stale dependent lockfile was not identified: %s\n' "$output" >&2
     exit 1
 }
 after="$(git -C "$partial" status --porcelain)"
