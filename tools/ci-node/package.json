@@ -7,6 +7,8 @@
     "markdownlint-cli2": "0.24.0"
   },
   "overrides": {
-    "basic-ftp": "6.2.3"
+    "basic-ftp": "6.2.3",
+    "katex": "0.19.1",
+    "re2js": "2.8.8"
   }
 }
