@@ -9,10 +9,10 @@ support. This document explains how to go from idea to merged PR.
 SysKnife is released under the **MIT License**. By submitting a pull request
 you agree that your contribution will be included under the same MIT terms.
 
-No CLA is required. Optionally, sign off your commits with
-`git commit -s` to add a DCO line (`Signed-off-by: Your Name <email>`)
-as a lightweight record of your agreement to the Developer Certificate of Origin
-(<https://developercertificate.org>).
+No CLA is required. Sign off every commit with `git commit -s`, which adds a
+`Signed-off-by: Your Name <email>` trailer certifying the Developer Certificate
+of Origin (<https://developercertificate.org>). The `dco` check fails a pull
+request with an unsigned commit and prints the commands that fix it.
 
 If you have questions, open a
 [Discussion](https://github.com/lacs-project/sysknife/discussions) — we would

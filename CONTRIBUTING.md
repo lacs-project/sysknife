@@ -81,7 +81,8 @@ or [`help wanted`](https://github.com/lacs-project/sysknife/labels/help%20wanted
 to find something self-contained. If the tracker looks thin, open an issue
 describing what you want to work on and we will scope it with you.
 
-No CLA and no copyright waiver. The project is MIT.
+No CLA and no copyright waiver. The project is MIT, and each commit carries a
+[DCO sign-off](#4-pull-request).
 
 ## Workflow
 
@@ -307,8 +308,11 @@ Bodies should explain *why*. The diff already says what.
 - Update docs alongside the code, not in a follow-up.
 - Title in Conventional Commits style (`fix(cli): …`, `docs: …`). No CI check
   enforces it; the squash merge uses the title as the commit subject.
-- Sign off your commits if your employer asks for DCO; we don't require
-  it but we accept it.
+- Sign off every commit with `git commit -s`. The `Signed-off-by:` trailer
+  certifies the [Developer Certificate of Origin](https://developercertificate.org/):
+  you wrote the change, or have the right to submit it under the MIT licence.
+  The `dco` check fails a pull request with an unsigned commit and prints the
+  commands that sign off commits you already pushed.
 
 **Before you open it.** Three habits account for most of the rework on this
 tracker, and each is cheap:

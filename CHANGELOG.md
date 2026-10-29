@@ -26,6 +26,18 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   API does not change. [docs/contributing/fuzzing.md](docs/contributing/fuzzing.md)
   covers running a target and adding one.
 
+### Changed
+
+- **Every commit in a pull request needs a DCO sign-off.** A new required
+  check, `dco`, runs `scripts/check_dco.sh` over the commits a pull request
+  adds and fails any without a `Signed-off-by:` trailer from its author.
+  `git commit -s` adds one; the check's output prints the commands that sign
+  off commits already pushed. CONTRIBUTING.md has the details. Merge commits
+  and Dependabot's own sign-off address are handled.
+- **The docs workflow grants Pages and OIDC write only to its deploy job.**
+  The build job, which runs mdBook and the link checker, now holds
+  `contents: read` and nothing else.
+
 ### Fixed
 
 - **The setup wizard reports a user service that did not install.**
