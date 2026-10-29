@@ -12,6 +12,8 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.29.0] — 2026-10-29
+
 ### Added
 
 - **Fuzz targets for the trust boundary, run by ClusterFuzzLite on pull
