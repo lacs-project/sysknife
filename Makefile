@@ -6,6 +6,11 @@
 #   sudo make uninstall
 #
 # PREFIX can be overridden: sudo make install PREFIX=/opt/sysknife
+#
+# DESTDIR stages the install for packaging: every file lands under it, and the
+# steps that activate an install on this host (systemd-sysusers,
+# systemd-tmpfiles, systemctl) are skipped for the package to run later:
+#   make install DESTDIR=/tmp/stage
 
 PREFIX      ?= /usr/local
 BINDIR      ?= $(PREFIX)/bin
@@ -33,6 +38,10 @@ INSTALL_DIRS = $(BINDIR) $(SYSUSERS) $(TMPFILES) $(SYSTEMD) $(POLKIT) \
                $(SUDOERS) $(HELPERS)
 
 CARGO_BUILD_FLAGS ?= --release --locked
+
+# Run a command that acts on the running host, or name it and skip it when
+# DESTDIR stages the install somewhere else.
+on_host = $(if $(DESTDIR),@echo "DESTDIR set; skipped: $(1)",$(1))
 
 .PHONY: build install uninstall daemon-install daemon-install-preflight \
 	cli-install daemon-uninstall cli-uninstall check
@@ -62,7 +71,7 @@ build:
 daemon-install-preflight:
 	@unwritable=""; \
 	for d in $(INSTALL_DIRS); do \
-		probe="$$d"; \
+		probe="$(DESTDIR)$$d"; \
 		while [ ! -d "$$probe" ] && [ "$$probe" != "/" ]; do \
 			probe="$$(dirname "$$probe")"; \
 		done; \
@@ -88,84 +97,84 @@ install: daemon-install cli-install
 # The `sysknife` CLI is what the setup wizard (`--no-binary`) and the MCP server
 # invoke, so a from-source install must place it on PATH alongside the daemon.
 cli-install: build
-	install -Dm 755 target/release/sysknife $(BINDIR)/sysknife
-	@echo "CLI installed: $(BINDIR)/sysknife"
+	install -Dm 755 target/release/sysknife $(DESTDIR)$(BINDIR)/sysknife
+	@echo "CLI installed: $(DESTDIR)$(BINDIR)/sysknife"
 
 daemon-install: daemon-install-preflight build
-	install -Dm 755 target/release/sysknife-daemon $(BINDIR)/sysknife-daemon
+	install -Dm 755 target/release/sysknife-daemon $(DESTDIR)$(BINDIR)/sysknife-daemon
 
 	# System user and group (idempotent via systemd-sysusers).
-	install -Dm 644 packaging/sysknife-sysusers.conf $(SYSUSERS)/sysknife.conf
-	systemd-sysusers $(SYSUSERS)/sysknife.conf
+	install -Dm 644 packaging/sysknife-sysusers.conf $(DESTDIR)$(SYSUSERS)/sysknife.conf
+	$(call on_host,systemd-sysusers $(SYSUSERS)/sysknife.conf)
 
 	# Runtime and state directories (idempotent via systemd-tmpfiles).
-	install -Dm 644 packaging/sysknife-tmpfiles.conf $(TMPFILES)/sysknife.conf
-	systemd-tmpfiles --create $(TMPFILES)/sysknife.conf
+	install -Dm 644 packaging/sysknife-tmpfiles.conf $(DESTDIR)$(TMPFILES)/sysknife.conf
+	$(call on_host,systemd-tmpfiles --create $(TMPFILES)/sysknife.conf)
 
 	# systemd unit.
-	install -Dm 644 packaging/sysknife-daemon.service $(SYSTEMD)/sysknife-daemon.service
-	systemctl daemon-reload
+	install -Dm 644 packaging/sysknife-daemon.service $(DESTDIR)$(SYSTEMD)/sysknife-daemon.service
+	$(call on_host,systemctl daemon-reload)
 
 	# polkit rules.
-	install -Dm 644 packaging/50-sysknife.rules $(POLKIT)/50-sysknife.rules
+	install -Dm 644 packaging/50-sysknife.rules $(DESTDIR)$(POLKIT)/50-sysknife.rules
 
 	# Privileged helper scripts — root-owned, not writable by sysknife.
 	# Every helper the daemon calls must be here; `cargo nextest run -p
 	# sysknife-daemon --test helper_install_coverage` derives the required set
 	# from the daemon source and fails if one is missing.
-	install -Dm 755 packaging/sysknife-apt-pin-edit $(HELPERS)/apt-pin-edit
-	install -Dm 755 packaging/sysknife-action-steps $(HELPERS)/action-steps
-	install -Dm 755 packaging/sysknife-firewall-state $(HELPERS)/firewall-state
-	install -Dm 755 packaging/sysknife-audit-edit $(HELPERS)/audit-edit
-	install -Dm 755 packaging/sysknife-fail2ban-jail-edit $(HELPERS)/fail2ban-jail-edit
-	install -Dm 755 packaging/sysknife-fail2ban-ban $(HELPERS)/fail2ban-ban
-	install -Dm 755 packaging/sysknife-grub-kargs-edit $(HELPERS)/grub-kargs-edit
-	install -Dm 755 packaging/sysknife-log-edit $(HELPERS)/log-edit
-	install -Dm 755 packaging/sysknife-mount-edit $(HELPERS)/mount-edit
-	install -Dm 755 packaging/sysknife-pam-edit $(HELPERS)/pam-edit
-	install -Dm 755 packaging/sysknife-scheduled-job-edit $(HELPERS)/scheduled-job-edit
-	install -Dm 755 packaging/sysknife-sshd-option-edit $(HELPERS)/sshd-option-edit
-	install -Dm 755 packaging/sysknife-sudoers-edit $(HELPERS)/sudoers-edit
-	install -Dm 755 packaging/sysknife-sysctl-edit $(HELPERS)/sysctl-edit
-	install -Dm 755 packaging/sysknife-unattended-upgrades-edit $(HELPERS)/unattended-upgrades-edit
+	install -Dm 755 packaging/sysknife-apt-pin-edit $(DESTDIR)$(HELPERS)/apt-pin-edit
+	install -Dm 755 packaging/sysknife-action-steps $(DESTDIR)$(HELPERS)/action-steps
+	install -Dm 755 packaging/sysknife-firewall-state $(DESTDIR)$(HELPERS)/firewall-state
+	install -Dm 755 packaging/sysknife-audit-edit $(DESTDIR)$(HELPERS)/audit-edit
+	install -Dm 755 packaging/sysknife-fail2ban-jail-edit $(DESTDIR)$(HELPERS)/fail2ban-jail-edit
+	install -Dm 755 packaging/sysknife-fail2ban-ban $(DESTDIR)$(HELPERS)/fail2ban-ban
+	install -Dm 755 packaging/sysknife-grub-kargs-edit $(DESTDIR)$(HELPERS)/grub-kargs-edit
+	install -Dm 755 packaging/sysknife-log-edit $(DESTDIR)$(HELPERS)/log-edit
+	install -Dm 755 packaging/sysknife-mount-edit $(DESTDIR)$(HELPERS)/mount-edit
+	install -Dm 755 packaging/sysknife-pam-edit $(DESTDIR)$(HELPERS)/pam-edit
+	install -Dm 755 packaging/sysknife-scheduled-job-edit $(DESTDIR)$(HELPERS)/scheduled-job-edit
+	install -Dm 755 packaging/sysknife-sshd-option-edit $(DESTDIR)$(HELPERS)/sshd-option-edit
+	install -Dm 755 packaging/sysknife-sudoers-edit $(DESTDIR)$(HELPERS)/sudoers-edit
+	install -Dm 755 packaging/sysknife-sysctl-edit $(DESTDIR)$(HELPERS)/sysctl-edit
+	install -Dm 755 packaging/sysknife-unattended-upgrades-edit $(DESTDIR)$(HELPERS)/unattended-upgrades-edit
 
 	# Install grants last: a failed helper install must not activate new grants
 	# pointing at absent or stale helpers. Validate the fragment before install.
 	visudo -cf packaging/sysknife-sudoers
-	install -Dm 440 packaging/sysknife-sudoers $(SUDOERS)/sysknife
+	install -Dm 440 packaging/sysknife-sudoers $(DESTDIR)$(SUDOERS)/sysknife
 
 ## ── Uninstall ────────────────────────────────────────────────────────────────
 
 uninstall: daemon-uninstall cli-uninstall
 
 cli-uninstall:
-	rm -f $(BINDIR)/sysknife
-	@echo "CLI uninstalled: $(BINDIR)/sysknife"
+	rm -f $(DESTDIR)$(BINDIR)/sysknife
+	@echo "CLI uninstalled: $(DESTDIR)$(BINDIR)/sysknife"
 
 daemon-uninstall:
-	-systemctl disable --now sysknife-daemon 2>/dev/null || true
-	rm -f $(BINDIR)/sysknife-daemon
-	rm -f $(SYSTEMD)/sysknife-daemon.service
-	systemctl daemon-reload
-	rm -f $(POLKIT)/50-sysknife.rules
-	rm -f $(SUDOERS)/sysknife
-	rm -f $(SYSUSERS)/sysknife.conf
-	rm -f $(TMPFILES)/sysknife.conf
-	rm -f $(HELPERS)/apt-pin-edit
-	rm -f $(HELPERS)/action-steps
-	rm -f $(HELPERS)/firewall-state
-	rm -f $(HELPERS)/audit-edit
-	rm -f $(HELPERS)/fail2ban-jail-edit
-	rm -f $(HELPERS)/fail2ban-ban
-	rm -f $(HELPERS)/grub-kargs-edit
-	rm -f $(HELPERS)/log-edit
-	rm -f $(HELPERS)/mount-edit
-	rm -f $(HELPERS)/pam-edit
-	rm -f $(HELPERS)/scheduled-job-edit
-	rm -f $(HELPERS)/sshd-option-edit
-	rm -f $(HELPERS)/sudoers-edit
-	rm -f $(HELPERS)/sysctl-edit
-	rm -f $(HELPERS)/unattended-upgrades-edit
+	$(if $(DESTDIR),,-systemctl disable --now sysknife-daemon 2>/dev/null || true)
+	rm -f $(DESTDIR)$(BINDIR)/sysknife-daemon
+	rm -f $(DESTDIR)$(SYSTEMD)/sysknife-daemon.service
+	$(call on_host,systemctl daemon-reload)
+	rm -f $(DESTDIR)$(POLKIT)/50-sysknife.rules
+	rm -f $(DESTDIR)$(SUDOERS)/sysknife
+	rm -f $(DESTDIR)$(SYSUSERS)/sysknife.conf
+	rm -f $(DESTDIR)$(TMPFILES)/sysknife.conf
+	rm -f $(DESTDIR)$(HELPERS)/apt-pin-edit
+	rm -f $(DESTDIR)$(HELPERS)/action-steps
+	rm -f $(DESTDIR)$(HELPERS)/firewall-state
+	rm -f $(DESTDIR)$(HELPERS)/audit-edit
+	rm -f $(DESTDIR)$(HELPERS)/fail2ban-jail-edit
+	rm -f $(DESTDIR)$(HELPERS)/fail2ban-ban
+	rm -f $(DESTDIR)$(HELPERS)/grub-kargs-edit
+	rm -f $(DESTDIR)$(HELPERS)/log-edit
+	rm -f $(DESTDIR)$(HELPERS)/mount-edit
+	rm -f $(DESTDIR)$(HELPERS)/pam-edit
+	rm -f $(DESTDIR)$(HELPERS)/scheduled-job-edit
+	rm -f $(DESTDIR)$(HELPERS)/sshd-option-edit
+	rm -f $(DESTDIR)$(HELPERS)/sudoers-edit
+	rm -f $(DESTDIR)$(HELPERS)/sysctl-edit
+	rm -f $(DESTDIR)$(HELPERS)/unattended-upgrades-edit
 	@echo "Daemon uninstalled. User 'sysknife' and /var/lib/sysknife data were NOT removed."
 	@echo "To remove them manually: userdel sysknife && rm -rf /var/lib/sysknife /run/sysknife"
 

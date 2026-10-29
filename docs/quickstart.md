@@ -69,6 +69,11 @@ sudo systemctl enable --now sysknife-daemon
 `make build` compiles around 400 crates: expect 7 to 12 minutes on a first
 build (measured 6m56s on Ubuntu 24.04, 11m43s on 22.04).
 
+Packaging SysKnife? `make install DESTDIR=/path/to/stage` writes every file
+under the stage directory and skips the `systemd-sysusers`, `systemd-tmpfiles`
+and `systemctl` steps, which your package's install scripts run on the target
+host instead. `make uninstall DESTDIR=...` removes the staged files.
+
 > **ℹ️ Fedora / Silverblue**
 >
 > Ubuntu 22.04, 24.04 and 26.04 are each validated by a committed live-VM

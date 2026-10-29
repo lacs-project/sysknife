@@ -82,7 +82,7 @@ fn every_referenced_helper_is_shipped_in_packaging() {
 fn every_referenced_helper_is_installed_by_the_makefile() {
     let makefile = std::fs::read_to_string(repo_root().join("Makefile")).expect("read Makefile");
     for helper in referenced_helpers() {
-        let expected = format!("packaging/sysknife-{helper} $(HELPERS)/{helper}");
+        let expected = format!("packaging/sysknife-{helper} $(DESTDIR)$(HELPERS)/{helper}");
         assert!(
             makefile.contains(&expected),
             "Makefile must install {helper}: expected a line containing `{expected}`. \
@@ -95,7 +95,7 @@ fn every_referenced_helper_is_installed_by_the_makefile() {
 fn every_installed_helper_is_removed_by_uninstall() {
     let makefile = std::fs::read_to_string(repo_root().join("Makefile")).expect("read Makefile");
     for helper in referenced_helpers() {
-        let expected = format!("rm -f $(HELPERS)/{helper}");
+        let expected = format!("rm -f $(DESTDIR)$(HELPERS)/{helper}");
         assert!(
             makefile.contains(&expected),
             "uninstall must remove {helper}: expected `{expected}`; a stale root-owned \
