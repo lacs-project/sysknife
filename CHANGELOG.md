@@ -48,6 +48,9 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   put it in the process's argv; cargo reads the same variable from the
   environment, so the flag is gone. `tests/release/secret-argv.test.sh` fails
   any workflow that expands a secret outside a `test -n` presence check.
+  [@jay23606](https://github.com/jay23606) found and fixed the same flag first,
+  in [#696](https://github.com/lacs-project/sysknife/pull/696) for
+  [#694](https://github.com/lacs-project/sysknife/issues/694).
 - **SECURITY.md states response times, supported versions and the policies CI
   enforces.** Reports go to a named maintainer through the private advisory
   form; we acknowledge within 3 days, triage within 7, and ship a fix for a
