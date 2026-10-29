@@ -32,6 +32,8 @@
 
 # Security
 
+- [Assurance Case](assurance-case.md)
+- [Dependencies](dependencies.md)
 - [SysKnife vs. Alternatives](comparison.md)
 - [Accepted Audit Advisories](security/audit-advisories.md)
 

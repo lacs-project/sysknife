@@ -1,0 +1,42 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/lacs-project/sysknife/blob/main/vex/sysknife.openvex.json",
+  "author": "Vladimir Rotariu <sysknife-development@protonmail.com>",
+  "role": "Project maintainer",
+  "timestamp": "2026-10-29T10:37:17Z",
+  "version": 1,
+  "tooling": "Checked against Cargo.lock on every pull request by tests/release/vex.test.sh",
+  "statements": [
+    {
+      "vulnerability": {
+        "@id": "https://github.com/advisories/GHSA-wrw7-89jp-8q8g",
+        "name": "GHSA-wrw7-89jp-8q8g",
+        "aliases": [
+          "RUSTSEC-2024-0429"
+        ],
+        "description": "Unsoundness in Iterator and DoubleEndedIterator impls for glib::VariantStrIter (glib >= 0.15.0, < 0.20.0)"
+      },
+      "products": [
+        {
+          "@id": "pkg:cargo/sysknife-cli",
+          "subcomponents": [
+            {
+              "@id": "pkg:cargo/glib"
+            }
+          ]
+        },
+        {
+          "@id": "pkg:cargo/sysknife-daemon",
+          "subcomponents": [
+            {
+              "@id": "pkg:cargo/glib"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "component_not_present",
+      "impact_statement": "glib 0.18.5 is in Cargo.lock only through the paused desktop app (sysknife-shell, via gtk, webkit2gtk, wry and tauri), which no release ships. Neither released binary depends on glib."
+    }
+  ]
+}

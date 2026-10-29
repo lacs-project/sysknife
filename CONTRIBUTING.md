@@ -344,6 +344,31 @@ Every PR gets a review pass + a sonnet code-reviewer agent dispatch
 audit chain) also get a red-team agent dispatch. Aim for review turnaround
 under 48h; ping in the PR if you've been waiting longer.
 
+A reviewer checks, in this order:
+
+1. **The trust boundary.** The change keeps every rule in
+   [Trust-boundary rules](#trust-boundary-rules). A change that touches one of
+   them gets the deeper pass described there.
+2. **Tests that prove the change.** A fix or a behaviour change comes with a
+   test that fails when the change is reverted, and the reviewer reverts it to
+   watch that happen. A test that stays green without the fix does not count.
+3. **The couplings a diff hides.** Adding or removing a Rust test moves
+   `tests/evidence/workspace-tests.json` (`UPDATE_TEST_BASELINE=1
+   scripts/test_baseline.sh`). An edit to `packaging/sysknife-daemon.service`
+   lands in the copy inside `tests/e2e/ubuntu-provision.sh` too. A
+   `packaging/sysknife-*-edit` helper's own screen stays in step with the Rust
+   validator it mirrors, element by element.
+4. **Docs that move with the code.** A user-visible change updates the docs in
+   the same PR, and published figures come from `<!-- fig:NAME -->` markers,
+   never typed by hand. The maintainer writes the CHANGELOG entry at merge.
+5. **A green board.** Every required check passes, `dco` included, on a branch
+   that is up to date with `main`.
+
+A maintainer approves a PR that meets all five. Each review finding is marked
+blocking or optional, and only a blocking one holds the merge. When you and
+the reviewer disagree, keep the discussion on the PR; the maintainer decides
+and writes the reason there.
+
 ## Working with an AI assistant
 
 Use one if it helps. Several merged changes here were written with one, and

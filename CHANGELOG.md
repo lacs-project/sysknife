@@ -48,6 +48,27 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   put it in the process's argv; cargo reads the same variable from the
   environment, so the flag is gone. `tests/release/secret-argv.test.sh` fails
   any workflow that expands a secret outside a `test -n` presence check.
+- **SECURITY.md states response times, supported versions and the policies CI
+  enforces.** Reports go to a named maintainer through the private advisory
+  form; we acknowledge within 3 days, triage within 7, and ship a fix for a
+  critical or high severity issue within 30. The latest release is the
+  supported one. New sections write down the dependency, static-analysis and
+  secrets rules the required checks already apply, and the tag-verification
+  steps now say where the signing key lives.
+- **An assurance case and a dependency policy.**
+  [docs/assurance-case.md](docs/assurance-case.md) argues each security
+  requirement with the code and test that carry it, and
+  `tests/release/assurance-case.test.sh` fails when a citation goes stale.
+  [docs/dependencies.md](docs/dependencies.md) covers choosing, pinning,
+  watching and removing dependencies.
+- **VEX for the dismissed glib advisory, and Dependabot on every lockfile.**
+  `vex/sysknife.openvex.json` records that GHSA-wrw7-89jp-8q8g
+  (RUSTSEC-2024-0429) does not affect the released binaries, and
+  `tests/release/vex.test.sh` rechecks that against `Cargo.lock`. Dependabot
+  now opens version updates for `fuzz/`, `.clusterfuzzlite/`, `tools/ci-node`
+  and `tools/ci-python` too.
+- **CONTRIBUTING.md says what a reviewer checks** before a pull request is
+  accepted.
 
 ### Fixed
 

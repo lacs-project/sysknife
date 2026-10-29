@@ -158,6 +158,15 @@ jobs:
       - name: Check no workflow puts a secret on a command line
         run: bash tests/release/secret-argv.test.sh
 
+      - name: Check every lockfile has a Dependabot entry
+        run: bash tests/release/dependabot-coverage.test.sh
+
+      - name: Check each VEX statement holds against Cargo.lock
+        run: bash tests/release/vex.test.sh
+
+      - name: Check the assurance case cites code that exists
+        run: bash tests/release/assurance-case.test.sh
+
       - name: Check systemd directory modes match tmpfiles
         run: bash tests/release/systemd-directory-modes.test.sh
 
