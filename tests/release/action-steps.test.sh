@@ -877,8 +877,6 @@ class RpmOstreeVerb(unittest.TestCase):
              [R, 'rebase', 'fedora/41/x86_64/silverblue']),
             (['rpm-ostree', 'rebase', 'fedora:fedora/41/x86_64/silverblue'],
              [R, 'rebase', 'fedora:fedora/41/x86_64/silverblue']),
-            (['rpm-ostree', 'rebase', 'ostree-unverified-registry:quay.io/fedora/fedora-silverblue:41'],
-             [R, 'rebase', 'ostree-unverified-registry:quay.io/fedora/fedora-silverblue:41']),
             (['rpm-ostree', 'rebase', 'ostree-image-signed:docker://quay.io/fedora/fedora-silverblue:41'],
              [R, 'rebase', 'ostree-image-signed:docker://quay.io/fedora/fedora-silverblue:41']),
             (['rpm-ostree', 'kargs'], [R, 'kargs']),
@@ -975,6 +973,9 @@ class RpmOstreeVerb(unittest.TestCase):
             # rebase: a local repository or a local image is an arbitrary OS image.
             ['rpm-ostree', 'rebase', '/tmp/repo'], ['rpm-ostree', 'rebase', './repo'],
             ['rpm-ostree', 'rebase', '../repo'], ['rpm-ostree', 'rebase', 'fedora:../../tmp/x'],
+            # rebase: an unverified image, local or remote, is any OS image the caller names.
+            ['rpm-ostree', 'rebase', 'ostree-unverified-registry:quay.io/fedora/fedora-silverblue:41'],
+            ['rpm-ostree', 'rebase', 'ostree-unverified-image:docker://quay.io/x:1'],
             ['rpm-ostree', 'rebase', 'ostree-unverified-image:oci:/tmp/img'],
             ['rpm-ostree', 'rebase', 'ostree-unverified-image:OCI:/tmp/img'],
             ['rpm-ostree', 'rebase', 'ostree-unverified-image:oci-archive:/tmp/img.tar'],
@@ -1147,7 +1148,7 @@ class RpmOstreeVerb(unittest.TestCase):
                   'its=off', 'tsa=off', 'vmscape=off', 'noibrs', 'noibpb', 'audit=f', 'quiet=1',
                   'console=', 'splash', 'rhgb', 'nowatchdog', 'threadirqs', 'slab_nomerge',
                   'rd.driver.blacklist=nouveau', 'nvidia-drm.modeset=1', 'lockdown=integrity',
-                  'module.sig_enforce=1', 'intel_iommu=on', 'amd_iommu=on', 'init_on_free=1',
+                  'module.sig_enforce=1', 'intel_iommu=on', 'amd_iommu=force_isolation', 'init_on_free=1',
                   'page_alloc.shuffle=1', 'randomize_kstack_offset=on', 'mitigations=auto',
                   'mitigations=auto,nosmt', 'pti=on', 'vsyscall=none', 'debugfs=off', 'root=/dev/sdb1',
                   'resume=/dev/sdb1', 'resume_offset=1', 'resume', 'rd.driver.blacklist=tpm_crb',

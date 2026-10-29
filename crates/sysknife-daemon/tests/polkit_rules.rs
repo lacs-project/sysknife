@@ -49,3 +49,27 @@ fn the_sysknife_account_gets_no_unit_management_over_dbus() {
         );
     }
 }
+
+/// Every privileged rpm-ostree call the daemon makes goes through sudo and the
+/// `action-steps rpm-ostree` verb, which screens its operands. A polkit grant
+/// for the same D-Bus method lets the sysknife account skip that verb: rebase to
+/// any image, install any package, deploy any commit. Only the calls the daemon
+/// makes WITHOUT sudo keep a grant: `upgrade --check` and the auto-rollback.
+#[test]
+fn the_sysknife_account_gets_only_unprivileged_rpm_ostree_calls_over_dbus() {
+    let actions = allowed_actions();
+    let rpm_ostree: Vec<&str> = actions
+        .iter()
+        .copied()
+        .filter(|a| a.starts_with("org.projectatomic.rpmostree1."))
+        .collect();
+    assert_eq!(
+        rpm_ostree,
+        [
+            "org.projectatomic.rpmostree1.upgrade",
+            "org.projectatomic.rpmostree1.rollback",
+        ],
+        "the rpm-ostree polkit grants changed; every other method must go through \
+         sudo and the action-steps verb"
+    );
+}

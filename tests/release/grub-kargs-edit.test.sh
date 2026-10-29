@@ -230,7 +230,7 @@ for tok in ["lockdown", "module.sig_enforce", "lockdown=integrity", "nosmt", "sl
 for tok in ["quiet", "splash", "rhgb", "nomodeset", "nowatchdog", "threadirqs", "nosmt",
             "slab_nomerge", "console=ttyS0", "rd.driver.blacklist=nouveau",
             "transparent_hugepage=madvise", "lockdown=integrity", "lockdown=confidentiality",
-            "module.sig_enforce=1", "intel_iommu=on", "amd_iommu=on", "init_on_alloc=1",
+            "module.sig_enforce=1", "intel_iommu=on", "amd_iommu=force_isolation", "init_on_alloc=1",
             "init_on_free=1", "page_alloc.shuffle=1", "randomize_kstack_offset=on",
             "mitigations=auto", "pti=on", "vsyscall=none", "debugfs=off"]:
     if refused_append(tok):

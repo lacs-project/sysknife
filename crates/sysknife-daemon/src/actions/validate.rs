@@ -672,17 +672,27 @@ pub const LOCAL_IMAGE_TRANSPORTS: &[&str] = &[
     "file",
 ];
 
+/// The ostree-container transports that skip signature verification. Through
+/// them a rebase boots any image the caller names, so a direct call to the
+/// helper would hand the sysknife account an arbitrary root filesystem.
+/// `ostree-image-signed:` and `ostree-remote-image:` verify against a policy the
+/// administrator configured, and a plain `remote:ref` uses an administrator's
+/// ostree remote. `packaging/sysknife-action-steps` holds the same list.
+pub const UNVERIFIED_IMAGE_TRANSPORTS: &[&str] =
+    &["ostree-unverified-registry", "ostree-unverified-image"];
+
 /// Validate the target of `RebaseSystem`: [`validated_safe_arg`], and no local
 /// source.
 ///
 /// `rpm-ostree rebase` boots whatever the target names. An ostree
-/// `remote:ref` or a registry image (`ostree-unverified-registry:quay.io/...`,
-/// `ostree-image-signed:docker://...`) is fetched from a source the host already
-/// trusts or the operator approved by name. A target that reads from this host
+/// `remote:ref` or a verified image (`ostree-image-signed:docker://...`) is
+/// fetched from a source the host already trusts. An unverified image
+/// ([`UNVERIFIED_IMAGE_TRANSPORTS`]) is any image at all. A target that reads from this host
 /// (`ostree-unverified-image:oci:/tmp/img`, a repository path) is an OS image
 /// whoever can write a file put there, and [`validated_safe_arg`] admits it.
 ///
-/// Split on `:`, no part may be one of [`LOCAL_IMAGE_TRANSPORTS`] (any case),
+/// Split on `:`, no part may be one of [`LOCAL_IMAGE_TRANSPORTS`] or
+/// [`UNVERIFIED_IMAGE_TRANSPORTS`] (any case),
 /// start with `.`, or start with `/` unless it is the `//` that follows
 /// `docker`. `..` and `@/` (the repository path of the `ostree` transport) are
 /// refused anywhere. `packaging/sysknife-action-steps` repeats this rule for its
@@ -693,7 +703,11 @@ pub fn validated_rebase_ref(s: &str, param: &'static str) -> Result<String, Exec
     for part in target.split(':') {
         let lower = part.to_ascii_lowercase();
         let local_path = part.starts_with('/') && !(previous == "docker" && part.starts_with("//"));
-        if LOCAL_IMAGE_TRANSPORTS.contains(&lower.as_str()) || part.starts_with('.') || local_path {
+        if LOCAL_IMAGE_TRANSPORTS.contains(&lower.as_str())
+            || UNVERIFIED_IMAGE_TRANSPORTS.contains(&lower.as_str())
+            || part.starts_with('.')
+            || local_path
+        {
             return Err(ExecutorError::InvalidParam(param));
         }
         previous = lower;
@@ -1994,8 +2008,8 @@ mod tests {
         for ok in [
             "fedora/41/x86_64/silverblue",
             "fedora:fedora/41/x86_64/silverblue",
-            "ostree-unverified-registry:quay.io/fedora/fedora-silverblue:41",
             "ostree-image-signed:docker://quay.io/fedora/fedora-silverblue:41",
+            "ostree-remote-registry:fedora:quay.io/fedora/fedora-silverblue:41",
         ] {
             assert!(
                 validated_rebase_ref(ok, "target_ref").is_ok(),
@@ -2015,6 +2029,9 @@ mod tests {
             "ostree-unverified-image:containers-storage:localhost/x",
             "ostree-unverified-image:ostree:x@/tmp/repo",
             "ostree-unverified-image:docker:/tmp/x",
+            "ostree-unverified-registry:quay.io/fedora/fedora-silverblue:41",
+            "Ostree-Unverified-Registry:quay.io/x:1",
+            "ostree-unverified-image:docker://quay.io/x:1",
             "-b",
             "--experimental",
             "",

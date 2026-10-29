@@ -19,16 +19,13 @@ polkit.addRule(function(action, subject) {
 
     var allowedActions = [
         // ── rpm-ostree (Fedora Silverblue / Kinoite) ─────────────────────
-        "org.projectatomic.rpmostree1.install-uninstall-packages",
-        "org.projectatomic.rpmostree1.install-packages",
-        "org.projectatomic.rpmostree1.uninstall-packages",
+        // Only the two calls the daemon makes without sudo: `upgrade --check`
+        // and the automatic rollback. Every other method (install, rebase,
+        // deploy, override, cleanup) goes through sudo and the action-steps
+        // verb that screens its operands; a grant here would let the sysknife
+        // account skip that screen. See tests/polkit_rules.rs.
         "org.projectatomic.rpmostree1.upgrade",
-        "org.projectatomic.rpmostree1.rebase",
         "org.projectatomic.rpmostree1.rollback",
-        "org.projectatomic.rpmostree1.deploy",
-        "org.projectatomic.rpmostree1.override-remove-packages",
-        "org.projectatomic.rpmostree1.override-reset-packages",
-        "org.projectatomic.rpmostree1.cleanup",
         // ── systemd / systemctl ───────────────────────────────────────────
         // No manage-units or manage-unit-files: manage-units also authorises
         // StartTransientUnit (systemd-run), a root command line over D-Bus

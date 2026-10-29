@@ -65,10 +65,10 @@ package refuse abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 ref ok fedora/41/x86_64/silverblue
 ref ok fedora:fedora/41/x86_64/silverblue
 ref ok fedora:fedora/41/x86_64/kinoite
-ref ok ostree-unverified-registry:quay.io/fedora/fedora-silverblue:41
+ref refuse ostree-unverified-registry:quay.io/fedora/fedora-silverblue:41
 ref ok ostree-image-signed:docker://quay.io/fedora/fedora-silverblue:41
 ref ok ostree-remote-image:fedora:docker://quay.io/fedora/fedora-kinoite:41
-ref ok ostree-unverified-registry:ghcr.io/ublue-os/bluefin@sha256:0123456789abcdef
+ref refuse ostree-unverified-registry:ghcr.io/ublue-os/bluefin@sha256:0123456789abcdef
 ref ok fedora-stable
 # --- ref: options and local sources ---
 ref refuse -b
@@ -217,6 +217,15 @@ append refuse spectre_v2=on
 # --- rebase: `..` and `@/` where no other rule sees them ---
 ref refuse fedora/../../tmp/x
 ref refuse ostree-unverified-registry:x@/tmp/repo
+
+# --- rebase: an unverified image is any OS image the caller names ---
+ref refuse OSTREE-UNVERIFIED-REGISTRY:quay.io/x:1
+ref refuse ostree-unverified-image:docker://quay.io/x:1
+ref refuse ostree-unverified-image:registry:quay.io/x:1
+ref ok ostree-image-signed:docker://quay.io/fedora/fedora-silverblue:41
+ref ok ostree-remote-image:fedora:docker://quay.io/fedora/fedora-silverblue:41
+ref ok ostree-image-signed:docker://ghcr.io/ublue-os/bluefin:stable
+ref ok fedora:fedora/41/x86_64/silverblue
 
 # --- `-` and `_` are one character in a parameter name (kernel parameq(), systemd
 #     proc_cmdline_key_streq()); the value keeps its own spelling ---

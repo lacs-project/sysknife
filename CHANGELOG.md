@@ -190,7 +190,13 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   `ResetLayeredPackageOverride` keep exact grants. `rpm-ostree cancel`, which
   the action-timeout reaper runs, gets an exact grant as well: it had none, so
   sudo refused the reaper and a timed-out rpm-ostree transaction ran on.
-  (GHSA-32wv-3c2p-qp95)
+  `50-sysknife.rules` keeps only the rpm-ostree `upgrade` and `rollback`
+  polkit actions, the two the daemon calls without sudo; the others let the
+  `sysknife` account reach rpmostreed over D-Bus and skip the verb. A rebase
+  target now also refuses the `ostree-unverified-registry:` and
+  `ostree-unverified-image:` transports, which boot any image without a
+  signature check; rebase to an `ostree-image-signed:` image or a configured
+  ostree remote instead. (GHSA-32wv-3c2p-qp95)
 
 ## [0.27.0] — 2026-10-27
 
