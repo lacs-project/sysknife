@@ -105,6 +105,14 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   now refuses a job whose unit exists in any load-path directory and names that
   directory. (GHSA-7p9v-4r44-fh7c)
 
+- **`verify-action-pins` checks which ref a version comment resolved to.** It
+  looked up `git/ref/tags/<comment>` and compared only the commit. GitHub
+  normalises `..` in that path, so a comment such as
+  `# v4.2.2/../../pull/1/head` resolved to a pull-request head and the pin
+  passed as a release. The check now requires the API to answer with
+  `refs/tags/<comment>` exactly. The script runs in CI only; no shipped binary
+  contains it. (GHSA-j754-mr7x-597h)
+
 - **Fifteen sudoers grants that accepted any arguments now accept only the argv
   SysKnife builds, and the `kill` grant is gone.** A grant that names a command
   and no arguments lets sudo run it with any arguments. For several of these

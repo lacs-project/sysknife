@@ -39,8 +39,12 @@ declare -A resolved
 declare -A branch_status
 
 deref() {  # $1 repository, $2 tag -> commit (including nested annotated tags)
-    local obj type sha depth=0
-    obj="$(gh api "repos/$1/git/ref/tags/$2" --jq '.object.type + " " + .object.sha')" || return 1
+    local answer ref obj type sha depth=0
+    answer="$(gh api "repos/$1/git/ref/tags/$2" --jq '.ref + " " + .object.type + " " + .object.sha')" || return 1
+    # GitHub normalises the path, so `v1/../../pull/1/head` reaches a pull-request
+    # head that anyone can push to. Only the exact tag the comment names counts.
+    read -r ref obj <<< "$answer"
+    [[ "$ref" == "refs/tags/$2" ]] || return 1
     while :; do
         read -r type sha <<< "$obj"
         [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1

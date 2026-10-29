@@ -9,10 +9,16 @@ export PATH="$tmp/bin:$PATH" PIN_API_LOG="$tmp/api.log"
 cat > "$tmp/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$2" >> "$PIN_API_LOG"
+# A tag-ref lookup answers with the ref GitHub resolved, then the object. The
+# ref is printed only when the caller's --jq asks for it, as the real API does.
+ref_answer() { if [[ "${*:4}" == *'.ref '* ]]; then echo "$1 $2 $3"; else echo "$2 $3"; fi; }
 case "$2" in
-  repos/actions/checkout/git/ref/tags/v1.2.3) echo 'commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
-  repos/actions/checkout/git/ref/tags/v9.9.9) echo 'commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' ;;
-  repos/github/codeql-action/git/ref/tags/v4.37.9) echo 'tag cccccccccccccccccccccccccccccccccccccccc' ;;
+  repos/actions/checkout/git/ref/tags/v1.2.3) ref_answer refs/tags/v1.2.3 commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$@" ;;
+  repos/actions/checkout/git/ref/tags/v9.9.9) ref_answer refs/tags/v9.9.9 commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "$@" ;;
+  # GHSA-j754: GitHub normalises `..` in the path, so this "tag" lookup returns a
+  # pull-request head that anyone can push to.
+  repos/actions/checkout/git/ref/tags/v1.2.3/../../pull/1/head) ref_answer refs/pull/1/head commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$@" ;;
+  repos/github/codeql-action/git/ref/tags/v4.37.9) ref_answer refs/tags/v4.37.9 tag cccccccccccccccccccccccccccccccccccccccc "$@" ;;
   repos/github/codeql-action/git/tags/cccccccccccccccccccccccccccccccccccccccc) echo 'tag dddddddddddddddddddddddddddddddddddddddd' ;;
   repos/github/codeql-action/git/tags/dddddddddddddddddddddddddddddddddddddddd) echo 'commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
   repos/dtolnay/rust-toolchain/compare/stable...aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)
@@ -56,6 +62,11 @@ expect_failure() {
     if check; then echo 'checker unexpectedly passed'; cat "$tmp/out"; exit 1; fi
     grep -q "$1" "$tmp/out" || { cat "$tmp/out"; exit 1; }
 }
+# A version comment must name a tag: one that GitHub resolves to any other ref
+# (here a pull-request head, through `..` in the path) is refused (GHSA-j754).
+sed 's|# v1.2.3$|# v1.2.3/../../pull/1/head|' "$tmp/good" > "$workflow"
+grep -q 'pull/1/head' "$workflow" || { echo 'fixture edit did not apply'; exit 1; }
+expect_failure 'ERROR.*actions/checkout.*cannot resolve tag v1.2.3/../../pull/1/head'
 # A branch marker is not an escape from verifying arbitrary action SHAs.
 sed 's/# v1.2.3/# main (branch)/g' "$tmp/good" > "$workflow"
 expect_failure 'actions/checkout.*not allowed'
