@@ -9,7 +9,9 @@
 //! builds a spec.
 //!
 //! The call must return a spec or an error and never panic. A command spec must
-//! also name a program.
+//! also name a program, and no argument may contain NUL: `std::process::Command`
+//! refuses one at spawn, so a NUL the validators let through becomes an action
+//! that fails after the operator approved it.
 
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
@@ -34,7 +36,10 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
 
-    if let ActionMechanism::Command { program, .. } = &spec.mechanism {
+    if let ActionMechanism::Command { program, args } = &spec.mechanism {
         assert!(!program.is_empty(), "{name}: empty program");
+        for arg in args {
+            assert!(!arg.contains('\0'), "{name}: NUL in argument {arg:?}");
+        }
     }
 });
