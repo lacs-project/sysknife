@@ -165,8 +165,12 @@ fi
 
 step "Install Rust via rustup"
 if ! su - "$VM_USER" -c 'command -v cargo &>/dev/null'; then
-    su - "$VM_USER" -c \
-        'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable' \
+    # rustup-init is downloaded and its sha256 checked by the pinned helper, then
+    # run as the VM user so it installs into that user's ~/.cargo. The helper is
+    # sourced inside the user's login shell because functions do not cross `su`.
+    pinned_installers="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pinned-installers.sh"
+    [ -f "$pinned_installers" ] || fail "Install Rust (missing $pinned_installers)"
+    su - "$VM_USER" -c "source $(printf '%q' "$pinned_installers") && pinned_install_rustup" \
         || fail "Install Rust"
 fi
 # Source cargo env for root too so we can run cargo in subsequent steps.

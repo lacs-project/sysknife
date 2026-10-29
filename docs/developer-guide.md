@@ -30,10 +30,10 @@ checks `main` requires:
 | ShellCheck | distro | `sudo apt-get install -y shellcheck` |
 | Python | 3.10+ | usually already present |
 | PyYAML | 6.x | `python3 -m pip install PyYAML` (installed explicitly in CI) |
-| `yamllint` | 1.38.0 | `python3 -m pip install yamllint==1.38.0` |
+| `yamllint` | 1.38.0 | `python3 -m pip install --require-hashes -r tools/ci-python/requirements.txt` (the hash list CI installs from; it also pins PyYAML and `pathspec`) |
 | `cargo-audit` | latest | `cargo install cargo-audit --locked` (the `security-audit` job) |
-| `markdownlint-cli2` | 0.23.2 | `npm install --global markdownlint-cli2@0.23.2` |
-| `markdown-link-check` | 3.15.0 | `npm install --global markdown-link-check@3.15.0` |
+| `markdownlint-cli2` | 0.24.0 | `npm ci --prefix tools/ci-node`, then put `tools/ci-node/node_modules/.bin` on `PATH` (the lockfile CI installs from) |
+| `markdown-link-check` | 3.15.0 | same `npm ci --prefix tools/ci-node` |
 
 **Required only for the jobs that name them:**
 

@@ -1,0 +1,12 @@
+{
+  "name": "sysknife-ci-node",
+  "private": true,
+  "description": "Markdown lint tools the docs-and-hygiene CI job runs. Installed with `npm ci` so every package, transitive ones included, is pinned by an integrity hash in package-lock.json. Never published.",
+  "dependencies": {
+    "markdown-link-check": "3.15.0",
+    "markdownlint-cli2": "0.24.0"
+  },
+  "overrides": {
+    "basic-ftp": "6.2.3"
+  }
+}

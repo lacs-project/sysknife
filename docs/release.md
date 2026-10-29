@@ -80,10 +80,13 @@ Pushing a tag matching `vMAJOR.MINOR.PATCH` on `main` starts
 1. Verifies the tag against every Cargo and npm package version.
 2. Builds `sysknife` and `sysknife-daemon` on native Linux x86_64 and aarch64
    runners.
-3. Generates SPDX SBOMs, checksums, and GitHub artifact attestations.
+3. Generates SPDX SBOMs, checksums, and GitHub artifact attestations, and
+   keeps the signed SLSA provenance of each architecture as a
+   `sysknife-<tag>-linux-<arch>.intoto.jsonl` file.
 4. Publishes `sysknife-setup` to npm through trusted publishing (OIDC).
 5. Publishes the public Rust crates to crates.io in dependency order.
-6. Creates the GitHub Release and uploads the binaries, SBOMs, and checksums.
+6. Creates the GitHub Release and uploads the binaries, SBOMs, checksums, and
+   the `*.intoto.jsonl` provenance bundles.
 
 Publication is never silently skipped. The release is created only after both
 registries accept the packages.
@@ -222,7 +225,9 @@ Trusted publishing requires the npm package's publisher configuration to
 match the GitHub repository and workflow exactly. Grant `id-token: write` per
 job, never at the workflow level. Three jobs hold it today: `build` (build
 provenance attestations), `publish-npm` (trusted publishing) and
-`publish-registry` (MCP Registry OIDC).
+`publish-registry` (MCP Registry OIDC). `attestations: write` belongs to `build`
+alone; the `release` job only uploads files, so it holds `contents: write` and
+cannot sign anything. `tests/release/release-provenance.test.sh` pins both.
 
 ### crates.io
 
@@ -249,6 +254,43 @@ npx sysknife-setup --help
 gh attestation verify sysknife-vX.Y.Z-linux-x86_64 \
   --repo lacs-project/sysknife
 sha256sum --check sha256sums-linux-x86_64.txt
+```
+
+### Verify a download against the provenance asset
+
+Each release also carries its SLSA build provenance as a release asset, one file
+per architecture, named `sysknife-vX.Y.Z-linux-<arch>.intoto.jsonl`. It covers
+both `sysknife` and `sysknife-daemon` for that architecture. The asset exists so
+a download can be checked without asking the GitHub API which attestations
+exist, and because
+[OpenSSF Scorecard](https://github.com/ossf/scorecard/blob/main/docs/checks.md#signed-releases)
+reads release assets, not the attestations page, when it scores signed releases.
+
+```bash
+gh release download vX.Y.Z --repo lacs-project/sysknife \
+  --pattern 'sysknife-*-linux-x86_64' \
+  --pattern 'sysknife-*-linux-x86_64.intoto.jsonl'
+
+gh attestation verify sysknife-vX.Y.Z-linux-x86_64 \
+  --repo lacs-project/sysknife \
+  --bundle sysknife-vX.Y.Z-linux-x86_64.intoto.jsonl
+gh attestation verify sysknife-daemon-vX.Y.Z-linux-x86_64 \
+  --repo lacs-project/sysknife \
+  --bundle sysknife-vX.Y.Z-linux-x86_64.intoto.jsonl
+```
+
+A successful run means the file's digest appears in a provenance statement that
+GitHub signed for a build of `lacs-project/sysknife` by `release.yml` at that
+tag. A file that was changed after the build fails with a non-zero exit status.
+Add `--signer-workflow lacs-project/sysknife/.github/workflows/release.yml` to
+require the workflow explicitly. The same command without `--bundle` fetches the
+attestation from GitHub instead.
+
+Before announcing a release, list its assets and confirm both
+`*.intoto.jsonl` files are there:
+
+```bash
+gh release view vX.Y.Z --repo lacs-project/sysknife --json assets --jq '.assets[].name'
 ```
 
 Also perform a clean install, `sysknife doctor`, one preview/approve/execute
