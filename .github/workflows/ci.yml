@@ -179,6 +179,9 @@ jobs:
       - name: Check the install knows every directory it writes into
         run: bash tests/release/install-paths.test.sh
 
+      - name: Check a DESTDIR install stages every file and leaves the host alone
+        run: bash tests/release/destdir-install.test.sh
+
       - name: Check postgres-contract still requires both job tokens
         run: bash tests/release/postgres-contract-guard.test.sh
 
@@ -356,6 +359,9 @@ jobs:
 
       - name: Check release crate lists against Cargo metadata
         run: bash tests/release/release-crates.test.sh
+
+      - name: Check every published package ships the LICENSE
+        run: bash tests/release/package-license.test.sh
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3

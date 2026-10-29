@@ -25,8 +25,22 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   private pieces to the fuzz crate only under `#[cfg(fuzzing)]`, so its public
   API does not change. [docs/contributing/fuzzing.md](docs/contributing/fuzzing.md)
   covers running a target and adding one.
+- **`make install DESTDIR=<stage>` for packagers.** Every file the install
+  writes lands under the stage directory, and the steps that act on the running
+  host (`systemd-sysusers`, `systemd-tmpfiles`, `systemctl daemon-reload`) are
+  skipped so the package's own install scripts can run them on the target.
+  `make uninstall DESTDIR=...` removes the staged files and leaves the running
+  service alone. Without `DESTDIR` the install behaves as before.
 
 ### Fixed
+
+- **Published crates and the npm package carry the licence text.** crates.io
+  and npm build each tarball from the package's own directory, and `LICENSE`
+  sat only at the repository root, so `sysknife-cli-0.28.0.crate` and
+  `sysknife-setup@0.28.0` shipped a `license = "MIT"` field with no licence
+  file. Each package directory now holds a copy, and
+  `tests/release/package-license.test.sh` fails when one goes missing or
+  drifts from the root file.
 
 - **The setup wizard reports a user service that did not install.**
   ([#699](https://github.com/lacs-project/sysknife/pull/699)) With

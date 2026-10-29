@@ -86,8 +86,10 @@ if [ "$check_recipe" != 'bash scripts/ci-local.sh --fast' ]; then
 fi
 
 # Variables the recipe writes into: the $(VAR) that appear as a destination.
+# $(DESTDIR) is the staging prefix in front of each of them, not a directory of
+# its own; the preflight probes $(DESTDIR) joined to every INSTALL_DIRS entry.
 recipe_vars="$(printf '%s\n' "$recipe" \
-    | grep -oE '\$\([A-Z_]+\)' | tr -d '$()' | sort -u)"
+    | grep -oE '\$\([A-Z_]+\)' | tr -d '$()' | grep -vx DESTDIR | sort -u)"
 [ -n "$recipe_vars" ] || { printf 'derived no variables from the recipe\n' >&2; exit 1; }
 
 # The variables $(INSTALL_DIRS) names, read from a Makefile as a sorted list.
