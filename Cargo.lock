@@ -4802,7 +4802,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-brain"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-openai",
  "async-trait",
@@ -4825,7 +4825,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-cli"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "assert_cmd",
  "chrono",
@@ -4855,7 +4855,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-core"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "serde",
  "tempfile",
@@ -4864,7 +4864,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-daemon"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4894,7 +4894,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-daemon-test"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "serde_json",
  "sysknife-daemon",
@@ -4903,7 +4903,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-proto"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -4912,7 +4912,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-shell"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "reqwest 0.12.28",
@@ -4929,7 +4929,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-types"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "prost",
  "serde",

@@ -12,6 +12,18 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-10-28
+
+### Changed
+
+- **CI installs and release assets are pinned and signed.** ([#693](https://github.com/lacs-project/sysknife/pull/693))
+  The lint tools install from `tools/ci-node/package-lock.json` and a pip hash
+  list, the E2E rustup and Ollama installers run only after their sha256
+  matches, and each release now carries a signed SLSA provenance bundle,
+  `sysknife-<tag>-linux-<arch>.intoto.jsonl`, that
+  `gh attestation verify --bundle` checks. `block-buffer` moves to 0.12.1
+  (GHSA-qwgh-2vcv-g2f7).
+
 ### Security
 
 - **PostgreSQL chains job outcomes, and one edited column no longer stops
