@@ -75,6 +75,21 @@ if text.count(heading) != 1:
     raise SystemExit("fixture could not find the Unreleased section")
 path.write_text(text.replace(heading, heading + "\n\n- Fixture release note.", 1))
 PY
+# A dependency that happens to sit at our own version is not a version site.
+# The npm `scheduler` package was 0.28.0 when SysKnife was, and a bump that
+# rewrote every "0.28.0" string refused itself. Plant one so the case outlives
+# that coincidence.
+python3 - "$success/apps/sysknife-shell/package-lock.json" "$current_version" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+lock = json.loads(path.read_text())
+lock["packages"]["node_modules/fixture-same-version"] = {"version": sys.argv[2]}
+path.write_text(json.dumps(lock, indent=2) + "\n")
+PY
+git -C "$success" -c commit.gpgsign=false commit -qam "fixture: a dependency at the release version"
 mkdir -p "$scratch/bin-success"
 cat >"$scratch/bin-success/cargo" <<'SH'
 #!/usr/bin/env python3
@@ -121,6 +136,11 @@ else
     exit 1
 fi
 success_state="$(git -C "$success" status --porcelain)"
+collision="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["packages"]["node_modules/fixture-same-version"]["version"])' "$success/apps/sysknife-shell/package-lock.json")"
+[ "$collision" = "$current_version" ] || {
+    printf 'release-version-bump: the bump rewrote a dependency at the release version (%s -> %s)\n' "$current_version" "$collision" >&2
+    exit 1
+}
 if [ -z "$success_state" ]; then
     printf 'release-version-bump: successful bump did not install version files\n' >&2
     exit 1

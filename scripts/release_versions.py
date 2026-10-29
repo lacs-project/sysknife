@@ -176,6 +176,21 @@ def leaves(doc, prefix=()):
         yield prefix, doc
 
 
+def replace_declared(text: str, before, current: str, target: str, declared: set) -> str:
+    """Rewrite each `"current"` in `text` whose JSON leaf is a declared path."""
+    needle, replacement = f'"{current}"', f'"{target}"'
+    keep = []
+    for match in re.finditer(re.escape(needle), text):
+        start = match.start()
+        trial = json.loads(text[:start] + replacement + text[start + len(needle):])
+        moved = {k for (k, a), (_, b) in zip(leaves(before), leaves(trial)) if a != b}
+        if moved and moved <= declared:
+            keep.append(start)
+    for start in reversed(keep):
+        text = text[:start] + replacement + text[start + len(needle):]
+    return text
+
+
 def cmd_values(cfg: dict) -> None:
     for _, value in all_values(cfg):
         print(value)
@@ -319,12 +334,14 @@ def cmd_bump_in_place(cfg: dict, target: str, when: str | None) -> None:
                 die(f"{rel}: path {path} holds {got}, not {current}; "
                     "the registry and the tree disagree")
         # Replace the text rather than re-serialising, so the diff stays
-        # reviewable, then check structurally that nothing else moved. A
-        # dependency pinned at the same version as ours is the collateral
-        # damage this catches.
-        text = text.replace(f'"{current}"', f'"{target}"')
-        after = json.loads(text)
+        # reviewable. Only an occurrence that lands on a declared path is
+        # replaced: npm's `scheduler` sat at 0.28.0 in the GUI lockfile when
+        # SysKnife did, and rewriting every "0.28.0" string made the next bump
+        # refuse itself. The structural check below still catches anything
+        # else that moved.
         declared = {tuple(path) for path in (tuple(x) for x in site["paths"])}
+        text = replace_declared(text, before, current, target, declared)
+        after = json.loads(text)
         moved = {k for (k, a), (_, b) in zip(leaves(before), leaves(after)) if a != b}
         stray = sorted(moved - declared)
         if stray:
