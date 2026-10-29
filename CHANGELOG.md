@@ -26,6 +26,18 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   API does not change. [docs/contributing/fuzzing.md](docs/contributing/fuzzing.md)
   covers running a target and adding one.
 
+### Fixed
+
+- **The setup wizard reports a user service that did not install.**
+  ([#699](https://github.com/lacs-project/sysknife/pull/699)) With
+  `--daemon-mode=user`, a failed `systemctl --user daemon-reload` or
+  `enable --now` printed "Setup complete" and exited 0, and a missing daemon
+  binary still got a unit pointing at it. The wizard now writes no unit when
+  `sysknife-daemon` is missing or not executable, prints the commands left to
+  run, and exits 3 (closes
+  [#665](https://github.com/lacs-project/sysknife/issues/665)). Thanks to
+  [@dannyward630](https://github.com/dannyward630).
+
 ## [0.28.0] — 2026-10-28
 
 ### Changed
