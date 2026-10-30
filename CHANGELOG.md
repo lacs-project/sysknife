@@ -12,6 +12,29 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Changed
+
+- **A release tag must point at a commit on `main` whose CI passed.**
+  ([#700](https://github.com/lacs-project/sysknife/pull/700)) The release
+  workflow's first job now refuses a tag whose commit is not an ancestor of
+  `main`, and refuses one without a completed, successful `ci` push run for
+  that exact commit (`scripts/check_release_ci.sh`, which fails closed when the
+  check runs cannot be read). Push a release tag only after `ci` finishes on
+  the release commit (closes
+  [#553](https://github.com/lacs-project/sysknife/issues/553)). Thanks to
+  [@dannyward630](https://github.com/dannyward630).
+
+### Fixed
+
+- **`RemoveSwap` keeps a swap file that is still in use.**
+  ([#698](https://github.com/lacs-project/sysknife/pull/698)) When `swapoff`
+  failed, `sysknife-mount-edit` went on to drop the `/etc/fstab` entry and
+  delete the file. It now stops and leaves both in place when the file is still
+  listed in `/proc/swaps` or `/proc/swaps` cannot be read, and reports
+  `swapoff`'s error (closes
+  [#666](https://github.com/lacs-project/sysknife/issues/666)). Thanks to
+  [@dannyward630](https://github.com/dannyward630).
+
 ## [0.29.0] — 2026-10-29
 
 ### Added
