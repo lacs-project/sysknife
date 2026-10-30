@@ -28,7 +28,7 @@
 //! This test parses them back out and compares, so the next edit to either side
 //! has to move both.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use sysknife_brain::prompt::build_system_prompt;
 use sysknife_daemon::actions::catalogue;
@@ -140,6 +140,95 @@ fn prompt_risk_tables_match_the_action_specs() {
         wrong.len(),
         wrong.join("\n")
     );
+}
+
+/// Unambiguous prose claims name one action and one affirmative risk level.
+/// Negated levels ("MEDIUM, not LOW") do not classify the action.
+fn prose_risk_claim(line: &str, known: &BTreeMap<String, String>) -> Option<(String, String)> {
+    let mut actions = BTreeSet::new();
+    let mut levels = BTreeSet::new();
+    let mut previous = "";
+    for token in line
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+    {
+        if known.contains_key(token) {
+            actions.insert(token);
+        }
+        if !previous.eq_ignore_ascii_case("not") {
+            if let Some(level) = match token {
+                "LOW" => Some("Low"),
+                "MEDIUM" => Some("Medium"),
+                "HIGH" => Some("High"),
+                _ => None,
+            } {
+                levels.insert(level);
+            }
+        }
+        previous = token;
+    }
+    if actions.len() != 1 || levels.len() != 1 {
+        return None;
+    }
+    Some((actions.first()?.to_string(), levels.first()?.to_string()))
+}
+
+#[test]
+fn prose_risk_claims_match_the_action_specs() {
+    let specs = spec_risk();
+    let mut wrong = Vec::new();
+    for (family, prompt) in rendered_prompts() {
+        let mut checked = 0;
+        for (index, line) in prompt.lines().enumerate() {
+            let Some((action, claimed)) = prose_risk_claim(line, &specs) else {
+                continue;
+            };
+            checked += 1;
+            let actual = &specs[&action];
+            if &claimed != actual {
+                wrong.push(format!(
+                    "  [{family}] line {}: {action}: prose says {claimed}, ActionSpec says {actual}",
+                    index + 1
+                ));
+            }
+        }
+        assert!(checked > 0, "[{family}] no prose risk claims were checked");
+    }
+    assert!(
+        wrong.is_empty(),
+        "the prompt's prose contradicts ActionSpec risk levels:\n{}",
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn prose_claims_distinguish_negation_and_ambiguous_lines() {
+    let specs = spec_risk();
+    for line in [
+        "`AptAutoremove` removes orphaned dependency packages only — LOW.",
+        "`AptAutoremove` is LOW, not HIGH — only removes orphaned packages.",
+        "`AptAutoremove` is LOW. AptAutoremove is LOW.",
+    ] {
+        assert_eq!(
+            prose_risk_claim(line, &specs),
+            Some(("AptAutoremove".into(), "Low".into())),
+            "{line}"
+        );
+    }
+    assert_eq!(
+        prose_risk_claim("`ReloadDaemon` is MEDIUM, not LOW.", &specs),
+        Some(("ReloadDaemon".into(), "Medium".into()))
+    );
+    for line in [
+        "`AptAutoremove` has no risk label here.",
+        "`AptAutoremove` can be LOW or HIGH.",
+        "`AptUpdate` is LOW and `AptUpgrade` is HIGH.",
+        "`NotAnAction` is LOW.",
+        "`AptAutoremoveExtra` is LOW.",
+        "`AptAutoremove` is not LOW.",
+    ] {
+        assert_eq!(prose_risk_claim(line, &specs), None, "{line}");
+    }
 }
 
 /// The other place a risk level is written in prose: the doc comment above each
