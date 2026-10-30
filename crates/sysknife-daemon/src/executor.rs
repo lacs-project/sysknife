@@ -870,10 +870,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             // `remote` defaults to "flathub" — the universal Flatpak remote.
             // Models frequently omit it; accepting the default avoids a
             // MissingParam failure for the most common install case.
-            let remote = params
-                .get("remote")
-                .and_then(|v| v.as_str())
-                .unwrap_or("flathub");
+            let remote = optional_str(params, "remote")?.unwrap_or("flathub");
             let remote = validated_safe_arg(remote, "remote")?;
             Ok(flatpak::install_flatpak(&username, &app_id, &remote))
         }
@@ -910,9 +907,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             let username = validated_username(resolve_username(params)?, "username")?;
             // app_id is optional — omitting it updates all installed Flatpaks.
             // Empty string is treated as absent (no app specified → update all).
-            let app_id = params
-                .get("app_id")
-                .and_then(|v| v.as_str())
+            let app_id = optional_str(params, "app_id")?
                 .filter(|id| !id.is_empty())
                 .map(|id| validated_safe_arg(id, "app_id"))
                 .transpose()?;
@@ -1130,14 +1125,10 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "CreateToolbox" => {
             let username = validated_username(resolve_username(params)?, "username")?;
             let name = validated_safe_arg(require_str(params, "name")?, "name")?;
-            let image = params
-                .get("image")
-                .and_then(|v| v.as_str())
+            let image = optional_str(params, "image")?
                 .map(|img| validated_safe_arg(img, "image"))
                 .transpose()?;
-            let release = params
-                .get("release")
-                .and_then(|v| v.as_str())
+            let release = optional_str(params, "release")?
                 .map(|r| validated_safe_arg(r, "release"))
                 .transpose()?;
             Ok(toolbox::create_toolbox(
@@ -1188,12 +1179,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             if pid < 2 || pid > u32::MAX as u64 {
                 return Err(ExecutorError::InvalidParam("pid"));
             }
-            let signal = validated_kill_signal(
-                params
-                    .get("signal")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("TERM"),
-            )?;
+            let signal = validated_kill_signal(optional_str(params, "signal")?.unwrap_or("TERM"))?;
             Ok(processes::signal_process(pid as u32, signal))
         }
 
@@ -1206,19 +1192,11 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             let grep = optional_validated(params, "grep", validated_journal_grep)?;
             // `lines` defaults to 100 and is clamped so an enormous value cannot
             // make the daemon buffer an unbounded journal dump.
-            let lines = params
-                .get("lines")
-                .and_then(|v| v.as_u64())
+            let lines = optional_u64(params, "lines")?
                 .unwrap_or(100)
                 .clamp(1, MAX_JOURNAL_LINES) as u32;
-            let boot = params
-                .get("boot")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let kernel = params
-                .get("kernel")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let boot = optional_bool(params, "boot")?.unwrap_or(false);
+            let kernel = optional_bool(params, "kernel")?.unwrap_or(false);
             Ok(journald::get_journal_log(&journald::JournalQuery {
                 lines,
                 unit: unit.as_deref(),
@@ -1232,8 +1210,8 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         }
         "VacuumJournal" => {
             // Exactly one of size_mb / retain_days selects the vacuum mode.
-            let size_mb = params.get("size_mb").and_then(|v| v.as_u64());
-            let retain_days = params.get("retain_days").and_then(|v| v.as_u64());
+            let size_mb = optional_u64(params, "size_mb")?;
+            let retain_days = optional_u64(params, "retain_days")?;
             match (size_mb, retain_days) {
                 (Some(mb), None) if (1..=u32::MAX as u64).contains(&mb) => {
                     Ok(journald::vacuum_journal_by_size(mb as u32))
@@ -1322,19 +1300,12 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             let user = validated_username(require_str(params, "user")?, "user")?;
             let commands = validated_sudo_commands(require_str(params, "commands")?, "commands")?;
             // runas defaults to root; if given it must be "ALL" or a username.
-            let runas = match params
-                .get("runas")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-            {
+            let runas = match optional_str(params, "runas")?.filter(|s| !s.is_empty()) {
                 Some("ALL") => Some("ALL".to_string()),
                 Some(u) => Some(validated_username(u, "runas")?),
                 None => None,
             };
-            let nopasswd = params
-                .get("nopasswd")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let nopasswd = optional_bool(params, "nopasswd")?.unwrap_or(false);
             // `commands = "ALL"` together with `nopasswd` mints a standing,
             // passwordless, unrestricted root credential (`user ALL=(ALL)
             // NOPASSWD: ALL`). Unlike every other action here, the effect
@@ -1379,10 +1350,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             let name = validated_apt_pin_name(require_str(params, "name")?, "name")?;
             let package = validated_apt_package(require_str(params, "package")?, "package")?;
             let pin = validated_apt_pin_expr(require_str(params, "pin")?, "pin")?;
-            let priority = params
-                .get("priority")
-                .and_then(|v| v.as_i64())
-                .ok_or(ExecutorError::MissingParam("priority"))?;
+            let priority = require_i64(params, "priority")?;
             if !(-1..=1000).contains(&priority) {
                 return Err(ExecutorError::InvalidParam("priority"));
             }
@@ -1411,10 +1379,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
                 return Err(ExecutorError::InvalidParam("rotate"));
             }
             let path = validated_log_rotation(require_str(params, "path")?, rotate)?;
-            let compress = params
-                .get("compress")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let compress = optional_bool(params, "compress")?.unwrap_or(false);
             Ok(logging::configure_log_rotation(
                 &name, &path, frequency, rotate, compress,
             ))
@@ -1451,7 +1416,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             // chage days: 0..=99999 (chage's own ceiling). At least one required.
             let mut flags = Vec::new();
             for (key, opt) in [("max_days", "-M"), ("min_days", "-m"), ("warn_days", "-W")] {
-                if let Some(n) = params.get(key).and_then(|v| v.as_u64()) {
+                if let Some(n) = optional_u64(params, key)? {
                     if n > MAX_PASSWORD_AGE_DAYS {
                         return Err(ExecutorError::InvalidParam(key));
                     }
@@ -1468,7 +1433,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             // minlen 1..=128; *credit knobs -64..=64 (negative = require that
             // many chars of the class). At least one required.
             let mut extra = Vec::new();
-            if let Some(n) = params.get("minlen").and_then(|v| v.as_u64()) {
+            if let Some(n) = optional_u64(params, "minlen")? {
                 if !(1..=MAX_PASSWORD_MINLEN).contains(&n) {
                     return Err(ExecutorError::InvalidParam("minlen"));
                 }
@@ -1481,7 +1446,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
                 ("lcredit", "--lcredit"),
                 ("ocredit", "--ocredit"),
             ] {
-                if let Some(n) = params.get(key).and_then(|v| v.as_i64()) {
+                if let Some(n) = optional_i64(params, key)? {
                     if !(-64..=64).contains(&n) {
                         return Err(ExecutorError::InvalidParam(key));
                     }
@@ -1497,7 +1462,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "SetAccountLockout" => {
             // deny 1..=1000; unlock_time/fail_interval seconds 0..=604800 (7d).
             let mut extra = Vec::new();
-            if let Some(n) = params.get("deny").and_then(|v| v.as_u64()) {
+            if let Some(n) = optional_u64(params, "deny")? {
                 if !(1..=1000).contains(&n) {
                     return Err(ExecutorError::InvalidParam("deny"));
                 }
@@ -1508,7 +1473,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
                 ("unlock_time", "--unlock-time"),
                 ("fail_interval", "--fail-interval"),
             ] {
-                if let Some(n) = params.get(key).and_then(|v| v.as_u64()) {
+                if let Some(n) = optional_u64(params, key)? {
                     if n > MAX_LOCKOUT_WINDOW_SECS {
                         return Err(ExecutorError::InvalidParam(key));
                     }
@@ -1535,9 +1500,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "ConfigureWifi" => {
             let ssid = validated_safe_arg(require_str(params, "ssid")?, "ssid")?;
             // password is optional — open networks connect without one.
-            let password = params
-                .get("password")
-                .and_then(|v| v.as_str())
+            let password = optional_str(params, "password")?
                 .filter(|p| !p.is_empty())
                 .map(|p| validated_safe_arg(p, "password"))
                 .transpose()?;
@@ -1568,14 +1531,10 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "ListGroups" => Ok(users::list_groups()),
         "CreateUser" => {
             let username = validated_username(resolve_username(params)?, "username")?;
-            let shell = params
-                .get("shell")
-                .and_then(|v| v.as_str())
+            let shell = optional_str(params, "shell")?
                 .map(|s| validated_safe_arg(s, "shell"))
                 .transpose()?;
-            let home = params
-                .get("home")
-                .and_then(|v| v.as_str())
+            let home = optional_str(params, "home")?
                 .map(|h| validated_home_dir(h, "home"))
                 .transpose()?;
             Ok(users::create_user(
@@ -1600,10 +1559,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         }
         "CreateGroup" => {
             let group = validated_group(require_str(params, "group")?, "group")?;
-            let system = params
-                .get("system")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let system = optional_bool(params, "system")?.unwrap_or(false);
             Ok(users::create_group(&group, system))
         }
         "DeleteGroup" => {
@@ -1706,16 +1662,11 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         // ── snap ─────────────────────────────────────────────────────────
         "SnapInstall" => {
             let name = validated_safe_arg(require_str(params, "name")?, "name")?;
-            let channel = params
-                .get("channel")
-                .and_then(|v| v.as_str())
+            let channel = optional_str(params, "channel")?
                 .filter(|s| !s.is_empty())
                 .map(|s| validated_safe_arg(s, "channel"))
                 .transpose()?;
-            let auto_update = params
-                .get("auto_update")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let auto_update = optional_bool(params, "auto_update")?.unwrap_or(false);
             snap::snap_install(&name, channel.as_deref(), auto_update).map_err(|e| match e {
                 snap::SnapInstallError::InvalidArg { param, .. } => {
                     ExecutorError::InvalidParam(param)
@@ -1727,9 +1678,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             Ok(snap::snap_remove(&name))
         }
         "SnapRefresh" => {
-            let name = params
-                .get("name")
-                .and_then(|v| v.as_str())
+            let name = optional_str(params, "name")?
                 .filter(|s| !s.is_empty())
                 .map(|s| validated_safe_arg(s, "name"))
                 .transpose()?;
@@ -1760,26 +1709,8 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         // ── grub ─────────────────────────────────────────────────────────
         "GrubGetKargs" => Ok(grub::grub_get_kargs()),
         "GrubSetKargs" => {
-            let append: Vec<String> = params
-                .get("append")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .map(String::from)
-                        .collect()
-                })
-                .unwrap_or_default();
-            let delete: Vec<String> = params
-                .get("delete")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .map(String::from)
-                        .collect()
-                })
-                .unwrap_or_default();
+            let append = str_array_or_empty(params, "append")?;
+            let delete = str_array_or_empty(params, "delete")?;
             // Validate each arg in both lists. `append` gets the charset check
             // (rejects `=`, `,`, shell metacharacters — the latter also blocks
             // CSV injection into the helper's comma-separated list) *and* the
@@ -1900,16 +1831,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "ResolvectlStatus" => Ok(resolvectl::resolvectl_status()),
         "ResolvectlSetDns" => {
             let interface = validated_safe_arg(require_str(params, "interface")?, "interface")?;
-            let raw_servers: Vec<String> = params
-                .get("servers")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .map(String::from)
-                        .collect()
-                })
-                .unwrap_or_default();
+            let raw_servers = str_array_or_empty(params, "servers")?;
             if raw_servers.is_empty() {
                 return Err(ExecutorError::MissingParam("servers"));
             }
@@ -1957,9 +1879,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         }
         "UbuntuUpdateFlatpak" => {
             let username = validated_username(resolve_username(params)?, "username")?;
-            let app_id = params
-                .get("app_id")
-                .and_then(|v| v.as_str())
+            let app_id = optional_str(params, "app_id")?
                 .filter(|s| !s.is_empty())
                 .map(|s| validated_safe_arg(s, "app_id"))
                 .transpose()?;
@@ -1972,9 +1892,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
 
         // ── fail2ban ──────────────────────────────────────────────────────
         "Fail2banStatus" => {
-            let jail = params
-                .get("jail")
-                .and_then(|v| v.as_str())
+            let jail = optional_str(params, "jail")?
                 .filter(|s| !s.is_empty())
                 .map(|s| validated_safe_arg(s, "jail"))
                 .transpose()?;
@@ -2008,11 +1926,11 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "ConfigureFail2banJail" => {
             let name = validated_sudoers_name(require_str(params, "name")?, "name")?;
             let mut extra = Vec::new();
-            if let Some(n) = params.get("enabled").and_then(|v| v.as_bool()) {
+            if let Some(n) = optional_bool(params, "enabled")? {
                 extra.push("--enabled".to_string());
                 extra.push(if n { "true" } else { "false" }.to_string());
             }
-            if let Some(n) = params.get("maxretry").and_then(|v| v.as_u64()) {
+            if let Some(n) = optional_u64(params, "maxretry")? {
                 if !(1..=100).contains(&n) {
                     return Err(ExecutorError::InvalidParam("maxretry"));
                 }
@@ -2020,7 +1938,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
                 extra.push(n.to_string());
             }
             for (key, flag) in [("bantime", "--bantime"), ("findtime", "--findtime")] {
-                if let Some(n) = params.get(key).and_then(|v| v.as_u64()) {
+                if let Some(n) = optional_u64(params, key)? {
                     if n > MAX_FAIL2BAN_WINDOW_SECS {
                         return Err(ExecutorError::InvalidParam(key));
                     }
@@ -2054,23 +1972,20 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "GetCertificates" => Ok(certbot::get_certificates()),
         "ObtainCertificate" => {
             // Accept a "domains" array or a single "domain" string; ≥1 required.
+            let domain = optional_str(params, "domain")?;
             let mut domains = Vec::new();
-            if let Some(arr) = params.get("domains").and_then(|v| v.as_array()) {
-                for d in arr {
-                    let s = d.as_str().ok_or(ExecutorError::InvalidParam("domains"))?;
-                    domains.push(validated_domain(s, "domains")?);
+            if let Some(arr) = optional_str_array(params, "domains")? {
+                for s in arr {
+                    domains.push(validated_domain(&s, "domains")?);
                 }
-            } else if let Some(d) = params.get("domain").and_then(|v| v.as_str()) {
+            } else if let Some(d) = domain {
                 domains.push(validated_domain(d, "domain")?);
             }
             if domains.is_empty() {
                 return Err(ExecutorError::MissingParam("domains"));
             }
             let email = validated_email(require_str(params, "email")?, "email")?;
-            let challenge = params
-                .get("challenge")
-                .and_then(|v| v.as_str())
-                .unwrap_or("standalone");
+            let challenge = optional_str(params, "challenge")?.unwrap_or("standalone");
             if !matches!(challenge, "standalone" | "nginx" | "apache") {
                 return Err(ExecutorError::InvalidParam("challenge"));
             }
@@ -2216,9 +2131,20 @@ fn require_str<'a>(params: &'a Value, key: &'static str) -> Result<&'a str, Exec
     }
 }
 
-/// Extract an optional string param and validate it. An absent key or an empty
-/// string yields `None` (the filter is simply omitted); a present non-empty
-/// value is passed through `validator`, propagating any validation error.
+/// Read an optional string; an absent or null key is treated as absent.
+fn optional_str<'a>(
+    params: &'a Value,
+    key: &'static str,
+) -> Result<Option<&'a str>, ExecutorError> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_str().map(Some).ok_or(ExecutorError::InvalidParam(key)),
+    }
+}
+
+/// Extract an optional string param and validate it. An absent or null key, or
+/// an empty string, yields `None` (the filter is simply omitted); a present
+/// non-empty value is passed through `validator`, propagating any validation error.
 fn optional_validated<F>(
     params: &Value,
     key: &'static str,
@@ -2227,14 +2153,10 @@ fn optional_validated<F>(
 where
     F: FnOnce(&str, &'static str) -> Result<String, ExecutorError>,
 {
-    match params
-        .get(key)
-        .and_then(|v| v.as_str())
+    optional_str(params, key)?
         .filter(|s| !s.is_empty())
-    {
-        Some(s) => Ok(Some(validator(s, key)?)),
-        None => Ok(None),
-    }
+        .map(|s| validator(s, key))
+        .transpose()
 }
 
 /// Extract the username from params, accepting either `"username"` or `"user"`
@@ -2337,6 +2259,37 @@ fn require_bool(params: &Value, key: &'static str) -> Result<bool, ExecutorError
     }
 }
 
+fn optional_bool(params: &Value, key: &'static str) -> Result<Option<bool>, ExecutorError> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_bool()
+            .map(Some)
+            .ok_or(ExecutorError::InvalidParam(key)),
+    }
+}
+
+fn optional_u64(params: &Value, key: &'static str) -> Result<Option<u64>, ExecutorError> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_u64().map(Some).ok_or(ExecutorError::InvalidParam(key)),
+    }
+}
+
+fn optional_i64(params: &Value, key: &'static str) -> Result<Option<i64>, ExecutorError> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_i64().map(Some).ok_or(ExecutorError::InvalidParam(key)),
+    }
+}
+
+fn require_i64(params: &Value, key: &'static str) -> Result<i64, ExecutorError> {
+    match params.get(key) {
+        None => Err(ExecutorError::MissingParam(key)),
+        Some(v) => v.as_i64().ok_or(ExecutorError::InvalidParam(key)),
+    }
+}
+
 fn require_u32(params: &Value, key: &'static str) -> Result<u32, ExecutorError> {
     match params.get(key) {
         None => Err(ExecutorError::MissingParam(key)),
@@ -2372,6 +2325,26 @@ fn str_array_or_empty(params: &Value, key: &'static str) -> Result<Vec<String>, 
                     .ok_or(ExecutorError::InvalidParam(key))
             })
             .collect(),
+        _ => Err(ExecutorError::InvalidParam(key)),
+    }
+}
+
+/// Read an optional string array; an absent or null key is treated as absent.
+fn optional_str_array(
+    params: &Value,
+    key: &'static str,
+) -> Result<Option<Vec<String>>, ExecutorError> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(String::from)
+                    .ok_or(ExecutorError::InvalidParam(key))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some),
         _ => Err(ExecutorError::InvalidParam(key)),
     }
 }
@@ -2691,6 +2664,300 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn optional_typed_action_params_reject_wrong_types() {
+        let cases: &[(&str, &str, serde_json::Value)] = &[
+            (
+                "GetJournalLog",
+                "lines",
+                json!({"lines": 10, "boot": true, "kernel": false}),
+            ),
+            (
+                "GetJournalLog",
+                "boot",
+                json!({"lines": 10, "boot": true, "kernel": false}),
+            ),
+            (
+                "GetJournalLog",
+                "kernel",
+                json!({"lines": 10, "boot": true, "kernel": false}),
+            ),
+            ("VacuumJournal", "size_mb", json!({"retain_days": 30})),
+            ("VacuumJournal", "retain_days", json!({"size_mb": 100})),
+            (
+                "GrantSudoAccess",
+                "nopasswd",
+                json!({
+                    "name": "ops",
+                    "user": "alice",
+                    "commands": "/usr/bin/uptime",
+                    "nopasswd": false
+                }),
+            ),
+            (
+                "ConfigureLogRotation",
+                "compress",
+                json!({
+                    "name": "app",
+                    "path": "/var/log/app.log",
+                    "frequency": "daily",
+                    "rotate": 5,
+                    "compress": false
+                }),
+            ),
+            (
+                "SetPasswordAging",
+                "max_days",
+                json!({"user": "bob", "max_days": 90, "min_days": 1, "warn_days": 7}),
+            ),
+            (
+                "SetPasswordAging",
+                "min_days",
+                json!({"user": "bob", "max_days": 90, "min_days": 1, "warn_days": 7}),
+            ),
+            (
+                "SetPasswordAging",
+                "warn_days",
+                json!({"user": "bob", "max_days": 90, "min_days": 1, "warn_days": 7}),
+            ),
+            (
+                "SetPasswordPolicy",
+                "minlen",
+                json!({"minlen": 16, "dcredit": 0}),
+            ),
+            (
+                "SetAccountLockout",
+                "deny",
+                json!({"deny": 5, "unlock_time": 60, "fail_interval": 30}),
+            ),
+            (
+                "SetAccountLockout",
+                "unlock_time",
+                json!({"deny": 5, "unlock_time": 60, "fail_interval": 30}),
+            ),
+            (
+                "SetAccountLockout",
+                "fail_interval",
+                json!({"deny": 5, "unlock_time": 60, "fail_interval": 30}),
+            ),
+            (
+                "CreateGroup",
+                "system",
+                json!({"group": "operators", "system": false}),
+            ),
+            (
+                "SnapInstall",
+                "auto_update",
+                json!({"name": "hello-world", "auto_update": false}),
+            ),
+            (
+                "ConfigureFail2banJail",
+                "enabled",
+                json!({"name": "sshd", "enabled": true, "maxretry": 5, "bantime": 3600, "findtime": 600}),
+            ),
+            (
+                "ConfigureFail2banJail",
+                "maxretry",
+                json!({"name": "sshd", "enabled": true, "maxretry": 5, "bantime": 3600, "findtime": 600}),
+            ),
+            (
+                "ConfigureFail2banJail",
+                "bantime",
+                json!({"name": "sshd", "enabled": true, "maxretry": 5, "bantime": 3600, "findtime": 600}),
+            ),
+            (
+                "ConfigureFail2banJail",
+                "findtime",
+                json!({"name": "sshd", "enabled": true, "maxretry": 5, "bantime": 3600, "findtime": 600}),
+            ),
+        ];
+
+        for (action, key, valid_params) in cases {
+            let mut params = valid_params.clone();
+            params[key] = json!(null);
+            assert!(
+                build_action_spec(action, &params).is_ok(),
+                "{action}.{key} must treat null as absent: {params}"
+            );
+
+            for invalid_value in [json!("wrong type"), json!(-1), json!(1.5)] {
+                let mut params = valid_params.clone();
+                params[key] = invalid_value.clone();
+                assert!(
+                    matches!(
+                        build_action_spec(action, &params),
+                        Err(ExecutorError::InvalidParam(invalid_key)) if invalid_key == *key
+                    ),
+                    "{action}.{key} must reject {invalid_value}: {params}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn optional_signed_and_string_action_params_validate_types_and_nulls() {
+        let numeric_cases: &[(&str, &str)] = &[
+            ("dcredit", "SetPasswordPolicy"),
+            ("ucredit", "SetPasswordPolicy"),
+            ("lcredit", "SetPasswordPolicy"),
+            ("ocredit", "SetPasswordPolicy"),
+        ];
+        for (key, action) in numeric_cases {
+            let mut params =
+                json!({"minlen": 16, "dcredit": 0, "ucredit": 0, "lcredit": 0, "ocredit": 0});
+            params[key] = json!(null);
+            assert!(
+                build_action_spec(action, &params).is_ok(),
+                "{action}.{key} must treat null as absent: {params}"
+            );
+
+            for invalid in [json!("0"), json!(1.5)] {
+                let mut params =
+                    json!({"minlen": 16, "dcredit": 0, "ucredit": 0, "lcredit": 0, "ocredit": 0});
+                params[key] = invalid.clone();
+                assert!(
+                    matches!(
+                        build_action_spec(action, &params),
+                        Err(ExecutorError::InvalidParam(invalid_key)) if invalid_key == *key
+                    ),
+                    "{action}.{key} must reject {invalid}: {params}"
+                );
+            }
+        }
+
+        let string_cases: &[(&str, &str, serde_json::Value)] = &[
+            (
+                "InstallFlatpak",
+                "remote",
+                json!({"username": "alice", "app_id": "org.mozilla.firefox", "remote": 42}),
+            ),
+            (
+                "UpdateFlatpak",
+                "app_id",
+                json!({"username": "alice", "app_id": 42}),
+            ),
+            (
+                "CreateToolbox",
+                "image",
+                json!({"username": "alice", "name": "fedora", "image": 42}),
+            ),
+            (
+                "CreateToolbox",
+                "release",
+                json!({"username": "alice", "name": "fedora", "release": 42}),
+            ),
+            (
+                "SignalProcess",
+                "signal",
+                json!({"pid": 4242, "signal": 42}),
+            ),
+            (
+                "GrantSudoAccess",
+                "runas",
+                json!({"name": "ops", "user": "alice", "commands": "/usr/bin/uptime", "runas": 42}),
+            ),
+            ("GetJournalLog", "unit", json!({"unit": 42})),
+            (
+                "ConfigureWifi",
+                "password",
+                json!({"ssid": "example", "password": 42}),
+            ),
+            (
+                "CreateUser",
+                "shell",
+                json!({"username": "alice", "shell": 42}),
+            ),
+            (
+                "CreateUser",
+                "home",
+                json!({"username": "alice", "home": 42}),
+            ),
+            (
+                "SnapInstall",
+                "channel",
+                json!({"name": "hello-world", "channel": 42}),
+            ),
+            ("SnapRefresh", "name", json!({"name": 42})),
+            (
+                "GrubSetKargs",
+                "append",
+                json!({"append": [true], "delete": ["splash"]}),
+            ),
+            (
+                "GrubSetKargs",
+                "append",
+                json!({"append": "quiet", "delete": ["splash"]}),
+            ),
+            (
+                "GrubSetKargs",
+                "delete",
+                json!({"append": ["quiet"], "delete": [false]}),
+            ),
+            (
+                "ResolvectlSetDns",
+                "servers",
+                json!({"interface": "eth0", "servers": [true, "8.8.8.8"]}),
+            ),
+            (
+                "UbuntuUpdateFlatpak",
+                "app_id",
+                json!({"username": "alice", "app_id": 42}),
+            ),
+            ("Fail2banStatus", "jail", json!({"jail": 42})),
+            (
+                "ObtainCertificate",
+                "domain",
+                json!({"domains": ["example.com"], "domain": 42, "email": "ops@example.com"}),
+            ),
+            (
+                "ObtainCertificate",
+                "domains",
+                json!({"domains": ["example.com", 42], "email": "ops@example.com"}),
+            ),
+            (
+                "ObtainCertificate",
+                "challenge",
+                json!({"domain": "example.com", "email": "ops@example.com", "challenge": 42}),
+            ),
+        ];
+        for (action, key, params) in string_cases {
+            let mut null_params = params.clone();
+            null_params[key] = json!(null);
+            match (*action, *key) {
+                ("GrubSetKargs", "append") => null_params["delete"] = json!(["splash"]),
+                ("ObtainCertificate", "domains") => null_params["domain"] = json!("example.com"),
+                _ => {}
+            }
+            let null_result = build_action_spec(action, &null_params);
+            if (*action, *key) == ("ResolvectlSetDns", "servers") {
+                assert!(
+                    matches!(null_result, Err(ExecutorError::MissingParam("servers"))),
+                    "{action}.{key} must treat null as absent: {null_params}"
+                );
+            } else {
+                assert!(
+                    null_result.is_ok(),
+                    "{action}.{key} must treat null as absent: {null_params}"
+                );
+            }
+            assert!(
+                matches!(
+                    build_action_spec(action, params),
+                    Err(ExecutorError::InvalidParam(invalid_key)) if invalid_key == *key
+                ),
+                "{action}.{key} must reject its wrong type: {params}"
+            );
+        }
+
+        assert!(matches!(
+            build_action_spec(
+                "SetAptPin",
+                &json!({"name": "test", "package": "vim", "pin": "version 1.*", "priority": "500"})
+            ),
+            Err(ExecutorError::InvalidParam("priority"))
+        ));
     }
 
     #[test]
