@@ -1083,13 +1083,41 @@ impl LlmPlanner {
     /// Returns `Err(PlannerStuck)` if `max_turns` elapse without a plan.
     /// Returns `Err(NoPlanProposed)` if the LLM ends the turn without a plan.
     pub async fn plan_intent(&self, intent: &str) -> Result<Plan, PlanningError> {
+        self.plan_intent_with_context(intent, None).await
+    }
+
+    /// Run a separate planning request with follow-up context in addition to
+    /// the original intent.
+    ///
+    /// This is used when a caller validates a proposed plan against an
+    /// authoritative executor and needs the model to correct that plan. It is
+    /// a distinct request, so it passes the same input checks and consumes its
+    /// own rate-limit token. Including the follow-up in the request content
+    /// also gives record/replay cassettes a distinct key for the correction.
+    pub async fn plan_intent_with_feedback(
+        &self,
+        intent: &str,
+        feedback: &str,
+    ) -> Result<Plan, PlanningError> {
+        self.plan_intent_with_context(intent, Some(feedback)).await
+    }
+
+    async fn plan_intent_with_context(
+        &self,
+        intent: &str,
+        feedback: Option<&str>,
+    ) -> Result<Plan, PlanningError> {
         let intent = intent.trim();
         if intent.is_empty() {
             return Err(PlanningError::EmptyIntent);
         }
-        self.admit_request(intent).await?;
+        let admission_text = match feedback {
+            Some(feedback) => format!("{intent}\n\n{feedback}"),
+            None => intent.to_owned(),
+        };
+        self.admit_request(&admission_text).await?;
 
-        let mut messages: Vec<Message> = vec![Message::user_text(intent)];
+        let mut messages: Vec<Message> = vec![Message::user_text(admission_text)];
 
         // Rebuild the system prompt with current preferences and distro hint
         // on each call so that preferences saved during a prior `plan_intent`

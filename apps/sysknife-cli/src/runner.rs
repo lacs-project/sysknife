@@ -493,6 +493,45 @@ fn reject_unrunnable_params(plan: &Plan) -> Result<(), CliError> {
     Ok(())
 }
 
+fn planning_error_to_cli(error: sysknife_brain::planner::PlanningError) -> CliError {
+    match error {
+        // Not a failure: the planner understood the request and the answer is
+        // no. Carried as its own variant so the CLI renders a reason instead of
+        // "planning failed", and so scripts do not read it as a fault (#179).
+        sysknife_brain::planner::PlanningError::Refused { reason, suggestion } => {
+            CliError::Refused { reason, suggestion }
+        }
+        other => CliError::PlanningFailed(other.to_string()),
+    }
+}
+
+/// Plan once, validate against the daemon, and give the model one chance to
+/// correct parameters that the daemon rejects. Both plans use the daemon's
+/// `build_action_spec` validation path; the second plan fails closed.
+async fn plan_intent_with_param_correction(
+    planner: &LlmPlanner,
+    intent: &str,
+) -> Result<Plan, CliError> {
+    let plan = planner
+        .plan_intent(intent)
+        .await
+        .map_err(planning_error_to_cli)?;
+    if let Err(error) = reject_unrunnable_params(&plan) {
+        let feedback = format!(
+            "The daemon rejected your previous plan with this exact error: \
+             \"{error}\". Correct the plan parameters and call `propose_plan` again. \
+             Preserve the requested action and intent."
+        );
+        let corrected = planner
+            .plan_intent_with_feedback(intent, &feedback)
+            .await
+            .map_err(planning_error_to_cli)?;
+        reject_unrunnable_params(&corrected)?;
+        return Ok(corrected);
+    }
+    Ok(plan)
+}
+
 /// Fail-closed check run at execution time: is the live daemon's risk for a step
 /// no higher than the risk the CLI approved it at?
 ///
@@ -2172,7 +2211,7 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     // Unix socket call) on the current async thread.  This is tolerable on
     // the multi-threaded runtime: the call is bounded by SOCKET_TIMEOUT (10 s)
     // and ties up one worker thread for at most that duration.
-    let plan_result = planner.plan_intent(&intent).await;
+    let plan_result = plan_intent_with_param_correction(&planner, &intent).await;
 
     // Drop the planner to close the UnboundedSender, which closes the channel
     // and allows event_task to drain and exit.
@@ -2183,21 +2222,7 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
 
     finish_spinner(&spinner);
 
-    let plan = plan_result.map_err(|e| match e {
-        // Not a failure: the planner understood the request and the answer is
-        // no. Carried as its own variant so the CLI renders a reason instead of
-        // "planning failed", and so scripts do not read it as a fault (#179).
-        sysknife_brain::planner::PlanningError::Refused { reason, suggestion } => {
-            CliError::Refused { reason, suggestion }
-        }
-        other => CliError::PlanningFailed(other.to_string()),
-    })?;
-
-    // Before anything is displayed or approved: refuse a plan the daemon could
-    // not run as written. A parameter the executor rejects is a planning
-    // failure, not an execution failure, and the operator should never be asked
-    // to approve one.
-    reject_unrunnable_params(&plan)?;
+    let plan = plan_result?;
 
     // ---- distro routing guard ---------------------------------------------
     // Validate every step's action against the detected distro. This sits beside
@@ -4828,6 +4853,224 @@ mod tests {
         reject_unrunnable_params(&ufw_deny_plan("23")).expect("port 23 is valid");
         reject_unrunnable_params(&ufw_deny_plan("22/tcp")).expect("22/tcp is valid");
         reject_unrunnable_params(&ufw_deny_plan("OpenSSH")).expect("an app profile is valid");
+    }
+
+    mod param_correction_tests {
+        use super::*;
+        use async_trait::async_trait;
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex};
+        use sysknife_brain::cassette::{Cassette, CassetteMode, CassetteProvider};
+        use sysknife_brain::planner::PlanningError;
+        use sysknife_brain::provider::{
+            Completion, ContentBlock, LlmProvider, Message, ProviderError, StopReason,
+            ToolDefinition,
+        };
+        use sysknife_brain::state_client::CuratedState;
+
+        struct ScriptedProvider {
+            completions: Mutex<VecDeque<Completion>>,
+            calls: Arc<Mutex<Vec<Vec<Message>>>>,
+        }
+
+        impl ScriptedProvider {
+            fn new(
+                completions: impl IntoIterator<Item = Completion>,
+            ) -> (Self, Arc<Mutex<Vec<Vec<Message>>>>) {
+                let calls = Arc::new(Mutex::new(Vec::new()));
+                (
+                    Self {
+                        completions: Mutex::new(completions.into_iter().collect()),
+                        calls: Arc::clone(&calls),
+                    },
+                    calls,
+                )
+            }
+        }
+
+        #[async_trait]
+        impl LlmProvider for ScriptedProvider {
+            async fn complete(
+                &self,
+                _system: &str,
+                messages: &[Message],
+                _tools: &[ToolDefinition],
+                _max_tokens: u32,
+            ) -> Result<Completion, ProviderError> {
+                self.calls.lock().unwrap().push(messages.to_vec());
+                self.completions
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .ok_or_else(|| ProviderError::Parse("unexpected provider call".into()))
+            }
+        }
+
+        struct UnusedStateClient;
+
+        impl sysknife_brain::state_client::StateClient for UnusedStateClient {
+            fn curated_state(&self) -> Result<CuratedState, PlanningError> {
+                Err(PlanningError::StateUnavailable(
+                    "unused in this test".into(),
+                ))
+            }
+
+            fn query_action(
+                &self,
+                _action_name: &str,
+                _params: &Value,
+            ) -> Result<String, PlanningError> {
+                Err(PlanningError::StateUnavailable(
+                    "unused in this test".into(),
+                ))
+            }
+        }
+
+        fn ntp_plan(params: Value) -> Completion {
+            Completion {
+                content: vec![ContentBlock::ToolUse {
+                    id: "tu_set_ntp".into(),
+                    call_id: None,
+                    name: "propose_plan".into(),
+                    input: json!({
+                        "summary": "Enable NTP",
+                        "explanation": "Enable time synchronization.",
+                        "steps": [{
+                            "action_name": "SetNtp",
+                            "summary": "Enable NTP time synchronization",
+                            "risk_level": "medium",
+                            "params": params
+                        }]
+                    }),
+                }],
+                stop_reason: StopReason::ToolUse,
+            }
+        }
+
+        fn planner_with_script(
+            completions: impl IntoIterator<Item = Completion>,
+        ) -> (LlmPlanner, Arc<Mutex<Vec<Vec<Message>>>>) {
+            let (provider, calls) = ScriptedProvider::new(completions);
+            (
+                LlmPlanner::new(Box::new(provider), Box::new(UnusedStateClient), 5),
+                calls,
+            )
+        }
+
+        fn planner_with_cassette(
+            path: &std::path::Path,
+            mode: CassetteMode,
+            completions: impl IntoIterator<Item = Completion>,
+        ) -> (LlmPlanner, Arc<Mutex<Vec<Vec<Message>>>>) {
+            let (provider, calls) = ScriptedProvider::new(completions);
+            let cassette = Cassette::open(path, mode).unwrap();
+            let provider = CassetteProvider::new(Box::new(provider), cassette, "test/model");
+            (
+                LlmPlanner::new(Box::new(provider), Box::new(UnusedStateClient), 5),
+                calls,
+            )
+        }
+
+        #[tokio::test]
+        async fn missing_ntp_enabled_param_is_corrected_once() {
+            let (planner, calls) =
+                planner_with_script([ntp_plan(json!({})), ntp_plan(json!({"enabled": true}))]);
+
+            let plan =
+                plan_intent_with_param_correction(&planner, "Enable NTP time synchronisation")
+                    .await
+                    .expect("the corrected plan should be runnable");
+
+            assert_eq!(plan.steps()[0].params()["enabled"], json!(true));
+            let calls = calls.lock().unwrap();
+            assert_eq!(calls.len(), 2);
+            let correction = calls[1]
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                correction.contains(
+                    "step SetNtp has parameters the daemon cannot run: missing required param: enabled"
+                ),
+                "correction must include the daemon error, got: {correction}"
+            );
+        }
+
+        #[tokio::test]
+        async fn invalid_corrected_plan_fails_without_a_third_call() {
+            let (planner, calls) = planner_with_script([ntp_plan(json!({})), ntp_plan(json!({}))]);
+
+            let error =
+                plan_intent_with_param_correction(&planner, "Enable NTP time synchronisation")
+                    .await
+                    .expect_err("a second unrunnable plan must fail closed");
+
+            assert!(error
+                .to_string()
+                .contains("missing required param: enabled"));
+            assert_eq!(calls.lock().unwrap().len(), 2);
+        }
+
+        #[tokio::test]
+        async fn runnable_first_plan_does_not_make_a_correction_call() {
+            let (planner, calls) = planner_with_script([ntp_plan(json!({"enabled": true}))]);
+
+            plan_intent_with_param_correction(&planner, "Enable NTP time synchronisation")
+                .await
+                .expect("the first plan is runnable");
+
+            assert_eq!(calls.lock().unwrap().len(), 1);
+        }
+
+        #[tokio::test]
+        async fn correction_request_consumes_a_rate_limit_slot() {
+            let (planner, calls) =
+                planner_with_script([ntp_plan(json!({})), ntp_plan(json!({"enabled": true}))]);
+            let rate_dir = tempfile::tempdir().unwrap();
+            let planner = planner.with_rate_limiter(sysknife_brain::rate_limit::RateLimiter::new(
+                rate_dir.path().join("rate.log"),
+                1,
+            ));
+
+            let error =
+                plan_intent_with_param_correction(&planner, "Enable NTP time synchronisation")
+                    .await
+                    .expect_err("the correction is a separately limited request");
+
+            assert!(error.to_string().contains("rate limit exceeded"));
+            assert_eq!(calls.lock().unwrap().len(), 1);
+        }
+
+        #[tokio::test]
+        async fn correction_call_records_and_replays_with_its_own_cassette_key() {
+            let dir = tempfile::tempdir().unwrap();
+            let cassette = dir.path().join("plans.json");
+            let (recording, record_calls) = planner_with_cassette(
+                &cassette,
+                CassetteMode::Record,
+                [ntp_plan(json!({})), ntp_plan(json!({"enabled": true}))],
+            );
+            plan_intent_with_param_correction(&recording, "Enable NTP time synchronisation")
+                .await
+                .expect("recorded correction should succeed");
+            assert_eq!(record_calls.lock().unwrap().len(), 2);
+            drop(recording);
+
+            let (replaying, replay_calls) =
+                planner_with_cassette(&cassette, CassetteMode::Replay, []);
+            plan_intent_with_param_correction(&replaying, "Enable NTP time synchronisation")
+                .await
+                .expect("replay must include the correction call");
+            assert!(
+                replay_calls.lock().unwrap().is_empty(),
+                "replay should serve both calls from the cassette"
+            );
+        }
     }
 
     #[test]

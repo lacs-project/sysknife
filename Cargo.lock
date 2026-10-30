@@ -4816,6 +4816,7 @@ name = "sysknife-cli"
 version = "0.29.0"
 dependencies = [
  "assert_cmd",
+ "async-trait",
  "chrono",
  "clap",
  "clap_complete",
