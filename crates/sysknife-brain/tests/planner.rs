@@ -896,6 +896,68 @@ async fn a_refused_plan_writes_no_preference() {
 }
 
 #[tokio::test]
+async fn same_turn_preference_calls_after_proposed_plan_are_retained() {
+    let dir = tempfile::tempdir().unwrap();
+    let prefs_path = dir.path().join("prefs.md");
+    let original = "- prefer emacs for editing\n";
+    std::fs::write(&prefs_path, original).unwrap();
+
+    let mut completion = propose_plan(
+        "Check disk usage",
+        &[("GetDiskUsage", "Inspect available space", "low")],
+    )
+    .unwrap();
+    completion.content.extend([
+        ContentBlock::ToolUse {
+            id: "tu_rem".into(),
+            call_id: None,
+            name: "remember".into(),
+            input: serde_json::json!({"fact": "prefer vim over nano"}),
+        },
+        ContentBlock::ToolUse {
+            id: "tu_fgt".into(),
+            call_id: None,
+            name: "forget".into(),
+            input: serde_json::json!({"fact": "prefer emacs for editing"}),
+        },
+    ]);
+
+    let planner = LlmPlanner::new(
+        Box::new(MockProvider::new([Ok(completion)])),
+        Box::new(MockStateClient::default()),
+        5,
+    )
+    .with_prefs_path(prefs_path.clone());
+
+    let plan = planner
+        .plan_intent("check disk and remember that I prefer vim over nano")
+        .await
+        .unwrap();
+
+    let [remember, forget] = plan.pref_changes() else {
+        panic!(
+            "expected both pending changes, got {:?}",
+            plan.pref_changes()
+        );
+    };
+    assert_eq!(remember.kind(), PrefChangeKind::Remember);
+    assert_eq!(remember.fact(), "prefer vim over nano");
+    assert_eq!(forget.kind(), PrefChangeKind::Forget);
+    assert_eq!(forget.fact(), "prefer emacs for editing");
+    assert_eq!(
+        std::fs::read_to_string(&prefs_path).unwrap(),
+        original,
+        "planning changed preferences before operator confirmation"
+    );
+
+    assert!(remember.apply().await.unwrap());
+    assert!(forget.apply().await.unwrap());
+    let content = std::fs::read_to_string(&prefs_path).unwrap();
+    assert!(content.contains("prefer vim over nano"));
+    assert!(!content.contains("prefer emacs for editing"));
+}
+
+#[tokio::test]
 async fn forget_tool_removes_preference() {
     let dir = tempfile::tempdir().unwrap();
     let prefs_path = dir.path().join("prefs.md");
