@@ -1185,8 +1185,18 @@ impl LlmPlanner {
 
                     let mut tool_results: Vec<ToolResultBlock> =
                         Vec::with_capacity(tool_calls.len());
+                    let mut proposed_plan = None;
 
                     for (id, call_id, name, input) in &tool_calls {
+                        // A valid plan ends the model turn. Continue only for
+                        // same-turn preference calls so they travel with the
+                        // plan; ignore any other calls that followed it.
+                        if proposed_plan.is_some()
+                            && !matches!(name.as_str(), "remember" | "forget")
+                        {
+                            continue;
+                        }
+
                         // Emit a progress event before dispatching each tool.
                         self.emit(progress_event(name, &tools));
 
@@ -1208,14 +1218,14 @@ impl LlmPlanner {
                                 );
                             }
                             "propose_plan" => {
-                                // Parse and validate before returning.
+                                // Parse and validate before accepting the plan.
                                 // If validation fails, log the rejection (safety fence
                                 // activations are security-relevant events) and feed the
                                 // error back as a tool result so the LLM can self-correct
                                 // within the remaining turns. Symmetric with the
                                 // unknown-tool retry path below.
                                 match parse_proposed_plan(intent, input) {
-                                    Ok(plan) => return Ok(plan.with_pref_changes(pref_changes)),
+                                    Ok(plan) => proposed_plan = Some(plan),
                                     Err(e) => {
                                         let reason = e.to_string();
                                         let raw_plan = input.to_string();
@@ -1439,6 +1449,10 @@ impl LlmPlanner {
                                 }
                             }
                         }
+                    }
+
+                    if let Some(plan) = proposed_plan {
+                        return Ok(plan.with_pref_changes(pref_changes));
                     }
 
                     // Local feedback/preferences can reflect free text too.
