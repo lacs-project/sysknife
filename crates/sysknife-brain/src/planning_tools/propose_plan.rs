@@ -1239,16 +1239,20 @@ pub fn parse_proposed_plan(intent: &str, input: &serde_json::Value) -> Result<Pl
 
         steps.push(PlanStep::new(
             action_name,
-            step_summary.to_string(),
+            super::normalise_operator_text(step_summary),
             risk_level,
             params,
         )?);
     }
 
+    // The same normalisation every other model-authored string gets: summary,
+    // explanation and step summaries are what the operator reads before
+    // approving a step, on the terminal and in the CLI's `--json` output alike
+    // (#474).
     Ok(Plan::new(
         intent.to_string(),
-        summary.to_string(),
-        explanation.to_string(),
+        super::normalise_operator_text(summary),
+        super::normalise_operator_text(explanation),
         steps,
     )?)
 }
@@ -2047,5 +2051,77 @@ mod tests {
                 offered.len()
             );
         }
+    }
+
+    // ── Model-authored text is normalised before it reaches the operator ─────
+    //
+    // The plan summary the operator approves, the explanation beside it and
+    // each step summary travel to the terminal *and* the `--json` output. The
+    // terminal renderer applies its own scrub (#180), but `serde_json` only
+    // escapes control bytes — bidi overrides and zero-width characters pass
+    // through to scripts and MCP consumers. The parse side therefore scrubs,
+    // the way `parse_refusal` does (#474).
+
+    #[test]
+    fn plan_and_step_text_is_normalised_at_parse() {
+        let input = serde_json::json!({
+            "summary": "List services \u{1b}[8m and reboot \u{1b}[0m the host",
+            "explanation": "shows the list\u{202e} first",
+            "steps": [{
+                "action_name": "ListServices",
+                "summary": "read\u{200d}state\u{202e}drowssap",
+                "risk_level": "low",
+                "params": {}
+            }]
+        });
+        let plan = parse_proposed_plan("list services", &input).unwrap();
+        for (field, text) in [
+            ("summary", plan.summary()),
+            ("explanation", plan.explanation()),
+            ("step summary", plan.steps()[0].summary()),
+        ] {
+            assert!(
+                !text.contains('\u{1b}'),
+                "{field}: ANSI escape survived: {text:?}"
+            );
+            assert!(
+                !text.contains('\u{202e}'),
+                "{field}: bidi override survived: {text:?}"
+            );
+            assert!(
+                !text.contains('\u{200d}'),
+                "{field}: zero-width joiner survived: {text:?}"
+            );
+        }
+        // Nothing stays hidden: the words behind the conceal sequence are part
+        // of the text the operator reads. A summary cannot render as one
+        // request while carrying another.
+        assert_eq!(plan.summary(), "List services  and reboot  the host");
+        assert_eq!(plan.explanation(), "shows the list first");
+        assert_eq!(plan.steps()[0].summary(), "readstatedrowssap");
+    }
+
+    #[test]
+    fn ordinary_plan_text_survives_parse_unchanged() {
+        let input = serde_json::json!({
+            "summary": "Layer vim into the system image.",
+            "explanation": "rpm-ostree layers vim; a reboot applies it.",
+            "steps": [{
+                "action_name": "AddLayeredPackage",
+                "summary": "Layer vim via rpm-ostree install.",
+                "risk_level": "high",
+                "params": { "packages": ["vim"] }
+            }]
+        });
+        let plan = parse_proposed_plan("install vim", &input).unwrap();
+        assert_eq!(plan.summary(), "Layer vim into the system image.");
+        assert_eq!(
+            plan.explanation(),
+            "rpm-ostree layers vim; a reboot applies it."
+        );
+        assert_eq!(
+            plan.steps()[0].summary(),
+            "Layer vim via rpm-ostree install."
+        );
     }
 }
