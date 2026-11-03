@@ -83,7 +83,7 @@ function findBinary(name) {
  *                     instead.  The prompt is still printed to stdout so
  *                     log output remains comprehensible.
  */
-function ask(rl, lineQueue, question, defaultVal) {
+function ask(rl, lineQueue, question, defaultVal, { secret = false } = {}) {
   if (NO_PROMPTS) {
     if (defaultVal === undefined) {
       return Promise.reject(new Error(`--no-prompts requires a default for: ${question}`));
@@ -92,26 +92,104 @@ function ask(rl, lineQueue, question, defaultVal) {
   }
 
   return new Promise((resolve) => {
-    const suffix = defaultVal ? ` ${D}[${defaultVal}]${X}` : '';
+    const suffix = defaultVal && !secret ? ` ${D}[${defaultVal}]${X}` : '';
     const prompt  = `  ${question}${suffix}: `;
 
     if (process.stdin.isTTY) {
-      rl.question(prompt, (answer) => {
-        resolve(answer.trim() || defaultVal || '');
-      });
+      if (!secret) {
+        rl.question(prompt, (answer) => {
+          resolve(answer.trim() || defaultVal || '');
+        });
+        return;
+      }
+
+      // Echo-off read for API keys. Pause readline so it does not also consume input.
+      rl.pause();
+      process.stdout.write(prompt);
+      const stdin = process.stdin;
+      stdin.setRawMode(true);
+      stdin.resume();
+      stdin.setEncoding('utf8');
+      let buf = '';
+      const onData = (ch) => {
+        if (ch === '\n' || ch === '\r' || ch === '\u0004') {
+          stdin.removeListener('data', onData);
+          stdin.setRawMode(false);
+          process.stdout.write('\n');
+          rl.resume();
+          resolve(buf.trim() || defaultVal || '');
+        } else if (ch === '\u0003') {
+          process.exit(130);
+        } else if (ch === '\u007f' || ch === '\b') {
+          buf = buf.slice(0, -1);
+        } else if (ch === '\u0015') {
+          buf = '';
+        } else {
+          buf += ch;
+        }
+      };
+      stdin.on('data', onData);
     } else {
       process.stdout.write(prompt);
-      if (lineQueue.lines.length > 0) {
-        const answer = lineQueue.lines.shift();
-        process.stdout.write(answer + '\n');
+      const finish = (answer) => {
+        if (!secret) process.stdout.write(answer + '\n');
+        else process.stdout.write('\n');
         resolve(answer.trim() || defaultVal || '');
+      };
+      if (lineQueue.lines.length > 0) {
+        finish(lineQueue.lines.shift());
       } else {
+        lineQueue.secret = secret;
         lineQueue.waiters.push((answer) => {
-          resolve(answer.trim() || defaultVal || '');
+          lineQueue.secret = false;
+          finish(answer);
         });
       }
     }
   });
+}
+
+function isInsideGitWorkTree(cwd = process.cwd()) {
+  try {
+    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** True when `git check-ignore` reports the path as ignored (exit 0). */
+function isGitIgnored(relPath, cwd = process.cwd()) {
+  try {
+    execFileSync('git', ['check-ignore', '-q', '--', relPath], {
+      cwd,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Append a .gitignore entry when `git check-ignore` says the path is not ignored.
+ * Returns true when an entry was appended.
+ */
+function ensureGitignored(relPath, cwd = process.cwd()) {
+  if (!isInsideGitWorkTree(cwd)) return false;
+  if (isGitIgnored(relPath, cwd)) return false;
+
+  const gitignorePath = path.join(cwd, '.gitignore');
+  let existing = '';
+  if (fs.existsSync(gitignorePath)) {
+    existing = fs.readFileSync(gitignorePath, 'utf8');
+  }
+  const prefix = existing.length === 0 || existing.endsWith('\n') ? '' : '\n';
+  fs.appendFileSync(gitignorePath, `${prefix}${relPath}\n`);
+  return true;
 }
 
 async function askIntegration(rl, lineQueue) {
@@ -570,7 +648,7 @@ async function main() {
     rl.on('line', (line) => {
       if (lineQueue.waiters.length > 0) {
         const waiter = lineQueue.waiters.shift();
-        process.stdout.write(line + '\n');
+        // ask() writes the echo (or a blank line for secrets); do not double-print here.
         waiter(line);
       } else {
         lineQueue.lines.push(line);
@@ -628,7 +706,7 @@ async function main() {
       console.log();
       console.log(`  ${Y}Note:${X} The key will be stored in plain text in the generated config files.`);
       console.log(`  Leave blank to set ${envVar} in your shell profile instead.`);
-      apiKey = await ask(rl, lineQueue, envVar, '');
+      apiKey = await ask(rl, lineQueue, envVar, '', { secret: true });
     }
   }
 
@@ -872,22 +950,45 @@ async function main() {
     }
   }
 
-  // ── Gitignore advice ─────────────────────────────────────────────────────
+  // ── Gitignore: ask git, do not substring-match .gitignore ────────────────
+  //
+  // A comment or negation that merely mentions `.mcp.json` used to suppress the
+  // warning while leaving the file tracked (#562). When a key is embedded,
+  // append missing ignore entries. Otherwise advise with check-ignore.
 
-  const gitignore = fs.existsSync('.gitignore')
-    ? fs.readFileSync('.gitignore', 'utf8')
-    : '';
+  const keyEmbedded = Boolean(envVar && apiKey);
+  const secretPaths = [];
+  if (doClaude) secretPaths.push('.mcp.json');
+  if (doCursor) secretPaths.push('.cursor/mcp.json');
+  const advicePaths = [];
+  if (doClaude) advicePaths.push('.claude/*.local.md');
 
-  const noMcpEntry     = doClaude && !gitignore.includes('.mcp.json');
-  const noHookEntry    = doClaude && !gitignore.includes('*.local.md');
-  const noCursorEntry  = doCursor && !gitignore.includes('.cursor/mcp.json');
+  if (isInsideGitWorkTree()) {
+    const missingSecrets = secretPaths.filter((entry) => !isGitIgnored(entry));
+    const missingAdvice = advicePaths.filter((entry) => {
+      const probe = entry.replace(
+        '*.local.md',
+        'hookify.require-sysknife-approval.local.md',
+      );
+      return !isGitIgnored(probe);
+    });
 
-  if (noMcpEntry || noHookEntry || noCursorEntry) {
-    console.log();
-    warn('Consider adding these to .gitignore to avoid committing secrets:');
-    if (noMcpEntry)    step('.mcp.json');
-    if (noHookEntry)   step('.claude/*.local.md');
-    if (noCursorEntry) step('.cursor/mcp.json');
+    if (keyEmbedded && missingSecrets.length > 0) {
+      console.log();
+      for (const entry of missingSecrets) {
+        if (ensureGitignored(entry)) {
+          ok(`Appended ${entry} to .gitignore (API key is embedded in config)`);
+        }
+      }
+    } else if (!keyEmbedded && (missingSecrets.length > 0 || missingAdvice.length > 0)) {
+      console.log();
+      warn('Consider adding these to .gitignore to avoid committing secrets:');
+      for (const entry of [...missingSecrets, ...missingAdvice]) step(entry);
+    } else if (keyEmbedded && missingAdvice.length > 0) {
+      console.log();
+      warn('Consider adding these to .gitignore to avoid committing secrets:');
+      for (const entry of missingAdvice) step(entry);
+    }
   }
 
   // ── Daemon service install ────────────────────────────────────────────────
