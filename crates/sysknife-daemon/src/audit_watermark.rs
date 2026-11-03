@@ -20,7 +20,9 @@
 //! ## Implementation
 //!
 //! Watermarks are emitted via `systemd-cat(1)`. This is a one-shot subprocess
-//! per audit entry (~1 µs overhead). `systemd-cat` is part of the same
+//! per audit entry, with a two-second deadline for its exit. PostgreSQL runs
+//! the blocking emission on Tokio's blocking pool; SQLite already emits from
+//! its blocking store worker. `systemd-cat` is part of the same
 //! `systemd` package as journald — its presence is guaranteed on any host that
 //! runs the daemon. No new Cargo dependency is required.
 //!
@@ -32,6 +34,9 @@
 //! notified without log spam.
 
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+const SYSTEMD_CAT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Syslog identifier for all watermark journal entries.
 ///
@@ -56,6 +61,22 @@ static WARNED_JOURNALD_UNAVAILABLE: OnceLock<()> = OnceLock::new();
 /// `WatermarkSink` instead of spawning a subprocess.
 pub fn emit_chain_tip_watermark(seq: u64, chain_hash_hex: &str) {
     emit_watermark_impl(seq, chain_hash_hex);
+}
+
+/// Emit after an async store commit without parking a Tokio runtime worker.
+/// A failed blocking task must not turn an already-committed write into an error.
+pub(crate) async fn emit_chain_tip_watermark_async(seq: u64, chain_hash_hex: String) {
+    if let Err(error) = tokio::task::spawn_blocking(move || {
+        emit_chain_tip_watermark(seq, &chain_hash_hex);
+    })
+    .await
+    {
+        WARNED_JOURNALD_UNAVAILABLE.get_or_init(|| {
+            eprintln!(
+                "sysknife-audit-tip: watermark task failed: {error}; audit watermark skipped"
+            );
+        });
+    }
 }
 
 /// Production implementation: shell out to `systemd-cat`.
@@ -95,8 +116,9 @@ fn emit_watermark_impl(seq: u64, hash_hex: &str) {
 /// spec forbids adding new Cargo dependencies. `systemd-cat` is part of the
 /// same `systemd` package as journald itself — its presence is guaranteed on
 /// any host that runs the daemon (the daemon's `.service` unit explicitly
-/// `Requires=journald.service`). The subprocess overhead is ~1 µs, which is
-/// negligible compared with the SQLite write that precedes it.
+/// `Requires=journald.service`). Spawning a process and contacting journald
+/// have variable cost. After two seconds we kill and reap the child instead of
+/// waiting indefinitely. Async callers must use the blocking-pool wrapper.
 fn emit_via_systemd_cat(seq: u64, hash_hex: &str) {
     use std::io::Write as _;
 
@@ -109,6 +131,7 @@ fn emit_via_systemd_cat(seq: u64, hash_hex: &str) {
         .stderr(std::process::Stdio::null())
         .spawn()
         .and_then(|mut child| {
+            let deadline = Instant::now() + SYSTEMD_CAT_TIMEOUT;
             // The write result is captured rather than propagated with `?`,
             // because `Child::drop` does not reap: an early return here would
             // leak a zombie on every audit record. This runs on every preview
@@ -120,7 +143,20 @@ fn emit_via_systemd_cat(seq: u64, hash_hex: &str) {
                 // Dropping the handle signals EOF before we wait.
                 None => Ok(()),
             };
-            let status = child.wait()?;
+            let status = loop {
+                if let Some(status) = child.try_wait()? {
+                    break status;
+                }
+                if Instant::now() >= deadline {
+                    child.kill()?;
+                    child.wait()?;
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "systemd-cat timed out after 2 seconds; child killed and reaped",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
             write_result.map(|()| status)
         });
 
@@ -145,8 +181,8 @@ fn emit_via_systemd_cat(seq: u64, hash_hex: &str) {
         Err(e) => {
             WARNED_JOURNALD_UNAVAILABLE.get_or_init(|| {
                 eprintln!(
-                    "sysknife-audit-tip: failed to spawn systemd-cat: {e}; \
-                     audit watermarks will not be written to journald"
+                    "sysknife-audit-tip: failed to emit via systemd-cat: {e}; \
+                     audit watermark skipped"
                 );
             });
         }
@@ -238,5 +274,153 @@ mod tests {
         let second = take_watermarks(&sink);
         assert_eq!(first.len(), 1);
         assert!(second.is_empty());
+    }
+
+    #[cfg(unix)]
+    mod subprocess {
+        use super::*;
+        use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        // Run each case in its own process: changing PATH in the test runner
+        // would race unrelated tests and the process-wide watermark sink.
+        fn run_with_stub(case: &str, script: &str) -> Option<(String, String)> {
+            if std::env::var("SYSKNIFE_WATERMARK_TEST").as_deref() == Ok(case) {
+                return None;
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let stub = dir.path().join("systemd-cat");
+            std::fs::write(&stub, format!("#!/bin/sh\n{script}\n")).unwrap();
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let stderr_path = dir.path().join("stderr");
+            let message_path = dir.path().join("message");
+            let mut paths = vec![dir.path().to_path_buf()];
+            paths.extend(std::env::split_paths(
+                &std::env::var_os("PATH").unwrap_or_default(),
+            ));
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    &format!("audit_watermark::tests::subprocess::{case}"),
+                    "--nocapture",
+                ])
+                .env("SYSKNIFE_WATERMARK_TEST", case)
+                .env("PATH", std::env::join_paths(paths).unwrap())
+                .env("WATERMARK_MESSAGE_FILE", &message_path)
+                .env("WATERMARK_PID_FILE", dir.path().join("pid"))
+                .stdout(Stdio::null())
+                .stderr(std::fs::File::create(&stderr_path).unwrap())
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(6);
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break Some(status);
+                }
+                if Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            // Clean up the isolated runner and its stub even if the production
+            // timeout is removed. The test must fail, never hang for 30 seconds.
+            // SAFETY: process_group(0) gave this child its own group; no process
+            // in the parent test runner's group can receive this signal.
+            unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+            child.wait().unwrap();
+            let stderr = std::fs::read_to_string(stderr_path).unwrap();
+            assert!(
+                status.is_some(),
+                "watermark exceeded the independent 6s watchdog: {stderr}"
+            );
+            assert!(
+                status.unwrap().success(),
+                "watermark subprocess failed: {stderr}"
+            );
+            Some((
+                stderr,
+                std::fs::read_to_string(message_path).unwrap_or_default(),
+            ))
+        }
+
+        #[test]
+        fn stalled_child_is_killed_and_reaped() {
+            if let Some((stderr, _)) = run_with_stub(
+                "stalled_child_is_killed_and_reaped",
+                "printf '%s' \"$$\" > \"$WATERMARK_PID_FILE\"\nexec sleep 30",
+            ) {
+                assert!(stderr.contains("timed out"), "{stderr}");
+                return;
+            }
+            let started = Instant::now();
+            emit_via_systemd_cat(7, &"ab".repeat(64));
+            assert!(started.elapsed() < Duration::from_secs(5));
+            let pid: i32 = std::fs::read_to_string(std::env::var_os("WATERMARK_PID_FILE").unwrap())
+                .unwrap()
+                .parse()
+                .unwrap();
+            // SAFETY: signal 0 only probes whether the recorded child exists.
+            assert_eq!(
+                unsafe { libc::kill(pid, 0) },
+                -1,
+                "stub is still alive or unreaped"
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+        }
+
+        #[test]
+        fn successful_child_receives_watermark_and_eof() {
+            if let Some((stderr, message)) = run_with_stub(
+                "successful_child_receives_watermark_and_eof",
+                "[ \"$*\" = '-t sysknife-audit-tip -p info' ] || exit 2\ncat > \"$WATERMARK_MESSAGE_FILE\"",
+            ) {
+                assert_eq!(message, format!("seq=7 chain_hash={}", "ab".repeat(64)));
+                assert!(!stderr.contains("sysknife-audit-tip:"), "{stderr}");
+                return;
+            }
+            emit_via_systemd_cat(7, &"ab".repeat(64));
+        }
+
+        #[test]
+        fn child_failure_is_nonfatal_and_warns_once() {
+            if let Some((stderr, _)) = run_with_stub(
+                "child_failure_is_nonfatal_and_warns_once",
+                "cat > /dev/null\nexit 23",
+            ) {
+                assert_eq!(
+                    stderr.matches("systemd-cat exited with").count(),
+                    1,
+                    "{stderr}"
+                );
+                return;
+            }
+            emit_via_systemd_cat(7, &"ab".repeat(64));
+            emit_via_systemd_cat(8, &"cd".repeat(64));
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn stalled_child_does_not_block_runtime() {
+            if let Some((stderr, _)) =
+                run_with_stub("stalled_child_does_not_block_runtime", "exec sleep 30")
+            {
+                assert!(stderr.contains("timed out"), "{stderr}");
+                return;
+            }
+            let started = Instant::now();
+            let watermark = emit_chain_tip_watermark_async(7, "ab".repeat(64));
+            let heartbeat = async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                assert!(
+                    started.elapsed() < Duration::from_secs(1),
+                    "a stalled watermark blocked the single-threaded executor"
+                );
+            };
+            tokio::join!(watermark, heartbeat);
+        }
     }
 }
