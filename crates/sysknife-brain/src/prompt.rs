@@ -888,7 +888,7 @@ const DEBIAN_SELECTION_RULES: &str = r#"
 - `AptInstall` installs a single named package — MEDIUM (reversible with AptRemove).
 - `AptUpdate` refreshes the apt cache only, no packages changed — LOW.
 - `AptUpgrade` upgrades every installed package — HIGH (large blast radius).
-- `AptAutoremove` removes orphaned dependency packages only — LOW.
+- `AptAutoremove` removes orphaned dependency packages — MEDIUM: apt chooses the removal set at run time, which can include old kernels.
 - `AptListUpgradable` lists packages with available upgrades — LOW, read-only. Use for "what updates are pending?" or "are there pending updates?" on Ubuntu/Debian.
 - `AptHistoryList` reads the apt transaction log — LOW, read-only. Use for "what was recently installed/removed?", "show apt history".
 - `AptHold` / `AptUnhold` control whether apt is ALLOWED to touch a package, which is a different question from what to install. A hold "will prevent the package from being automatically installed, upgraded or removed" (apt-mark(8)), so read the sentence for permission, not for the verb:
@@ -929,7 +929,7 @@ const DEBIAN_COUNTERINTUITIVE: &str = r#"
 ## Debian counterintuitive risk classifications — these override your intuition
 
 - `AptInstall` is MEDIUM, not HIGH — single named package, reversible with `AptRemove`.
-- `AptAutoremove` is LOW, not HIGH — only removes orphaned packages that nothing depends on.
+- `AptAutoremove` is MEDIUM — apt chooses the removal set at run time, which can include old kernels.
 - `AptUpdate` is LOW — only refreshes the local package cache; no packages are installed or changed.
 - `AptListUpgradable` is LOW — read-only query that lists available upgrades without applying them.
 - `AptHistoryList` is LOW — read-only audit of the apt transaction log.
