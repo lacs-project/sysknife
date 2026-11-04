@@ -153,17 +153,44 @@ wait_for_tcp() {
 # Wait until SSH key auth succeeds (not just TCP open — sshd may still be
 # starting up).
 wait_for_ssh_auth() {
-    local port="$1" max_wait="${2:-240}" waited=0
+    local port="$1" max_wait="${2:-240}" waited=0 ssh_error
     log "Waiting for SSH key auth on port $port (up to ${max_wait}s)..."
-    while ! ssh "${SSH_OPTIONS[@]}" -o ConnectTimeout=5 -p "$port" \
-            "${VM_USER}@127.0.0.1" true 2>/dev/null; do
+    while ! ssh_error="$(ssh "${SSH_OPTIONS[@]}" -o ConnectTimeout=5 -p "$port" \
+            "${VM_USER}@127.0.0.1" true 2>&1 >/dev/null)"; do
         if [ "$waited" -ge "$max_wait" ]; then
+            if [[ "${ssh_error,,}" == *"password has expired"* ]]; then
+                die "SSH login for '$VM_USER' failed because its password has expired (login user's password aging). Stop the VM, then recover with UBUNTU_RELEASE=$UBUNTU_RELEASE tests/e2e/ubuntu-vm.sh destroy, download, install and provision; destroy removes the overlay."
+            fi
             die "SSH key auth did not succeed on port $port within ${max_wait}s."
         fi
         sleep 5
         waited=$((waited + 5))
     done
     log "SSH key auth OK on port $port."
+}
+
+# Keep test actions' account-aging changes out of the next stopped snapshot.
+# Select only aging fields: never retain or log the shadow password field.
+reset_login_password_aging() {
+    local aging last_change max_days account_expiry quoted_user
+    printf -v quoted_user '%q' "$VM_USER"
+    # shellcheck disable=SC2029 # The username is shell-quoted above.
+    aging="$(ssh "${SSH_OPTIONS[@]}" -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
+        "sudo getent shadow $quoted_user" | cut -d: -f3,5,8)" \
+        || die "Could not read password aging for login user '$VM_USER'; refusing to power off with unchecked aging."
+    if [[ ! "$aging" =~ ^[0-9]*:[0-9]*:(-1|[0-9]*)$ ]]; then
+        die "Invalid password-aging fields for login user '$VM_USER'; refusing to power off."
+    fi
+    IFS=: read -r last_change max_days account_expiry <<< "$aging"
+    if [[ "$last_change" == 0 ]] \
+        || { [[ -n "$max_days" ]] && (( 10#$max_days < 99999 )); } \
+        || [[ -n "$account_expiry" && "$account_expiry" != -1 ]]; then
+        log "WARNING: Resetting login user '$VM_USER' password aging: last_change=${last_change:-unset}, max_days=${max_days:-unset}, account_expiry=${account_expiry:-unset}."
+        # shellcheck disable=SC2029 # UTC date and shell-quoted username are intentional.
+        ssh "${SSH_OPTIONS[@]}" -p "$SSH_PORT" "${VM_USER}@127.0.0.1" \
+            "sudo chage -d $(date -u +%F) -m 0 -M 99999 -I -1 -E -1 $quoted_user" \
+            || die "Could not reset password aging for login user '$VM_USER'; refusing to power off."
+    fi
 }
 
 # Ensure the SSH key exists (generate if missing). Idempotent.
@@ -548,6 +575,7 @@ cmd_stop() {
         return 0
     fi
     log "Requesting clean shutdown..."
+    reset_login_password_aging
     # Capture the SSH exit status instead of swallowing it. Three real
     # errors used to be silently `|| true`'d into nothing: SSH key auth
     # failure, sudo denial, systemctl-poweroff failure. Now they surface.
@@ -623,21 +651,23 @@ cmd_help() {
 # Dispatch
 # ---------------------------------------------------------------------------
 
-cmd="${1:-help}"
-shift || true
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    cmd="${1:-help}"
+    shift || true
 
-case "$cmd" in
-    download)       cmd_download "$@" ;;
-    install)        cmd_install "$@" ;;
-    start)          cmd_start "$@" ;;
-    stop)           cmd_stop "$@" ;;
-    ssh)            cmd_ssh "$@" ;;
-    sync)           cmd_sync "$@" ;;
-    provision)      cmd_provision "$@" ;;
-    run)            cmd_run "$@" ;;
-    snapshot)       cmd_snapshot "$@" ;;
-    restore)        cmd_restore "$@" ;;
-    destroy)        cmd_destroy "$@" ;;
-    help|--help|-h) cmd_help ;;
-    *)              die "unknown command: $cmd. Try: $0 help" ;;
-esac
+    case "$cmd" in
+        download)       cmd_download "$@" ;;
+        install)        cmd_install "$@" ;;
+        start)          cmd_start "$@" ;;
+        stop)           cmd_stop "$@" ;;
+        ssh)            cmd_ssh "$@" ;;
+        sync)           cmd_sync "$@" ;;
+        provision)      cmd_provision "$@" ;;
+        run)            cmd_run "$@" ;;
+        snapshot)       cmd_snapshot "$@" ;;
+        restore)        cmd_restore "$@" ;;
+        destroy)        cmd_destroy "$@" ;;
+        help|--help|-h) cmd_help ;;
+        *)              die "unknown command: $cmd. Try: $0 help" ;;
+    esac
+fi
