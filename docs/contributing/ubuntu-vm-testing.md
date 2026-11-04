@@ -294,6 +294,23 @@ Logs land at `tests/e2e/logs/story-N.log` inside the VM.
 
 ## Troubleshooting
 
+### Login user's password has expired
+
+Account-aging tests can leave the harness login account with a finite password
+lifetime. Once it expires, PAM rejects even SSH key authentication. `start` and
+`install` report this separately from an ordinary SSH timeout.
+
+`stop` checks the login user's shadow aging fields before requesting poweroff.
+It warns and resets a forced password change, finite maximum age, or account
+expiry so these settings do not enter the next stopped snapshot. A failed
+lookup or reset stops shutdown and reports the error. Use a separate test
+account when testing password aging.
+
+For an overlay already locked out, stop its QEMU process, then run `destroy`,
+`download`, `install` and `provision` with the same `UBUNTU_RELEASE` setting.
+`destroy` removes the overlay and its provisioned state; the cached base image
+is kept.
+
 ### `download` says "partial download" and tries to re-download
 
 The background download process may still be writing the `.tmp` file. Wait
