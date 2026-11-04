@@ -24,7 +24,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
 [dependencies]
 sysknife-core = { path = "../sysknife-core", version = "0.30.0" }
 sysknife-types = { path = "../sysknife-types", version = "0.30.0" }
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
