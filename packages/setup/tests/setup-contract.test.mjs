@@ -96,6 +96,21 @@ test('rerunning setup preserves existing hookify guards and reports what it did'
   }
 });
 
+test('a non-EEXIST hookify write error still fails setup', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-setup-enotdir-'));
+  try {
+    fs.writeFileSync(path.join(cwd, '.claude'), 'not a directory\n');
+    const result = runWizard({ cwd });
+    const output = `${result.stdout}${result.stderr}`;
+    assert.match(output, /ENOTDIR/);
+    assert.doesNotMatch(output, /Skipped \.claude/);
+    assert.notEqual(result.status, 0);
+    assert.notEqual(result.status, 3);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('all selected MCP configs are validated before any integration file is written', () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-setup-preflight-'));
   const claudePath = path.join(cwd, '.mcp.json');
