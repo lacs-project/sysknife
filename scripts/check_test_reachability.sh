@@ -31,11 +31,22 @@ except ImportError:
 
 mode = sys.argv[1]
 command = re.compile(r"(?:(sudo(?:[ \t]+-n)?)[ \t]+)?bash[ \t]+(tests/(?:release|e2e)/[A-Za-z0-9_.-]+\.test\.sh)(?:[ \t]+#.*)?[ \t]*")
+
+
+def is_boolean(value, expected):
+    if isinstance(value, str):
+        value = value.strip()
+        if value.startswith("${{") and value.endswith("}}"):
+            value = value[3:-2].strip()
+        return value.lower() == str(expected).lower()
+    return value is expected
+
+
 for path in sys.argv[2:]:
     try:
         with open(path, encoding="utf-8") as stream:
             workflow = yaml.safe_load(stream)
-        for job in (workflow or {}).get("jobs", {}).values():
+        for job_id, job in (workflow or {}).get("jobs", {}).items():
             for step in job.get("steps", []):
                 if not isinstance(step, dict):
                     continue
@@ -43,6 +54,14 @@ for path in sys.argv[2:]:
                 if isinstance(run, str):
                     match = command.fullmatch(run.strip())
                     if match and (mode != "list-privileged" or match.group(1)):
+                        if any(is_boolean(owner.get("if"), False) or
+                               is_boolean(owner.get("continue-on-error"), True)
+                               for owner in (job, step)):
+                            continue
+                        for scope, owner in (("job", job), ("step", step)):
+                            if "if" in owner and not is_boolean(owner["if"], True):
+                                print(f"test-reachability: {path} job '{job_id}' test '{match.group(2)}' "
+                                      f"depends on {scope} if: {owner['if']}", file=sys.stderr)
                         print(match.group(2))
     except (OSError, yaml.YAMLError, AttributeError, TypeError) as error:
         sys.exit(f"test-reachability: cannot read workflow {path}: {error}")
