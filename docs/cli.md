@@ -131,7 +131,13 @@ sysknife doctor
 sysknife --json doctor      # machine-readable
 ```
 
-Exit code `0` on success, non-zero if the daemon is unreachable.
+Exit code `0` when the daemon is reachable and the LLM configuration is
+valid. Exit code `4` when the daemon is unreachable **or** when the
+configuration has a problem (missing provider key, unreadable config).
+
+When the LLM configuration is unreadable, `doctor` still checks the daemon
+and reports the config problem as a warning. The `provider` and `model`
+fields read `"unknown"` and the `--json` output includes a `warnings` array.
 
 Sample output:
 
