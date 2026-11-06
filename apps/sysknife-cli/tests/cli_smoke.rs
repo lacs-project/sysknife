@@ -99,6 +99,40 @@ fn doctor_json_failure_goes_to_stdout_not_stderr() {
 }
 
 #[test]
+fn doctor_missing_provider_key_still_reports_json() {
+    // With the provider set but its key missing, `doctor` used to bail at
+    // BrainConfig::from_env() before ever contacting the daemon — stdout
+    // was empty and `--json` consumers got nothing to parse.
+    // After the fix the daemon is checked first, the config error goes into
+    // a `warnings` array, and provider/model read "unknown".
+    let dir = tempfile::tempdir().unwrap();
+    let out = cli()
+        .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+        .env("SYSKNIFE_LLM_PROVIDER", "anthropic")
+        .env_remove("ANTHROPIC_API_KEY")
+        .args(["--json", "doctor"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&out).expect("stdout must be valid JSON");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["provider"], "unknown");
+    assert_eq!(json["model"], "unknown");
+    let warnings = json["warnings"]
+        .as_array()
+        .expect("warnings must be an array");
+    assert!(
+        warnings.iter().any(|w| {
+            let s = w.as_str().unwrap_or_default();
+            s.contains("brain config") || s.contains("API_KEY")
+        }),
+        "warnings should mention the config error: {warnings:?}",
+    );
+}
+
+#[test]
 fn history_rejects_unparseable_since_timestamp() {
     let dir = tempfile::tempdir().unwrap();
     cli()
