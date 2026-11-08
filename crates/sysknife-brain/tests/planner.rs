@@ -958,6 +958,25 @@ async fn same_turn_preference_calls_after_proposed_plan_are_retained() {
 }
 
 #[tokio::test]
+async fn refusal_after_a_valid_plan_does_not_discard_the_plan() {
+    let mut completion = propose_plan(
+        "Check disk usage",
+        &[("GetDiskUsage", "Inspect available space", "low")],
+    )
+    .unwrap();
+    completion
+        .content
+        .extend(refuse("No action can do that.", None).unwrap().content);
+
+    let planner = make_planner(MockProvider::new([Ok(completion)]));
+    let plan = planner.plan_intent("check disk usage").await.unwrap();
+
+    assert_eq!(plan.summary(), "Check disk usage");
+    assert_eq!(plan.steps().len(), 1);
+    assert_eq!(plan.steps()[0].action_name(), "GetDiskUsage");
+}
+
+#[tokio::test]
 async fn forget_tool_removes_preference() {
     let dir = tempfile::tempdir().unwrap();
     let prefs_path = dir.path().join("prefs.md");
