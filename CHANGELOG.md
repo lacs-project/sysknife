@@ -12,6 +12,8 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-11-02
+
 ### Changed
 
 - **A release tag must point at a commit on `main` whose CI passed.**
@@ -34,6 +36,32 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   `swapoff`'s error (closes
   [#666](https://github.com/lacs-project/sysknife/issues/666)). Thanks to
   [@dannyward630](https://github.com/dannyward630).
+- **The daemon refuses an optional parameter of the wrong type.**
+  ([#701](https://github.com/lacs-project/sysknife/pull/701)) Optional
+  numbers, booleans, strings and string arrays used to be read with
+  `.as_u64()` and friends, so a value of the wrong type was skipped as if
+  absent: `SetPasswordAging {"user":"bob","max_days":"90","warn_days":7}` ran
+  without the 90-day limit the operator approved and reported success. The
+  executor now returns `InvalidParam` for a present value of the wrong type,
+  and still treats an explicit `null` as absent (closes
+  [#668](https://github.com/lacs-project/sysknife/issues/668)). Thanks to
+  [@dannyward630](https://github.com/dannyward630).
+- **The Ubuntu prompt calls `AptAutoremove` medium risk, as the daemon does.**
+  ([#695](https://github.com/lacs-project/sysknife/pull/695)) Two lines of
+  prose taught the model LOW while the prompt's own risk table and the
+  daemon's `ActionSpec` said MEDIUM. `prompt_risk_labels.rs` now checks risk
+  claims in the prose as well as the tables (closes
+  [#649](https://github.com/lacs-project/sysknife/issues/649)). Thanks to
+  [@jabrailkhalil](https://github.com/jabrailkhalil).
+- **A plan the daemon cannot run gets one correction turn.**
+  ([#742](https://github.com/lacs-project/sysknife/pull/742)) When a proposed
+  plan fails the daemon's own parameter validation, for example `SetNtp` with
+  `{}` instead of `{"enabled":true}`, the CLI asks the model once more with the
+  daemon's exact error, then validates the new plan the same way and fails
+  closed if it is still unrunnable. The correction is a separate request: it
+  takes its own rate-limit slot and its own cassette key (closes
+  [#737](https://github.com/lacs-project/sysknife/issues/737)). Thanks to
+  [@inmassat](https://github.com/inmassat).
 
 ## [0.29.0] — 2026-10-29
 

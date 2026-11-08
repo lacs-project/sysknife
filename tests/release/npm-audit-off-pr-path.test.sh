@@ -67,8 +67,13 @@ def triggers(workflow):
     return set()
 
 
-def is_true(value):
-    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
+def is_boolean(value, expected):
+    if isinstance(value, str):
+        value = value.strip()
+        if value.startswith("${{") and value.endswith("}}"):
+            value = value[3:-2].strip()
+        return value.lower() == str(expected).lower()
+    return value is expected
 
 
 for path in paths:
@@ -98,7 +103,14 @@ for path in paths:
                 continue
             invocations += 1
             label = f"{name} job '{job_id}' step {index} ('{step.get('name', 'unnamed')}')"
-            enforced = not (is_true(step.get("continue-on-error")) or is_true(job.get("continue-on-error")))
+            enabled = not any(is_boolean(owner.get("if"), False) for owner in (job, step))
+            enforced = enabled and not any(is_boolean(owner.get("continue-on-error"), True)
+                                           for owner in (job, step))
+            if not enforced:
+                print(f"npm-audit guard: {label} is disabled or non-blocking", file=sys.stderr)
+            for scope, owner in (("job", job), ("step", step)):
+                if enabled and "if" in owner and not is_boolean(owner["if"], True):
+                    print(f"npm-audit guard: {label} depends on {scope} if: {owner['if']}", file=sys.stderr)
             if on_pr and enforced:
                 failures.append(
                     f"{label} enforces npm audit on the pull-request path; a registry outage fails every PR (#367)"
@@ -199,6 +211,21 @@ add_frontend_step '      - name: Audit production dependencies
 '
 check_workflows "$fixture" >/dev/null
 
+# Disabled PR steps and jobs leave the separate scheduled audit eligible.
+reset_fixture
+add_frontend_step '      - name: Disabled audit
+        if: false
+        run: npm audit --omit=dev --audit-level=high
+'
+check_workflows "$fixture" >/dev/null
+
+reset_fixture
+add_frontend_step '      - name: Disabled audit job
+        run: npm audit --omit=dev --audit-level=high
+'
+sed -i '/^  frontend:$/a\    if: ${{ false }}' "$fixture/.github/workflows/ci.yml"
+check_workflows "$fixture" >/dev/null
+
 reset_fixture
 rm "$fixture/.github/workflows/npm-audit.yml"
 expect_failure "scheduled audit deleted" "no npm audit found in any workflow"
@@ -217,6 +244,45 @@ sed -i 's/^    runs-on: ubuntu-latest$/    runs-on: ubuntu-latest\n    continue-
     "$fixture/.github/workflows/npm-audit.yml"
 expect_failure "scheduled audit made non-blocking" "no scheduled, pull-request-free workflow enforces npm audit"
 
+set_audit_condition() {
+    python3 - "$fixture/.github/workflows/npm-audit.yml" "$1" "$2" <<'PYTHON'
+import sys
+from pathlib import Path
+
+import yaml
+
+path, scope, setting = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+job = doc["jobs"]["npm-audit"]
+step = next(step for step in job["steps"] if "npm audit" in step.get("run", ""))
+key, value = setting.split(": ", 1)
+target = job if scope == "job" else step
+target[key] = yaml.safe_load(value)
+path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+PYTHON
+}
+
+for scope in step job; do
+    for setting in 'if: false' 'if: ${{ false }}' 'if: "false"' \
+        'continue-on-error: true' 'continue-on-error: ${{ true }}' 'continue-on-error: "true"'; do
+        reset_fixture
+        set_audit_condition "$scope" "$setting"
+        expect_failure "scheduled audit $scope $setting" "npm-audit.yml job 'npm-audit'"
+    done
+
+    for setting in 'if: true' 'if: ${{ true }}' 'continue-on-error: false' 'continue-on-error: ${{ false }}'; do
+        reset_fixture
+        set_audit_condition "$scope" "$setting"
+        check_workflows "$fixture" >/dev/null
+    done
+
+    reset_fixture
+    set_audit_condition "$scope" 'if: success()'
+    output="$(check_workflows "$fixture" 2>&1)"
+    grep -Fq 'success()' <<< "$output"
+    grep -Fq "$scope if" <<< "$output"
+done
+
 reset_fixture
 mkdir -p "$fixture/.github/actions/audit"
 cat > "$fixture/.github/actions/audit/action.yml" <<'EOF'
@@ -229,4 +295,4 @@ runs:
 EOF
 expect_failure "audit hidden in a composite action" "runs npm audit inside a composite action"
 
-printf 'npm-audit guard test: 7 fixtures went red or green as expected.\n'
+printf 'npm-audit guard test: PR-path and scheduled-audit fixtures validated.\n'

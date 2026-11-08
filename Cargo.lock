@@ -126,9 +126,9 @@ dependencies = [
 
 [[package]]
 name = "async-openai"
-version = "0.42.2"
+version = "0.42.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "174e979f1e2ffe94b88d584740c11fd071f6d829c29120b1ba88bcaeb3374063"
+checksum = "04382e9f293268e235ef0ef51a18e7c988e70a52e3a5c893d497c67ec613a9a6"
 dependencies = [
  "async-openai-macros",
  "base64 0.22.1",
@@ -2570,9 +2570,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.38.2"
+version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "cc",
  "pkg-config",
@@ -3893,9 +3893,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.6.0"
+version = "3.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ceb42e9e47443cd83a834dea57b5816d35481417bae72ade5dc5615c59122e26"
+checksum = "f8be15815186873ea063bf005011d16c356804973489e40c39116ae3a2878d1f"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -3940,9 +3940,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.40.2"
+version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3"
+checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
 dependencies = [
  "bitflags 2.11.1",
  "fallible-iterator",
@@ -4790,7 +4790,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-brain"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "async-openai",
  "async-trait",
@@ -4813,9 +4813,10 @@ dependencies = [
 
 [[package]]
 name = "sysknife-cli"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "assert_cmd",
+ "async-trait",
  "chrono",
  "clap",
  "clap_complete",
@@ -4843,7 +4844,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-core"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "serde",
  "tempfile",
@@ -4852,7 +4853,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-daemon"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4882,7 +4883,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-daemon-test"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "serde_json",
  "sysknife-daemon",
@@ -4891,7 +4892,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-proto"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -4900,7 +4901,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-shell"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "async-trait",
  "reqwest 0.12.28",
@@ -4917,7 +4918,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-types"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "prost",
  "serde",
@@ -5834,9 +5835,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.28.0"
+version = "1.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
 dependencies = [
  "getrandom 0.4.2",
  "js-sys",
