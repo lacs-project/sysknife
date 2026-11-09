@@ -2281,6 +2281,27 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     .await
 }
 
+/// The `--json` view of a plan's preference changes.
+///
+/// A fact is model-authored. The terminal view neutralises it with
+/// `operator_safe`; the JSON view needs the same character rules but not the
+/// display caps, because `--json` is read by machines rather than scrollback.
+fn preference_changes_json(plan: &AuthorizedPlan) -> Vec<Value> {
+    plan.pref_changes()
+        .iter()
+        .map(|c| {
+            let fact = crate::operator_text::operator_safe_block_full(c.fact());
+            json!({
+                "kind": match c.kind() {
+                    PrefChangeKind::Remember => "remember",
+                    PrefChangeKind::Forget => "forget",
+                },
+                "fact": fact.text(),
+            })
+        })
+        .collect()
+}
+
 /// Run an authorized plan with the same approval and daemon path used by
 /// `run_intent`. Keeping operator input injectable lets refusal ordering and
 /// per-step consent be exercised without a live LLM or terminal.
@@ -2308,19 +2329,7 @@ where
                 })
             })
             .collect();
-        let preference_changes: Vec<Value> = plan
-            .pref_changes()
-            .iter()
-            .map(|c| {
-                json!({
-                    "kind": match c.kind() {
-                        PrefChangeKind::Remember => "remember",
-                        PrefChangeKind::Forget => "forget",
-                    },
-                    "fact": c.fact(),
-                })
-            })
-            .collect();
+        let preference_changes = preference_changes_json(plan);
         log.println(
             &serde_json::to_string(&json!({
                 "plan": {
@@ -4624,6 +4633,44 @@ mod tests {
             assert!(result.is_ok(), "{result:?}");
             let saved = std::fs::read_to_string(&prefs).unwrap();
             assert!(saved.contains("prefer nala over apt"), "{saved}");
+        }
+
+        /// #757: the JSON view printed the model-authored fact verbatim, so
+        /// bidi overrides, zero-width characters and C1 controls reached a
+        /// machine-readable field the caller may render.
+        #[test]
+        fn plan_json_neutralises_a_hostile_preference_fact() {
+            let dir = tempfile::tempdir().unwrap();
+            let prefs = dir.path().join("prefs.md");
+            let hostile = "prefer \u{202e}apache\u{202c}\u{200b} over nginx\u{009b}31m";
+            let plan = plan_remembering(&prefs, hostile);
+
+            let fact = preference_changes_json(&plan)[0]["fact"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert!(!fact.contains('\u{202e}'), "{fact:?}");
+            assert!(!fact.contains('\u{200b}'), "{fact:?}");
+            assert!(
+                !fact.chars().any(|c| ('\u{80}'..='\u{9f}').contains(&c)),
+                "{fact:?}"
+            );
+            assert!(
+                fact.contains("apache") && fact.contains("nginx"),
+                "{fact:?}"
+            );
+        }
+
+        /// A fact with nothing to neutralise comes back exactly as written.
+        #[test]
+        fn plan_json_keeps_a_benign_preference_fact() {
+            let dir = tempfile::tempdir().unwrap();
+            let prefs = dir.path().join("prefs.md");
+            let plan = plan_remembering(&prefs, "prefer nala over apt");
+
+            let change = &preference_changes_json(&plan)[0];
+            assert_eq!(change["kind"], "remember");
+            assert_eq!(change["fact"], "prefer nala over apt");
         }
 
         /// No operator answers under --dry-run, --yes or --non-interactive, so
