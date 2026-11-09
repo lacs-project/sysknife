@@ -2286,17 +2286,20 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
 /// A fact is model-authored. The terminal view neutralises it with
 /// `operator_safe`; the JSON view needs the same character rules but not the
 /// display caps, because `--json` is read by machines rather than scrollback.
+/// It also flattens the fact, as the terminal view does: keeping line breaks
+/// would carry a line's leading run — and with it the C1 controls and Unicode
+/// line separators `trim_start` treats as indentation — into the JSON string.
 fn preference_changes_json(plan: &AuthorizedPlan) -> Vec<Value> {
     plan.pref_changes()
         .iter()
         .map(|c| {
-            let fact = crate::operator_text::operator_safe_block_full(c.fact());
+            let fact = crate::operator_text::operator_safe_unbounded(c.fact());
             json!({
                 "kind": match c.kind() {
                     PrefChangeKind::Remember => "remember",
                     PrefChangeKind::Forget => "forget",
                 },
-                "fact": fact.text(),
+                "fact": fact,
             })
         })
         .collect()
@@ -4671,6 +4674,63 @@ mod tests {
             let change = &preference_changes_json(&plan)[0];
             assert_eq!(change["kind"], "remember");
             assert_eq!(change["fact"], "prefer nala over apt");
+        }
+
+        /// #757, second round: the tests above call `preference_changes_json`
+        /// directly, so they cannot see what `execute_plan` actually prints.
+        /// This drives the call site with `--json --dry-run`, which prints the
+        /// plan and returns before the daemon is touched, and reads the fact
+        /// back out of the emitted line. Reverting the call site to `c.fact()`,
+        /// or back to `operator_safe_block_full`, makes it fail: the escaped
+        /// bytes appear in the first case, the newline and the U+0085 indent in
+        /// the second.
+        #[tokio::test]
+        async fn execute_plan_json_neutralises_a_hostile_preference_fact() {
+            let dir = tempfile::tempdir().unwrap();
+            let prefs = dir.path().join("prefs.md");
+            let printed = dir.path().join("stdout.log");
+            // The two characters #757 names, a bidi override, and a second line
+            // that starts with the whitespace `trim_start` does not classify as
+            // indentation.
+            let hostile = "prefer \u{1b}[8m\u{202e}apache\u{202c}\u{200d} over nginx\r\n\u{0085}\tsecond line\u{2028}third";
+            let plan = plan_remembering(&prefs, hostile);
+
+            let log = Logger::new(Some(&printed)).unwrap();
+            let mut options = text_opts();
+            options.json = true;
+            options.dry_run = true;
+            execute_plan(&plan, &options, &log, |_| std::future::ready(true))
+                .await
+                .unwrap();
+
+            let emitted = std::fs::read_to_string(&printed).unwrap();
+            let line = emitted
+                .lines()
+                .find(|l| l.starts_with("{\"plan\""))
+                .unwrap_or_else(|| panic!("no plan JSON printed: {emitted:?}"));
+            let value: Value = serde_json::from_str(line).unwrap();
+            let fact = value["plan"]["preference_changes"][0]["fact"]
+                .as_str()
+                .unwrap_or_else(|| panic!("no fact in {line}"));
+
+            assert!(!fact.contains('\u{1b}'), "{fact:?}");
+            assert!(!fact.contains('\u{202e}'), "{fact:?}");
+            assert!(!fact.contains('\u{200d}'), "{fact:?}");
+            assert!(
+                !fact.chars().any(|c| ('\u{80}'..='\u{9f}').contains(&c)),
+                "{fact:?}"
+            );
+            assert!(
+                !fact.chars().any(|c| c.is_whitespace() && c != ' '),
+                "line break or non-space whitespace survived: {fact:?}"
+            );
+            assert!(
+                fact.contains("apache")
+                    && fact.contains("nginx")
+                    && fact.contains("second line")
+                    && fact.contains("third"),
+                "{fact:?}"
+            );
         }
 
         /// No operator answers under --dry-run, --yes or --non-interactive, so
