@@ -12,6 +12,48 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.30.1] — 2026-11-09
+
+### Changed
+
+- **Dependency updates.**
+  ([#759](https://github.com/lacs-project/sysknife/pull/759),
+  [#760](https://github.com/lacs-project/sysknife/pull/760)) `rusqlite` moves
+  from 0.40.2 to 0.41.0, and the minor and patch group brings `async-openai`
+  0.42.3 with updates to `uuid` and `rmcp`.
+
+### Fixed
+
+- **`RemoveMount` keeps the `/etc/fstab` entry when the unmount fails.**
+  ([#763](https://github.com/lacs-project/sysknife/pull/763)) When `umount`
+  failed, for example with `target is busy`, `sysknife-mount-edit` still
+  dropped the entry and reported success while the filesystem stayed mounted.
+  It now stops with `umount`'s error and leaves the entry in place. A target
+  that is already unmounted (exit 32 and a single `not mounted` line, read
+  under `LC_ALL=C`) still has its entry removed (closes
+  [#651](https://github.com/lacs-project/sysknife/issues/651)). Thanks to
+  [@QinXi-ai](https://github.com/QinXi-ai).
+- **Plan text the model writes is normalised when the plan is parsed.**
+  ([#751](https://github.com/lacs-project/sysknife/pull/751))
+  `parse_proposed_plan` stored `summary`, `explanation` and every step summary
+  as the model wrote them, so bidi overrides, zero-width characters and ANSI
+  sequences reached the `--json` output. All three now pass through
+  `normalise_operator_text`, the same normalisation `parse_refusal` already
+  applied (closes [#474](https://github.com/lacs-project/sysknife/issues/474)).
+  Thanks to [@yuee3](https://github.com/yuee3).
+- **The VM test harness no longer lets a login password age into a lockout.**
+  ([#758](https://github.com/lacs-project/sysknife/pull/758)) An aging test
+  could leave the VM login account usable for weeks and then lock out SSH key
+  authentication. The harness now resets risky aging fields before a clean
+  shutdown, recognises the PAM expiry failure and points to overlay recovery.
+  Thanks to [@QinXi-ai](https://github.com/QinXi-ai).
+- **The test-reachability check flags disabled tests.**
+  ([#761](https://github.com/lacs-project/sysknife/pull/761)) A release or E2E
+  test step switched off with `if: false`, `${{ false }}` or
+  `continue-on-error: true` now fails `docs-and-hygiene` (closes
+  [#652](https://github.com/lacs-project/sysknife/issues/652)). Thanks to
+  [@QinXi-ai](https://github.com/QinXi-ai).
+
 ## [0.30.0] — 2026-11-02
 
 ### Changed
