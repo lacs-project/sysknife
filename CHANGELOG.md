@@ -12,6 +12,30 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.30.2] — 2026-11-09
+
+### Changed
+
+- **`rmcp` moves from 3.8.0 to 3.9.0.**
+  ([#768](https://github.com/lacs-project/sysknife/pull/768)) RUSTSEC-2026-0462
+  (unbounded response body buffering in Streamable HTTP clients) failed
+  `cargo audit` on `main`, and the required `security-audit` check with it.
+  `sysknife-cli` builds `rmcp` with the `server`, `macros` and `transport-io`
+  features only, so the Streamable HTTP client code is not compiled into
+  SysKnife. The bump is a lockfile change.
+
+### Fixed
+
+- **`sysknife plan --json` neutralises model-authored preference facts.**
+  ([#764](https://github.com/lacs-project/sysknife/pull/764)) The JSON view of a
+  pending preference change printed each fact as the model wrote it, so bidi
+  overrides, zero-width characters and C1 controls reached a field a caller may
+  render. The fact now goes through the character rules the terminal view uses,
+  flattened to one line and without the display cap, so a Unicode line break at
+  the start of a line cannot carry an indent into the string (closes
+  [#757](https://github.com/lacs-project/sysknife/issues/757)). Thanks to
+  [@yuee3](https://github.com/yuee3).
+
 ## [0.30.1] — 2026-11-09
 
 ### Changed
