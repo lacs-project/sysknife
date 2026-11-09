@@ -1068,14 +1068,22 @@ pub async fn run_doctor(
 
     // Brain provider/model — fall back to placeholders if config is missing
     // (e.g. operator hasn't run `sysknife-setup` yet).
-    let (provider, model) = match BrainConfig::from_env() {
+    //
+    // `config_warning` tracks whether the brain config itself is broken —
+    // this is what governs the exit code.  Distro-fallback notes are
+    // informational and must not make the exit code non-zero on their own,
+    // because older daemons that answer but predate `host_distro` are still
+    // healthy setups.
+    let (provider, model, config_warning) = match BrainConfig::from_env() {
         Ok(cfg) => (
             cfg.provider_name().to_string(),
             cfg.model_name().to_string(),
+            None,
         ),
         Err(e) => {
-            warnings.push(format!("brain config unreadable: {e}"));
-            ("unknown".to_string(), "unknown".to_string())
+            let msg = format!("brain config unreadable: {e}");
+            warnings.push(msg.clone());
+            ("unknown".to_string(), "unknown".to_string(), Some(msg))
         }
     };
 
@@ -1106,7 +1114,7 @@ pub async fn run_doctor(
                     log.print_stderr(&format!("warning: {w}"));
                 }
             }
-            if warnings.is_empty() {
+            if config_warning.is_none() {
                 Ok(())
             } else {
                 Err(CliError::Exit(4))
