@@ -420,7 +420,7 @@ the command:
 | `--non-interactive` | Fail immediately (`exit 1`) if any step would require interactive approval.  Use in scripts and CI. |
 | `--dry-run` | Print the plan or approval preview and exit without executing or issuing a receipt. |
 | `--step-by-step` | Prompt for approval before each individual step instead of once for the whole plan. Each prompt comes *after* that step's daemon preview is printed. The whole-plan risk ceiling and non-interactive checks still run before any execution preview. |
-| `--json` | Emit NDJSON to stdout — one JSON object per event (plan, preview, result).  All colour and spinner output is suppressed.  Safe to pipe. |
+| `--json` | Emit NDJSON to stdout — one JSON object per event (plan, preview, progress, result).  All colour and spinner output is suppressed.  Safe to pipe. |
 | `--timeout SECS` | Hard wall-clock limit for the CLI invocation in seconds. Stops waiting when exceeded; see exit codes below. |
 | `--log-to FILE` | Tee stdout to FILE in addition to the terminal. Appends if the file exists; stderr diagnostics are not captured. |
 | `--dangerously-skip-approval` | Raises the ceiling `--yes` is clamped to from MEDIUM to HIGH, so `--yes --max-risk high` approves HIGH-risk steps too. It does not switch on `--yes`, `--max-risk` or `--non-interactive`; pass them yourself. Refuses to run unless `SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1` is also set. See [Unattended mode](#unattended-mode). |
@@ -644,6 +644,9 @@ The `--json` output schema:
 // Per-step preview (before execution)
 { "summary": "…", "risk_level": "low", "reboot_required": false,
   "warnings": [], "request_hash": "…", … }
+
+// Execution progress (one per line the daemon streams while a step runs)
+{ "event": "progress", "line": "Executing GetMemoryInfo…" }
 
 // Per-step result (after execution)
 { "status": "succeeded", "summary": "…", "job_id": "…",

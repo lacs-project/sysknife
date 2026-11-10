@@ -2556,7 +2556,10 @@ where
                     first_line = false;
                 }
                 if opts.json {
-                    log.println(line);
+                    // #664: every line under --json has to parse, so a progress
+                    // frame becomes an object of its own instead of a bare text
+                    // line between the plan and the result.
+                    log.println(&json!({ "event": "progress", "line": line }).to_string());
                 } else {
                     crate::render::print_output_line(line, log);
                 }
@@ -4143,6 +4146,7 @@ mod tests {
             events: Events,
             execution_statuses: &[(&str, &str)],
             proposed_changes: &[(&str, Value)],
+            progress_lines: &'static [(&'static str, &'static str)],
         ) -> (
             tokio::sync::oneshot::Sender<()>,
             tokio::task::JoinHandle<()>,
@@ -4191,6 +4195,20 @@ mod tests {
                             "type": "approval_response", "approval_receipt": "mock-receipt",
                         }),
                         "execute" => {
+                            // A real daemon streams progress frames before the
+                            // terminal one; the CLI decides what to do with them.
+                            for (_, line) in
+                                progress_lines.iter().filter(|(name, _)| *name == action)
+                            {
+                                let frame = serde_json::json!({
+                                    "type": "job_progress",
+                                    "job_id": "job-1",
+                                    "line": line,
+                                });
+                                let bytes = serde_json::to_vec(&frame).unwrap();
+                                stream.write_u32_le(bytes.len() as u32).await.unwrap();
+                                stream.write_all(&bytes).await.unwrap();
+                            }
                             let status = statuses
                                 .get(action)
                                 .map(String::as_str)
@@ -4275,6 +4293,7 @@ mod tests {
                 Arc::clone(&events),
                 execution_statuses,
                 proposed_changes,
+                &[],
             )
             .await;
             let log = Logger::new(None).unwrap();
@@ -4296,6 +4315,62 @@ mod tests {
             answers: &[bool],
         ) -> (Result<(), CliError>, Vec<String>) {
             run_with_statuses(plan, opts, answers, &[]).await
+        }
+
+        /// #664: an executed run under `--json` has to stay one JSON object per
+        /// line. The daemon's progress frames are plain text, so handing them to
+        /// `log.println` raw breaks every `jq` pipeline. Reverting the JSON arm
+        /// to `log.println(line)` makes the parse loop below fail on
+        /// "Executing GetMemoryInfo...".
+        #[tokio::test]
+        async fn execute_plan_json_emits_progress_as_its_own_event() {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("daemon.sock");
+            let printed = dir.path().join("stdout.log");
+            let events: Events = Arc::new(Mutex::new(Vec::new()));
+            let (stop, task) = mock_execution_daemon(
+                &socket,
+                Arc::clone(&events),
+                &[],
+                &[],
+                &[
+                    ("GetMemoryInfo", "Authorization passed for GetMemoryInfo"),
+                    ("GetMemoryInfo", "Executing GetMemoryInfo..."),
+                ],
+            )
+            .await;
+
+            let log = Logger::new(Some(&printed)).unwrap();
+            let mut options = opts(socket);
+            options.json = true;
+            execute_plan(&plan(&["GetMemoryInfo"]), &options, &log, |_| {
+                std::future::ready(true)
+            })
+            .await
+            .unwrap();
+            stop.send(()).unwrap();
+            task.await.unwrap();
+
+            let emitted = std::fs::read_to_string(&printed).unwrap();
+            for line in emitted.lines() {
+                if let Err(e) = serde_json::from_str::<Value>(line) {
+                    panic!("--json printed a line that is not JSON ({e}): {line:?}");
+                }
+            }
+
+            let progress: Vec<String> = emitted
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|value| value["event"] == "progress")
+                .filter_map(|value| value["line"].as_str().map(str::to_owned))
+                .collect();
+
+            assert!(
+                progress
+                    .iter()
+                    .any(|line| line == "Executing GetMemoryInfo..."),
+                "the daemon's progress text is not in the output: {progress:?}"
+            );
         }
 
         /// #602: exercise the actual execute_plan loop, not a duplicate loop
