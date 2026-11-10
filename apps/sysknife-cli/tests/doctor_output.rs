@@ -243,3 +243,40 @@ fn daemon_answers_no_distro_valid_config_exits_0() {
         out,
     );
 }
+
+/// Text mode, daemon sends no distro, valid config.
+///
+/// The distro-fallback warning must appear exactly once in stderr.  Before the
+/// fix the `for w in &warnings` loop printed it a second time.
+#[test]
+fn daemon_no_distro_text_mode_warns_once() {
+    let (dir, stop, daemon) = start_fake_daemon(false);
+    let socket = dir.path().join("daemon.sock");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_sysknife"))
+        .env_clear()
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("XDG_DATA_HOME", dir.path())
+        .env("SYSKNIFE_SOCKET", &socket)
+        .env("SYSKNIFE_LLM_PROVIDER", "ollama")
+        .env("SYSKNIFE_LLM_MODEL", "test")
+        .env("SYSKNIFE_OLLAMA_URL", "http://127.0.0.1:1")
+        .arg("doctor")
+        .output()
+        .expect("the sysknife binary runs");
+
+    stop.store(true, Ordering::Relaxed);
+    daemon.join().unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let distro_warnings = stderr
+        .lines()
+        .filter(|l| l.contains("daemon distro unavailable") || l.contains("distro unavailable"))
+        .count();
+    assert_eq!(
+        distro_warnings, 1,
+        "the distro-fallback warning must appear exactly once in text mode:\n{stderr}"
+    );
+    assert_eq!(out.status.code(), Some(0));
+}
