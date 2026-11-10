@@ -1110,7 +1110,7 @@ pub async fn run_doctor(
                     &distro_label,
                     log,
                 );
-                for w in &warnings {
+                if let Some(w) = &config_warning {
                     log.print_stderr(&format!("warning: {w}"));
                 }
             }
@@ -1135,7 +1135,7 @@ pub async fn run_doctor(
                 log.println(&serde_json::to_string(&out).expect("static JSON"));
             } else {
                 crate::render::print_doctor_fail(&socket_label, &e.to_string());
-                for w in &warnings {
+                if let Some(w) = &config_warning {
                     log.print_stderr(&format!("warning: {w}"));
                 }
             }
