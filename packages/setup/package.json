@@ -18,6 +18,7 @@
     "node": ">=22"
   },
   "files": [
+    "claude-hooks.js",
     "index.js",
     "install-binary.js",
     "install-daemon.js",

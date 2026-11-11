@@ -30,6 +30,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const { databasePath, legacyDatabasePath, DB_SIDECARS } = require('./install-daemon.js');
+const { CLAUDE_HOOKS } = require('./claude-hooks.js');
 
 const SYSTEM_UNIT_PATH = '/etc/systemd/system/sysknife-daemon.service';
 
@@ -114,6 +115,60 @@ function removeSysknifeMcpServers(target) {
   return true;
 }
 
+function regularFileState(target) {
+  try {
+    return fs.lstatSync(target).isFile();
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/** Remove only SysKnife's Claude entries, preserving other servers and settings. */
+function removeClaudeMcpServers(target, { dryRun = false } = {}) {
+  if (regularFileState(target) !== true) return null;
+  let config;
+  try {
+    config = JSON.parse(fs.readFileSync(target, 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!config || typeof config !== 'object' || Array.isArray(config) ||
+      !config.mcpServers || typeof config.mcpServers !== 'object' || Array.isArray(config.mcpServers)) {
+    return null;
+  }
+
+  const servers = Object.entries(config.mcpServers);
+  const kept = servers.filter(([key]) => !key.startsWith('sysknife'));
+  if (kept.length === servers.length) return null;
+
+  const remaining = kept.length;
+  if (remaining === 0) delete config.mcpServers;
+  const deleteFile = Object.keys(config).length === 0;
+
+  if (!dryRun) {
+    if (deleteFile) {
+      fs.unlinkSync(target);
+    } else {
+      if (remaining > 0) config.mcpServers = Object.fromEntries(kept);
+      fs.writeFileSync(target, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+      fs.chmodSync(target, 0o600);
+    }
+  }
+
+  return { remaining, deleted: deleteFile };
+}
+
+/** Remove an installer-owned Claude rule only while it still matches its template. */
+function removeClaudeHook(target, expectedContent, { dryRun = false } = {}) {
+  const state = regularFileState(target);
+  if (state === null) return null;
+  if (!state) return { preserved: true };
+  if (fs.readFileSync(target, 'utf8') !== expectedContent) return { preserved: true };
+  if (!dryRun) removePath(target);
+  return { removed: true };
+}
+
 function removeTomlSysknifeBlocks(target) {
   if (!fs.existsSync(target)) return false;
   const original = fs.readFileSync(target, 'utf8');
@@ -191,13 +246,17 @@ function removePath(target) {
  * @param {boolean} opts.dryRun  print what would happen, change nothing
  * @param {string}  opts.cwd     project directory holding .mcp.json
  * @param {(s: string) => void} opts.log
- * @returns {{removed: string[], kept: string[], systemUnitPresent: boolean}}
+ * @returns {{removed: string[], updated: string[], kept: string[], preserved: string[], mcpServersRemaining: number|null, mcpConfigDeleted: boolean|null, systemUnitPresent: boolean}}
  */
 function uninstall(opts = {}) {
   const { purge = false, dryRun = false, cwd = process.cwd(), log = console.log } = opts;
   const fp = footprint(cwd);
   const removed = [];
+  const updated = [];
   const kept = [];
+  const preserved = [];
+  let mcpServersRemaining = null;
+  let mcpConfigDeleted = null;
 
   const systemUnitPresent = fs.existsSync(SYSTEM_UNIT_PATH);
   if (systemUnitPresent) {
@@ -214,12 +273,33 @@ function uninstall(opts = {}) {
 
   if (!dryRun) stopUserService(log);
 
+  const claudeMcpPath = path.join(cwd, '.mcp.json');
+  const claudeHooks = Object.entries(CLAUDE_HOOKS).map(([file, content]) => [
+    path.join(cwd, '.claude', file),
+    content,
+  ]);
+  const managedClaudePaths = new Set([claudeMcpPath, ...claudeHooks.map(([target]) => target)]);
+
   for (const target of fp.software) {
+    if (managedClaudePaths.has(target)) continue;
     if (dryRun) {
       if (fs.existsSync(target)) removed.push(target);
       continue;
     }
     if (removePath(target)) removed.push(target);
+  }
+
+  const mcpResult = removeClaudeMcpServers(claudeMcpPath, { dryRun });
+  if (mcpResult) {
+    mcpServersRemaining = mcpResult.remaining;
+    mcpConfigDeleted = mcpResult.deleted;
+    (mcpResult.deleted ? removed : updated).push(claudeMcpPath);
+  }
+
+  for (const [target, expectedContent] of claudeHooks) {
+    const hookResult = removeClaudeHook(target, expectedContent, { dryRun });
+    if (hookResult?.removed) removed.push(target);
+    if (hookResult?.preserved) preserved.push(target);
   }
 
   const managed = [
@@ -252,7 +332,7 @@ function uninstall(opts = {}) {
     removed.push(entry.path);
   }
 
-  return { removed, kept, systemUnitPresent };
+  return { removed, updated, kept, preserved, mcpServersRemaining, mcpConfigDeleted, systemUnitPresent };
 }
 
 module.exports = { uninstall, footprint, userUnitPath, SYSTEM_UNIT_PATH };

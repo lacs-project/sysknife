@@ -18,6 +18,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { footprint } = require('../uninstall.js');
+const { CLAUDE_HOOKS } = require('../claude-hooks.js');
 const { databasePath, legacyDatabasePath } = require('../install-daemon.js');
 
 test('the footprint separates software from data, and the audit chain is data', () => {
@@ -31,7 +32,7 @@ test('the footprint separates software from data, and the audit chain is data', 
       path.join(os.homedir(), '.config', 'systemd', 'user', 'sysknife-daemon.service'),
     ),
   );
-  assert.ok(fp.software.includes('/tmp/project/.mcp.json'));
+  assert.ok(fp.software.includes(path.join('/tmp/project', '.mcp.json')));
 
   // Data: only --purge touches these.
   const dataPaths = fp.data.map((d) => d.path);
@@ -68,13 +69,122 @@ test('a dry run reports what exists and changes nothing on disk', async () => {
   const { uninstall } = require('../uninstall.js');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-uninstall-'));
   const mcp = path.join(tmp, '.mcp.json');
-  fs.writeFileSync(mcp, '{}');
+  fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { sysknife: { command: 'sysknife' } } }));
 
   const result = uninstall({ dryRun: true, cwd: tmp, log: () => {} });
 
   assert.ok(result.removed.includes(mcp), 'dry run should report the file it found');
+  assert.equal(result.mcpServersRemaining, 0);
   assert.ok(fs.existsSync(mcp), 'dry run must not delete anything');
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('uninstall preserves other Claude MCP servers and project settings', () => {
+  const { uninstall } = require('../uninstall.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-uninstall-claude-shared-'));
+  const mcp = path.join(tmp, '.mcp.json');
+  fs.writeFileSync(mcp, JSON.stringify({
+    mcpServers: {
+      sysknife: { command: 'sysknife' },
+      docs: { command: 'docs-server' },
+      database: { command: 'database-server' },
+    },
+    projectSettings: { keep: true },
+  }));
+
+  try {
+    const result = uninstall({ cwd: tmp, log: () => {} });
+
+    assert.deepEqual(JSON.parse(fs.readFileSync(mcp, 'utf8')), {
+      mcpServers: {
+        docs: { command: 'docs-server' },
+        database: { command: 'database-server' },
+      },
+      projectSettings: { keep: true },
+    });
+    assert.equal(result.mcpServersRemaining, 2);
+    assert.equal(result.mcpConfigDeleted, false);
+    assert.ok(result.updated.includes(mcp));
+    assert.ok(!result.removed.includes(mcp));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('uninstall deletes the Claude MCP config when SysKnife was its only content', () => {
+  const { uninstall } = require('../uninstall.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-uninstall-claude-only-'));
+  const mcp = path.join(tmp, '.mcp.json');
+  fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { sysknife: { command: 'sysknife' } } }));
+
+  try {
+    const result = uninstall({ cwd: tmp, log: () => {} });
+
+    assert.equal(fs.existsSync(mcp), false);
+    assert.equal(result.mcpServersRemaining, 0);
+    assert.equal(result.mcpConfigDeleted, true);
+    assert.ok(result.removed.includes(mcp));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('uninstall keeps other Claude project settings when no MCP servers remain', () => {
+  const { uninstall } = require('../uninstall.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-uninstall-claude-settings-'));
+  const mcp = path.join(tmp, '.mcp.json');
+  fs.writeFileSync(mcp, JSON.stringify({
+    mcpServers: { sysknife: { command: 'sysknife' } },
+    projectSettings: { keep: true },
+  }));
+
+  try {
+    const result = uninstall({ cwd: tmp, log: () => {} });
+
+    assert.deepEqual(JSON.parse(fs.readFileSync(mcp, 'utf8')), { projectSettings: { keep: true } });
+    assert.equal(result.mcpServersRemaining, 0);
+    assert.equal(result.mcpConfigDeleted, false);
+    assert.ok(result.updated.includes(mcp));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('uninstall preserves locally edited Claude rules and reports them', () => {
+  const { uninstall } = require('../uninstall.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-uninstall-claude-edited-'));
+  const claudeDir = path.join(tmp, '.claude');
+  const hook = path.join(claudeDir, 'hookify.require-sysknife-approval.local.md');
+  fs.mkdirSync(claudeDir);
+  fs.writeFileSync(hook, '# User edits to SysKnife guidance\n');
+
+  try {
+    const result = uninstall({ cwd: tmp, log: () => {} });
+
+    assert.equal(fs.readFileSync(hook, 'utf8'), '# User edits to SysKnife guidance\n');
+    assert.ok(result.preserved.includes(hook));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('uninstall removes unchanged Claude rules written by setup', () => {
+  const { uninstall } = require('../uninstall.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-uninstall-claude-generated-'));
+  const claudeDir = path.join(tmp, '.claude');
+  const hook = path.join(claudeDir, 'hookify.require-sysknife-approval.local.md');
+  fs.mkdirSync(claudeDir);
+  fs.writeFileSync(hook, CLAUDE_HOOKS['hookify.require-sysknife-approval.local.md']);
+
+  try {
+    const result = uninstall({ cwd: tmp, log: () => {} });
+
+    assert.equal(fs.existsSync(hook), false);
+    assert.ok(result.removed.includes(hook));
+    assert.ok(!result.preserved.includes(hook));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('--purge can see a database the migration never moved', () => {
@@ -128,8 +238,9 @@ test('uninstall removes only SysKnife Codex and AGENTS blocks', async () => {
   const { uninstall } = require('../uninstall.js');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-uninstall-codex-'));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-uninstall-home-'));
-  const oldHome = process.env.HOME;
-  process.env.HOME = home;
+  const homeVariable = process.platform === 'win32' ? 'USERPROFILE' : 'HOME';
+  const oldHome = process.env[homeVariable];
+  process.env[homeVariable] = home;
   const codexDir = path.join(home, '.codex');
   fs.mkdirSync(codexDir, { recursive: true });
   const codex = path.join(codexDir, 'config.toml');
@@ -164,7 +275,8 @@ test('uninstall removes only SysKnife Codex and AGENTS blocks', async () => {
     assert.doesNotMatch(agentsText, /SysKnife MCP rules|managed/);
     assert.match(agentsText, /## Keep me\nuser text/);
   } finally {
-    process.env.HOME = oldHome;
+    if (oldHome === undefined) delete process.env[homeVariable];
+    else process.env[homeVariable] = oldHome;
     fs.rmSync(tmp, { recursive: true, force: true });
     fs.rmSync(home, { recursive: true, force: true });
   }
