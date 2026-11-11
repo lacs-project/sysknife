@@ -528,6 +528,11 @@ snapshot beforehand costs less than the alternative.
 | `4` | **Configuration or daemon error** — invalid configuration, or the daemon could not be reached |
 | `5` | **Reboot required** - a step returned `needs_reboot`; remaining steps were not executed and the plan is incomplete. Reboot and deliberately re-run or resume. |
 
+If OpenAI reaches its output token limit before completing a proposed tool call,
+SysKnife discards the partial plan and returns a planning failure. Split a large
+intent into smaller requests; the truncated response is not retried as malformed
+tool-call JSON.
+
 Subcommands with their own semantics (for example `sysknife audit verify`) pass
 through their own exit code.
 
