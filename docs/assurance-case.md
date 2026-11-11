@@ -202,7 +202,7 @@ each.
 | CWE-208 | Observable timing discrepancy | `ct_eq` on the vsock token (`crates/sysknife-daemon/src/auth.rs`) and on receipt digests | None; the code pointer is the evidence |
 | CWE-1427 | Improper neutralization of input used for LLM prompting | The untrusted-output envelope, and the catalogue, role and approval checks after the model | `crates/sysknife-brain/src/sanitize.rs::envelope_wraps_with_tool_name`, `crates/sysknife-brain/src/action_name.rs::unknown_action_rejected` |
 | CWE-295 | Improper certificate validation | rustls defaults; `verify-ca` for remote Postgres | `crates/sysknife-daemon/src/pg_tls.rs::a_remote_tcp_url_without_sslmode_is_refused` |
-| CWE-798 | Use of hard-coded credentials | trufflehog on every pull request and push; GitHub push protection; `scripts/check_no_secrets.sh` in the opt-in pre-commit hook ([#653](https://github.com/lacs-project/sysknife/issues/653) moves it into CI) | `tests/release/no-secrets.test.sh` |
+| CWE-798 | Use of hard-coded credentials | trufflehog on every pull request and push; GitHub push protection; `scripts/check_no_secrets.sh` in the opt-in pre-commit hook and over every tracked file in CI through `tests/release/no-secrets.test.sh` (`docs-and-hygiene` job) | `tests/release/no-secrets.test.sh` |
 | CWE-319 | Cleartext transmission of sensitive information | HTTPS to providers; audit forwarding is the open gap | [#728](https://github.com/lacs-project/sysknife/issues/728) |
 
 ## Known gaps
