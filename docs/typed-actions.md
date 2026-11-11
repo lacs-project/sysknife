@@ -109,6 +109,13 @@ daemon has to believe; it's a property of the fixed `ActionSpec` the daemon
 already owns. The risk level and the missing rollback both surface in the
 approval prompt before anything executes.
 
+## Removing a mount
+
+`RemoveMount` unmounts the filesystem before removing its `/etc/fstab` entry.
+If unmounting fails, for example because the target is busy, the action reports
+the error and leaves the entry intact. If the target is already unmounted,
+the action removes its entry successfully.
+
 ## Composing with approval and rollback
 
 A typed action alone is not the whole safety story — it's the piece that

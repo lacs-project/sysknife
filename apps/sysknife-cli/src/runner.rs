@@ -2322,6 +2322,30 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     .await
 }
 
+/// The `--json` view of a plan's preference changes.
+///
+/// A fact is model-authored. The terminal view neutralises it with
+/// `operator_safe`; the JSON view needs the same character rules but not the
+/// display caps, because `--json` is read by machines rather than scrollback.
+/// It also flattens the fact, as the terminal view does: keeping line breaks
+/// would carry a line's leading run — and with it the C1 controls and Unicode
+/// line separators `trim_start` treats as indentation — into the JSON string.
+fn preference_changes_json(plan: &AuthorizedPlan) -> Vec<Value> {
+    plan.pref_changes()
+        .iter()
+        .map(|c| {
+            let fact = crate::operator_text::operator_safe_unbounded(c.fact());
+            json!({
+                "kind": match c.kind() {
+                    PrefChangeKind::Remember => "remember",
+                    PrefChangeKind::Forget => "forget",
+                },
+                "fact": fact,
+            })
+        })
+        .collect()
+}
+
 /// Run an authorized plan with the same approval and daemon path used by
 /// `run_intent`. Keeping operator input injectable lets refusal ordering and
 /// per-step consent be exercised without a live LLM or terminal.
@@ -2349,19 +2373,7 @@ where
                 })
             })
             .collect();
-        let preference_changes: Vec<Value> = plan
-            .pref_changes()
-            .iter()
-            .map(|c| {
-                json!({
-                    "kind": match c.kind() {
-                        PrefChangeKind::Remember => "remember",
-                        PrefChangeKind::Forget => "forget",
-                    },
-                    "fact": c.fact(),
-                })
-            })
-            .collect();
+        let preference_changes = preference_changes_json(plan);
         log.println(
             &serde_json::to_string(&json!({
                 "plan": {
@@ -2585,7 +2597,10 @@ where
                     first_line = false;
                 }
                 if opts.json {
-                    log.println(line);
+                    // #664: every line under --json has to parse, so a progress
+                    // frame becomes an object of its own instead of a bare text
+                    // line between the plan and the result.
+                    log.println(&json!({ "event": "progress", "line": line }).to_string());
                 } else {
                     crate::render::print_output_line(line, log);
                 }
@@ -4172,6 +4187,7 @@ mod tests {
             events: Events,
             execution_statuses: &[(&str, &str)],
             proposed_changes: &[(&str, Value)],
+            progress_lines: &'static [(&'static str, &'static str)],
         ) -> (
             tokio::sync::oneshot::Sender<()>,
             tokio::task::JoinHandle<()>,
@@ -4220,6 +4236,20 @@ mod tests {
                             "type": "approval_response", "approval_receipt": "mock-receipt",
                         }),
                         "execute" => {
+                            // A real daemon streams progress frames before the
+                            // terminal one; the CLI decides what to do with them.
+                            for (_, line) in
+                                progress_lines.iter().filter(|(name, _)| *name == action)
+                            {
+                                let frame = serde_json::json!({
+                                    "type": "job_progress",
+                                    "job_id": "job-1",
+                                    "line": line,
+                                });
+                                let bytes = serde_json::to_vec(&frame).unwrap();
+                                stream.write_u32_le(bytes.len() as u32).await.unwrap();
+                                stream.write_all(&bytes).await.unwrap();
+                            }
                             let status = statuses
                                 .get(action)
                                 .map(String::as_str)
@@ -4304,6 +4334,7 @@ mod tests {
                 Arc::clone(&events),
                 execution_statuses,
                 proposed_changes,
+                &[],
             )
             .await;
             let log = Logger::new(None).unwrap();
@@ -4325,6 +4356,62 @@ mod tests {
             answers: &[bool],
         ) -> (Result<(), CliError>, Vec<String>) {
             run_with_statuses(plan, opts, answers, &[]).await
+        }
+
+        /// #664: an executed run under `--json` has to stay one JSON object per
+        /// line. The daemon's progress frames are plain text, so handing them to
+        /// `log.println` raw breaks every `jq` pipeline. Reverting the JSON arm
+        /// to `log.println(line)` makes the parse loop below fail on
+        /// "Executing GetMemoryInfo...".
+        #[tokio::test]
+        async fn execute_plan_json_emits_progress_as_its_own_event() {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("daemon.sock");
+            let printed = dir.path().join("stdout.log");
+            let events: Events = Arc::new(Mutex::new(Vec::new()));
+            let (stop, task) = mock_execution_daemon(
+                &socket,
+                Arc::clone(&events),
+                &[],
+                &[],
+                &[
+                    ("GetMemoryInfo", "Authorization passed for GetMemoryInfo"),
+                    ("GetMemoryInfo", "Executing GetMemoryInfo..."),
+                ],
+            )
+            .await;
+
+            let log = Logger::new(Some(&printed)).unwrap();
+            let mut options = opts(socket);
+            options.json = true;
+            execute_plan(&plan(&["GetMemoryInfo"]), &options, &log, |_| {
+                std::future::ready(true)
+            })
+            .await
+            .unwrap();
+            stop.send(()).unwrap();
+            task.await.unwrap();
+
+            let emitted = std::fs::read_to_string(&printed).unwrap();
+            for line in emitted.lines() {
+                if let Err(e) = serde_json::from_str::<Value>(line) {
+                    panic!("--json printed a line that is not JSON ({e}): {line:?}");
+                }
+            }
+
+            let progress: Vec<String> = emitted
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|value| value["event"] == "progress")
+                .filter_map(|value| value["line"].as_str().map(str::to_owned))
+                .collect();
+
+            assert!(
+                progress
+                    .iter()
+                    .any(|line| line == "Executing GetMemoryInfo..."),
+                "the daemon's progress text is not in the output: {progress:?}"
+            );
         }
 
         /// #602: exercise the actual execute_plan loop, not a duplicate loop
@@ -4665,6 +4752,101 @@ mod tests {
             assert!(result.is_ok(), "{result:?}");
             let saved = std::fs::read_to_string(&prefs).unwrap();
             assert!(saved.contains("prefer nala over apt"), "{saved}");
+        }
+
+        /// #757: the JSON view printed the model-authored fact verbatim, so
+        /// bidi overrides, zero-width characters and C1 controls reached a
+        /// machine-readable field the caller may render.
+        #[test]
+        fn plan_json_neutralises_a_hostile_preference_fact() {
+            let dir = tempfile::tempdir().unwrap();
+            let prefs = dir.path().join("prefs.md");
+            let hostile = "prefer \u{202e}apache\u{202c}\u{200b} over nginx\u{009b}31m";
+            let plan = plan_remembering(&prefs, hostile);
+
+            let fact = preference_changes_json(&plan)[0]["fact"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert!(!fact.contains('\u{202e}'), "{fact:?}");
+            assert!(!fact.contains('\u{200b}'), "{fact:?}");
+            assert!(
+                !fact.chars().any(|c| ('\u{80}'..='\u{9f}').contains(&c)),
+                "{fact:?}"
+            );
+            assert!(
+                fact.contains("apache") && fact.contains("nginx"),
+                "{fact:?}"
+            );
+        }
+
+        /// A fact with nothing to neutralise comes back exactly as written.
+        #[test]
+        fn plan_json_keeps_a_benign_preference_fact() {
+            let dir = tempfile::tempdir().unwrap();
+            let prefs = dir.path().join("prefs.md");
+            let plan = plan_remembering(&prefs, "prefer nala over apt");
+
+            let change = &preference_changes_json(&plan)[0];
+            assert_eq!(change["kind"], "remember");
+            assert_eq!(change["fact"], "prefer nala over apt");
+        }
+
+        /// #757, second round: the tests above call `preference_changes_json`
+        /// directly, so they cannot see what `execute_plan` actually prints.
+        /// This drives the call site with `--json --dry-run`, which prints the
+        /// plan and returns before the daemon is touched, and reads the fact
+        /// back out of the emitted line. Reverting the call site to `c.fact()`,
+        /// or back to `operator_safe_block_full`, makes it fail: the escaped
+        /// bytes appear in the first case, the newline and the U+0085 indent in
+        /// the second.
+        #[tokio::test]
+        async fn execute_plan_json_neutralises_a_hostile_preference_fact() {
+            let dir = tempfile::tempdir().unwrap();
+            let prefs = dir.path().join("prefs.md");
+            let printed = dir.path().join("stdout.log");
+            // The two characters #757 names, a bidi override, and a second line
+            // that starts with the whitespace `trim_start` does not classify as
+            // indentation.
+            let hostile = "prefer \u{1b}[8m\u{202e}apache\u{202c}\u{200d} over nginx\r\n\u{0085}\tsecond line\u{2028}third";
+            let plan = plan_remembering(&prefs, hostile);
+
+            let log = Logger::new(Some(&printed)).unwrap();
+            let mut options = text_opts();
+            options.json = true;
+            options.dry_run = true;
+            execute_plan(&plan, &options, &log, |_| std::future::ready(true))
+                .await
+                .unwrap();
+
+            let emitted = std::fs::read_to_string(&printed).unwrap();
+            let line = emitted
+                .lines()
+                .find(|l| l.starts_with("{\"plan\""))
+                .unwrap_or_else(|| panic!("no plan JSON printed: {emitted:?}"));
+            let value: Value = serde_json::from_str(line).unwrap();
+            let fact = value["plan"]["preference_changes"][0]["fact"]
+                .as_str()
+                .unwrap_or_else(|| panic!("no fact in {line}"));
+
+            assert!(!fact.contains('\u{1b}'), "{fact:?}");
+            assert!(!fact.contains('\u{202e}'), "{fact:?}");
+            assert!(!fact.contains('\u{200d}'), "{fact:?}");
+            assert!(
+                !fact.chars().any(|c| ('\u{80}'..='\u{9f}').contains(&c)),
+                "{fact:?}"
+            );
+            assert!(
+                !fact.chars().any(|c| c.is_whitespace() && c != ' '),
+                "line break or non-space whitespace survived: {fact:?}"
+            );
+            assert!(
+                fact.contains("apache")
+                    && fact.contains("nginx")
+                    && fact.contains("second line")
+                    && fact.contains("third"),
+                "{fact:?}"
+            );
         }
 
         /// No operator answers under --dry-run, --yes or --non-interactive, so
