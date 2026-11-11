@@ -1036,7 +1036,7 @@ pub async fn run_doctor(
     json_out: bool,
     log: &Logger,
 ) -> Result<(), CliError> {
-    let config = BrainConfig::from_env().map_err(|e| CliError::ConfigOrDaemon(e.to_string()))?;
+    let mut warnings: Vec<String> = Vec::new();
 
     // `{:?}` printed `Unix("/run/…")` at users; `label()` gives the URI form
     // they can put back into SYSKNIFE_SOCKET.
@@ -1062,6 +1062,31 @@ pub async fn run_doctor(
             log.print_stderr(&format!("warning: {warning}"));
         }
     }
+    if let Some(w) = target.warning() {
+        warnings.push(w.into());
+    }
+
+    // Brain provider/model — fall back to placeholders if config is missing
+    // (e.g. operator hasn't run `sysknife-setup` yet).
+    //
+    // `config_warning` tracks whether the brain config itself is broken —
+    // this is what governs the exit code.  Distro-fallback notes are
+    // informational and must not make the exit code non-zero on their own,
+    // because older daemons that answer but predate `host_distro` are still
+    // healthy setups.
+    let (provider, model, config_warning) = match BrainConfig::from_env() {
+        Ok(cfg) => (
+            cfg.provider_name().to_string(),
+            cfg.model_name().to_string(),
+            None,
+        ),
+        Err(e) => {
+            let msg = format!("brain config unreadable: {e}");
+            warnings.push(msg.clone());
+            ("unknown".to_string(), "unknown".to_string(), Some(msg))
+        }
+    };
+
     match state_result {
         Ok((state, _)) => {
             if json_out {
@@ -1069,34 +1094,50 @@ pub async fn run_doctor(
                     "ok": true,
                     "socket": socket_label,
                     "host": state.host_name(),
-                    "provider": config.provider_name(),
-                    "model": config.model_name(),
+                    "provider": provider,
+                    "model": model,
                     "distro": distro_label,
                     "distro_source": target.source,
-                    "warnings": target.warning().into_iter().collect::<Vec<_>>(),
+                    "warnings": warnings,
                 });
                 log.println(&serde_json::to_string(&out).expect("static JSON"));
             } else {
                 crate::render::print_doctor_ok(
                     &socket_label,
                     state.host_name(),
-                    config.provider_name(),
-                    config.model_name(),
+                    &provider,
+                    &model,
                     &distro_label,
                     log,
                 );
+                if let Some(w) = &config_warning {
+                    log.print_stderr(&format!("warning: {w}"));
+                }
             }
-            Ok(())
+            if config_warning.is_none() {
+                Ok(())
+            } else {
+                Err(CliError::Exit(4))
+            }
         }
         Err(e) => {
             if json_out {
-                // Scripts need to know which socket failed, not just that one did.
-                let out = json!({ "ok": false, "socket": socket_label, "error": e.to_string(),
-                    "distro": distro_label, "distro_source": target.source,
-                    "warnings": target.warning().into_iter().collect::<Vec<_>>() });
+                let out = json!({
+                    "ok": false,
+                    "socket": socket_label,
+                    "error": e.to_string(),
+                    "provider": provider,
+                    "model": model,
+                    "distro": distro_label,
+                    "distro_source": target.source,
+                    "warnings": warnings,
+                });
                 log.println(&serde_json::to_string(&out).expect("static JSON"));
             } else {
                 crate::render::print_doctor_fail(&socket_label, &e.to_string());
+                if let Some(w) = &config_warning {
+                    log.print_stderr(&format!("warning: {w}"));
+                }
             }
             // The report above is the user-facing output; `Exit` carries the
             // code (4, as for any config/daemon failure) without main
