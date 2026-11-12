@@ -2336,7 +2336,12 @@ async fn host_secrets_are_redacted_from_query_results_and_later_provider_context
             .await
             .unwrap();
         let actions = actions.lock().unwrap();
-        assert_eq!(actions.len(), query_names.len()); // current_user is local; logs run twice.
+        let expected_actions = query_names.len() - if fail { 5 } else { 0 };
+        assert_eq!(
+            actions.len(),
+            expected_actions,
+            "current_user is local, logs run twice, and user-scoped queries do not reach the daemon when it fails"
+        );
         assert_eq!(
             actions
                 .iter()
