@@ -1191,7 +1191,16 @@ impl RunOpts {
 // run_audit_export / run_audit_verify
 // ---------------------------------------------------------------------------
 
-/// Export the signed transaction-chain rows from the configured audit store.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AuditExport {
+    version: u32,
+    chain: Vec<sysknife_daemon::audit_chain::ChainRow>,
+    events: Vec<sysknife_daemon::audit_chain::EventRow>,
+    #[serde(default)]
+    partial: bool,
+}
+
+/// Export both signed chains from the configured audit store.
 ///
 /// This is deliberately a local storage read, just like `audit verify`; it
 /// does not cross the daemon protocol or load the private audit key.
@@ -1209,11 +1218,11 @@ pub async fn run_audit_export(args: AuditExportArgs, log: &Logger) -> Result<(),
         log.print_stderr(&format!("note: {note}"));
     }
 
-    let rows = match lacs_config.storage.as_ref() {
+    let (rows, events) = match lacs_config.storage.as_ref() {
         Some(storage) if storage.backend.eq_ignore_ascii_case("postgres") => {
             let config = postgres_config(storage)
                 .map_err(|reason| CliError::ConfigOrDaemon(format!("audit export: {reason}")))?;
-            sysknife_daemon::store::postgres::PostgresStore::read_chain_rows(&config)
+            sysknife_daemon::store::postgres::PostgresStore::read_audit_rows(&config)
                 .await
                 .map_err(|e| {
                     CliError::ConfigOrDaemon(format!("postgres audit chain query failed: {e}"))
@@ -1252,15 +1261,25 @@ pub async fn run_audit_export(args: AuditExportArgs, log: &Logger) -> Result<(),
             let store = TransactionStore::open_read_only(db_path).map_err(|e| {
                 CliError::ConfigOrDaemon(format!("opening audit database failed: {e}"))
             })?;
-            store
+            let chain = store
                 .fetch_chain_rows()
-                .map_err(|e| CliError::ConfigOrDaemon(format!("audit chain query failed: {e}")))?
+                .map_err(|e| CliError::ConfigOrDaemon(format!("audit chain query failed: {e}")))?;
+            let events = store
+                .fetch_event_rows()
+                .map_err(|e| CliError::ConfigOrDaemon(format!("audit event query failed: {e}")))?;
+            (chain, events)
         }
     };
 
     let rows = select_chain_rows_for_export(rows, args.since.as_deref(), args.limit)
         .map_err(|e| CliError::ConfigOrDaemon(e.to_string()))?;
-    let json = serde_json::to_string(&rows)
+    let document = AuditExport {
+        version: 1,
+        chain: rows,
+        events,
+        partial: args.since.is_some() || args.limit.is_some(),
+    };
+    let json = serde_json::to_string(&document)
         .map_err(|e| CliError::ConfigOrDaemon(format!("serializing audit export failed: {e}")))?;
     log.println(&json);
     Ok(())
@@ -1284,9 +1303,50 @@ pub async fn run_audit_export(args: AuditExportArgs, log: &Logger) -> Result<(),
 /// tampered — the result is unknown until the operator resolves the
 /// underlying access problem.
 pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(), CliError> {
+    if let Some(path) = args.from.as_ref() {
+        let outcome = verify_export(path, args.pubkey.as_deref());
+        let exit_code = combined_verification_exit_code(&outcome, None);
+        emit_verification(&args, log, &outcome, &path.display().to_string(), None);
+        return if exit_code == 0 {
+            Ok(())
+        } else {
+            Err(CliError::Exit(exit_code))
+        };
+    }
     let lacs_config = sysknife_core::config::LacsConfig::load();
     let store = sysknife_core::resolve_audit_store();
     run_audit_verify_with_store(args, log, &lacs_config, &store).await
+}
+
+fn verify_export(path: &std::path::Path, pubkey: Option<&std::path::Path>) -> AuditVerification {
+    let read = || -> Result<AuditVerification, String> {
+        let key_path = pubkey.ok_or("offline verification requires --pubkey")?;
+        let key = std::fs::read_to_string(key_path).map_err(|e| {
+            format!(
+                "public key file {} could not be read: {e}",
+                key_path.display()
+            )
+        })?;
+        let file = std::fs::File::open(path)
+            .map_err(|e| format!("audit export {} could not be read: {e}", path.display()))?;
+        let document: AuditExport = serde_json::from_reader(std::io::BufReader::new(file))
+            .map_err(|e| format!("invalid audit export: {e}"))?;
+        if document.version != 1 {
+            return Err(format!(
+                "unsupported audit export version {}",
+                document.version
+            ));
+        }
+        if document.partial {
+            return Err("partial audit export cannot be verified from genesis; export again without --since or --limit".into());
+        }
+        Ok(sysknife_daemon::audit_chain::verify_all_with_pubkey(
+            key.trim(),
+            &document.chain,
+            &document.events,
+        ))
+    };
+    read().unwrap_or_else(cannot_verify_all)
 }
 
 /// Verify with a store selection supplied by the caller. Keeping this path
@@ -3112,7 +3172,11 @@ mod tests {
                     status: status.clone(),
                 };
                 emit_verification(
-                    &AuditVerifyArgs { json, pubkey: None },
+                    &AuditVerifyArgs {
+                        from: None,
+                        json,
+                        pubkey: None,
+                    },
                     &log,
                     &verification,
                     "test.db",
@@ -3173,7 +3237,11 @@ mod tests {
             status: None,
         };
         emit_verification(
-            &crate::cli::AuditVerifyArgs { json, pubkey: None },
+            &crate::cli::AuditVerifyArgs {
+                from: None,
+                json,
+                pubkey: None,
+            },
             &log,
             &verification,
             "/tmp/test.db",
@@ -3409,6 +3477,7 @@ mod tests {
         let log = Logger::new(Some(&path)).expect("logger");
         emit_verification(
             &crate::cli::AuditVerifyArgs {
+                from: None,
                 json: true,
                 pubkey: None,
             },

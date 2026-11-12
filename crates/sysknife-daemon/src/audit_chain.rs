@@ -1436,7 +1436,7 @@ impl AuditKey {
 }
 
 /// One approval event as fetched from the store.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EventRow {
     pub seq: u64,
     pub key_id: String,

@@ -446,6 +446,18 @@ async fn migrates_legacy_schema_and_enforces_store_contract() {
     );
     assert_eq!(pubkey_only.exit_code(), 0);
 
+    let (exported_chain, exported_events) = PostgresStore::read_audit_rows(&config)
+        .await
+        .expect("export both audit chains without the private key");
+    assert_eq!(exported_chain.len(), 1);
+    assert_eq!(exported_events.len(), 3);
+    let exported = sysknife_daemon::audit_chain::verify_all_with_pubkey(
+        &key.verifying_key_hex(),
+        &exported_chain,
+        &exported_events,
+    );
+    assert_eq!(exported.exit_code(), 0);
+
     // cancel_queued success path on Postgres: a fresh, never-claimed Queued
     // transaction must cancel (return true) and flip to Canceled. Placed after
     // the rows_checked assertions above because recording it adds a chain row.
