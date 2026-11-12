@@ -420,7 +420,7 @@ the command:
 | `--non-interactive` | Fail immediately (`exit 1`) if any step would require interactive approval.  Use in scripts and CI. |
 | `--dry-run` | Print the plan or approval preview and exit without executing or issuing a receipt. |
 | `--step-by-step` | Prompt for approval before each individual step instead of once for the whole plan. Each prompt comes *after* that step's daemon preview is printed. The whole-plan risk ceiling and non-interactive checks still run before any execution preview. |
-| `--json` | Emit NDJSON to stdout — one JSON object per event (plan, preview, result).  All colour and spinner output is suppressed.  Safe to pipe. |
+| `--json` | Emit NDJSON to stdout — one JSON object per event (plan, preview, progress, result).  All colour and spinner output is suppressed.  Safe to pipe. |
 | `--timeout SECS` | Hard wall-clock limit for the CLI invocation in seconds. Stops waiting when exceeded; see exit codes below. |
 | `--log-to FILE` | Tee stdout to FILE in addition to the terminal. Appends if the file exists; stderr diagnostics are not captured. |
 | `--dangerously-skip-approval` | Raises the ceiling `--yes` is clamped to from MEDIUM to HIGH, so `--yes --max-risk high` approves HIGH-risk steps too. It does not switch on `--yes`, `--max-risk` or `--non-interactive`; pass them yourself. Refuses to run unless `SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1` is also set. See [Unattended mode](#unattended-mode). |
@@ -527,6 +527,11 @@ snapshot beforehand costs less than the alternative.
 | `3` | **Planning failed** — LLM error, provider unreachable, the intent could not be turned into a plan, or a daemon preview refusal before any plan step executed |
 | `4` | **Configuration or daemon error** — invalid configuration, or the daemon could not be reached |
 | `5` | **Reboot required** - a step returned `needs_reboot`; remaining steps were not executed and the plan is incomplete. Reboot and deliberately re-run or resume. |
+
+If OpenAI reaches its output token limit before completing a proposed tool call,
+SysKnife discards the partial plan and returns a planning failure. Split a large
+intent into smaller requests; the truncated response is not retried as malformed
+tool-call JSON.
 
 Subcommands with their own semantics (for example `sysknife audit verify`) pass
 through their own exit code.
@@ -644,6 +649,9 @@ The `--json` output schema:
 // Per-step preview (before execution)
 { "summary": "…", "risk_level": "low", "reboot_required": false,
   "warnings": [], "request_hash": "…", … }
+
+// Execution progress (one per line the daemon streams while a step runs)
+{ "event": "progress", "line": "Executing GetMemoryInfo…" }
 
 // Per-step result (after execution)
 { "status": "succeeded", "summary": "…", "job_id": "…",

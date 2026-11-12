@@ -12,8 +12,11 @@ SCRIPT="$ROOT/packaging/sysknife-mount-edit"
 [ -f "$SCRIPT" ] || { echo "FAIL: $SCRIPT not found"; exit 1; }
 
 python3 - "$SCRIPT" <<'PY'
+import contextlib
 import importlib.util
+import io
 import os
+import shlex
 import sys
 import tempfile
 from importlib.machinery import SourceFileLoader
@@ -168,6 +171,65 @@ with tempfile.TemporaryDirectory() as d4:
     os.symlink("/home", ump)
     if not op_refuses_before_mount(mod.op_unmount, ump):
         failures.append("op_unmount did NOT refuse a symlinked mountpoint before umount(8)")
+
+# A failed unmount must leave fstab untouched (#651). Use a real subprocess
+# stub and a staged fstab; no test invokes the host's umount or edits /etc/fstab.
+with tempfile.TemporaryDirectory() as unmount_dir:
+    mountpoint = os.path.join(unmount_dir, "mnt")
+    os.mkdir(mountpoint)
+    staged_fstab = os.path.join(unmount_dir, "fstab")
+    stub_umount = os.path.join(unmount_dir, "umount")
+    observed_locale = os.path.join(unmount_dir, "locale")
+    other_entry = "/dev/other\t/mnt/other\text4\tdefaults,nofail\t0\t0\n"
+    original = (
+        "# keep this comment\n"
+        f"/dev/test\t{mountpoint}\text4\tdefaults,nofail\t0\t0\n"
+        + other_entry
+    ).encode()
+    expected_kept = ("# keep this comment\n" + other_entry).encode()
+    real_fstab, real_umount = mod.FSTAB, mod.UMOUNT
+    mod.FSTAB, mod.UMOUNT = staged_fstab, stub_umount
+    try:
+        for label, returncode, detail, expected_exit in (
+            ("busy", 32, "umount: target is busy", 1),
+            ("permission denied", 1, "umount: permission denied", 1),
+            ("silent failure", 32, "", 1),
+            ("not mounted with another error", 1, f"umount: {mountpoint}: not mounted.", 1),
+            ("multiple errors", 32, f"umount: target is busy\numount: {mountpoint}: not mounted.", 1),
+            ("not mounted", 32, f"umount: {mountpoint}: not mounted.", 0),
+            ("not mounted with canonical path", 32, "umount: /mnt/canonical: not mounted.", 0),
+            ("success", 0, "", 0),
+        ):
+            with open(staged_fstab, "wb") as fh:
+                fh.write(original)
+            with open(stub_umount, "w") as fh:
+                fh.write(
+                    "#!/bin/sh\n"
+                    f"printf '%s\\n' \"$LC_ALL\" > {shlex.quote(observed_locale)}\n"
+                    f"printf '%s\\n' {shlex.quote(detail)} >&2\n"
+                    f"exit {returncode}\n"
+                )
+            os.chmod(stub_umount, 0o755)
+            diagnostic = io.StringIO()
+            with contextlib.redirect_stderr(diagnostic):
+                try:
+                    mod.op_unmount(Args(mountpoint))
+                    exit_code = 0
+                except SystemExit as exc:
+                    exit_code = exc.code
+            if exit_code != expected_exit:
+                failures.append(f"unmount {label}: expected exit {expected_exit}, got {exit_code}")
+            with open(staged_fstab, "rb") as fh:
+                expected = original if expected_exit else expected_kept
+                if fh.read() != expected:
+                    failures.append(f"unmount {label}: fstab contents do not match the outcome")
+            if expected_exit and detail and detail not in diagnostic.getvalue():
+                failures.append(f"unmount {label}: the umount diagnostic was lost")
+            with open(observed_locale) as fh:
+                if fh.read().strip() != "C":
+                    failures.append(f"unmount {label}: umount diagnostics were not pinned to the C locale")
+    finally:
+        mod.FSTAB, mod.UMOUNT = real_fstab, real_umount
 
 # 9. The swap operations resolve ANCESTORS, not just the final component.
 #    O_EXCL|O_NOFOLLOW on the leaf says nothing about the directories above it.
@@ -367,6 +429,7 @@ if failures:
     sys.exit(1)
 print("ok: sysknife-mount-edit refuses symlinked and critical-resolving mountpoints")
 print("ok: op_mount and op_unmount invoke the guard before any (u)mount")
+print("ok: unmount failures preserve fstab; successful or already-unmounted targets remove only their entry")
 print("ok: the swap operations refuse a symlinked ancestor before running anything")
 print("ok: the helper refuses every mount option the daemon denies, and hardens the rest")
 PY
