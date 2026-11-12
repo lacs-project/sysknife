@@ -168,7 +168,7 @@ impl Command {
 pub enum FleetCommand {
     /// Validate and list every host without connecting to a daemon.
     Hosts {
-        /// TOML inventory containing [[host]] entries.
+        /// TOML inventory containing `[[host]]` entries.
         inventory: std::path::PathBuf,
     },
 }
