@@ -33,6 +33,7 @@ rustyline = { version = "18", features = ["with-file-history"] }
 rmcp = { version = "3", features = ["transport-io"] }
 serde_json = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+toml = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "signal", "net", "io-util", "io-std", "sync"] }
 thiserror = { workspace = true }
 vsock = "0.5.4"
