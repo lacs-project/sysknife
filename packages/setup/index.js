@@ -175,13 +175,18 @@ function detectDistro() {
 }
 
 /**
- * Check whether a Unix-domain socket is reachable by attempting a zero-byte
- * connection with `nc -U`. Returns true if the daemon answers, false otherwise.
+ * Check whether a Unix-domain socket accepts a connection without sending data.
+ * A Node subprocess keeps the probe synchronous without requiring netcat.
  * Skips the check silently for vsock:// and non-local paths.
  */
 function checkSocket(socket) {
   if (socket.startsWith('vsock://') || !socket.startsWith('/')) return null;
-  const result = spawnSync('nc', ['-zU', socket], { timeout: 2000 });
+  const probe = [
+    "const connection = require('node:net').createConnection({ path: process.argv[1] });",
+    "connection.once('connect', () => process.exit(0));",
+    "connection.once('error', () => process.exit(1));",
+  ].join(' ');
+  const result = spawnSync(process.execPath, ['-e', probe, socket], { timeout: 2000, stdio: 'ignore' });
   return result.status === 0;
 }
 
