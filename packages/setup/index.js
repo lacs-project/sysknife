@@ -41,6 +41,7 @@ const crypto   = require('crypto');
 const { installBinaryIfMissing } = require('./install-binary.js');
 const { installDaemonService, parseDaemonMode } = require('./install-daemon.js');
 const { mergeMcpServers }        = require('./mcp-config.js');
+const { CLAUDE_HOOKS }            = require('./claude-hooks.js');
 
 // ---------------------------------------------------------------------------
 // Terminal helpers
@@ -314,87 +315,6 @@ if (NO_PROMPTS && DAEMON_MODE === null) {
   );
   process.exit(2);
 }
-
-// ---------------------------------------------------------------------------
-// Hookify rule content (Claude Code only)
-// ---------------------------------------------------------------------------
-//
-// Always includes multi-VM fleet guidance even when a single target is
-// configured — users may add targets manually later, and the rule stays valid.
-
-const HOOK_APPROVAL = `---
-name: require-sysknife-approval
-enabled: true
-event: prompt
-pattern: .*
----
-
-# SysKnife execution rules (always active)
-
-## Single VM
-
-When using the sysknife MCP tools, you MUST follow this order:
-
-1. Call \`sysknife_plan\` and present every transaction ID to the user
-2. **STOP.** The user must run \`sysknife approve <transaction-id>\` in a terminal
-3. Ask the user to provide each one-time receipt printed by that command
-4. Call \`sysknife_execute\` only with the matching \`approval_receipt\`
-
-**Never call \`sysknife_execute\` in the same turn as \`sysknife_plan\`.**
-A chat response such as "yes" is not approval and cannot replace a receipt.
-
-## Multiple VMs (fleet operations)
-
-When sysknife is configured with multiple targets (sysknife-web, sysknife-db, …):
-
-1. Call \`sysknife_plan\` for **all** VMs that will be affected — before executing any
-2. Present **all** plans together so the user can review the full scope of changes
-3. **STOP** while the user runs \`sysknife approve <transaction-id>\` for every accepted step
-4. Collect the matching terminal-issued receipts, then execute each VM
-
-**Never execute one VM while another VM's plan is still pending review.**
-**Never skip showing a plan because it looks similar to another VM's plan.**
-Each VM is independent — show each plan explicitly.
-`;
-
-const HOOK_SCHEMA_FETCH = `---
-name: sysknife-schema-fetch
-enabled: true
-event: prompt
-pattern: .*
----
-
-# Deferred MCP tool schemas must be fetched before use
-
-Sysknife MCP tools (\`sysknife_plan\`, \`sysknife_execute\`) are registered as
-**deferred tools** — their full schemas are NOT loaded at session start to
-save context.
-
-**Before calling any sysknife tool you have not used yet this session:**
-1. Call \`ToolSearch\` with the tool name (e.g. \`select:sysknife_plan\`) to fetch its schema.
-2. Only then call the tool.
-
-Skipping this step causes \`InputValidationError\` because the parameter schema is unknown.
-`;
-
-const HOOK_BASH_GUARD = `---
-name: sysknife-bash-guard
-enabled: true
-event: bash
-pattern: (?:date|hostname|uname|df|free|uptime|who|id|ps|top|systemctl|journalctl|ip\\s|ss\\s|netstat|lscpu|lsmem|cat\\s+/proc|dmidecode)
----
-
-# Route VM system queries through sysknife — not local Bash
-
-The command you are about to run queries system state.  If the user is asking
-about their **QEMU/KVM guest VM**, this local Bash command returns host data —
-not VM data.
-
-**Before running local Bash for system queries:**
-1. Check whether sysknife MCP tools are available (fetch deferred schemas via \`ToolSearch\`).
-2. If sysknife is available, use \`sysknife_plan\` → terminal \`sysknife approve\` → \`sysknife_execute\` instead.
-3. Only run the local Bash command if sysknife is unavailable or the user explicitly asks for the local host.
-`;
 
 // ---------------------------------------------------------------------------
 // Cursor project rules (.cursor/rules/sysknife.mdc)
@@ -771,13 +691,7 @@ async function main() {
       fs.mkdirSync('.claude', { recursive: true });
     }
 
-    const rules = [
-      { file: 'hookify.require-sysknife-approval.local.md', content: HOOK_APPROVAL },
-      { file: 'hookify.sysknife-schema-fetch.local.md',     content: HOOK_SCHEMA_FETCH },
-      { file: 'hookify.sysknife-bash-guard.local.md',       content: HOOK_BASH_GUARD },
-    ];
-
-    for (const { file, content } of rules) {
+    for (const [file, content] of Object.entries(CLAUDE_HOOKS)) {
       const hookPath = path.join('.claude', file);
       try {
         fs.writeFileSync(hookPath, content, { flag: 'wx' });
@@ -1024,11 +938,34 @@ if (process.argv.includes('--uninstall')) {
   console.log();
   console.log(`  ${B}sysknife-setup --uninstall${X}${dryRun ? `  ${D}(dry run, nothing will change)${X}` : ''}`);
 
-  const { removed, kept } = uninstall({ purge, dryRun });
+  const {
+    removed,
+    updated,
+    kept,
+    preserved,
+    mcpServersRemaining,
+    mcpConfigDeleted,
+  } = uninstall({ purge, dryRun });
 
   console.log();
   for (const path_ of removed) ok(`${dryRun ? 'would remove' : 'removed'}  ${path_}`);
-  if (removed.length === 0) step('nothing to remove — no wizard installation found here.');
+  for (const path_ of updated) ok(`${dryRun ? 'would update' : 'updated'}  ${path_}`);
+  if (removed.length === 0 && updated.length === 0) step('nothing to remove — no wizard installation found here.');
+
+  if (mcpServersRemaining > 0) {
+    const serverLabel = mcpServersRemaining === 1 ? 'server' : 'servers';
+    step(`${dryRun ? 'Would leave' : 'Left'} ${mcpServersRemaining} other ${serverLabel} in .mcp.json.`);
+  } else if (mcpServersRemaining === 0 && mcpConfigDeleted) {
+    step(`${dryRun ? 'Would remove' : 'Removed'} .mcp.json because no servers or settings remained.`);
+  } else if (mcpServersRemaining === 0) {
+    step(`No other MCP servers remain; other .mcp.json settings were ${dryRun ? 'kept' : 'preserved'}.`);
+  }
+
+  if (preserved.length > 0) {
+    console.log();
+    warn('Left these locally edited Claude rules in place:');
+    for (const path_ of preserved) step(`  ${path_}`);
+  }
 
   if (kept.length > 0) {
     console.log();
@@ -1065,15 +1002,15 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
                 system  privileged service; required for mutating actions
                 user    runs as you, no sudo; read-only actions only
                 skip    install no service
-  --uninstall   Remove what this wizard installed: the user service, the
-                binaries in ~/.local/bin, and the MCP/agent config in this
-                directory. The audit database and your config are KEPT and
-                their paths printed. A system service installed by
+  --uninstall   Remove the user service, binaries in ~/.local/bin, and
+                SysKnife entries from MCP and agent config in this directory.
+                Other MCP servers and settings are kept; edited Claude rules
+                are left in place. The audit database and provider config stay
+                in place. A system service installed by
                 \`sudo make install\` is not touched; use \`sudo make uninstall\`.
   --purge       With --uninstall, also delete the audit database, the safety
                 audit log and ~/.config/sysknife. Each is named before it goes.
-  --dry-run     With --uninstall, print what would be removed and change
-                nothing.
+  --dry-run     With --uninstall, show planned changes and change nothing.
   --help, -h    Show this help message and exit.
 
 \x1b[1mEXIT STATUS\x1b[0m
