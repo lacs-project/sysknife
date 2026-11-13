@@ -12,8 +12,8 @@
 # Writes a jail override to /etc/fail2ban/jail.d/sysknife-<name>.local. Inputs
 # are re-validated here. If `fail2ban-client` is present the config is checked
 # with `fail2ban-client -t` (test) before the daemon is reloaded, rolling back
-# on rejection. If fail2ban is not installed the override is still written and
-# the test/reload is skipped cleanly.
+# on rejection. If fail2ban is unavailable or reload fails, the override is
+# written but the helper returns nonzero: the daemon must not report it active.
 #
 # NOTE (network-gated): the `fail2ban` package is NOT on the base cloud image
 # and cannot be installed offline, so the -t/reload path could not be
@@ -103,9 +103,7 @@ def main() -> None:
     atomic_write(dest, "\n".join(lines) + "\n")
 
     if not os.path.exists(FAIL2BAN_CLIENT):
-        print("sysknife-fail2ban-jail-edit: fail2ban-client not found; "
-              "override written but not tested/reloaded", file=sys.stderr)
-        return
+        die("fail2ban-client not found; override written but not active (not tested/reloaded)")
     check = subprocess.run(
         [FAIL2BAN_CLIENT, "-t"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
     )
@@ -115,7 +113,11 @@ def main() -> None:
         else:
             os.unlink(dest)
         die(f"fail2ban rejected the config: {check.stderr.decode(errors='replace').strip()}")
-    subprocess.run([FAIL2BAN_CLIENT, "reload"], check=False, stderr=subprocess.DEVNULL)
+    reload = subprocess.run([FAIL2BAN_CLIENT, "reload"], check=False, stderr=subprocess.PIPE)
+    if reload.returncode != 0:
+        detail = reload.stderr.decode(errors="replace").strip()
+        die(f"override written but not active: fail2ban reload failed "
+            f"(exit {reload.returncode}){': ' + detail if detail else ''}")
 
 
 if __name__ == "__main__":

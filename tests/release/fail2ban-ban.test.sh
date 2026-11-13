@@ -169,3 +169,66 @@ if failures:
 
 print("ok: sysknife-fail2ban-ban builds a fixed argv and agrees with the daemon on jail names")
 PY
+
+# A changed jail file is not protection until fail2ban has loaded it. Test the
+# jail-edit helper with a failing client, without root or a fail2ban service.
+python3 - "$ROOT/packaging/sysknife-fail2ban-jail-edit" <<'PY'
+import contextlib
+import importlib.util
+import io
+import os
+import sys
+import tempfile
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+script = sys.argv[1]
+loader = SourceFileLoader("fail2ban_jail_edit", script)
+spec = importlib.util.spec_from_loader("fail2ban_jail_edit", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+
+with tempfile.TemporaryDirectory(prefix="sysknife-f2b-jail-") as tmp:
+    mod.JAIL_D = tmp
+    mod.FAIL2BAN_CLIENT = os.path.join(tmp, "fail2ban-client")
+
+    def run_jail():
+        sys.argv = [script, "--name", "sshd", "--maxretry", "3"]
+        output = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(output):
+                mod.main()
+        except SystemExit as exc:
+            return exc.code, output.getvalue()
+        return 0, output.getvalue()
+
+    # A valid override can be written before installation, but is not active.
+    rc, message = run_jail()
+    assert rc != 0 and "not found" in message and "not active" in message, (rc, message)
+    assert Path(tmp, "sysknife-sshd.local").exists()
+
+    # A stubbed client validates successfully, but its reload fails.
+    Path(mod.FAIL2BAN_CLIENT).touch()
+    calls = []
+
+    class Result:
+        def __init__(self, code, stderr=b""):
+            self.returncode = code
+            self.stderr = stderr
+
+    def fail_reload(argv, **kwargs):
+        calls.append(list(argv))
+        return Result(0) if argv[1] == "-t" else Result(255, b"service unavailable")
+
+    mod.subprocess.run = fail_reload
+    rc, message = run_jail()
+    assert calls == [[mod.FAIL2BAN_CLIENT, "-t"], [mod.FAIL2BAN_CLIENT, "reload"]]
+    assert rc != 0 and "not active" in message and "service unavailable" in message, (rc, message)
+
+    calls.clear()
+    mod.subprocess.run = lambda argv, **kwargs: Result(0)
+    rc, message = run_jail()
+    assert rc == 0, (rc, message)
+
+print("ok: fail2ban jail edits fail visibly when the override cannot become active")
+PY
