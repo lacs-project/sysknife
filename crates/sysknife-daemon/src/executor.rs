@@ -4245,9 +4245,8 @@ mod tests {
 
     #[test]
     fn authorized_keys_actions_reject_a_traversal_username() {
-        // `actions/ssh.rs` builds `/home/{username}/.ssh/authorized_keys` by
-        // interpolation, so the only thing keeping the path inside the user's
-        // home is `validated_username` being called in these three match arms.
+        // These actions route through a fixed helper. `validated_username`
+        // ensures only an accepted account name reaches the account lookup.
         // `validate.rs` tests the validator in isolation, and `ssh_key_ops.rs`
         // calls the action functions directly — neither proves the guard is
         // actually wired to the reachable actions.

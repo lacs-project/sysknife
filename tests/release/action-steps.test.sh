@@ -5,6 +5,7 @@ python3 - <<'PY'
 from pathlib import Path
 import re
 import os
+import io
 import runpy
 import subprocess
 import tempfile
@@ -28,9 +29,9 @@ class ShellGrants(unittest.TestCase):
     def test_no_unrestricted_helper_grant(self):
         grants = [line for line in Path('packaging/sysknife-sudoers').read_text(encoding='utf-8').splitlines()
                   if line.startswith('sysknife ') and '/action-steps' in line]
-        self.assertEqual(len(grants), 23)
+        self.assertEqual(len(grants), 24)
         for grant in grants:
-            self.assertRegex(grant, r'/action-steps (firewall|group-add|group-remove|snap-install-hold|ssh-add|ssh-remove|flatpak|podman|toolbox|user-create|user-lock|user-unlock|unit|signal|user-delete|group-create|group-delete|password-aging|lv-extend|lv-create|lv-snapshot|apt|rpm-ostree) \*$')
+            self.assertRegex(grant, r'/action-steps (firewall|group-add|group-remove|snap-install-hold|ssh-list|ssh-add|ssh-remove|flatpak|podman|toolbox|user-create|user-lock|user-unlock|unit|signal|user-delete|group-create|group-delete|password-aging|lv-extend|lv-create|lv-snapshot|apt|rpm-ostree) \*$')
 
     def test_no_useradd_usermod_or_unit_verb_grant_remains(self):
         # The escapes GHSA-j9c3-j2qr-65c4 named matched the "narrowed" grants
@@ -69,7 +70,8 @@ class ShellGrants(unittest.TestCase):
                ['group-add', 'alice', 'wheel\nroot'], ['ssh-add', 'alice', 'ssh-ed25519 a\nroot'],
                ['podman', 'alice', 'run', '--privileged', 'image'],
                ['toolbox', 'alice', 'run', 'sh'], ['flatpak', 'alice', 'run', '--command=sh', 'app'],
-               ['ssh-remove', 'alice', 'ssh-ed25519 a', '/etc/passwd']]
+               ['ssh-remove', 'alice', 'ssh-ed25519 a', '/etc/passwd'],
+               ['ssh-list', 'alice', 'unexpected']]
         runner = mock.Mock(side_effect=AssertionError('must not execute'))
         with mock.patch.dict(helper, run=runner, drop_to_user=runner):
             for args in bad:
@@ -100,6 +102,22 @@ class ShellGrants(unittest.TestCase):
         with mock.patch.dict(helper, drop_to_user=drop, edit_key=lambda *a: events.append(('edit', a))):
             helper['main'](['ssh-add', 'alice', 'ssh-ed25519 AAAA...'])
         self.assertEqual(events, ['drop', ('edit', (os.path.join('/home/alice', '.ssh', 'authorized_keys'), 'ssh-ed25519 AAAA...', True))])
+
+    def test_key_listing_occurs_after_drop_and_uses_the_resolved_home(self):
+        events = []
+        output = io.BytesIO()
+        def drop(user):
+            events.append(('drop', user))
+            return types.SimpleNamespace(pw_dir='/srv/accounts/alice')
+        def read(path):
+            events.append(('read', path))
+            return b'ssh-ed25519 AAAA fixture\n'
+        with mock.patch.dict(helper, drop_to_user=drop, read_keys=read):
+            with mock.patch.object(sys, 'stdout', types.SimpleNamespace(buffer=output)):
+                helper['main'](['ssh-list', 'alice'])
+        self.assertEqual(events, [('drop', 'alice'),
+                                  ('read', '/srv/accounts/alice/.ssh/authorized_keys')])
+        self.assertEqual(output.getvalue(), b'ssh-ed25519 AAAA fixture\n')
 
     def test_group_materialization_failure_prevents_membership_change(self):
         for op in ('group-add', 'group-remove'):
@@ -165,6 +183,32 @@ class ShellGrants(unittest.TestCase):
             with self.assertRaises(OSError):
                 helper['edit_key'](link, key, True)
 
+    @unittest.skipUnless(os.name == 'posix', 'Linux filesystem semantics')
+    def test_add_creates_private_ssh_directory_and_refuses_unsafe_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d) / 'home'
+            home.mkdir()
+            ssh = home / '.ssh'
+            keys = ssh / 'authorized_keys'
+            key = 'ssh-ed25519 AAAA fixture'
+            helper['edit_key'](keys, key, True)
+            self.assertEqual(ssh.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(keys.read_text(), key + '\n')
+
+            keys.unlink()
+            ssh.rmdir()
+            target = home / 'redirect'
+            target.mkdir()
+            ssh.symlink_to(target, target_is_directory=True)
+            with self.assertRaises((OSError, ValueError)):
+                helper['edit_key'](keys, key, True)
+            self.assertFalse((target / 'authorized_keys').exists())
+
+            ssh.unlink()
+            ssh.write_text('not a directory')
+            with self.assertRaises((OSError, ValueError)):
+                helper['edit_key'](keys, key, True)
+
     @unittest.skipUnless(hasattr(os, 'geteuid') and os.geteuid() == 0,
                          'real credential-drop test requires a root test subprocess')
     def test_real_drop_cannot_regain_root_or_write_through_a_symlink(self):
@@ -175,10 +219,9 @@ class ShellGrants(unittest.TestCase):
             root.chmod(0o755)
             home = root / 'home'
             ssh = home / '.ssh'
-            ssh.mkdir(parents=True)
-            for path in (home, ssh):
-                os.chown(path, account.pw_uid, account.pw_gid)
-                path.chmod(0o700)
+            home.mkdir()
+            os.chown(home, account.pw_uid, account.pw_gid)
+            home.chmod(0o700)
             protected = root / 'root-only'
             protected.write_text('must remain unchanged\n')
             protected.chmod(0o600)
@@ -187,10 +230,13 @@ import os,pwd,runpy,sys,types
 m=runpy.run_path(sys.argv[1]); account=pwd.getpwnam('nobody')
 # Substitute only the fixture home; use real NSS identity and real set*id calls.
 pwd.getpwnam=lambda name: types.SimpleNamespace(pw_name=account.pw_name,pw_uid=account.pw_uid,pw_gid=account.pw_gid,pw_dir=sys.argv[2],pw_shell=account.pw_shell)
+mode=sys.argv[3]
 failed=False
-try: m['main'](['ssh-add','nobody','ssh-ed25519 AAAA fixture'])
-except OSError: failed=True
-assert failed == (sys.argv[3]=='symlink')
+try:
+    if mode == 'list': m['main'](['ssh-list','nobody'])
+    else: m['main'](['ssh-add','nobody','ssh-ed25519 AAAA fixture'])
+except (OSError,ValueError): failed=True
+assert failed == (mode in ('file-symlink','ssh-dir-symlink','ssh-dir-file'))
 assert os.getuid()==account.pw_uid and os.geteuid()==account.pw_uid
 assert os.getgid()==account.pw_gid and 0 not in os.getgroups()
 try: os.setuid(0)
@@ -202,13 +248,35 @@ else: raise AssertionError('root can be regained')
             result = subprocess.run([*command, 'normal'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             keys = ssh / 'authorized_keys'
+            self.assertTrue(ssh.is_dir())
+            self.assertFalse(ssh.is_symlink())
+            self.assertEqual(ssh.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(ssh.stat().st_uid, account.pw_uid)
             self.assertEqual(keys.stat().st_uid, account.pw_uid)
             self.assertEqual(keys.read_text(), 'ssh-ed25519 AAAA fixture\n')
+            result = subprocess.run([*command, 'list'], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, 'ssh-ed25519 AAAA fixture\n')
             keys.unlink()
             keys.symlink_to(protected)
-            result = subprocess.run([*command, 'symlink'], capture_output=True, text=True)
+            result = subprocess.run([*command, 'file-symlink'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(protected.read_text(), 'must remain unchanged\n')
+            keys.unlink()
+            ssh.rmdir()
+            redirect = root / 'redirect'
+            redirect.mkdir()
+            os.chown(redirect, account.pw_uid, account.pw_gid)
+            redirect.chmod(0o700)
+            ssh.symlink_to(redirect, target_is_directory=True)
+            result = subprocess.run([*command, 'ssh-dir-symlink'], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((redirect / 'authorized_keys').exists())
+            ssh.unlink()
+            ssh.write_text('not a directory')
+            os.chown(ssh, account.pw_uid, account.pw_gid)
+            result = subprocess.run([*command, 'ssh-dir-file'], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class UserAndUnitVerbs(unittest.TestCase):

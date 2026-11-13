@@ -186,6 +186,7 @@ sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps firewall *
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps group-add *
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps group-remove *
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps snap-install-hold *
+sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps ssh-list *
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps ssh-add *
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps ssh-remove *
 sysknife ALL=(root) NOPASSWD: /usr/lib/sysknife/action-steps flatpak *
