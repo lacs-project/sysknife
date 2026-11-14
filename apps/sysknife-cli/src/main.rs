@@ -3,6 +3,7 @@ mod cli;
 mod client;
 mod distro_routing;
 mod error;
+mod fleet;
 mod mcp_server;
 mod operator_text;
 mod render;
@@ -121,6 +122,11 @@ async fn dispatch(
     }
 
     match &cli.command {
+        Some(Command::Fleet { command }) => match command {
+            crate::cli::FleetCommand::Hosts { inventory } => {
+                fleet::show_hosts(inventory, cli.json, log)
+            }
+        },
         // --- sysknife completions <shell> ---
         Some(Command::Completions { shell }) => {
             runner::run_completions(*shell);
