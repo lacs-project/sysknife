@@ -41,11 +41,7 @@ use sysknife_core::distro::DistroId;
 use sysknife_types::MAX_MESSAGE_BYTES;
 use sysknife_types::{ApprovalReceipt, PreviewEnvelope, ResultEnvelope, TransactionId};
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct PreparedPreview {
-    pub transaction_id: TransactionId,
-    pub preview: PreviewEnvelope,
-}
+pub use sysknife_cli::fleet_previews::PreparedPreview;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ApprovalDetails {
