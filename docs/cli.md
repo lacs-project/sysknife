@@ -646,6 +646,12 @@ SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1 \
      "apply pending security updates"
 ```
 
+A dry run of an intent reports the same refusals as the real run. The plan is
+still printed, but the exit code is non-zero when the real run would refuse it:
+`1` when a step is above `--max-risk`, `4` when the target distro cannot run a
+step. A pre-flight check can therefore treat exit 0 from
+`sysknife --dry-run --json ...` as "the real run would be accepted".
+
 `--log-to` records stdout only. Capture stderr separately when the log must
 include provider notices, planning progress, and failure diagnostics:
 

@@ -14,8 +14,9 @@
 //! `--step-by-step`, only that prompt is skipped; [`ApprovalPolicy::decide_step`]
 //! still gates each step after its preview so the user can decide individually.
 //!
-//! `--dry-run` short-circuits before any execution: the plan is printed and
-//! the function returns `Ok(())`.
+//! `--dry-run` short-circuits before any execution: the plan is printed, the
+//! distro and risk-ceiling gates are still evaluated, and the function returns
+//! the same refusal the real run would (#561).
 
 use std::io::{self, IsTerminal, Write as _};
 use std::path::PathBuf;
@@ -2184,6 +2185,25 @@ enum GateAction {
     Refuse(CliError),
 }
 
+/// Refuse any step whose action the target distro cannot run.
+///
+/// Shared by the pre-display guard in [`run_intent`] and the dry-run gate in
+/// [`execute_plan`], so both judge the plan the same way (#561).
+fn check_plan_distro<'a, I>(
+    actions: I,
+    distro: Option<&sysknife_core::distro::DistroId>,
+) -> Result<(), CliError>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    for action in actions {
+        if let Err(msg) = crate::distro_routing::check_action_distro(action, distro) {
+            return Err(CliError::ConfigOrDaemon(msg));
+        }
+    }
+    Ok(())
+}
+
 /// Map an approval decision onto the gate's behaviour.
 ///
 /// `highest` is the risk being gated: the plan's highest for the plan-level
@@ -2292,13 +2312,10 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     // then refused. A dry run still displays such a plan on purpose — inspecting
     // what the planner produced is the point of it.
     if !opts.dry_run {
-        for step in plan.steps() {
-            if let Err(msg) =
-                crate::distro_routing::check_action_distro(step.action_name(), distro.as_ref())
-            {
-                return Err(CliError::ConfigOrDaemon(msg));
-            }
-        }
+        check_plan_distro(
+            plan.steps().iter().map(|step| step.action_name()),
+            distro.as_ref(),
+        )?;
     }
 
     // Surface any step where the planner's proposed risk disagreed with the
@@ -2332,12 +2349,9 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     // prevented from reading the LLM's proposed risk.
     let plan = plan.into_authorized(authoritative_plan_risk);
 
-    execute_plan(
-        &plan,
-        opts,
-        log,
-        |msg| async move { prompt_confirm(&msg).await },
-    )
+    execute_plan(&plan, opts, log, distro.as_ref(), |msg| async move {
+        prompt_confirm(&msg).await
+    })
     .await
 }
 
@@ -2372,6 +2386,7 @@ async fn execute_plan<F, Fut>(
     plan: &AuthorizedPlan,
     opts: &RunOpts,
     log: &Logger,
+    distro: Option<&sysknife_core::distro::DistroId>,
     mut confirm: F,
 ) -> Result<(), CliError>
 where
@@ -2418,6 +2433,16 @@ where
         }
         if !plan.pref_changes().is_empty() {
             log.print_stderr("Preference changes not saved: this is a dry run.");
+        }
+
+        // #561: the plan is printed, and a dry run has to predict the real
+        // run's exit code. Both gates are pure and cheap, and neither prompts,
+        // so a plan the real run would refuse exits the same way here.
+        check_plan_distro(plan.steps().map(|step| step.action_name()), distro)?;
+        let highest = plan.highest_risk().expect("plan has steps").clone();
+        match gate_action(opts.approval_policy().decide_plan(plan), &highest) {
+            GateAction::Proceed | GateAction::AskOperator => {}
+            GateAction::Refuse(err) => return Err(err),
         }
         return Ok(());
     }
@@ -3095,7 +3120,7 @@ mod tests {
                 skip_approval: false,
             };
             let log = Logger::new(None).unwrap();
-            let err = execute_plan(&plan, &opts, &log, |_| async {
+            let err = execute_plan(&plan, &opts, &log, None, |_| async {
                 panic!("low-risk --yes plan must not ask for confirmation");
             })
             .await
@@ -4343,7 +4368,7 @@ mod tests {
             answers: &[bool],
             execution_statuses: &[(&str, &str)],
         ) -> (Result<(), CliError>, Vec<String>) {
-            run_against(plan, opts, answers, execution_statuses, &[]).await
+            run_against(plan, opts, answers, execution_statuses, &[], None).await
         }
 
         async fn run_against(
@@ -4352,6 +4377,7 @@ mod tests {
             answers: &[bool],
             execution_statuses: &[(&str, &str)],
             proposed_changes: &[(&str, Value)],
+            distro: Option<&sysknife_core::distro::DistroId>,
         ) -> (Result<(), CliError>, Vec<String>) {
             let dir = tempfile::tempdir().unwrap();
             let socket = dir.path().join("daemon.sock");
@@ -4367,7 +4393,7 @@ mod tests {
             .await;
             let log = Logger::new(None).unwrap();
             let mut answers = answers.iter();
-            let result = execute_plan(plan, &opts, &log, |_| {
+            let result = execute_plan(plan, &opts, &log, distro, |_| {
                 events.lock().unwrap().push("prompt".into());
                 std::future::ready(*answers.next().expect("unexpected operator prompt"))
             })
@@ -4412,7 +4438,7 @@ mod tests {
             let log = Logger::new(Some(&printed)).unwrap();
             let mut options = opts(socket);
             options.json = true;
-            execute_plan(&plan(&["GetMemoryInfo"]), &options, &log, |_| {
+            execute_plan(&plan(&["GetMemoryInfo"]), &options, &log, None, |_| {
                 std::future::ready(true)
             })
             .await
@@ -4536,8 +4562,11 @@ mod tests {
             }
         }
 
+        /// #561: a refused plan used to exit 0 under `--dry-run`, so a
+        /// pre-flight check built on `--dry-run --json --max-risk` passed
+        /// plans the real run rejects.
         #[tokio::test]
-        async fn dry_run_still_displays_a_refused_plan_without_daemon_or_prompts() {
+        async fn dry_run_reports_a_refused_plan_without_touching_daemon_or_prompts() {
             for step_by_step in [false, true] {
                 let mut opts = opts(PathBuf::new());
                 opts.step_by_step = step_by_step;
@@ -4546,12 +4575,159 @@ mod tests {
                 opts.max_risk = Some(MaxRisk::Low);
                 let (result, events) =
                     run(&plan(&["GetDiskUsage", "RebootSystem"]), opts, &[]).await;
+                assert!(
+                    matches!(
+                        &result,
+                        Err(CliError::RiskCeilingExceeded {
+                            highest: PlanRiskLevel::High,
+                            ceiling: MaxRisk::Low,
+                        })
+                    ),
+                    "{result:?}"
+                );
+                assert!(
+                    events.is_empty(),
+                    "dry run touched daemon or operator: {events:?}"
+                );
+            }
+        }
+
+        /// The honest dry run must not refuse everything: with no ceiling set
+        /// a High step is still only inspected.
+        #[tokio::test]
+        async fn dry_run_without_a_ceiling_still_succeeds() {
+            for step_by_step in [false, true] {
+                let mut opts = opts(PathBuf::new());
+                opts.step_by_step = step_by_step;
+                opts.dry_run = true;
+                opts.non_interactive = true;
+                let (result, events) =
+                    run(&plan(&["GetDiskUsage", "RebootSystem"]), opts, &[]).await;
                 assert!(result.is_ok(), "{result:?}");
                 assert!(
                     events.is_empty(),
                     "dry run touched daemon or operator: {events:?}"
                 );
             }
+        }
+
+        /// The plan is printed before the refusal, so the operator still sees
+        /// what the planner produced.
+        #[tokio::test]
+        async fn dry_run_prints_the_plan_before_reporting_the_refusal() {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("daemon.sock");
+            let printed = dir.path().join("stdout.log");
+            let events: Events = Arc::new(Mutex::new(Vec::new()));
+            let (stop, task) =
+                mock_execution_daemon(&socket, Arc::clone(&events), &[], &[], &[]).await;
+
+            let log = Logger::new(Some(&printed)).unwrap();
+            let mut options = opts(socket);
+            options.json = true;
+            options.dry_run = true;
+            options.non_interactive = true;
+            options.max_risk = Some(MaxRisk::Low);
+            let result = execute_plan(
+                &plan(&["GetDiskUsage", "RebootSystem"]),
+                &options,
+                &log,
+                None,
+                |_| std::future::ready(true),
+            )
+            .await;
+            stop.send(()).unwrap();
+            task.await.unwrap();
+
+            let err = result.expect_err("a dry run of a refused plan must not exit 0");
+            assert_eq!(err.exit_code(), 1, "{err}");
+            let emitted = std::fs::read_to_string(&printed).unwrap();
+            let plan_line = emitted
+                .lines()
+                .find(|line| line.starts_with("{\"plan\""))
+                .unwrap_or_else(|| panic!("the plan was not printed: {emitted:?}"));
+            assert!(plan_line.contains("RebootSystem"), "{plan_line}");
+            assert!(
+                events.lock().unwrap().is_empty(),
+                "dry run touched daemon or operator"
+            );
+        }
+
+        /// #561: the distro guard is pure too, so the dry run applies it: a
+        /// plan this host cannot run exits 4, after the plan is printed.
+        #[tokio::test]
+        async fn dry_run_reports_a_distro_refusal_with_exit_4() {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("daemon.sock");
+            let printed = dir.path().join("stdout.log");
+            let events: Events = Arc::new(Mutex::new(Vec::new()));
+            let (stop, task) =
+                mock_execution_daemon(&socket, Arc::clone(&events), &[], &[], &[]).await;
+
+            let log = Logger::new(Some(&printed)).unwrap();
+            let mut options = opts(socket);
+            options.dry_run = true;
+            options.non_interactive = true;
+            let fedora = sysknife_core::distro::DistroId::Fedora { version: 41 };
+            let result = execute_plan(
+                &plan(&["AptInstall"]),
+                &options,
+                &log,
+                Some(&fedora),
+                |_| std::future::ready(true),
+            )
+            .await;
+            stop.send(()).unwrap();
+            task.await.unwrap();
+
+            let err = result.expect_err("a dry run on the wrong distro must not exit 0");
+            assert_eq!(err.exit_code(), 4, "{err}");
+            assert!(matches!(&err, CliError::ConfigOrDaemon(_)), "{err:?}");
+            let emitted = std::fs::read_to_string(&printed).unwrap();
+            let plan_line = emitted
+                .lines()
+                .find(|line| line.starts_with("{\"plan\""))
+                .unwrap_or_else(|| panic!("the plan was not printed: {emitted:?}"));
+            assert!(plan_line.contains("AptInstall"), "{plan_line}");
+            assert!(
+                events.lock().unwrap().is_empty(),
+                "dry run touched the daemon"
+            );
+        }
+
+        /// A supported host is not refused: the gate only reports a real one.
+        #[tokio::test]
+        async fn dry_run_on_a_distro_that_supports_the_plan_still_succeeds() {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("daemon.sock");
+            let events: Events = Arc::new(Mutex::new(Vec::new()));
+            let (stop, task) =
+                mock_execution_daemon(&socket, Arc::clone(&events), &[], &[], &[]).await;
+
+            let log = Logger::new(None).unwrap();
+            let mut options = opts(socket);
+            options.dry_run = true;
+            options.non_interactive = true;
+            let ubuntu = sysknife_core::distro::DistroId::Ubuntu {
+                major: 24,
+                minor: 4,
+            };
+            let result = execute_plan(
+                &plan(&["AptInstall"]),
+                &options,
+                &log,
+                Some(&ubuntu),
+                |_| std::future::ready(true),
+            )
+            .await;
+            stop.send(()).unwrap();
+            task.await.unwrap();
+
+            assert!(result.is_ok(), "{result:?}");
+            assert!(
+                events.lock().unwrap().is_empty(),
+                "dry run touched the daemon"
+            );
         }
 
         #[tokio::test]
@@ -4843,7 +5019,7 @@ mod tests {
             let mut options = text_opts();
             options.json = true;
             options.dry_run = true;
-            execute_plan(&plan, &options, &log, |_| std::future::ready(true))
+            execute_plan(&plan, &options, &log, None, |_| std::future::ready(true))
                 .await
                 .unwrap();
 
@@ -4910,6 +5086,7 @@ mod tests {
                 &[true, true],
                 &[],
                 &[("RestartService", tall_json())],
+                None,
             )
             .await;
             assert!(
