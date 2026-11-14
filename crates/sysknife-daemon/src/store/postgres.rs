@@ -339,6 +339,16 @@ impl PostgresStore {
         fetch_chain_rows_from_pool(&pool).await
     }
 
+    /// Read both signed chains without a signing key or schema mutation.
+    pub async fn read_audit_rows(
+        config: &PostgresConfig,
+    ) -> Result<(Vec<ChainRow>, Vec<EventRow>), TransactionStoreError> {
+        let pool = Self::connect_pool(config).await?;
+        let chain = fetch_chain_rows_from_pool(&pool).await?;
+        let events = fetch_event_rows_from_pool(&pool).await?;
+        Ok((chain, events))
+    }
+
     /// All three checks with the daemon's key.
     pub async fn verify_all(
         &self,

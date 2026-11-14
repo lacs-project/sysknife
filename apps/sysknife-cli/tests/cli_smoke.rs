@@ -406,7 +406,11 @@ fn audit_export_emits_the_stored_rows_as_parseable_json() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let exported: Vec<ChainRow> = serde_json::from_slice(&output.stdout).unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["version"], 1);
+    assert_eq!(document["partial"], true);
+    assert!(document["events"].is_array());
+    let exported: Vec<ChainRow> = serde_json::from_value(document["chain"].clone()).unwrap();
     assert_eq!(exported.len(), 1);
     assert_eq!(exported[0], stored[0]);
     assert_eq!(
