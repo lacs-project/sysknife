@@ -2723,6 +2723,8 @@ pub async fn run_repl(opts: &RunOpts, log: &Logger) -> Result<(), CliError> {
         }
     }
 
+    let mut first_failure: Option<i32> = None;
+
     loop {
         // Block the worker thread only during the blocking readline call.
         // Other tokio threads continue executing tasks unaffected.
@@ -2741,6 +2743,10 @@ pub async fn run_repl(opts: &RunOpts, log: &Logger) -> Result<(), CliError> {
                 }
                 if let Err(e) = run_intent(intent, opts, log).await {
                     log.print_stderr(&format!("error: {e}"));
+                    // The first failure decides the process exit status; later
+                    // intents may depend on the earlier one, so their codes do
+                    // not replace it (#646).
+                    record_intent_failure(&mut first_failure, e.exit_code());
                 }
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
@@ -2757,7 +2763,22 @@ pub async fn run_repl(opts: &RunOpts, log: &Logger) -> Result<(), CliError> {
         }
     }
 
+    // An interactive session keeps exiting 0 at EOF: the operator saw each
+    // diagnostic as it happened. Piped intents and --non-interactive scripts
+    // only see the status, so a failed intent has to reach it (#646).
+    if let Some(code) = first_failure {
+        if opts.non_interactive || !io::stdin().is_terminal() {
+            return Err(CliError::Exit(code));
+        }
+    }
+
     Ok(())
+}
+
+/// Keep the first failed intent's exit code; a later failure must not replace
+/// it, because the later intents may depend on the earlier one (#646).
+fn record_intent_failure(first_failure: &mut Option<i32>, code: i32) {
+    first_failure.get_or_insert(code);
 }
 
 // ---------------------------------------------------------------------------
@@ -2946,6 +2967,16 @@ mod approval_view_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The REPL reports the first failed intent's code (#646); a later failure
+    /// must not replace it.
+    #[test]
+    fn only_the_first_failed_intent_sets_the_exit_code() {
+        let mut first_failure = None;
+        record_intent_failure(&mut first_failure, 2);
+        record_intent_failure(&mut first_failure, 4);
+        assert_eq!(first_failure, Some(2));
+    }
 
     #[test]
     fn checkpoint_reports_when_the_system_store_needs_sudo() {

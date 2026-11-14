@@ -776,3 +776,71 @@ fn help_says_what_the_skip_approval_flag_does_and_does_not_do() {
             .or(predicate::str::contains("Requires")),
     );
 }
+
+// ---------------------------------------------------------------------------
+// REPL exit status for piped intents (#646)
+// ---------------------------------------------------------------------------
+
+/// A `sysknife` command wired to fail inside the planner before it reaches a
+/// daemon: the provider is named and its key is empty, so every intent stops at
+/// `BrainConfig` with exit code 4. The environment is cleared so an exported
+/// provider or turn-limit variable cannot change the failure, and `HOME`,
+/// `XDG_DATA_HOME` and `XDG_CONFIG_HOME` point at the temporary directory so
+/// neither the REPL history nor the configuration touches the real one.
+fn repl_cli(dir: &tempfile::TempDir) -> assert_cmd::Command {
+    let mut command = assert_cmd::Command::cargo_bin("sysknife").expect("sysknife binary builds");
+    command
+        .env_clear()
+        .env("SYSKNIFE_SOCKET", fake_socket(dir))
+        .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("HOME", dir.path())
+        .env("SYSKNIFE_LLM_PROVIDER", "anthropic")
+        .env("ANTHROPIC_API_KEY", "");
+    command
+}
+
+/// Piped input alone must reach the failure: this test deliberately omits
+/// `--non-interactive`, so only the non-terminal stdin branch applies.
+#[test]
+fn repl_piped_intent_failure_sets_the_exit_code() {
+    let dir = tempfile::tempdir().unwrap();
+    repl_cli(&dir)
+        .write_stdin("list services\n")
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("ANTHROPIC_API_KEY"));
+}
+
+/// `exit` after a failed intent must not clear the code recorded earlier.
+#[test]
+fn repl_piped_intent_failure_survives_exit() {
+    let dir = tempfile::tempdir().unwrap();
+    repl_cli(&dir)
+        .arg("--non-interactive")
+        .write_stdin("list services\nexit\n")
+        .assert()
+        .code(4);
+}
+
+/// An immediately empty input is a clean session, not a failure.
+#[test]
+fn repl_piped_empty_input_exits_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    repl_cli(&dir)
+        .arg("--non-interactive")
+        .write_stdin("")
+        .assert()
+        .code(0);
+}
+
+/// A session without a failed intent keeps the ordinary success exit code.
+#[test]
+fn repl_piped_clean_session_exits_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    repl_cli(&dir)
+        .arg("--non-interactive")
+        .write_stdin("exit\n")
+        .assert()
+        .code(0);
+}

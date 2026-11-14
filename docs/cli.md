@@ -528,6 +528,13 @@ snapshot beforehand costs less than the alternative.
 | `4` | **Configuration or daemon error** — invalid configuration, or the daemon could not be reached |
 | `5` | **Reboot required** - a step returned `needs_reboot`; remaining steps were not executed and the plan is incomplete. Reboot and deliberately re-run or resume. |
 
+In the REPL, a failed intent prints its diagnostic and the session continues.
+When standard input is not a terminal (piped intents) or `--non-interactive` is
+set, the process exits with the **first** failed intent's code once the input
+ends, including when the session ends with `exit` or `quit`, so a script that
+pipes intents fails when any of them does. An interactive terminal session still
+exits `0` at `exit`, `quit` or end of input.
+
 If OpenAI reaches its output token limit before completing a proposed tool call,
 SysKnife discards the partial plan and returns a planning failure. Split a large
 intent into smaller requests; the truncated response is not retried as malformed
