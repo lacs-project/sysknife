@@ -1298,12 +1298,9 @@ async fn doctor_at_socket(socket: SocketTarget) -> DoctorReport {
         warnings.push(format!("audit database: {note}"));
     }
 
-    let audit_chain_status =
-        match audit_chain_quick_check(&lacs_config, &audit_store, &mut warnings).await {
-            VerifyOutcomeKind::Intact => "intact",
-            VerifyOutcomeKind::Broken => "broken",
-            VerifyOutcomeKind::Unknown => "unknown",
-        }
+    let audit_chain_status = audit_chain_quick_check(&lacs_config, &audit_store, &mut warnings)
+        .await
+        .as_str()
         .to_string();
 
     DoctorReport {
@@ -1324,6 +1321,35 @@ enum VerifyOutcomeKind {
     Intact,
     Broken,
     Unknown,
+}
+
+impl VerifyOutcomeKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Intact => "intact",
+            Self::Broken => "broken",
+            // Same word `status_word` publishes for the CLI JSON and the
+            // `sysknife_audit_verify` report, so an agent comparing surfaces
+            // sees one vocabulary (#556).
+            Self::Unknown => "cannot_verify",
+        }
+    }
+}
+
+/// Doctor's headline for one verification plus anchor pair.
+///
+/// The doctor summarizes the same combined verdict as `sysknife audit verify`
+/// and its JSON builder; keeping the mapping in one place is what makes the
+/// three surfaces comparable (#556).
+fn doctor_chain_status(
+    verification: &sysknife_daemon::audit_chain::AuditVerification,
+    anchor: Option<&sysknife_daemon::audit_chain::CheckpointOutcome>,
+) -> VerifyOutcomeKind {
+    match combined_verification_exit_code(verification, anchor) {
+        0 => VerifyOutcomeKind::Intact,
+        1 => VerifyOutcomeKind::Broken,
+        _ => VerifyOutcomeKind::Unknown,
+    }
 }
 
 /// Run a non-fatal audit chain check. Anything that prevents verification
@@ -1379,11 +1405,13 @@ async fn audit_chain_quick_check(
             "transaction seq={transaction_seq} commits to an approval event that no longer exists"
         ));
     }
-    match outcome.exit_code() {
-        0 => VerifyOutcomeKind::Intact,
-        1 => VerifyOutcomeKind::Broken,
-        _ => VerifyOutcomeKind::Unknown,
-    }
+    // #556: the exit code alone calls an empty unanchored chain `intact`; the
+    // CLI folds in the checkpoint anchor and answers CANNOT VERIFY (exit 2)
+    // for the same store. Use that combined verdict here too, so the doctor
+    // cannot disagree with `sysknife audit verify` on a store an agent reads
+    // without a CLI beside it.
+    let anchor = verify_configured_anchor(lacs_config, &db_path, &verifier).await;
+    doctor_chain_status(&outcome, anchor.as_ref())
 }
 
 // ---------------------------------------------------------------------------
@@ -2289,6 +2317,70 @@ mod tests {
         );
     }
 
+    /// #556: an empty, unanchored chain is CANNOT VERIFY for the CLI, so the
+    /// doctor's headline must not say `intact` over the same store.
+    #[tokio::test]
+    async fn an_empty_store_makes_the_doctor_say_unknown() {
+        use sysknife_daemon::audit_chain::resolve_audit_key_path;
+
+        let dir = tempfile::tempdir().expect("temporary store directory");
+        let db_path = dir.path().join("transactions.sqlite");
+        drop(
+            sysknife_daemon::transactions::TransactionStore::open(&db_path)
+                .expect("create empty audit store"),
+        );
+        sysknife_daemon::audit_chain::AuditKey::load_or_generate(&resolve_audit_key_path(&db_path))
+            .expect("test audit key");
+
+        let store = sysknife_core::AuditStoreChoice::Explicit(db_path);
+        let mut warnings = Vec::new();
+        let kind = audit_chain_quick_check(
+            &sysknife_core::config::LacsConfig::default(),
+            &store,
+            &mut warnings,
+        )
+        .await;
+
+        assert!(
+            matches!(kind, VerifyOutcomeKind::Unknown),
+            "an empty unanchored store must be unknown; warnings: {warnings:?}"
+        );
+    }
+
+    /// #556 section 2: `#571` removed the `if report.status == "intact"`
+    /// guard that let a proven break hide behind `cannot_verify`, but nothing
+    /// pinned it. Restoring that guard must turn this red.
+    #[test]
+    fn a_broken_check_behind_cannot_verify_still_makes_the_headline_broken() {
+        use sysknife_daemon::audit_chain::{AuditVerification, BindingOutcome, VerifyOutcome};
+
+        let report = outcome_to_report(
+            AuditVerification {
+                chain: VerifyOutcome::CannotVerify {
+                    reason: "row seq=9 declares chain_version=4".to_string(),
+                },
+                events: VerifyOutcome::Broken {
+                    rows_checked: 4,
+                    first_broken_seq: 2,
+                    first_broken_transaction_id: "ev2".to_string(),
+                    expected: "x".to_string(),
+                    actual: "y".to_string(),
+                },
+                binding: BindingOutcome::NotChecked,
+                attribution: None,
+                status: None,
+            },
+            "/tmp/store.sqlite".to_string(),
+            None,
+        );
+
+        assert_eq!(
+            report.status, "broken",
+            "a proven break must outrank an inconclusive chain"
+        );
+        assert_eq!(report.chain_status, "cannot_verify");
+    }
+
     #[test]
     fn an_empty_unanchored_store_has_the_same_mcp_and_cli_verdict() {
         use sysknife_daemon::audit_chain::VerifyOutcome;
@@ -2296,6 +2388,11 @@ mod tests {
         let verification = verification_with(VerifyOutcome::Intact { rows_checked: 0 }, None);
         let cli_status = crate::runner::status_word(
             crate::runner::combined_verification_exit_code(&verification, None),
+        );
+        assert_eq!(
+            doctor_chain_status(&verification, None).as_str(),
+            cli_status,
+            "the doctor must not say `intact` where the CLI says cannot_verify"
         );
         let report = outcome_to_report(verification, "/tmp/store.sqlite".to_string(), None);
 
@@ -2328,6 +2425,11 @@ mod tests {
         let verification = verification_with(chain, None);
         let cli_status = crate::runner::status_word(
             crate::runner::combined_verification_exit_code(&verification, Some(&anchor)),
+        );
+        assert_eq!(
+            doctor_chain_status(&verification, Some(&anchor)).as_str(),
+            cli_status,
+            "the doctor must fold in the anchor like the CLI does"
         );
         let report =
             outcome_to_report(verification, "/tmp/store.sqlite".to_string(), Some(&anchor));
