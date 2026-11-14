@@ -422,3 +422,73 @@ print("ok: --append refuses systemd.debug_shell in all its spellings")
 print("ok: ordinary arguments stay appendable")
 print("ok: main() screens --delete before touching /etc/default/grub")
 PY
+
+python3 - "$SCRIPT" <<'PY'
+import contextlib
+import importlib.machinery
+import importlib.util
+import io
+from pathlib import Path
+import sys
+import tempfile
+from unittest.mock import patch
+
+loader = importlib.machinery.SourceFileLoader("grub_edit", sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+helper = importlib.util.module_from_spec(spec)
+loader.exec_module(helper)
+
+def run_case(original, snippet=None, update_status=0):
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        config = root / "grub"
+        backup = root / "grub.bak"
+        snippets = root / "grub.d"
+        snippets.mkdir()
+        config.write_text(original)
+        if snippet is not None:
+            (snippets / "50-cloudimg-settings.cfg").write_text(snippet)
+        log = root / "update.log"
+        update = root / "update-grub"
+        update.write_text(f"#!/bin/sh\necho called >> '{log}'\nexit {update_status}\n")
+        update.chmod(0o755)
+        stderr = io.StringIO()
+        with patch.multiple(helper, GRUB_DEFAULT=str(config), GRUB_BACKUP=str(backup),
+                            UPDATE_GRUB=str(update)), \
+             patch.object(helper, "GRUB_D", str(snippets), create=True), \
+             patch.object(sys, "argv", ["grub-edit", "--append", "nomodeset", "--delete", "splash"]), \
+             contextlib.redirect_stderr(stderr):
+            try:
+                helper.main()
+                status = 0
+            except SystemExit as exc:
+                status = exc.code
+        return status, config.read_text(), backup.exists(), log.exists(), stderr.getvalue()
+
+for original, diagnostic in [
+    ("GRUB_CMDLINE_LINUX_DEFAULT='quiet splash'\n", "single-quoted"),
+    ("GRUB_CMDLINE_LINUX_DEFAULT=quiet\n", "double-quoted"),
+    ("GRUB_TIMEOUT=5\n", "GRUB_CMDLINE_LINUX_DEFAULT"),
+]:
+    status, result, backed_up, updated, error = run_case(original)
+    assert status != 0, (original, "unmatched assignment reported success")
+    assert result == original and not backed_up and not updated, (original, result)
+    assert diagnostic in error, error
+
+original = 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\n'
+for snippet in ['GRUB_CMDLINE_LINUX_DEFAULT="console=tty1"\n',
+                "  export GRUB_CMDLINE_LINUX_DEFAULT='quiet'\n"]:
+    status, result, backed_up, updated, error = run_case(original, snippet)
+    assert status != 0 and result == original and not backed_up and not updated
+    assert "50-cloudimg-settings.cfg" in error, error
+
+for snippet in [None, '# GRUB_CMDLINE_LINUX_DEFAULT="quiet"\nGRUB_TIMEOUT=0\n']:
+    status, result, backed_up, updated, error = run_case(original, snippet)
+    assert status == 0, error
+    assert result == 'GRUB_CMDLINE_LINUX_DEFAULT="quiet nomodeset"\n', result
+    assert backed_up and updated
+
+status, result, backed_up, updated, error = run_case(original, update_status=7)
+assert status == 7 and result == original and backed_up and updated, error
+print("ok: GRUB edits refuse unmatched assignments and overriding snippets before writing")
+PY
