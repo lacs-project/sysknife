@@ -118,7 +118,10 @@ not silently permit forged history.
   status, and chain history.
 - The safety-fence JSONL file records plans rejected before daemon execution.
 - Journald receives safety-fence events and audit-chain watermarks where
-  available.
+  available. Audit-chain watermark emission runs off the async runtime workers.
+  If `systemd-cat` has not exited after two seconds, the daemon kills and reaps
+  it and skips that watermark. Failures produce a warning at most once per
+  daemon process; the committed transaction remains successful.
 - UDP syslog forwarding can lose, reorder, or duplicate messages. Treat it as
   alerting telemetry, not a durable copy.
 
