@@ -2046,6 +2046,7 @@ mod tests {
             crate::runner::Logger::new(Some(&cli_log_path)).expect("create CLI report capture");
         crate::runner::run_audit_verify_with_store(
             crate::cli::AuditVerifyArgs {
+                from: None,
                 json: true,
                 pubkey: None,
             },
