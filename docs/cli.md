@@ -232,22 +232,32 @@ writes for every executed action.
 
 #### `sysknife audit export`
 
-Export the transaction-chain rows from the configured SQLite or PostgreSQL
-audit store as a JSON array, in ascending `seq` order. Each object contains the
-17 stored `ChainRow` columns, including `prev_chain_hash` and `chain_hash`.
-The latter is the Ed25519 signature and is deliberately not renamed. Optional
-values that were not recorded are JSON `null`; `argv`, `outcome`, and a
-separate `signature` field are not reconstructed.
+Export both signed chains from the configured SQLite or PostgreSQL audit store:
+
+```json
+{"version":1,"chain":[],"events":[],"partial":false}
+```
+
+`chain` contains the stored transaction rows and `events` the stored event
+rows, each in ascending `seq` order. Row fields and signatures are preserved.
+The top-level object replaces the former transaction-only array; consumers
+that iterated the old array should now read `.chain`.
 
 ```sh
 sysknife audit export
 sysknife audit export --since 2026-08-01T00:00:00Z --limit 500
+sysknife audit export > audit.json
+sysknife audit verify --from audit.json --pubkey /etc/sysknife/audit-key.pub
 ```
 
 | Flag | Description |
 |---|---|
-| `--since DATETIME` | Include rows recorded at or after this RFC 3339 timestamp |
-| `--limit N` | Emit at most N matching rows; omitted means all matching rows |
+| `--since DATETIME` | Include transaction rows recorded at or after this RFC 3339 timestamp |
+| `--limit N` | Emit at most N matching transaction rows; omitted means all matching rows |
+
+Either filter sets `partial: true`; the event chain is still included in full.
+Offline verification refuses a partial export with exit code 2. Export without
+filters when the file will be verified.
 
 An export is not a redacted artifact. It inherits the confidentiality class of
 the audit database, which the daemon keeps `0600` inside a `0700` directory, and
@@ -294,12 +304,19 @@ rows: that row-integrity check does not establish which history occurred.
 sysknife audit verify
 sysknife audit verify --json
 sysknife audit verify --pubkey /etc/sysknife/audit-key.pub
+sysknife audit verify --from audit.json --pubkey /etc/sysknife/audit-key.pub
 ```
 
 | Flag | Description |
 |---|---|
 | `--json` | Machine-readable JSON report instead of human text |
+| `--from FILE` | Verify a complete version-1 export offline. Requires `--pubkey`; opens no database or private key and contacts no checkpoint service. |
 | `--pubkey FILE` | Verify with only the exported public key (`<audit-key>.pub`), no private key: the third-party / auditor path. Works with SQLite and PostgreSQL and proves the chain without signing access. |
+
+Offline verification checks both signature chains and their bindings using
+the existing verifier. Live status columns and external checkpoints are
+outside the exported document. Checking for deletion of an otherwise valid
+tail still requires an independently retained checkpoint.
 
 #### `sysknife audit checkpoint`
 
