@@ -276,7 +276,21 @@ fn from_openai_response(
 
     let stop_reason = match choice.finish_reason {
         Some(FinishReason::ToolCalls) => StopReason::ToolUse,
-        Some(FinishReason::Length) => StopReason::MaxTokens,
+        Some(FinishReason::Length) => {
+            // The provider says the output was cut off, so any tool-call
+            // arguments may be incomplete JSON. Preserve partial text for
+            // diagnostics, but never parse or return partial tool calls.
+            let content = choice
+                .message
+                .content
+                .filter(|text| !text.is_empty())
+                .map(|text| vec![ContentBlock::Text { text }])
+                .unwrap_or_default();
+            return Ok(Completion {
+                content,
+                stop_reason: StopReason::MaxTokens,
+            });
+        }
         _ => StopReason::EndTurn,
     };
 
@@ -797,6 +811,32 @@ mod tests {
         let response = make_text_response("truncated", FinishReason::Length);
         let completion = from_openai_response(response).unwrap();
         assert_eq!(completion.stop_reason, StopReason::MaxTokens);
+    }
+
+    #[test]
+    fn finish_reason_length_does_not_parse_truncated_tool_call_arguments() {
+        let mut response = make_tool_call_response(FinishReason::Length);
+        let Some(ChatCompletionMessageToolCalls::Function(call)) = response.choices[0]
+            .message
+            .tool_calls
+            .as_mut()
+            .and_then(|calls| calls.first_mut())
+        else {
+            panic!("expected a function tool call");
+        };
+        call.function.arguments = r#"{"summary":"x","steps":["#.into();
+
+        let completion = from_openai_response(response)
+            .expect("truncated tool arguments should return the max-token stop reason");
+
+        assert_eq!(completion.stop_reason, StopReason::MaxTokens);
+        assert!(
+            completion
+                .content
+                .iter()
+                .all(|block| !matches!(block, ContentBlock::ToolUse { .. })),
+            "partial tool calls must not reach the planner"
+        );
     }
 
     #[test]

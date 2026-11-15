@@ -148,16 +148,22 @@ impl ApprovalPolicy {
 
     /// Decision for a single step's risk level.
     pub fn decide_step(&self, risk: &PlanRiskLevel) -> ApprovalDecision {
-        // --dry-run: nothing executes, so everything is "approved" vacuously.
-        if self.dry_run {
-            return ApprovalDecision::AutoApproved;
-        }
-
         // Check --max-risk ceiling (hard abort, independent of --yes).
+        //
+        // This sits before the --dry-run shortcut on purpose. `--dry-run
+        // --json --max-risk` is the documented pre-flight check, so exit 0 has
+        // to mean the real run would be accepted; evaluating the ceiling runs
+        // nothing and prompts nobody, so it is safe under a dry run.
         if let Some(ceiling) = self.max_risk {
             if !ceiling.includes(risk) {
                 return ApprovalDecision::ExceedsCeiling(ceiling);
             }
+        }
+
+        // --dry-run: nothing executes, so everything else is "approved"
+        // vacuously.
+        if self.dry_run {
+            return ApprovalDecision::AutoApproved;
         }
 
         // Check auto-approval via --yes.
