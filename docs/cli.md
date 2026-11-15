@@ -528,6 +528,11 @@ snapshot beforehand costs less than the alternative.
 | `4` | **Configuration or daemon error** — invalid configuration, or the daemon could not be reached |
 | `5` | **Reboot required** - a step returned `needs_reboot`; remaining steps were not executed and the plan is incomplete. Reboot and deliberately re-run or resume. |
 
+If OpenAI reaches its output token limit before completing a proposed tool call,
+SysKnife discards the partial plan and returns a planning failure. Split a large
+intent into smaller requests; the truncated response is not retried as malformed
+tool-call JSON.
+
 Subcommands with their own semantics (for example `sysknife audit verify`) pass
 through their own exit code.
 
@@ -623,6 +628,12 @@ SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1 \
   sysknife --dangerously-skip-approval --yes --max-risk high --json --timeout 300 \
      "apply pending security updates"
 ```
+
+A dry run of an intent reports the same refusals as the real run. The plan is
+still printed, but the exit code is non-zero when the real run would refuse it:
+`1` when a step is above `--max-risk`, `4` when the target distro cannot run a
+step. A pre-flight check can therefore treat exit 0 from
+`sysknife --dry-run --json ...` as "the real run would be accepted".
 
 `--log-to` records stdout only. Capture stderr separately when the log must
 include provider notices, planning progress, and failure diagnostics:
