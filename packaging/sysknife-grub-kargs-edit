@@ -27,6 +27,7 @@
 #      non-zero so the daemon can surface the error.
 
 import argparse
+from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -38,6 +39,7 @@ import sys
 
 GRUB_DEFAULT = "/etc/default/grub"
 GRUB_BACKUP = "/etc/default/grub.sysknife.bak"
+GRUB_D = "/etc/default/grub.d"
 
 # Every pattern below is applied with fullmatch(). With match(), `$` also
 # matches just before a trailing newline, so `name\n` passed the charset and
@@ -187,21 +189,40 @@ def reject_dangerous_delete(tokens: list[str]) -> None:
 def edit_grub_cmdline(lines: list[str], append: list[str], delete: list[str]) -> list[str]:
     """Return a new line list with GRUB_CMDLINE_LINUX_DEFAULT updated."""
     out = []
+    rewritten = 0
     for line in lines:
         if line.startswith("GRUB_CMDLINE_LINUX_DEFAULT="):
             m = re.match(r'^(GRUB_CMDLINE_LINUX_DEFAULT=")([^"]*)(".*)', line)
-            if m:
-                value = m.group(2).strip()
-                for d in delete:
-                    # Remove the exact token (word-boundary match).
-                    escaped = re.escape(d)
-                    value = re.sub(r"(?<!\S)" + escaped + r"(?!\S)\s*", "", value)
-                value = value.strip()
-                if append:
-                    value = (value + " " + " ".join(append)).strip()
-                line = f'GRUB_CMDLINE_LINUX_DEFAULT="{value}"\n'
+            if not m:
+                form = "single-quoted" if line.split("=", 1)[1].startswith("'") else "not double-quoted"
+                raise ValueError(f"GRUB_CMDLINE_LINUX_DEFAULT is {form}; expected a double-quoted value")
+            rewritten += 1
+            value = m.group(2).strip()
+            for d in delete:
+                # Remove the exact token (word-boundary match).
+                escaped = re.escape(d)
+                value = re.sub(r"(?<!\S)" + escaped + r"(?!\S)\s*", "", value)
+            value = value.strip()
+            if append:
+                value = (value + " " + " ".join(append)).strip()
+            line = f'GRUB_CMDLINE_LINUX_DEFAULT="{value}"\n'
         out.append(line)
+    if rewritten == 0:
+        raise ValueError("no editable GRUB_CMDLINE_LINUX_DEFAULT assignment found")
     return out
+
+
+def check_grub_overrides() -> None:
+    """Refuse an assignment sourced after /etc/default/grub."""
+    directory = Path(GRUB_D)
+    if not directory.exists():
+        return
+    for path in sorted(directory.iterdir()):
+        if path.suffix != ".cfg":
+            continue
+        for line in path.read_text().splitlines():
+            if re.match(r"^\s*(?:export\s+)?GRUB_CMDLINE_LINUX_DEFAULT\s*=", line):
+                raise ValueError(f"{path} reassigns GRUB_CMDLINE_LINUX_DEFAULT; edit the overriding configuration first")
 
 
 # ---------------------------------------------------------------------------
@@ -248,15 +269,19 @@ def main() -> None:
         print(f"sysknife-grub-kargs-edit: cannot read {GRUB_DEFAULT}: {exc}", file=sys.stderr)
         sys.exit(1)
 
+    try:
+        check_grub_overrides()
+        new_lines = edit_grub_cmdline(original_lines, append_tokens, delete_tokens)
+    except (OSError, ValueError) as exc:
+        print(f"sysknife-grub-kargs-edit: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     # Back up the original.
     try:
         shutil.copy2(GRUB_DEFAULT, GRUB_BACKUP)
     except OSError as exc:
         print(f"sysknife-grub-kargs-edit: cannot write backup {GRUB_BACKUP}: {exc}", file=sys.stderr)
         sys.exit(1)
-
-    # Apply edits.
-    new_lines = edit_grub_cmdline(original_lines, append_tokens, delete_tokens)
 
     # Write updated config.
     try:
