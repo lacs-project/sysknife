@@ -42,6 +42,67 @@ fn cli() -> Command {
 }
 
 #[test]
+fn fleet_hosts_rejects_an_empty_inventory() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("inventory.toml");
+    std::fs::write(&path, "").unwrap();
+    cli()
+        .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+        .args(["fleet", "hosts"])
+        .arg(path)
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("inventory has no hosts"));
+}
+
+#[test]
+fn fleet_hosts_prints_all_hosts_without_connecting() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("inventory.toml");
+    let hosts: Vec<_> = (1..=3)
+        .map(|i| {
+            serde_json::json!({
+                "name": format!("web-{i}"),
+                "socket": format!("unix:///missing/web-{i}.sock"),
+                "key": format!("{i:064x}"),
+            })
+        })
+        .collect();
+    let contents = hosts
+        .iter()
+        .map(|h| {
+            format!(
+                "[[host]]\nname = {}\nsocket = {}\nkey = {}\n",
+                h["name"], h["socket"], h["key"]
+            )
+        })
+        .collect::<String>();
+    std::fs::write(&path, contents).unwrap();
+    let output = cli()
+        .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+        .args(["fleet", "hosts"])
+        .arg(&path)
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output).unwrap(),
+        serde_json::json!(hosts)
+    );
+    cli()
+        .args(["fleet", "hosts"])
+        .arg(path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("web-1"))
+        .stdout(predicate::str::contains("web-3"))
+        .stdout(predicate::str::contains(format!("{:064x}", 1)).not());
+}
+
+#[test]
 fn help_lists_every_top_level_subcommand() {
     let output = cli()
         .arg("--help")
