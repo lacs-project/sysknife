@@ -6,6 +6,14 @@ allowlist or a regex over a shell command string. SysKnife answers it
 differently — the model is never given a channel to produce a shell string
 in the first place.
 
+## Editing GRUB kernel arguments
+
+`GrubSetKargs` requires a double-quoted `GRUB_CMDLINE_LINUX_DEFAULT`
+assignment in `/etc/default/grub`. Missing, single-quoted and unquoted
+assignments are refused before the file is changed or `update-grub` is run.
+If a `/etc/default/grub.d/*.cfg` file reassigns that variable, the error names
+the overriding file so the operator can resolve it first.
+
 ## Reading ufw rule numbers
 
 For ufw rule deletion, read current indices with `UfwStatus` and
