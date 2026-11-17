@@ -167,14 +167,13 @@ fn daemon_answers_missing_config_key_exits_4() {
     stop.store(true, Ordering::Relaxed);
     daemon.join().unwrap();
 
-    let report: serde_json::Value =
-        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
-            panic!(
-                "invalid JSON: {e}\nstdout: {}\nstderr: {}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr),
-            )
-        });
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "invalid JSON: {e}\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        )
+    });
     assert_eq!(report["ok"], true, "daemon answered, so ok must be true");
     assert_eq!(
         report["provider"], "unknown",
@@ -224,14 +223,13 @@ fn daemon_answers_no_distro_valid_config_exits_0() {
     stop.store(true, Ordering::Relaxed);
     daemon.join().unwrap();
 
-    let report: serde_json::Value =
-        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
-            panic!(
-                "invalid JSON: {e}\nstdout: {}\nstderr: {}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr),
-            )
-        });
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "invalid JSON: {e}\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        )
+    });
     assert_eq!(
         report["ok"], true,
         "daemon answered, so ok must be true: {report}"
