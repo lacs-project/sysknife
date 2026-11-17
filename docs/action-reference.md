@@ -399,4 +399,4 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 ---
 
-_191 actions have an `ActionSpec` and are tabled above. The full catalogue (`KNOWN_ACTION_NAMES`) also includes `ListJobHistory`, which the dispatcher handles before the executor, for **192** total._
+_192 actions have an `ActionSpec` and are tabled above. The full catalogue (`KNOWN_ACTION_NAMES`) also includes `ListJobHistory`, which the dispatcher handles before the executor, for **193** total._
