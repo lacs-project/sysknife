@@ -28,7 +28,7 @@ strip-ansi-escapes = "0.2"
 
 indicatif  = "0.18"
 owo-colors = { version = "4", features = ["supports-colors"] }
-rustyline = { version = "18", features = ["with-file-history"] }
+rustyline = { version = "19", features = ["with-file-history"] }
 
 rmcp = { version = "3", features = ["transport-io"] }
 serde_json = { workspace = true }
