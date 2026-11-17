@@ -1037,7 +1037,7 @@ pub async fn run_doctor(
     json_out: bool,
     log: &Logger,
 ) -> Result<(), CliError> {
-    let config = BrainConfig::from_env().map_err(|e| CliError::ConfigOrDaemon(e.to_string()))?;
+    let mut warnings: Vec<String> = Vec::new();
 
     // `{:?}` printed `Unix("/run/…")` at users; `label()` gives the URI form
     // they can put back into SYSKNIFE_SOCKET.
@@ -1063,6 +1063,31 @@ pub async fn run_doctor(
             log.print_stderr(&format!("warning: {warning}"));
         }
     }
+    if let Some(w) = target.warning() {
+        warnings.push(w.into());
+    }
+
+    // Brain provider/model — fall back to placeholders if config is missing
+    // (e.g. operator hasn't run `sysknife-setup` yet).
+    //
+    // `config_warning` tracks whether the brain config itself is broken —
+    // this is what governs the exit code.  Distro-fallback notes are
+    // informational and must not make the exit code non-zero on their own,
+    // because older daemons that answer but predate `host_distro` are still
+    // healthy setups.
+    let (provider, model, config_warning) = match BrainConfig::from_env() {
+        Ok(cfg) => (
+            cfg.provider_name().to_string(),
+            cfg.model_name().to_string(),
+            None,
+        ),
+        Err(e) => {
+            let msg = format!("brain config unreadable: {e}");
+            warnings.push(msg.clone());
+            ("unknown".to_string(), "unknown".to_string(), Some(msg))
+        }
+    };
+
     match state_result {
         Ok((state, _)) => {
             if json_out {
@@ -1070,34 +1095,50 @@ pub async fn run_doctor(
                     "ok": true,
                     "socket": socket_label,
                     "host": state.host_name(),
-                    "provider": config.provider_name(),
-                    "model": config.model_name(),
+                    "provider": provider,
+                    "model": model,
                     "distro": distro_label,
                     "distro_source": target.source,
-                    "warnings": target.warning().into_iter().collect::<Vec<_>>(),
+                    "warnings": warnings,
                 });
                 log.println(&serde_json::to_string(&out).expect("static JSON"));
             } else {
                 crate::render::print_doctor_ok(
                     &socket_label,
                     state.host_name(),
-                    config.provider_name(),
-                    config.model_name(),
+                    &provider,
+                    &model,
                     &distro_label,
                     log,
                 );
+                if let Some(w) = &config_warning {
+                    log.print_stderr(&format!("warning: {w}"));
+                }
             }
-            Ok(())
+            if config_warning.is_none() {
+                Ok(())
+            } else {
+                Err(CliError::Exit(4))
+            }
         }
         Err(e) => {
             if json_out {
-                // Scripts need to know which socket failed, not just that one did.
-                let out = json!({ "ok": false, "socket": socket_label, "error": e.to_string(),
-                    "distro": distro_label, "distro_source": target.source,
-                    "warnings": target.warning().into_iter().collect::<Vec<_>>() });
+                let out = json!({
+                    "ok": false,
+                    "socket": socket_label,
+                    "error": e.to_string(),
+                    "provider": provider,
+                    "model": model,
+                    "distro": distro_label,
+                    "distro_source": target.source,
+                    "warnings": warnings,
+                });
                 log.println(&serde_json::to_string(&out).expect("static JSON"));
             } else {
                 crate::render::print_doctor_fail(&socket_label, &e.to_string());
+                if let Some(w) = &config_warning {
+                    log.print_stderr(&format!("warning: {w}"));
+                }
             }
             // The report above is the user-facing output; `Exit` carries the
             // code (4, as for any config/daemon failure) without main
@@ -2075,7 +2116,7 @@ fn emit_verification(
 
 /// An empty row-integrity check cannot establish whether an unanchored log
 /// is fresh or was erased. Keep that uncertainty separate from detected breaks.
-fn empty_unanchored_chain(
+pub(crate) fn empty_unanchored_chain(
     verification: &AuditVerification,
     anchor: Option<&CheckpointOutcome>,
 ) -> bool {
@@ -2783,6 +2824,8 @@ pub async fn run_repl(opts: &RunOpts, log: &Logger) -> Result<(), CliError> {
         }
     }
 
+    let mut first_failure: Option<i32> = None;
+
     loop {
         // Block the worker thread only during the blocking readline call.
         // Other tokio threads continue executing tasks unaffected.
@@ -2801,6 +2844,10 @@ pub async fn run_repl(opts: &RunOpts, log: &Logger) -> Result<(), CliError> {
                 }
                 if let Err(e) = run_intent(intent, opts, log).await {
                     log.print_stderr(&format!("error: {e}"));
+                    // The first failure decides the process exit status; later
+                    // intents may depend on the earlier one, so their codes do
+                    // not replace it (#646).
+                    record_intent_failure(&mut first_failure, e.exit_code());
                 }
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
@@ -2817,7 +2864,22 @@ pub async fn run_repl(opts: &RunOpts, log: &Logger) -> Result<(), CliError> {
         }
     }
 
+    // An interactive session keeps exiting 0 at EOF: the operator saw each
+    // diagnostic as it happened. Piped intents and --non-interactive scripts
+    // only see the status, so a failed intent has to reach it (#646).
+    if let Some(code) = first_failure {
+        if opts.non_interactive || !io::stdin().is_terminal() {
+            return Err(CliError::Exit(code));
+        }
+    }
+
     Ok(())
+}
+
+/// Keep the first failed intent's exit code; a later failure must not replace
+/// it, because the later intents may depend on the earlier one (#646).
+fn record_intent_failure(first_failure: &mut Option<i32>, code: i32) {
+    first_failure.get_or_insert(code);
 }
 
 // ---------------------------------------------------------------------------
@@ -3006,6 +3068,16 @@ mod approval_view_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The REPL reports the first failed intent's code (#646); a later failure
+    /// must not replace it.
+    #[test]
+    fn only_the_first_failed_intent_sets_the_exit_code() {
+        let mut first_failure = None;
+        record_intent_failure(&mut first_failure, 2);
+        record_intent_failure(&mut first_failure, 4);
+        assert_eq!(first_failure, Some(2));
+    }
 
     #[test]
     fn checkpoint_reports_when_the_system_store_needs_sudo() {
