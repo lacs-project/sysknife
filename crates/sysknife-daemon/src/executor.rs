@@ -4245,12 +4245,11 @@ mod tests {
 
     #[test]
     fn authorized_keys_actions_reject_a_traversal_username() {
-        // `actions/ssh.rs` builds `/home/{username}/.ssh/authorized_keys` by
-        // interpolation, so the only thing keeping the path inside the user's
-        // home is `validated_username` being called in these three match arms.
-        // `validate.rs` tests the validator in isolation, and `ssh_key_ops.rs`
-        // calls the action functions directly — neither proves the guard is
-        // actually wired to the reachable actions.
+        // `validated_username` must guard all three reachable SSH-key actions.
+        // The root-owned helper repeats the account lookup and drops credentials
+        // before accessing a home; keeping this guard prevents malformed names
+        // from reaching that lookup. `validate.rs` tests the validator in
+        // isolation, and `ssh_key_ops.rs` calls action functions directly.
         for action in [
             "GetAuthorizedKeys",
             "AddAuthorizedKey",

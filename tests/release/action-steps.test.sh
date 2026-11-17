@@ -3,6 +3,8 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 python3 - <<'PY'
 from pathlib import Path
+import contextlib
+import io
 import re
 import os
 import runpy
@@ -28,9 +30,9 @@ class ShellGrants(unittest.TestCase):
     def test_no_unrestricted_helper_grant(self):
         grants = [line for line in Path('packaging/sysknife-sudoers').read_text(encoding='utf-8').splitlines()
                   if line.startswith('sysknife ') and '/action-steps' in line]
-        self.assertEqual(len(grants), 23)
+        self.assertEqual(len(grants), 24)
         for grant in grants:
-            self.assertRegex(grant, r'/action-steps (firewall|group-add|group-remove|snap-install-hold|ssh-add|ssh-remove|flatpak|podman|toolbox|user-create|user-lock|user-unlock|unit|signal|user-delete|group-create|group-delete|password-aging|lv-extend|lv-create|lv-snapshot|apt|rpm-ostree) \*$')
+            self.assertRegex(grant, r'/action-steps (firewall|group-add|group-remove|snap-install-hold|ssh-add|ssh-remove|ssh-list|flatpak|podman|toolbox|user-create|user-lock|user-unlock|unit|signal|user-delete|group-create|group-delete|password-aging|lv-extend|lv-create|lv-snapshot|apt|rpm-ostree) \*$')
 
     def test_no_useradd_usermod_or_unit_verb_grant_remains(self):
         # The escapes GHSA-j9c3-j2qr-65c4 named matched the "narrowed" grants
@@ -67,6 +69,7 @@ class ShellGrants(unittest.TestCase):
         bad = [[], ['exec', '/bin/sh'], ['firewall', 'public', 'ssh', 'reload'],
                ['firewall', 'x;id', 'ssh', 'add-service'], ['snap-install-hold', '--dangerous', 'stable'],
                ['group-add', 'alice', 'wheel\nroot'], ['ssh-add', 'alice', 'ssh-ed25519 a\nroot'],
+               ['ssh-list', 'alice', 'extra'],
                ['podman', 'alice', 'run', '--privileged', 'image'],
                ['toolbox', 'alice', 'run', 'sh'], ['flatpak', 'alice', 'run', '--command=sh', 'app'],
                ['ssh-remove', 'alice', 'ssh-ed25519 a', '/etc/passwd']]
@@ -97,9 +100,48 @@ class ShellGrants(unittest.TestCase):
         def drop(user):
             events.append('drop')
             return types.SimpleNamespace(pw_dir='/home/alice')
-        with mock.patch.dict(helper, drop_to_user=drop, edit_key=lambda *a: events.append(('edit', a))):
+        with mock.patch.dict(helper, drop_to_user=drop, edit_user_key=lambda *a: events.append(('edit', a))):
             helper['main'](['ssh-add', 'alice', 'ssh-ed25519 AAAA...'])
-        self.assertEqual(events, ['drop', ('edit', (os.path.join('/home/alice', '.ssh', 'authorized_keys'), 'ssh-ed25519 AAAA...', True))])
+        self.assertEqual(events, ['drop', ('edit', ('/home/alice', 'ssh-ed25519 AAAA...', True))])
+
+    @unittest.skipUnless(os.name == 'posix', 'Linux filesystem semantics')
+    def test_add_creates_secure_ssh_dir_and_list_reads_the_account_home(self):
+        key = 'ssh-ed25519 AAAA fixture user@example'
+        with tempfile.TemporaryDirectory() as root:
+            home = Path(root) / 'srv' / 'account'
+            home.mkdir(parents=True)
+            home.chmod(0o700)
+            account = types.SimpleNamespace(pw_dir=str(home))
+            with mock.patch.dict(helper, drop_to_user=lambda _: account):
+                helper['main'](['ssh-add', 'alice', key])
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    helper['main'](['ssh-list', 'alice'])
+            ssh_dir = home / '.ssh'
+            self.assertEqual(output.getvalue(), key + '\n')
+            self.assertEqual(ssh_dir.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(ssh_dir.stat().st_uid, os.geteuid())
+
+    @unittest.skipUnless(os.name == 'posix', 'Linux filesystem semantics')
+    def test_add_refuses_symlinked_or_non_directory_ssh_path(self):
+        key = 'ssh-ed25519 AAAA fixture user@example'
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            home = root_path / 'home'
+            home.mkdir()
+            target = root_path / 'target'
+            target.mkdir()
+            (home / '.ssh').symlink_to(target, target_is_directory=True)
+            account = types.SimpleNamespace(pw_dir=str(home))
+            with mock.patch.dict(helper, drop_to_user=lambda _: account):
+                with self.assertRaises(OSError):
+                    helper['main'](['ssh-add', 'alice', key])
+
+            (home / '.ssh').unlink()
+            (home / '.ssh').write_text('not a directory')
+            with mock.patch.dict(helper, drop_to_user=lambda _: account):
+                with self.assertRaises(OSError):
+                    helper['main'](['ssh-add', 'alice', key])
 
     def test_group_materialization_failure_prevents_membership_change(self):
         for op in ('group-add', 'group-remove'):
@@ -174,9 +216,8 @@ class ShellGrants(unittest.TestCase):
             root = Path(d)
             root.chmod(0o755)
             home = root / 'home'
-            ssh = home / '.ssh'
-            ssh.mkdir(parents=True)
-            for path in (home, ssh):
+            home.mkdir()
+            for path in (home,):
                 os.chown(path, account.pw_uid, account.pw_gid)
                 path.chmod(0o700)
             protected = root / 'root-only'
@@ -187,10 +228,14 @@ import os,pwd,runpy,sys,types
 m=runpy.run_path(sys.argv[1]); account=pwd.getpwnam('nobody')
 # Substitute only the fixture home; use real NSS identity and real set*id calls.
 pwd.getpwnam=lambda name: types.SimpleNamespace(pw_name=account.pw_name,pw_uid=account.pw_uid,pw_gid=account.pw_gid,pw_dir=sys.argv[2],pw_shell=account.pw_shell)
-failed=False
-try: m['main'](['ssh-add','nobody','ssh-ed25519 AAAA fixture'])
-except OSError: failed=True
-assert failed == (sys.argv[3]=='symlink')
+mode=sys.argv[3]
+if mode == 'list':
+    m['main'](['ssh-list','nobody'])
+else:
+    failed=False
+    try: m['main'](['ssh-add','nobody','ssh-ed25519 AAAA fixture'])
+    except OSError: failed=True
+    assert failed == (mode in ('key-symlink','ssh-symlink'))
 assert os.getuid()==account.pw_uid and os.geteuid()==account.pw_uid
 assert os.getgid()==account.pw_gid and 0 not in os.getgroups()
 try: os.setuid(0)
@@ -201,12 +246,24 @@ else: raise AssertionError('root can be regained')
                        str(Path('packaging/sysknife-action-steps').resolve()), str(home)]
             result = subprocess.run([*command, 'normal'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
+            ssh = home / '.ssh'
+            self.assertEqual(ssh.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(ssh.stat().st_uid, account.pw_uid)
             keys = ssh / 'authorized_keys'
             self.assertEqual(keys.stat().st_uid, account.pw_uid)
             self.assertEqual(keys.read_text(), 'ssh-ed25519 AAAA fixture\n')
+            result = subprocess.run([*command, 'list'], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, 'ssh-ed25519 AAAA fixture\n')
             keys.unlink()
             keys.symlink_to(protected)
-            result = subprocess.run([*command, 'symlink'], capture_output=True, text=True)
+            result = subprocess.run([*command, 'key-symlink'], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(protected.read_text(), 'must remain unchanged\n')
+            keys.unlink()
+            ssh.rename(home / '.ssh-real')
+            ssh.symlink_to(root, target_is_directory=True)
+            result = subprocess.run([*command, 'ssh-symlink'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(protected.read_text(), 'must remain unchanged\n')
 

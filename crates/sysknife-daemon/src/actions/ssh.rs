@@ -30,7 +30,10 @@ pub fn set_sshd_option(option: &str, value: &str) -> ActionSpec {
 pub fn get_authorized_keys(username: &str) -> ActionSpec {
     ActionSpec {
         action_name: "GetAuthorizedKeys",
-        mechanism: command_mechanism("cat", [&format!("/home/{username}/.ssh/authorized_keys")]),
+        mechanism: command_mechanism(
+            "sudo",
+            ["/usr/lib/sysknife/action-steps", "ssh-list", username],
+        ),
         risk_level: RiskLevel::Low,
         reboot_required: false,
         rollback_available: false,
@@ -70,4 +73,23 @@ pub fn add_authorized_key(username: &str, public_key: &str) -> ActionSpec {
 
 pub fn remove_authorized_key(username: &str, public_key: &str) -> ActionSpec {
     keys_edit_as_user("RemoveAuthorizedKey", username, "ssh-remove", public_key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_authorized_keys_uses_the_credential_dropping_helper() {
+        let spec = get_authorized_keys("alice");
+        let ActionMechanism::Command { program, args } = spec.mechanism else {
+            panic!("GetAuthorizedKeys must use a command mechanism");
+        };
+        assert_eq!(program, "sudo");
+        assert_eq!(
+            args,
+            ["/usr/lib/sysknife/action-steps", "ssh-list", "alice"]
+        );
+        assert_eq!(spec.risk_level, RiskLevel::Low);
+    }
 }

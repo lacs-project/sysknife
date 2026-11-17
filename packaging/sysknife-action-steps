@@ -525,12 +525,61 @@ def drop_to_user(name):
     return account
 
 
-def edit_key(path, key, add):
+def open_ssh_dir(home, create):
+    """Open a user's .ssh directory without following a planted symlink."""
+    path = os.path.join(home, ".ssh")
+    created = False
+    if create:
+        try:
+            os.mkdir(path, 0o700)
+            created = True
+        except FileExistsError:
+            pass
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open(path, flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError(".ssh is not a directory")
+        if info.st_uid != os.geteuid():
+            raise ValueError(".ssh is not owned by the target user")
+        if created:
+            os.fchmod(fd, 0o700)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def read_authorized_keys(home):
+    """Read authorized_keys from the resolved home, refusing symlinks."""
+    try:
+        directory_fd = open_ssh_dir(home, create=False)
+    except FileNotFoundError:
+        return ""
+    try:
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+        try:
+            fd = os.open("authorized_keys", flags, dir_fd=directory_fd)
+        except FileNotFoundError:
+            return ""
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError("authorized_keys is not a regular file")
+            content = stream.read(16 * 1024 * 1024 + 1)
+            if len(content) > 16 * 1024 * 1024:
+                raise ValueError("authorized_keys exceeds size limit")
+            return content.decode("utf-8", errors="replace")
+    finally:
+        os.close(directory_fd)
+
+
+def edit_key(path, key, add, dir_fd=None):
     import fcntl
     flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
     if add:
         flags |= os.O_CREAT
-    fd = os.open(path, flags, 0o600)
+    fd = os.open(path, flags, 0o600, dir_fd=dir_fd) if dir_fd is not None else os.open(path, flags, 0o600)
     with os.fdopen(fd, "r+b") as stream:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise ValueError("authorized_keys is not a regular file")
@@ -553,6 +602,14 @@ def edit_key(path, key, add):
             stream.truncate()
             stream.flush()
             os.fsync(stream.fileno())
+
+
+def edit_user_key(home, key, add):
+    directory_fd = open_ssh_dir(home, create=add)
+    try:
+        edit_key("authorized_keys", key, add, dir_fd=directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def ensure_local_group(group):
@@ -698,12 +755,15 @@ def main(args):
             run(["/usr/sbin/usermod", "--append", "--groups", group, name])
         else:
             run(["/usr/bin/gpasswd", "--delete", name, group])
+    elif op == "ssh-list" and len(values) == 1:
+        account = drop_to_user(values[0])
+        sys.stdout.write(read_authorized_keys(account.pw_dir))
     elif op in ("ssh-add", "ssh-remove") and len(values) == 2:
         name, key = values
         public_key(key)
         account = drop_to_user(name)
-        # No stat/open/mkdir of this user-controlled path occurs as root.
-        edit_key(os.path.join(account.pw_dir, ".ssh", "authorized_keys"), key, op == "ssh-add")
+        # No .ssh creation, path lookup or key-file access occurs as root.
+        edit_user_key(account.pw_dir, key, op == "ssh-add")
     elif op in ("flatpak", "podman", "toolbox") and len(values) >= 2:
         name, *parameters = values
         argv = tool_argv(op, parameters)

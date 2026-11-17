@@ -64,12 +64,10 @@ const MIN_EMAIL_LEN: usize = 3;
 /// Validate a username: `[a-zA-Z0-9._-]`, 1-32 chars, must not start with `-`
 /// or `.`, and must not contain `..`.
 ///
-/// The leading-`-` guard blocks option injection; the leading-`.` and `..`
-/// guards block path traversal, because usernames are interpolated directly
-/// into `/home/<username>/...` filesystem paths (see `actions/ssh.rs`). Without
-/// them a username of `..` yields `/home/../.ssh/authorized_keys` = `/.ssh/...`,
-/// escaping the per-user home directory. `.` and `..` are also caught by the
-/// leading-`.` check; the `..` substring guard additionally rejects `a..b`.
+/// The leading-`-` guard blocks option-like values. The leading-`.` and `..`
+/// guards reject path-like strings before account lookup and home resolution;
+/// SSH key paths are resolved from the account's passwd entry by the
+/// credential-dropping helper rather than interpolated from this value.
 pub fn validated_username(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     if s.is_empty() || s.len() > MAX_USERNAME_LEN {
         return Err(ExecutorError::InvalidParam(param));
@@ -2170,7 +2168,7 @@ mod tests {
 
     #[test]
     fn username_rejects_traversal_forms() {
-        // Path-traversal guard: usernames feed `/home/<username>/...` in ssh.rs.
+        // Do not accept path-like values as account names.
         assert!(validated_username("..", "username").is_err());
         assert!(validated_username(".", "username").is_err());
         assert!(validated_username(".hidden", "username").is_err());
