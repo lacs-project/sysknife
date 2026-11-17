@@ -27,6 +27,20 @@ for command in cargo jq sysknife systemctl timeout; do
     write_fake_command "$command"
 done
 
+cat >"$fake_bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == metadata ]]; then
+    printf '{"target_directory":"%s"}\n' "${FAKE_CARGO_TARGET_DIR:?}"
+fi
+EOF
+cat >"$fake_bin/jq" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == -er ]]; then
+    python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])'
+fi
+EOF
+chmod +x "$fake_bin/cargo" "$fake_bin/jq"
+
 write_story() {
     local directory="$1" prefix="$2" story_id="$3" outcome="$4"
     local path="$directory/${prefix}${story_id}.sh"
@@ -64,6 +78,8 @@ run_case() {
 
     if CASE_OUTPUT="$(
         PATH="$fake_bin:$PATH" \
+        FAKE_CARGO_TARGET_DIR="${FAKE_CARGO_TARGET_DIR:-$fixture/unused-target}" \
+        DEV_STORY_CLI_PATH_FILE="${DEV_STORY_CLI_PATH_FILE:-$fixture/dev-story-cli-path}" \
         SYSKNIFE_LLM_MODEL=fixture \
         SYSKNIFE_LLM_PROVIDER=ollama \
         SYSKNIFE_ALLOW_DESTRUCTIVE=0 \
@@ -192,9 +208,13 @@ run_case 'run-exec-stories accepts an explicit PASS' 0 "$exec_runner" 1
 # external operations while leaving the verdict path untouched.
 dev_root="$fixture/dev"
 dev_e2e="$dev_root/tests/e2e"
-mkdir -p "$dev_e2e/stories"
+dev_target="$dev_root/cargo target"
+mkdir -p "$dev_e2e/stories" "$dev_root/scripts" "$dev_target/release"
 dev_runner="$dev_e2e/dev-stories.sh"
 cp "$repo_root/tests/e2e/dev-stories.sh" "$dev_runner"
+cp "$repo_root/scripts/dev-stories-target.sh" "$dev_root/scripts/"
+cp "$fake_bin/sysknife" "$dev_target/release/sysknife"
+cp "$fake_bin/sysknife" "$dev_target/release/sysknife-daemon"
 sed -i 's/\r$//' "$dev_runner"
 dev_socket="$dev_root/daemon.sock"
 touch "$dev_socket"
@@ -209,14 +229,31 @@ done
 write_story "$dev_e2e/stories" story- 2 skip
 write_story "$dev_e2e/stories" story- 3 silent
 
-run_case 'dev-stories rejects SKIP' 1 "$dev_runner" 1 2
-run_case 'dev-stories rejects an unmarked zero exit' 1 "$dev_runner" 3
-run_case 'dev-stories accepts an explicit PASS' 0 "$dev_runner" 1
+FAKE_CARGO_TARGET_DIR="$dev_target" run_case 'dev-stories rejects SKIP' 1 "$dev_runner" 1 2
+FAKE_CARGO_TARGET_DIR="$dev_target" run_case 'dev-stories rejects an unmarked zero exit' 1 "$dev_runner" 3
+FAKE_CARGO_TARGET_DIR="$dev_target" run_case 'dev-stories accepts an explicit PASS' 0 "$dev_runner" 1
+
+# The real runner must put Cargo's built CLI ahead of an older executable on
+# PATH before it starts the stories. A fixed target/release prefix does not
+# point at this fixture's custom target directory and leaves fake_bin first.
+cat >"$dev_e2e/stories/story-1.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'PASS: fixture story\n'
+printf '%s\n' "$(command -v sysknife)" >"${DEV_STORY_CLI_PATH_FILE:?}"
+EOF
+chmod +x "$dev_e2e/stories/story-1.sh"
+FAKE_CARGO_TARGET_DIR="$dev_target" run_case \
+    'dev-stories stories resolve Cargo target CLI' 0 "$dev_runner" 1
+if [[ "$(<"$fixture/dev-story-cli-path")" != "$dev_target/release/sysknife" ]]; then
+    printf 'FAIL: dev-stories story resolved %s, expected %s\n' \
+        "$(<"$fixture/dev-story-cli-path")" "$dev_target/release/sysknife" >&2
+    failures=$((failures + 1))
+fi
 
 write_story "$dev_e2e/stories" story- 2 pass
 write_story "$dev_e2e/stories" story- 3 pass
 write_story "$dev_e2e/stories" story- 28 skip
-run_case 'dev-stories default set accepts portable stories' 0 "$dev_runner"
+FAKE_CARGO_TARGET_DIR="$dev_target" run_case 'dev-stories default set accepts portable stories' 0 "$dev_runner"
 assert_output_not_contains 'dev-stories default set omits Fedora-only story 28' 'Story 28'
 
 if [[ "$failures" -ne 0 ]]; then
