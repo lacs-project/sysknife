@@ -182,6 +182,13 @@ pub struct StoragePoolSection {
 #[derive(Debug, Default, Deserialize)]
 pub struct AuditSection {
     pub forward: Option<AuditForwardSection>,
+    /// Postgres URL of the external append-only checkpoint database, e.g.
+    /// `postgres://sysknife@anchor-host/anchors`. Maps to
+    /// `SYSKNIFE_CHECKPOINT_DB` (#558): the daemon and every CLI reader
+    /// (`audit verify`, `audit checkpoint`) resolve the anchor from this one
+    /// source, so `sudo sysknife audit verify` — whose environment is reset —
+    /// still checks the anchor the daemon is writing.
+    pub checkpoint_db: Option<String>,
 }
 
 /// `[audit.forward]` section. Each subsection enables one external sink.
@@ -380,6 +387,12 @@ impl LacsConfig {
             }
             if let Some(db) = &daemon.database {
                 set_if_absent("SYSKNIFE_DATABASE_PATH", db);
+            }
+        }
+
+        if let Some(audit) = &self.audit {
+            if let Some(url) = &audit.checkpoint_db {
+                set_if_absent("SYSKNIFE_CHECKPOINT_DB", url);
             }
         }
 
@@ -672,6 +685,54 @@ provider = "anthropic"
             std::env::remove_var("SYSKNIFE_LLM_PROVIDER");
         }
         assert_eq!(provider, "ollama", "env var must win over config file");
+    }
+
+    /// #558 — `[audit] checkpoint_db` maps to `SYSKNIFE_CHECKPOINT_DB` so the
+    /// daemon and every CLI reader (including `sudo sysknife audit verify`,
+    /// whose environment is reset) share one anchor source. An explicit env
+    /// var still wins.
+    #[test]
+    fn checkpoint_db_maps_to_env_and_env_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let sysknife_dir = dir.path().join("sysknife");
+        std::fs::create_dir_all(&sysknife_dir).unwrap();
+        std::fs::write(
+            sysknife_dir.join("config.toml"),
+            r#"
+[audit]
+checkpoint_db = "postgres://sysknife@anchor-host/anchors"
+"#,
+        )
+        .unwrap();
+
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", dir.path());
+            std::env::remove_var("SYSKNIFE_CHECKPOINT_DB");
+        }
+        let cfg = LacsConfig::load();
+        assert_eq!(
+            cfg.audit.as_ref().and_then(|a| a.checkpoint_db.as_deref()),
+            Some("postgres://sysknife@anchor-host/anchors")
+        );
+        cfg.apply_defaults_to_env();
+        let mapped = std::env::var("SYSKNIFE_CHECKPOINT_DB").unwrap();
+        unsafe {
+            std::env::remove_var("SYSKNIFE_CHECKPOINT_DB");
+        }
+        assert_eq!(mapped, "postgres://sysknife@anchor-host/anchors");
+
+        // Env var wins over the file.
+        unsafe {
+            std::env::set_var("SYSKNIFE_CHECKPOINT_DB", "postgres://other-host/anchors");
+        }
+        cfg.apply_defaults_to_env();
+        let winner = std::env::var("SYSKNIFE_CHECKPOINT_DB").unwrap();
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+            std::env::remove_var("SYSKNIFE_CHECKPOINT_DB");
+        }
+        assert_eq!(winner, "postgres://other-host/anchors");
     }
 
     #[test]

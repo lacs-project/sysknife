@@ -841,3 +841,169 @@ fn help_says_what_the_skip_approval_flag_does_and_does_not_do() {
             .or(predicate::str::contains("Requires")),
     );
 }
+
+/// #558 — a Postgres-backed deployment with a configured anchor must get the
+/// real cross-check, not a permanent "sqlite backend only" exit 2.
+///
+/// The daemon anchors a Postgres chain every 15 minutes
+/// (`spawn_periodic_anchor` reads through the `AuditStore` trait), but both
+/// readers disagreed with that: `verify_configured_anchor` short-circuited
+/// every Postgres config with `CannotVerify`, and `sysknife audit checkpoint`
+/// ignored `[storage]` and opened a SQLite store only. A correctly configured
+/// Postgres deployment therefore got a permanent exit 2, which teaches the
+/// operator to ignore 2.
+///
+/// Done-when, end to end through the real binary: anchor a Postgres chain
+/// with `audit checkpoint`, truncate the tail, and expect `Truncated`
+/// (exit 1) from `audit verify`.
+#[tokio::test]
+#[ignore = "live Postgres; set SYSKNIFE_TEST_POSTGRES_URL and run with --include-ignored"]
+async fn postgres_backend_checkpoint_anchors_and_verify_reports_truncation() {
+    use sqlx_postgres::{PgConnectOptions, PgPoolOptions};
+    use std::str::FromStr;
+    use sysknife_daemon::audit_chain::resolve_audit_key_path;
+    use sysknife_daemon::store::postgres::{PostgresConfig, PostgresStore};
+    use sysknife_daemon::store::AuditStore;
+
+    let required = std::env::var_os("SYSKNIFE_REQUIRE_POSTGRES").is_some();
+    let url = std::env::var("SYSKNIFE_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|url| !url.is_empty());
+    let Some(url) = url else {
+        assert!(
+            !required,
+            "SYSKNIFE_REQUIRE_POSTGRES is set but SYSKNIFE_TEST_POSTGRES_URL is unset"
+        );
+        return;
+    };
+    assert!(
+        url.contains("sysknife_test"),
+        "refusing destructive integration test against a non-test database"
+    );
+
+    const CHAIN_SCHEMA: &str = "cli_smoke_pg_chain";
+    const ANCHOR_SCHEMA: &str = "cli_smoke_pg_anchor";
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(PgConnectOptions::from_str(&url).expect("valid test URL"))
+        .await
+        .expect("connect for schema setup");
+    for statement in [
+        format!("DROP SCHEMA IF EXISTS {CHAIN_SCHEMA} CASCADE"),
+        format!("CREATE SCHEMA {CHAIN_SCHEMA}"),
+        format!("DROP SCHEMA IF EXISTS {ANCHOR_SCHEMA} CASCADE"),
+        format!("CREATE SCHEMA {ANCHOR_SCHEMA}"),
+    ] {
+        sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(statement))
+            .execute(&admin)
+            .await
+            .expect("prepare isolated schemas");
+    }
+    let separator = if url.contains('?') { '&' } else { '?' };
+    let chain_url = format!("{url}{separator}options=-csearch_path%3D{CHAIN_SCHEMA}");
+    let anchor_url = format!("{url}{separator}options=-csearch_path%3D{ANCHOR_SCHEMA}");
+
+    // A Postgres deployment keeps the signing key on local disk beside the
+    // (vestigial) default database path; the CLI resolves it the same way.
+    let dir = tempfile::tempdir().expect("create CLI fixture directory");
+    let db_path = dir.path().join("daemon.sqlite");
+    let key =
+        AuditKey::load_or_generate(&resolve_audit_key_path(&db_path)).expect("generate audit key");
+
+    // Two rows in the Postgres chain, signed with that key.
+    let store_cfg = PostgresConfig {
+        url: chain_url.clone(),
+        ..PostgresConfig::default()
+    };
+    let store = PostgresStore::connect(&store_cfg, Arc::new(key.clone()))
+        .await
+        .expect("connect postgres store");
+    for request_id in ["pg-anchor-1", "pg-anchor-2"] {
+        store
+            .record(NewTransaction {
+                request_id: request_id.to_string(),
+                request_hash: format!("hash-{request_id}"),
+                action_name: "UpdateSystem".to_string(),
+                risk_level: RiskLevel::High,
+                summary: "Upgrade the system".to_string(),
+                warnings: vec![],
+                caller_role: CallerRole::Dev,
+                caller_principal: CallerPrincipal::Uid(1000),
+            })
+            .await
+            .expect("record postgres chain row");
+    }
+    drop(store);
+
+    // config.toml selects the Postgres backend, the way a real deployment does.
+    let config_root = dir.path().join("cfg");
+    std::fs::create_dir_all(config_root.join("sysknife")).expect("create config dir");
+    std::fs::write(
+        config_root.join("sysknife/config.toml"),
+        format!("[storage]\nbackend = \"postgres\"\nurl = \"{chain_url}\"\n"),
+    )
+    .expect("write config.toml");
+
+    // Step 1: `audit checkpoint` must honour [storage] and anchor the
+    // Postgres chain (before the fix it demanded a local SQLite file).
+    let checkpoint = cli()
+        .env("XDG_CONFIG_HOME", &config_root)
+        .env("HOME", dir.path())
+        .env("SYSKNIFE_DATABASE_PATH", &db_path)
+        .env("SYSKNIFE_CHECKPOINT_DB", &anchor_url)
+        .args(["audit", "checkpoint"])
+        .output()
+        .expect("run audit checkpoint");
+    assert_eq!(
+        checkpoint.status.code(),
+        Some(0),
+        "audit checkpoint must anchor a postgres chain\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&checkpoint.stdout),
+        String::from_utf8_lossy(&checkpoint.stderr)
+    );
+
+    // Step 2: an attacker with write access to the store deletes the tail.
+    sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(format!(
+        "DELETE FROM {CHAIN_SCHEMA}.transactions WHERE seq = 2"
+    )))
+    .execute(&admin)
+    .await
+    .expect("truncate the chain tail");
+
+    // Step 3: `audit verify` cross-checks the anchor and reports the
+    // truncation (before the fix: CannotVerify "sqlite backend only", exit 2).
+    let verify = cli()
+        .env("XDG_CONFIG_HOME", &config_root)
+        .env("HOME", dir.path())
+        .env("SYSKNIFE_DATABASE_PATH", &db_path)
+        .env("SYSKNIFE_CHECKPOINT_DB", &anchor_url)
+        .args(["audit", "verify", "--json"])
+        .output()
+        .expect("run audit verify");
+
+    for schema in [CHAIN_SCHEMA, ANCHOR_SCHEMA] {
+        sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(format!(
+            "DROP SCHEMA {schema} CASCADE"
+        )))
+        .execute(&admin)
+        .await
+        .expect("drop isolated schema");
+    }
+
+    assert_eq!(
+        verify.status.code(),
+        Some(1),
+        "a truncated postgres chain with an anchor must fail verify with exit 1\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&verify.stdout),
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    let doc: serde_json::Value =
+        serde_json::from_slice(&verify.stdout).expect("--json emits one document");
+    assert_eq!(
+        doc["audit_anchor"]["status"],
+        "truncated",
+        "the anchor check must report the truncation: {}",
+        String::from_utf8_lossy(&verify.stdout)
+    );
+    assert_eq!(doc["status"], "broken");
+}

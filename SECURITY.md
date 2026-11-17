@@ -577,6 +577,15 @@ For a deployment that claims tamper-evident retention:
 
 ```sh
 # An independent, append-only Postgres database — not the SysKnife store.
+# Put the URL in config.toml so the daemon AND every CLI reader (including
+# `sudo sysknife audit verify`, whose environment is reset) resolve the same
+# anchor. An explicit env var still wins for one-off runs.
+#   ~/.config/sysknife/config.toml:
+#     [audit]
+#     checkpoint_db = "postgres://sysknife@anchor-host/anchors"
+#
+# The daemon picks this up via SYSKNIFE_CHECKPOINT_DB, which config.toml
+# populates at startup; a systemd unit may also set it directly:
 sudo systemctl edit sysknife-daemon
 # [Service]
 # Environment="SYSKNIFE_CHECKPOINT_DB=postgres://sysknife@anchor-host/anchors"
