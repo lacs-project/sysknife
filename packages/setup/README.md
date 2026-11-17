@@ -64,6 +64,20 @@ them manually if you want to update them to the packaged defaults.
 
 All files that may contain API keys are created with `chmod 0600`.
 
+## Uninstall
+
+From the project root, run:
+
+```sh
+sysknife-setup --uninstall
+```
+
+For Claude Code, uninstall removes only SysKnife MCP server entries. Other
+servers and top-level `.mcp.json` settings are preserved, and the file is
+removed only when nothing else remains. Packaged hookify rules are removed
+only if they still match their original contents; locally edited rules are
+left in place and reported.
+
 ## Gitignore advice
 
 The wizard prints a reminder to add sensitive files to `.gitignore`:

@@ -39,6 +39,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$REPO_ROOT/scripts/dev-stories-target.sh"
 LOG_DIR="$SCRIPT_DIR/logs"
 STORY_DIR="$SCRIPT_DIR/stories"
 SOCKET_PATH="/tmp/sysknife-daemon.sock"
@@ -66,12 +67,12 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 
 echo "Building sysknife-daemon and sysknife..."
+TARGET_DIR="$(dev_stories_target_dir "$REPO_ROOT")"
 cargo build -p sysknife-daemon -p sysknife-cli --release --quiet \
     --manifest-path "$REPO_ROOT/Cargo.toml"
+dev_stories_configure_paths "$TARGET_DIR"
 echo "Build done."
 echo ""
-
-DAEMON_BIN="$REPO_ROOT/target/release/sysknife-daemon"
 
 # ---------------------------------------------------------------------------
 # Start daemon if not already running
@@ -134,7 +135,6 @@ if [[ -z "${SYSKNIFE_LLM_PROVIDER:-}" ]]; then
     fi
 fi
 export SYSKNIFE_LISTEN_URI="unix://$SOCKET_PATH"
-export PATH="$REPO_ROOT/target/release:$PATH"
 
 echo "LLM provider: $SYSKNIFE_LLM_PROVIDER, model: ${SYSKNIFE_LLM_MODEL:-<provider default>}"
 echo "Daemon socket: $SOCKET_PATH"

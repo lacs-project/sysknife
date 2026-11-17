@@ -199,6 +199,8 @@ jobs:
 
       - name: Check the install knows every directory it writes into
         run: bash tests/release/install-paths.test.sh
+      - name: Check dev stories use Cargo's target directory
+        run: bash tests/release/dev-stories-target-dir.test.sh
 
       - name: Check a DESTDIR install stages every file and leaves the host alone
         run: bash tests/release/destdir-install.test.sh
