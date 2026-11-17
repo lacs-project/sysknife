@@ -71,9 +71,9 @@ use sysknife_daemon::actions::OBSERVER_MUTATING_ACTIONS;
 use crate::client::{DaemonClient, DescribeInfo, SocketTarget};
 use crate::error::CliError;
 use crate::runner::{
-    audit_anchor_json, combined_verification_exit_code, resolve_socket_target, status_word,
-    unchecked_audit_anchor_json, verify_configured_anchor, verify_postgres, verify_sqlite,
-    Verifier,
+    audit_anchor_json, combined_verification_exit_code, empty_unanchored_chain,
+    resolve_socket_target, status_word, unchecked_audit_anchor_json, verify_configured_anchor,
+    verify_postgres, verify_sqlite, Verifier,
 };
 
 // ---------------------------------------------------------------------------
@@ -407,8 +407,9 @@ pub struct DoctorReport {
     /// Resolved audit DB path. For Postgres deployments, the literal string
     /// `"postgres"` instead of a filesystem path.
     pub audit_db_path: String,
-    /// `"intact"` | `"broken"` | `"unknown"`. `"unknown"` covers all
-    /// `CannotVerify` cases (missing key file, unreachable DB, etc.).
+    /// `"intact"` | `"broken"` | `"cannot_verify"`. `"cannot_verify"` covers
+    /// all `CannotVerify` cases (missing key file, unreachable DB, an empty
+    /// chain without an anchor, etc.).
     pub audit_chain_status: String,
     /// Non-fatal warnings collected during the diagnostic run. Anything
     /// that could not be checked (state, brain config, audit chain, …)
@@ -853,7 +854,7 @@ impl SysknifeMcpServer {
     /// it never mutates system state. Mirrors `sysknife doctor` plus an
     /// audit-chain quick-check.
     #[tool(
-        description = "Diagnose SysKnife: pings the daemon, reports the configured brain provider/model, the audit DB path, and a quick audit-chain status (intact/broken/unknown). Read-only and safe to call without prior sysknife_plan."
+        description = "Diagnose SysKnife: pings the daemon, reports the configured brain provider/model, the audit DB path, and a quick audit-chain status (intact/broken/cannot_verify). Read-only and safe to call without prior sysknife_plan."
     )]
     async fn sysknife_doctor(&self) -> Result<Json<DoctorReport>, ErrorData> {
         let mut report = doctor_inner().await;
@@ -1298,12 +1299,9 @@ async fn doctor_at_socket(socket: SocketTarget) -> DoctorReport {
         warnings.push(format!("audit database: {note}"));
     }
 
-    let audit_chain_status =
-        match audit_chain_quick_check(&lacs_config, &audit_store, &mut warnings).await {
-            VerifyOutcomeKind::Intact => "intact",
-            VerifyOutcomeKind::Broken => "broken",
-            VerifyOutcomeKind::Unknown => "unknown",
-        }
+    let audit_chain_status = audit_chain_quick_check(&lacs_config, &audit_store, &mut warnings)
+        .await
+        .as_str()
         .to_string();
 
     DoctorReport {
@@ -1324,6 +1322,62 @@ enum VerifyOutcomeKind {
     Intact,
     Broken,
     Unknown,
+}
+
+impl VerifyOutcomeKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Intact => "intact",
+            Self::Broken => "broken",
+            // Same word `status_word` publishes for the CLI JSON and the
+            // `sysknife_audit_verify` report, so an agent comparing surfaces
+            // sees one vocabulary (#556).
+            Self::Unknown => "cannot_verify",
+        }
+    }
+}
+
+/// One warning line for anchors the doctor could not confirm, so an agent
+/// that only sees the MCP answer learns why the chain is not provably intact.
+fn audit_anchor_warning(
+    outcome: &sysknife_daemon::audit_chain::CheckpointOutcome,
+) -> Option<String> {
+    use sysknife_daemon::audit_chain::CheckpointOutcome;
+
+    match outcome {
+        CheckpointOutcome::Consistent { .. } => None,
+        CheckpointOutcome::CannotVerify { reason } => {
+            Some(format!("audit anchor cannot be verified: {reason}"))
+        }
+        CheckpointOutcome::BadSignature { seq } => Some(format!(
+            "audit anchor checkpoint {seq} has an invalid signature"
+        )),
+        CheckpointOutcome::Truncated {
+            checkpoint_seq,
+            current_max_seq,
+        } => Some(format!(
+            "audit anchor checkpoint {checkpoint_seq} is beyond the chain tip {current_max_seq}: the chain was truncated"
+        )),
+        CheckpointOutcome::TipMismatch { seq, .. } => Some(format!(
+            "audit anchor checkpoint {seq} does not match the chain hash: the chain was rewritten"
+        )),
+    }
+}
+
+/// Doctor's headline for one verification plus anchor pair.
+///
+/// The doctor summarizes the same combined verdict as `sysknife audit verify`
+/// and its JSON builder; keeping the mapping in one place is what makes the
+/// three surfaces comparable (#556).
+fn doctor_chain_status(
+    verification: &sysknife_daemon::audit_chain::AuditVerification,
+    anchor: Option<&sysknife_daemon::audit_chain::CheckpointOutcome>,
+) -> VerifyOutcomeKind {
+    match combined_verification_exit_code(verification, anchor) {
+        0 => VerifyOutcomeKind::Intact,
+        1 => VerifyOutcomeKind::Broken,
+        _ => VerifyOutcomeKind::Unknown,
+    }
 }
 
 /// Run a non-fatal audit chain check. Anything that prevents verification
@@ -1379,11 +1433,24 @@ async fn audit_chain_quick_check(
             "transaction seq={transaction_seq} commits to an approval event that no longer exists"
         ));
     }
-    match outcome.exit_code() {
-        0 => VerifyOutcomeKind::Intact,
-        1 => VerifyOutcomeKind::Broken,
-        _ => VerifyOutcomeKind::Unknown,
+    // #556: the exit code alone calls an empty unanchored chain `intact`; the
+    // CLI folds in the checkpoint anchor and answers CANNOT VERIFY (exit 2)
+    // for the same store. Use that combined verdict here too, so the doctor
+    // cannot disagree with `sysknife audit verify` on a store an agent reads
+    // without a CLI beside it.
+    let anchor = verify_configured_anchor(lacs_config, &db_path, &verifier).await;
+    if let Some(outcome) = &anchor {
+        if let Some(warning) = audit_anchor_warning(outcome) {
+            warnings.push(warning);
+        }
     }
+    if empty_unanchored_chain(&outcome, anchor.as_ref()) {
+        warnings.push(
+            "audit chain: empty transaction log; no independent anchor distinguishes a fresh log from an erased log"
+                .to_string(),
+        );
+    }
+    doctor_chain_status(&outcome, anchor.as_ref())
 }
 
 // ---------------------------------------------------------------------------
@@ -2290,6 +2357,107 @@ mod tests {
         );
     }
 
+    /// #556: an empty, unanchored chain is CANNOT VERIFY for the CLI, so the
+    /// doctor's headline must not say `intact` over the same store.
+    #[tokio::test]
+    async fn an_empty_store_makes_the_doctor_say_cannot_verify() {
+        use sysknife_daemon::audit_chain::resolve_audit_key_path;
+
+        let dir = tempfile::tempdir().expect("temporary store directory");
+        let db_path = dir.path().join("transactions.sqlite");
+        drop(
+            sysknife_daemon::transactions::TransactionStore::open(&db_path)
+                .expect("create empty audit store"),
+        );
+        sysknife_daemon::audit_chain::AuditKey::load_or_generate(&resolve_audit_key_path(&db_path))
+            .expect("test audit key");
+
+        let store = sysknife_core::AuditStoreChoice::Explicit(db_path);
+        let mut warnings = Vec::new();
+        let kind = audit_chain_quick_check(
+            &sysknife_core::config::LacsConfig::default(),
+            &store,
+            &mut warnings,
+        )
+        .await;
+
+        assert!(
+            matches!(kind, VerifyOutcomeKind::Unknown),
+            "an empty unanchored store must be cannot_verify; warnings: {warnings:?}"
+        );
+        assert!(
+            !warnings.is_empty(),
+            "cannot_verify must explain itself in warnings"
+        );
+    }
+
+    #[test]
+    fn broken_or_unverifiable_anchors_produce_a_warning() {
+        use sysknife_daemon::audit_chain::CheckpointOutcome;
+
+        assert!(audit_anchor_warning(&CheckpointOutcome::Consistent {
+            checkpoints_checked: 1
+        })
+        .is_none());
+        assert!(
+            audit_anchor_warning(&CheckpointOutcome::BadSignature { seq: 4 })
+                .expect("bad signature warns")
+                .contains("signature")
+        );
+        assert!(audit_anchor_warning(&CheckpointOutcome::Truncated {
+            checkpoint_seq: 9,
+            current_max_seq: 6,
+        })
+        .expect("truncation warns")
+        .contains("truncated"));
+        assert!(audit_anchor_warning(&CheckpointOutcome::TipMismatch {
+            seq: 5,
+            anchored: "aa".into(),
+            actual: "bb".into(),
+        })
+        .expect("rewrite warns")
+        .contains("rewritten"));
+        assert!(audit_anchor_warning(&CheckpointOutcome::CannotVerify {
+            reason: "malformed public key".into(),
+        })
+        .expect("cannot_verify warns")
+        .contains("malformed public key"));
+    }
+
+    /// #556 section 2: `#571` removed the `if report.status == "intact"`
+    /// guard that let a proven break hide behind `cannot_verify`, but nothing
+    /// pinned it. Restoring that guard must turn this red.
+    #[test]
+    fn a_broken_check_behind_cannot_verify_still_makes_the_headline_broken() {
+        use sysknife_daemon::audit_chain::{AuditVerification, BindingOutcome, VerifyOutcome};
+
+        let report = outcome_to_report(
+            AuditVerification {
+                chain: VerifyOutcome::CannotVerify {
+                    reason: "row seq=9 declares chain_version=4".to_string(),
+                },
+                events: VerifyOutcome::Broken {
+                    rows_checked: 4,
+                    first_broken_seq: 2,
+                    first_broken_transaction_id: "ev2".to_string(),
+                    expected: "x".to_string(),
+                    actual: "y".to_string(),
+                },
+                binding: BindingOutcome::NotChecked,
+                attribution: None,
+                status: None,
+            },
+            "/tmp/store.sqlite".to_string(),
+            None,
+        );
+
+        assert_eq!(
+            report.status, "broken",
+            "a proven break must outrank an inconclusive chain"
+        );
+        assert_eq!(report.chain_status, "cannot_verify");
+    }
+
     #[test]
     fn an_empty_unanchored_store_has_the_same_mcp_and_cli_verdict() {
         use sysknife_daemon::audit_chain::VerifyOutcome;
@@ -2297,6 +2465,11 @@ mod tests {
         let verification = verification_with(VerifyOutcome::Intact { rows_checked: 0 }, None);
         let cli_status = crate::runner::status_word(
             crate::runner::combined_verification_exit_code(&verification, None),
+        );
+        assert_eq!(
+            doctor_chain_status(&verification, None).as_str(),
+            cli_status,
+            "the doctor must not say `intact` where the CLI says cannot_verify"
         );
         let report = outcome_to_report(verification, "/tmp/store.sqlite".to_string(), None);
 
@@ -2329,6 +2502,11 @@ mod tests {
         let verification = verification_with(chain, None);
         let cli_status = crate::runner::status_word(
             crate::runner::combined_verification_exit_code(&verification, Some(&anchor)),
+        );
+        assert_eq!(
+            doctor_chain_status(&verification, Some(&anchor)).as_str(),
+            cli_status,
+            "the doctor must fold in the anchor like the CLI does"
         );
         let report =
             outcome_to_report(verification, "/tmp/store.sqlite".to_string(), Some(&anchor));
