@@ -6,7 +6,7 @@ COSMIC Atomic). Run inside a QEMU/KVM VM via `tests/e2e/atomic-vm.sh`, or on
 real hardware.
 
 These twenty are a readable subset, not the suite: the atomic family is <!-- fig:stories_atomic floor=10 -->50+<!-- /fig -->
-stories and the Ubuntu family a further <!-- fig:stories_ubuntu floor=10 -->90+<!-- /fig --> (<!-- fig:lts_story_total -->79<!-- /fig --> of them in the recorded
+stories and the Ubuntu family a further <!-- fig:stories_ubuntu floor=10 -->100+<!-- /fig --> (<!-- fig:lts_story_total -->79<!-- /fig --> of them in the recorded
 live-VM runs), all in `tests/e2e/stories/`. The
 harness runs the family; this file explains twenty of them in prose.
 
