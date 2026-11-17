@@ -82,7 +82,7 @@ test('rerunning setup preserves existing hookify guards and reports what it did'
     fs.writeFileSync(schemaPath, 'project-specific schema reminder\n');
 
     const result = runWizard({ cwd });
-    const output = `${result.stdout}${result.stderr}`;
+    const output = `${result.stdout}${result.stderr}`.replaceAll('\\', '/');
 
     assert.equal(result.status, 3, output);
     assert.equal(fs.readFileSync(approvalPath, 'utf8'), 'project-specific approval guard\n');
