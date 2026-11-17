@@ -173,6 +173,13 @@ impl ActionExecutor for RealActionExecutor {
         spec: &ActionSpec,
         progress: UnboundedSender<String>,
     ) -> Result<ExecutionOutput, ExecutorError> {
+        if spec.action_name == "UnattendedUpgradesStatus" {
+            let output = execute_spec(spec).await?;
+            for line in output.stdout.lines().filter(|line| !line.is_empty()) {
+                let _ = progress.send(line.to_string());
+            }
+            return Ok(output);
+        }
         match &spec.mechanism {
             ActionMechanism::Command { program, args } => {
                 execute_command_with_progress(program, args, progress).await
@@ -650,6 +657,7 @@ fn allowed_action_params(action_name: &str) -> Option<&'static [&'static str]> {
         | "AptListInstalled"
         | "AptListUpgradable"
         | "AptHistoryList"
+        | "UnattendedUpgradesStatus"
         | "SnapList"
         | "GrubGetKargs"
         | "CheckPendingReboot"
@@ -1645,6 +1653,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         }
         "AptListUpgradable" => Ok(apt::apt_list_upgradable()),
         "AptHistoryList" => Ok(apt::apt_history_list()),
+        "UnattendedUpgradesStatus" => Ok(apt::unattended_upgrades_status()),
         "ConfigureUnattendedUpgrades" => Ok(apt::configure_unattended_upgrades(require_bool(
             params, "enabled",
         )?)),
@@ -2062,11 +2071,15 @@ pub async fn execute_spec(spec: &ActionSpec) -> Result<ExecutionOutput, Executor
             let stdout = stdout_task.await.map_err(join)??;
             let stderr = stderr_task.await.map_err(join)??;
 
-            Ok(ExecutionOutput {
+            let mut output = ExecutionOutput {
                 stdout: String::from_utf8_lossy(&stdout).into_owned(),
                 stderr: String::from_utf8_lossy(&stderr).into_owned(),
                 exit_code: status.code().unwrap_or(-1),
-            })
+            };
+            if output.is_success() && spec.action_name == "UnattendedUpgradesStatus" {
+                output.stdout = apt::parse_unattended_upgrades_status(&output.stdout);
+            }
+            Ok(output)
         }
         ActionMechanism::FileScan { path } => {
             let mut entries = tokio::fs::read_dir(path).await?;

@@ -176,6 +176,17 @@ Sources consulted:
   the 80 most recent log lines, covering the last several `Start-Date`
   transaction blocks, for auditing what was installed/removed/upgraded.
 
+### UnattendedUpgradesStatus — Report automatic-upgrade schedule and latest log entry
+
+- **Canonical**: inspect `/etc/apt/apt.conf.d/20auto-upgrades`, query
+  `apt-daily.timer` and `apt-daily-upgrade.timer`, and read the newest entry
+  from `/var/log/unattended-upgrades`.
+- **SysKnife argv**: `bash -c <fixed read-only status script>` (no sudo).
+- **Status**: ✅ implemented as a Low-risk Observer action.
+- **Notes**: Missing configuration, timer, or log inputs are reported as
+  unknown with the missing path or unit. The action does not run a dry-run or
+  take the apt lock.
+
 ### ConfigureUnattendedUpgrades — Enable or disable automatic security updates
 
 - **Canonical**: no single canonical CLI — SysKnife ships a helper script
