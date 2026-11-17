@@ -281,6 +281,20 @@ fn require_str_param<'a>(
         .ok_or_else(|| format!("{tool_name} requires '{key}' param"))
 }
 
+/// These read-only actions resolve records within the caller's account on the
+/// daemon. Their tool schemas intentionally leave identity selection to the
+/// client rather than the model.
+pub(crate) fn query_tool_needs_current_user(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "query_containers"
+            | "query_flatpak_remotes"
+            | "query_toolboxes"
+            | "query_flatpak_info"
+            | "query_container_info"
+    )
+}
+
 pub fn query_tool_to_action(
     tool_name: &str,
     input: &serde_json::Value,

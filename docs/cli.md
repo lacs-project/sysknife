@@ -160,7 +160,13 @@ sysknife doctor
 sysknife --json doctor      # machine-readable
 ```
 
-Exit code `0` on success, non-zero if the daemon is unreachable.
+Exit code `0` when the daemon is reachable and the LLM configuration is
+valid. Exit code `4` when the daemon is unreachable **or** when the
+configuration has a problem (missing provider key, unreadable config).
+
+When the LLM configuration is unreadable, `doctor` still checks the daemon
+and reports the config problem as a warning. The `provider` and `model`
+fields read `"unknown"` and the `--json` output includes a `warnings` array.
 
 Sample output:
 
@@ -573,6 +579,13 @@ snapshot beforehand costs less than the alternative.
 | `3` | **Planning failed** — LLM error, provider unreachable, the intent could not be turned into a plan, or a daemon preview refusal before any plan step executed |
 | `4` | **Configuration or daemon error** — invalid configuration, or the daemon could not be reached |
 | `5` | **Reboot required** - a step returned `needs_reboot`; remaining steps were not executed and the plan is incomplete. Reboot and deliberately re-run or resume. |
+
+In the REPL, a failed intent prints its diagnostic and the session continues.
+When standard input is not a terminal (piped intents) or `--non-interactive` is
+set, the process exits with the **first** failed intent's code once the input
+ends, including when the session ends with `exit` or `quit`, so a script that
+pipes intents fails when any of them does. An interactive terminal session still
+exits `0` at `exit`, `quit` or end of input.
 
 If OpenAI reaches its output token limit before completing a proposed tool call,
 SysKnife discards the partial plan and returns a planning failure. Split a large

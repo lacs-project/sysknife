@@ -1214,6 +1214,7 @@ impl LlmPlanner {
                     let mut tool_results: Vec<ToolResultBlock> =
                         Vec::with_capacity(tool_calls.len());
                     let mut proposed_plan = None;
+                    let mut current_user: Option<Result<String, String>> = None;
 
                     for (id, call_id, name, input) in &tool_calls {
                         // A valid plan ends the model turn. Continue only for
@@ -1402,7 +1403,37 @@ impl LlmPlanner {
                                 match crate::planning_tools::query_tools::query_tool_to_action(
                                     other_name, input,
                                 ) {
-                                    Ok(Some((action_name, params))) => {
+                                    Ok(Some((action_name, mut params))) => {
+                                        if crate::planning_tools::query_tools::
+                                            query_tool_needs_current_user(other_name)
+                                        {
+                                            let username = current_user.get_or_insert_with(|| {
+                                                self.state_client
+                                                    .current_user()
+                                                    .map_err(|error| error.to_string())
+                                            });
+                                            match username {
+                                                Ok(username) => {
+                                                    params["username"] = username.clone().into();
+                                                }
+                                                Err(reason) => {
+                                                    let result = sanitize_tool_output(
+                                                        other_name,
+                                                        &format!(
+                                                            "Query failed: cannot determine current user: {reason}"
+                                                        ),
+                                                    );
+                                                    tool_results.push(
+                                                        result.into_error_tool_result(
+                                                            id.clone(),
+                                                            call_id.clone(),
+                                                        ),
+                                                    );
+                                                    continue;
+                                                }
+                                            }
+                                        }
+
                                         match self.state_client.query_action(action_name, &params) {
                                             Ok(output) => {
                                                 tool_results.push(
