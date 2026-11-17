@@ -47,6 +47,35 @@ an interactive REPL.
 
 ## Subcommands
 
+### `sysknife fleet hosts <inventory.toml>`
+
+Validate and display an explicit host inventory without contacting any daemon.
+Each TOML entry names a host, its socket and the SHA-256 pin of its daemon audit
+public key:
+
+```toml
+[[host]]
+name = "web-1"
+socket = "unix:///run/user/1000/sysknife-web-1.sock"
+key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+```
+
+```sh
+sysknife fleet hosts inventory.toml
+sysknife fleet hosts inventory.toml --json
+```
+
+Text output shows the name, socket and first 12 key characters. JSON output is
+an array containing the full entries in file order. Unix socket paths must be
+absolute; Linux also accepts `vsock://CID:PORT`. Names contain 1-64 ASCII letters,
+digits, dots, underscores or hyphens. Keys contain exactly 64 lowercase
+hexadecimal characters.
+
+An empty inventory, duplicate name/socket/key, missing key, unknown field or
+invalid entry rejects the entire inventory with exit code 4. Errors name the
+offending host. This command validates the file; live pin checks happen when a
+future fleet command connects.
+
 ### `sysknife <intent>`
 
 Plan and (optionally) execute a natural-language intent.
