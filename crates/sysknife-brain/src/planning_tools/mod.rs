@@ -1,7 +1,7 @@
 pub(crate) mod get_state;
 pub(crate) mod preferences;
 pub mod propose_plan;
-pub(crate) mod query_tools;
+pub mod query_tools;
 pub(crate) mod refuse;
 
 /// Normalise model-authored free text that is on its way to the operator.

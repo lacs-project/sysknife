@@ -1402,7 +1402,28 @@ impl LlmPlanner {
                                 match crate::planning_tools::query_tools::query_tool_to_action(
                                     other_name, input,
                                 ) {
-                                    Ok(Some((action_name, params))) => {
+                                    Ok(Some((action_name, mut params))) => {
+                                        if crate::planning_tools::query_tools::action_requires_current_username(action_name) {
+                                            match self.state_client.current_user() {
+                                                Ok(username) => {
+                                                    crate::planning_tools::query_tools::inject_current_username(
+                                                        action_name,
+                                                        &mut params,
+                                                        &username,
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    tool_results.push(
+                                                        sanitize_tool_output(
+                                                            other_name,
+                                                            &format!("Query failed: cannot determine current user: {e}"),
+                                                        )
+                                                        .into_error_tool_result(id.clone(), call_id.clone()),
+                                                    );
+                                                    continue;
+                                                }
+                                            }
+                                        }
                                         match self.state_client.query_action(action_name, &params) {
                                             Ok(output) => {
                                                 tool_results.push(

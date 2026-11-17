@@ -349,6 +349,29 @@ pub fn query_tool_to_action(
     }
 }
 
+/// Whether a planner query action must run in the current user's context.
+///
+/// These actions use per-user Flatpak or rootless Podman state. The username
+/// comes from the client environment and is added only after the model's tool
+/// call has been mapped, so it is never a model-authored parameter.
+pub fn action_requires_current_username(action_name: &str) -> bool {
+    matches!(
+        action_name,
+        "ListContainers"
+            | "ListFlatpakRemotes"
+            | "ListToolboxes"
+            | "GetFlatpakAppInfo"
+            | "GetContainerInfo"
+    )
+}
+
+/// Add the client-authenticated username to a user-scoped query action.
+pub fn inject_current_username(action_name: &str, params: &mut serde_json::Value, username: &str) {
+    if action_requires_current_username(action_name) {
+        params["username"] = serde_json::Value::String(username.to_owned());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
