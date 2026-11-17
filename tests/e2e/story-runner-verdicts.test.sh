@@ -79,6 +79,7 @@ run_case() {
     if CASE_OUTPUT="$(
         PATH="$fake_bin:$PATH" \
         FAKE_CARGO_TARGET_DIR="${FAKE_CARGO_TARGET_DIR:-$fixture/unused-target}" \
+        DEV_STORY_CLI_PATH_FILE="${DEV_STORY_CLI_PATH_FILE:-$fixture/dev-story-cli-path}" \
         SYSKNIFE_LLM_MODEL=fixture \
         SYSKNIFE_LLM_PROVIDER=ollama \
         SYSKNIFE_ALLOW_DESTRUCTIVE=0 \
@@ -231,6 +232,23 @@ write_story "$dev_e2e/stories" story- 3 silent
 FAKE_CARGO_TARGET_DIR="$dev_target" run_case 'dev-stories rejects SKIP' 1 "$dev_runner" 1 2
 FAKE_CARGO_TARGET_DIR="$dev_target" run_case 'dev-stories rejects an unmarked zero exit' 1 "$dev_runner" 3
 FAKE_CARGO_TARGET_DIR="$dev_target" run_case 'dev-stories accepts an explicit PASS' 0 "$dev_runner" 1
+
+# The real runner must put Cargo's built CLI ahead of an older executable on
+# PATH before it starts the stories. A fixed target/release prefix does not
+# point at this fixture's custom target directory and leaves fake_bin first.
+cat >"$dev_e2e/stories/story-1.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'PASS: fixture story\n'
+printf '%s\n' "$(command -v sysknife)" >"${DEV_STORY_CLI_PATH_FILE:?}"
+EOF
+chmod +x "$dev_e2e/stories/story-1.sh"
+FAKE_CARGO_TARGET_DIR="$dev_target" run_case \
+    'dev-stories stories resolve Cargo target CLI' 0 "$dev_runner" 1
+if [[ "$(<"$fixture/dev-story-cli-path")" != "$dev_target/release/sysknife" ]]; then
+    printf 'FAIL: dev-stories story resolved %s, expected %s\n' \
+        "$(<"$fixture/dev-story-cli-path")" "$dev_target/release/sysknife" >&2
+    failures=$((failures + 1))
+fi
 
 write_story "$dev_e2e/stories" story- 2 pass
 write_story "$dev_e2e/stories" story- 3 pass
