@@ -2116,7 +2116,7 @@ fn emit_verification(
 
 /// An empty row-integrity check cannot establish whether an unanchored log
 /// is fresh or was erased. Keep that uncertainty separate from detected breaks.
-fn empty_unanchored_chain(
+pub(crate) fn empty_unanchored_chain(
     verification: &AuditVerification,
     anchor: Option<&CheckpointOutcome>,
 ) -> bool {
