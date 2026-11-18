@@ -185,9 +185,11 @@ pub struct AuditSection {
     /// Postgres URL of the external append-only checkpoint database, e.g.
     /// `postgres://sysknife@anchor-host/anchors`. Maps to
     /// `SYSKNIFE_CHECKPOINT_DB` (#558): the daemon and every CLI reader
-    /// (`audit verify`, `audit checkpoint`) resolve the anchor from this one
-    /// source, so `sudo sysknife audit verify` — whose environment is reset —
-    /// still checks the anchor the daemon is writing.
+    /// (`audit verify`, `audit checkpoint`) resolve the anchor from config
+    /// instead of only the process environment, so a `sudo` run with a reset
+    /// environment still finds it — in *its own* config.toml, since each
+    /// process resolves the file from its own `XDG_CONFIG_HOME`/`HOME` (see
+    /// SECURITY.md for which file each packaged reader consults).
     pub checkpoint_db: Option<String>,
 }
 
@@ -687,10 +689,10 @@ provider = "anthropic"
         assert_eq!(provider, "ollama", "env var must win over config file");
     }
 
-    /// #558 — `[audit] checkpoint_db` maps to `SYSKNIFE_CHECKPOINT_DB` so the
-    /// daemon and every CLI reader (including `sudo sysknife audit verify`,
-    /// whose environment is reset) share one anchor source. An explicit env
-    /// var still wins.
+    /// #558 — `[audit] checkpoint_db` maps to `SYSKNIFE_CHECKPOINT_DB` so a
+    /// reader whose environment was reset (e.g. `sudo sysknife audit verify`)
+    /// still finds the anchor in its own config.toml. An explicit env var
+    /// still wins.
     #[test]
     fn checkpoint_db_maps_to_env_and_env_wins() {
         let dir = tempfile::tempdir().unwrap();

@@ -1508,47 +1508,35 @@ pub async fn run_audit_checkpoint(
     let db_path = resolved_store.path();
     let system_store = db_path == std::path::Path::new(sysknife_core::PRODUCTION_DATABASE_PATH);
 
-    // Load the signing key and read the current chain tip from the store
-    // `[storage]` selects (#558). The postgres deployment keeps the key on
-    // local disk at the same location the daemon uses (see
-    // `build_postgres_audit`), so the two cannot drift.
-    let (key, rows) = if let Some(storage) = postgres_storage {
+    // Load the signing key (same location rules as `verify`; the postgres
+    // deployment keeps it on local disk, resolved through the shared store
+    // choice — the CLI guard test forbids `default_database_path` here).
+    let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(db_path);
+    require_exists(&key_path, "audit key", system_store)?;
+    let key = AuditKey::load_or_generate(&key_path).map_err(|e| {
+        eprintln!("audit key load failed: {e}");
+        CliError::Exit(2)
+    })?;
+
+    // Read the current chain tip from the store `[storage]` selects (#558).
+    let rows = if let Some(storage) = postgres_storage {
         use sysknife_daemon::store::postgres::PostgresStore;
 
         let cfg = postgres_config(storage).map_err(CliError::ConfigOrDaemon)?;
-        // The postgres deployment keeps the signing key on local disk; resolve
-        // it from the shared store choice (never `default_database_path`
-        // directly — the CLI guard test forbids bypassing the resolver), the
-        // same `db_path` the sqlite branch and `verify` use.
-        let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(db_path);
-        require_exists(&key_path, "audit key", system_store)?;
-        let key = AuditKey::load_or_generate(&key_path).map_err(|e| {
-            eprintln!("audit key load failed: {e}");
-            CliError::Exit(2)
-        })?;
-        let rows = PostgresStore::read_chain_rows(&cfg).await.map_err(|e| {
+        PostgresStore::read_chain_rows(&cfg).await.map_err(|e| {
             eprintln!("reading audit chain failed: {e}");
             CliError::Exit(2)
-        })?;
-        (key, rows)
+        })?
     } else {
-        let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(db_path);
-        require_exists(&key_path, "audit key", system_store)?;
-        let key = AuditKey::load_or_generate(&key_path).map_err(|e| {
-            eprintln!("audit key load failed: {e}");
-            CliError::Exit(2)
-        })?;
-
         require_exists(db_path, "audit database", system_store)?;
         let store = TransactionStore::open_read_only(db_path).map_err(|e| {
             eprintln!("opening audit database failed: {e}");
             CliError::Exit(2)
         })?;
-        let rows = store.fetch_chain_rows().map_err(|e| {
+        store.fetch_chain_rows().map_err(|e| {
             eprintln!("reading audit chain failed: {e}");
             CliError::Exit(2)
-        })?;
-        (key, rows)
+        })?
     };
     // The anchoring rules — refuse a broken chain, read back after writing,
     // re-verify every anchored checkpoint — live in the daemon crate so this
