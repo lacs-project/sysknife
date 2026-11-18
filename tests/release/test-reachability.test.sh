@@ -81,6 +81,49 @@ for mention in \
     grep -Fq 'test is not invoked by a gate: tests/release/not-executed.test.sh' <<< "$output"
 done
 
+# A disabled or non-blocking invocation cannot satisfy either discovery mode.
+guarded_invocation() {
+    local scope="$1" setting="$2"
+    cp "$fixture/base-ci.yml" "$fixture/.github/workflows/ci.yml"
+    if [[ "$scope" == job ]]; then
+        printf '  guarded:\n    %s\n    steps:\n      - run: sudo -n bash tests/release/not-executed.test.sh\n' \
+            "$setting" >> "$fixture/.github/workflows/ci.yml"
+    else
+        printf '      - %s\n        run: sudo -n bash tests/release/not-executed.test.sh\n' \
+            "$setting" >> "$fixture/.github/workflows/ci.yml"
+    fi
+}
+
+for scope in step job; do
+    for setting in 'if: false' 'if: ${{ false }}' 'if: "false"' \
+        'continue-on-error: true' 'continue-on-error: ${{ true }}' 'continue-on-error: "true"'; do
+        guarded_invocation "$scope" "$setting"
+        if output="$(bash "$fixture/scripts/check_test_reachability.sh" 2>&1)"; then
+            printf 'test-reachability test: %s %s unexpectedly passed\n' "$scope" "$setting" >&2
+            exit 1
+        fi
+        grep -Fq 'test is not invoked by a gate: tests/release/not-executed.test.sh' <<< "$output"
+        if bash "$fixture/scripts/check_test_reachability.sh" --list-privileged >/dev/null 2>&1; then
+            printf 'test-reachability test: %s %s counted as privileged\n' "$scope" "$setting" >&2
+            exit 1
+        fi
+    done
+
+    for setting in 'if: true' 'if: ${{ true }}' 'continue-on-error: false' 'continue-on-error: ${{ false }}'; do
+        guarded_invocation "$scope" "$setting"
+        bash "$fixture/scripts/check_test_reachability.sh" >/dev/null
+    done
+
+    # Other expressions remain eligible and must be disclosed on stderr.
+    guarded_invocation "$scope" 'if: success()'
+    output="$(bash "$fixture/scripts/check_test_reachability.sh" 2>&1)"
+    grep -Fq 'success()' <<< "$output"
+    grep -Fq "$scope if" <<< "$output"
+    privileged="$(bash "$fixture/scripts/check_test_reachability.sh" --list-privileged 2> "$fixture/conditions.log")"
+    [[ "$privileged" == 'tests/release/not-executed.test.sh' ]]
+    grep -Fq 'success()' "$fixture/conditions.log"
+done
+
 # Scalar text can look like a step while only being data passed to an action.
 for scalar in '|' '>' '"'; do
     cp "$fixture/base-ci.yml" "$fixture/.github/workflows/ci.yml"

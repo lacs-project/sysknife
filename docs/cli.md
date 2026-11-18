@@ -47,6 +47,35 @@ an interactive REPL.
 
 ## Subcommands
 
+### `sysknife fleet hosts <inventory.toml>`
+
+Validate and display an explicit host inventory without contacting any daemon.
+Each TOML entry names a host, its socket and the SHA-256 pin of its daemon audit
+public key:
+
+```toml
+[[host]]
+name = "web-1"
+socket = "unix:///run/user/1000/sysknife-web-1.sock"
+key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+```
+
+```sh
+sysknife fleet hosts inventory.toml
+sysknife fleet hosts inventory.toml --json
+```
+
+Text output shows the name, socket and first 12 key characters. JSON output is
+an array containing the full entries in file order. Unix socket paths must be
+absolute; Linux also accepts `vsock://CID:PORT`. Names contain 1-64 ASCII letters,
+digits, dots, underscores or hyphens. Keys contain exactly 64 lowercase
+hexadecimal characters.
+
+An empty inventory, duplicate name/socket/key, missing key, unknown field or
+invalid entry rejects the entire inventory with exit code 4. Errors name the
+offending host. This command validates the file; live pin checks happen when a
+future fleet command connects.
+
 ### `sysknife <intent>`
 
 Plan and (optionally) execute a natural-language intent.
@@ -131,7 +160,13 @@ sysknife doctor
 sysknife --json doctor      # machine-readable
 ```
 
-Exit code `0` on success, non-zero if the daemon is unreachable.
+Exit code `0` when the daemon is reachable and the LLM configuration is
+valid. Exit code `4` when the daemon is unreachable **or** when the
+configuration has a problem (missing provider key, unreadable config).
+
+When the LLM configuration is unreadable, `doctor` still checks the daemon
+and reports the config problem as a warning. The `provider` and `model`
+fields read `"unknown"` and the `--json` output includes a `warnings` array.
 
 Sample output:
 
@@ -232,22 +267,32 @@ writes for every executed action.
 
 #### `sysknife audit export`
 
-Export the transaction-chain rows from the configured SQLite or PostgreSQL
-audit store as a JSON array, in ascending `seq` order. Each object contains the
-17 stored `ChainRow` columns, including `prev_chain_hash` and `chain_hash`.
-The latter is the Ed25519 signature and is deliberately not renamed. Optional
-values that were not recorded are JSON `null`; `argv`, `outcome`, and a
-separate `signature` field are not reconstructed.
+Export both signed chains from the configured SQLite or PostgreSQL audit store:
+
+```json
+{"version":1,"chain":[],"events":[],"partial":false}
+```
+
+`chain` contains the stored transaction rows and `events` the stored event
+rows, each in ascending `seq` order. Row fields and signatures are preserved.
+The top-level object replaces the former transaction-only array; consumers
+that iterated the old array should now read `.chain`.
 
 ```sh
 sysknife audit export
 sysknife audit export --since 2026-08-01T00:00:00Z --limit 500
+sysknife audit export > audit.json
+sysknife audit verify --from audit.json --pubkey /etc/sysknife/audit-key.pub
 ```
 
 | Flag | Description |
 |---|---|
-| `--since DATETIME` | Include rows recorded at or after this RFC 3339 timestamp |
-| `--limit N` | Emit at most N matching rows; omitted means all matching rows |
+| `--since DATETIME` | Include transaction rows recorded at or after this RFC 3339 timestamp |
+| `--limit N` | Emit at most N matching transaction rows; omitted means all matching rows |
+
+Either filter sets `partial: true`; the event chain is still included in full.
+Offline verification refuses a partial export with exit code 2. Export without
+filters when the file will be verified.
 
 An export is not a redacted artifact. It inherits the confidentiality class of
 the audit database, which the daemon keeps `0600` inside a `0700` directory, and
@@ -294,12 +339,19 @@ rows: that row-integrity check does not establish which history occurred.
 sysknife audit verify
 sysknife audit verify --json
 sysknife audit verify --pubkey /etc/sysknife/audit-key.pub
+sysknife audit verify --from audit.json --pubkey /etc/sysknife/audit-key.pub
 ```
 
 | Flag | Description |
 |---|---|
 | `--json` | Machine-readable JSON report instead of human text |
+| `--from FILE` | Verify a complete version-1 export offline. Requires `--pubkey`; opens no database or private key and contacts no checkpoint service. |
 | `--pubkey FILE` | Verify with only the exported public key (`<audit-key>.pub`), no private key: the third-party / auditor path. Works with SQLite and PostgreSQL and proves the chain without signing access. |
+
+Offline verification checks both signature chains and their bindings using
+the existing verifier. Live status columns and external checkpoints are
+outside the exported document. Checking for deletion of an otherwise valid
+tail still requires an independently retained checkpoint.
 
 #### `sysknife audit checkpoint`
 
@@ -420,7 +472,7 @@ the command:
 | `--non-interactive` | Fail immediately (`exit 1`) if any step would require interactive approval.  Use in scripts and CI. |
 | `--dry-run` | Print the plan or approval preview and exit without executing or issuing a receipt. |
 | `--step-by-step` | Prompt for approval before each individual step instead of once for the whole plan. Each prompt comes *after* that step's daemon preview is printed. The whole-plan risk ceiling and non-interactive checks still run before any execution preview. |
-| `--json` | Emit NDJSON to stdout — one JSON object per event (plan, preview, result).  All colour and spinner output is suppressed.  Safe to pipe. |
+| `--json` | Emit NDJSON to stdout — one JSON object per event (plan, preview, progress, result).  All colour and spinner output is suppressed.  Safe to pipe. |
 | `--timeout SECS` | Hard wall-clock limit for the CLI invocation in seconds. Stops waiting when exceeded; see exit codes below. |
 | `--log-to FILE` | Tee stdout to FILE in addition to the terminal. Appends if the file exists; stderr diagnostics are not captured. |
 | `--dangerously-skip-approval` | Raises the ceiling `--yes` is clamped to from MEDIUM to HIGH, so `--yes --max-risk high` approves HIGH-risk steps too. It does not switch on `--yes`, `--max-risk` or `--non-interactive`; pass them yourself. Refuses to run unless `SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1` is also set. See [Unattended mode](#unattended-mode). |
@@ -528,6 +580,18 @@ snapshot beforehand costs less than the alternative.
 | `4` | **Configuration or daemon error** — invalid configuration, or the daemon could not be reached |
 | `5` | **Reboot required** - a step returned `needs_reboot`; remaining steps were not executed and the plan is incomplete. Reboot and deliberately re-run or resume. |
 
+In the REPL, a failed intent prints its diagnostic and the session continues.
+When standard input is not a terminal (piped intents) or `--non-interactive` is
+set, the process exits with the **first** failed intent's code once the input
+ends, including when the session ends with `exit` or `quit`, so a script that
+pipes intents fails when any of them does. An interactive terminal session still
+exits `0` at `exit`, `quit` or end of input.
+
+If OpenAI reaches its output token limit before completing a proposed tool call,
+SysKnife discards the partial plan and returns a planning failure. Split a large
+intent into smaller requests; the truncated response is not retried as malformed
+tool-call JSON.
+
 Subcommands with their own semantics (for example `sysknife audit verify`) pass
 through their own exit code.
 
@@ -624,6 +688,12 @@ SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1 \
      "apply pending security updates"
 ```
 
+A dry run of an intent reports the same refusals as the real run. The plan is
+still printed, but the exit code is non-zero when the real run would refuse it:
+`1` when a step is above `--max-risk`, `4` when the target distro cannot run a
+step. A pre-flight check can therefore treat exit 0 from
+`sysknife --dry-run --json ...` as "the real run would be accepted".
+
 `--log-to` records stdout only. Capture stderr separately when the log must
 include provider notices, planning progress, and failure diagnostics:
 
@@ -644,6 +714,9 @@ The `--json` output schema:
 // Per-step preview (before execution)
 { "summary": "…", "risk_level": "low", "reboot_required": false,
   "warnings": [], "request_hash": "…", … }
+
+// Execution progress (one per line the daemon streams while a step runs)
+{ "event": "progress", "line": "Executing GetMemoryInfo…" }
 
 // Per-step result (after execution)
 { "status": "succeeded", "summary": "…", "job_id": "…",

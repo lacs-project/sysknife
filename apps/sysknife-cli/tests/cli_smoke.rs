@@ -42,6 +42,67 @@ fn cli() -> Command {
 }
 
 #[test]
+fn fleet_hosts_rejects_an_empty_inventory() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("inventory.toml");
+    std::fs::write(&path, "").unwrap();
+    cli()
+        .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+        .args(["fleet", "hosts"])
+        .arg(path)
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("inventory has no hosts"));
+}
+
+#[test]
+fn fleet_hosts_prints_all_hosts_without_connecting() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("inventory.toml");
+    let hosts: Vec<_> = (1..=3)
+        .map(|i| {
+            serde_json::json!({
+                "name": format!("web-{i}"),
+                "socket": format!("unix:///missing/web-{i}.sock"),
+                "key": format!("{i:064x}"),
+            })
+        })
+        .collect();
+    let contents = hosts
+        .iter()
+        .map(|h| {
+            format!(
+                "[[host]]\nname = {}\nsocket = {}\nkey = {}\n",
+                h["name"], h["socket"], h["key"]
+            )
+        })
+        .collect::<String>();
+    std::fs::write(&path, contents).unwrap();
+    let output = cli()
+        .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+        .args(["fleet", "hosts"])
+        .arg(&path)
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output).unwrap(),
+        serde_json::json!(hosts)
+    );
+    cli()
+        .args(["fleet", "hosts"])
+        .arg(path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("web-1"))
+        .stdout(predicate::str::contains("web-3"))
+        .stdout(predicate::str::contains(format!("{:064x}", 1)).not());
+}
+
+#[test]
 fn help_lists_every_top_level_subcommand() {
     let output = cli()
         .arg("--help")
@@ -96,6 +157,40 @@ fn doctor_json_failure_goes_to_stdout_not_stderr() {
         .assert()
         .failure()
         .stdout(predicate::str::contains("\"ok\":false"));
+}
+
+#[test]
+fn doctor_missing_provider_key_still_reports_json() {
+    // With the provider set but its key missing, `doctor` used to bail at
+    // BrainConfig::from_env() before ever contacting the daemon — stdout
+    // was empty and `--json` consumers got nothing to parse.
+    // After the fix the daemon is checked first, the config error goes into
+    // a `warnings` array, and provider/model read "unknown".
+    let dir = tempfile::tempdir().unwrap();
+    let out = cli()
+        .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+        .env("SYSKNIFE_LLM_PROVIDER", "anthropic")
+        .env_remove("ANTHROPIC_API_KEY")
+        .args(["--json", "doctor"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&out).expect("stdout must be valid JSON");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["provider"], "unknown");
+    assert_eq!(json["model"], "unknown");
+    let warnings = json["warnings"]
+        .as_array()
+        .expect("warnings must be an array");
+    assert!(
+        warnings.iter().any(|w| {
+            let s = w.as_str().unwrap_or_default();
+            s.contains("brain config") || s.contains("API_KEY")
+        }),
+        "warnings should mention the config error: {warnings:?}",
+    );
 }
 
 #[test]
@@ -406,7 +501,11 @@ fn audit_export_emits_the_stored_rows_as_parseable_json() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let exported: Vec<ChainRow> = serde_json::from_slice(&output.stdout).unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["version"], 1);
+    assert_eq!(document["partial"], true);
+    assert!(document["events"].is_array());
+    let exported: Vec<ChainRow> = serde_json::from_value(document["chain"].clone()).unwrap();
     assert_eq!(exported.len(), 1);
     assert_eq!(exported[0], stored[0]);
     assert_eq!(
@@ -775,4 +874,238 @@ fn help_says_what_the_skip_approval_flag_does_and_does_not_do() {
         predicate::str::contains("SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT")
             .or(predicate::str::contains("Requires")),
     );
+}
+
+/// #558 — a Postgres-backed deployment with a configured anchor must get the
+/// real cross-check, not a permanent "sqlite backend only" exit 2.
+///
+/// The daemon anchors a Postgres chain every 15 minutes
+/// (`spawn_periodic_anchor` reads through the `AuditStore` trait), but both
+/// readers disagreed with that: `verify_configured_anchor` short-circuited
+/// every Postgres config with `CannotVerify`, and `sysknife audit checkpoint`
+/// ignored `[storage]` and opened a SQLite store only. A correctly configured
+/// Postgres deployment therefore got a permanent exit 2, which teaches the
+/// operator to ignore 2.
+///
+/// Done-when, end to end through the real binary: anchor a Postgres chain
+/// with `audit checkpoint`, truncate the tail, and expect `Truncated`
+/// (exit 1) from `audit verify`.
+#[tokio::test]
+#[ignore = "live Postgres; set SYSKNIFE_TEST_POSTGRES_URL and run with --include-ignored"]
+async fn postgres_backend_checkpoint_anchors_and_verify_reports_truncation() {
+    use sqlx_postgres::{PgConnectOptions, PgPoolOptions};
+    use std::str::FromStr;
+    use sysknife_daemon::audit_chain::resolve_audit_key_path;
+    use sysknife_daemon::store::postgres::{PostgresConfig, PostgresStore};
+    use sysknife_daemon::store::AuditStore;
+
+    let required = std::env::var_os("SYSKNIFE_REQUIRE_POSTGRES").is_some();
+    let url = std::env::var("SYSKNIFE_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|url| !url.is_empty());
+    let Some(url) = url else {
+        assert!(
+            !required,
+            "SYSKNIFE_REQUIRE_POSTGRES is set but SYSKNIFE_TEST_POSTGRES_URL is unset"
+        );
+        return;
+    };
+    assert!(
+        url.contains("sysknife_test"),
+        "refusing destructive integration test against a non-test database"
+    );
+
+    const CHAIN_SCHEMA: &str = "cli_smoke_pg_chain";
+    const ANCHOR_SCHEMA: &str = "cli_smoke_pg_anchor";
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(PgConnectOptions::from_str(&url).expect("valid test URL"))
+        .await
+        .expect("connect for schema setup");
+    for statement in [
+        format!("DROP SCHEMA IF EXISTS {CHAIN_SCHEMA} CASCADE"),
+        format!("CREATE SCHEMA {CHAIN_SCHEMA}"),
+        format!("DROP SCHEMA IF EXISTS {ANCHOR_SCHEMA} CASCADE"),
+        format!("CREATE SCHEMA {ANCHOR_SCHEMA}"),
+    ] {
+        sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(statement))
+            .execute(&admin)
+            .await
+            .expect("prepare isolated schemas");
+    }
+    let separator = if url.contains('?') { '&' } else { '?' };
+    let chain_url = format!("{url}{separator}options=-csearch_path%3D{CHAIN_SCHEMA}");
+    let anchor_url = format!("{url}{separator}options=-csearch_path%3D{ANCHOR_SCHEMA}");
+
+    // A Postgres deployment keeps the signing key on local disk beside the
+    // (vestigial) default database path; the CLI resolves it the same way.
+    let dir = tempfile::tempdir().expect("create CLI fixture directory");
+    let db_path = dir.path().join("daemon.sqlite");
+    let key =
+        AuditKey::load_or_generate(&resolve_audit_key_path(&db_path)).expect("generate audit key");
+
+    // Two rows in the Postgres chain, signed with that key.
+    let store_cfg = PostgresConfig {
+        url: chain_url.clone(),
+        ..PostgresConfig::default()
+    };
+    let store = PostgresStore::connect(&store_cfg, Arc::new(key.clone()))
+        .await
+        .expect("connect postgres store");
+    for request_id in ["pg-anchor-1", "pg-anchor-2"] {
+        store
+            .record(NewTransaction {
+                request_id: request_id.to_string(),
+                request_hash: format!("hash-{request_id}"),
+                action_name: "UpdateSystem".to_string(),
+                risk_level: RiskLevel::High,
+                summary: "Upgrade the system".to_string(),
+                warnings: vec![],
+                caller_role: CallerRole::Dev,
+                caller_principal: CallerPrincipal::Uid(1000),
+            })
+            .await
+            .expect("record postgres chain row");
+    }
+    drop(store);
+
+    // config.toml selects the Postgres backend, the way a real deployment does.
+    let config_root = dir.path().join("cfg");
+    std::fs::create_dir_all(config_root.join("sysknife")).expect("create config dir");
+    std::fs::write(
+        config_root.join("sysknife/config.toml"),
+        format!("[storage]\nbackend = \"postgres\"\nurl = \"{chain_url}\"\n"),
+    )
+    .expect("write config.toml");
+
+    // Step 1: `audit checkpoint` must honour [storage] and anchor the
+    // Postgres chain (before the fix it demanded a local SQLite file).
+    let checkpoint = cli()
+        .env("XDG_CONFIG_HOME", &config_root)
+        .env("HOME", dir.path())
+        .env("SYSKNIFE_DATABASE_PATH", &db_path)
+        .env("SYSKNIFE_CHECKPOINT_DB", &anchor_url)
+        .args(["audit", "checkpoint"])
+        .output()
+        .expect("run audit checkpoint");
+    assert_eq!(
+        checkpoint.status.code(),
+        Some(0),
+        "audit checkpoint must anchor a postgres chain\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&checkpoint.stdout),
+        String::from_utf8_lossy(&checkpoint.stderr)
+    );
+
+    // Step 2: an attacker with write access to the store deletes the tail.
+    sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(format!(
+        "DELETE FROM {CHAIN_SCHEMA}.transactions WHERE seq = 2"
+    )))
+    .execute(&admin)
+    .await
+    .expect("truncate the chain tail");
+
+    // Step 3: `audit verify` cross-checks the anchor and reports the
+    // truncation (before the fix: CannotVerify "sqlite backend only", exit 2).
+    let verify = cli()
+        .env("XDG_CONFIG_HOME", &config_root)
+        .env("HOME", dir.path())
+        .env("SYSKNIFE_DATABASE_PATH", &db_path)
+        .env("SYSKNIFE_CHECKPOINT_DB", &anchor_url)
+        .args(["audit", "verify", "--json"])
+        .output()
+        .expect("run audit verify");
+
+    for schema in [CHAIN_SCHEMA, ANCHOR_SCHEMA] {
+        sqlx_core::query::query(sqlx_core::sql_str::AssertSqlSafe(format!(
+            "DROP SCHEMA {schema} CASCADE"
+        )))
+        .execute(&admin)
+        .await
+        .expect("drop isolated schema");
+    }
+
+    assert_eq!(
+        verify.status.code(),
+        Some(1),
+        "a truncated postgres chain with an anchor must fail verify with exit 1\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&verify.stdout),
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    let doc: serde_json::Value =
+        serde_json::from_slice(&verify.stdout).expect("--json emits one document");
+    assert_eq!(
+        doc["audit_anchor"]["status"],
+        "truncated",
+        "the anchor check must report the truncation: {}",
+        String::from_utf8_lossy(&verify.stdout)
+    );
+    assert_eq!(doc["status"], "broken");
+}
+
+// ---------------------------------------------------------------------------
+// REPL exit status for piped intents (#646)
+// ---------------------------------------------------------------------------
+
+/// A `sysknife` command wired to fail inside the planner before it reaches a
+/// daemon: the provider is named and its key is empty, so every intent stops at
+/// `BrainConfig` with exit code 4. The environment is cleared so an exported
+/// provider or turn-limit variable cannot change the failure, and `HOME`,
+/// `XDG_DATA_HOME` and `XDG_CONFIG_HOME` point at the temporary directory so
+/// neither the REPL history nor the configuration touches the real one.
+fn repl_cli(dir: &tempfile::TempDir) -> assert_cmd::Command {
+    let mut command = assert_cmd::Command::cargo_bin("sysknife").expect("sysknife binary builds");
+    command
+        .env_clear()
+        .env("SYSKNIFE_SOCKET", fake_socket(dir))
+        .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("HOME", dir.path())
+        .env("SYSKNIFE_LLM_PROVIDER", "anthropic")
+        .env("ANTHROPIC_API_KEY", "");
+    command
+}
+
+/// Piped input alone must reach the failure: this test deliberately omits
+/// `--non-interactive`, so only the non-terminal stdin branch applies.
+#[test]
+fn repl_piped_intent_failure_sets_the_exit_code() {
+    let dir = tempfile::tempdir().unwrap();
+    repl_cli(&dir)
+        .write_stdin("list services\n")
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("ANTHROPIC_API_KEY"));
+}
+
+/// `exit` after a failed intent must not clear the code recorded earlier.
+#[test]
+fn repl_piped_intent_failure_survives_exit() {
+    let dir = tempfile::tempdir().unwrap();
+    repl_cli(&dir)
+        .arg("--non-interactive")
+        .write_stdin("list services\nexit\n")
+        .assert()
+        .code(4);
+}
+
+/// An immediately empty input is a clean session, not a failure.
+#[test]
+fn repl_piped_empty_input_exits_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    repl_cli(&dir)
+        .arg("--non-interactive")
+        .write_stdin("")
+        .assert()
+        .code(0);
+}
+
+/// A session without a failed intent keeps the ordinary success exit code.
+#[test]
+fn repl_piped_clean_session_exits_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    repl_cli(&dir)
+        .arg("--non-interactive")
+        .write_stdin("exit\n")
+        .assert()
+        .code(0);
 }

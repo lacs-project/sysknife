@@ -80,9 +80,9 @@ reason on the alert. Everything else gets fixed.
 **Secrets.** The repository holds no secrets: trufflehog scans every pull
 request and push, GitHub secret scanning with push protection is on, and the
 opt-in pre-commit hook runs `scripts/check_no_secrets.sh` before a commit
-exists. Running that script in CI as well is
-[#653](https://github.com/lacs-project/sysknife/issues/653). The project's credentials
-are:
+exists. CI also runs that script over every tracked file through
+`tests/release/no-secrets.test.sh` in the `docs-and-hygiene` job. The project's
+credentials are:
 
 | Secret | Where it lives | Used by |
 |---|---|---|
@@ -577,6 +577,22 @@ For a deployment that claims tamper-evident retention:
 
 ```sh
 # An independent, append-only Postgres database — not the SysKnife store.
+# Put the URL in config.toml so the daemon and the CLI readers resolve the
+# same anchor without depending on the calling shell's environment.
+# An explicit env var still wins for one-off runs.
+#
+# NOTE: which config.toml each process reads. config_dir() resolves from
+# XDG_CONFIG_HOME/HOME, so on a packaged install the daemon (User=sysknife,
+# home /var/lib/sysknife) reads /var/lib/sysknife/.config/sysknife/config.toml,
+# while `sudo sysknife audit verify` under the default env_reset reads root's
+# /root/.config/sysknife/config.toml. They are two files: set [audit]
+# checkpoint_db in both (or keep using the systemd Environment= below, which
+# covers the daemon, plus sudo -E or a root-level config for the verifier).
+#   [audit]
+#   checkpoint_db = "postgres://sysknife@anchor-host/anchors"
+#
+# The value maps to SYSKNIFE_CHECKPOINT_DB at startup; a systemd unit may
+# also set it directly:
 sudo systemctl edit sysknife-daemon
 # [Service]
 # Environment="SYSKNIFE_CHECKPOINT_DB=postgres://sysknife@anchor-host/anchors"

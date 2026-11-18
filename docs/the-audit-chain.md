@@ -386,12 +386,12 @@ warns the unanchored case. The cross-check now runs, its result appears beside
 the chain verdict, and a `Truncated` or rewritten verdict fails the command
 (exit 1) rather than printing under an `OK`.
 
-Two boundary cases are deliberate. An anchor holding **no** checkpoints reports
+One boundary case is deliberate: an anchor holding **no** checkpoints reports
 `cannot_verify`, not `consistent` — zero checkpoints trivially satisfy "every
 checkpoint agrees", and calling that success would attest to a chain nothing has
-ever committed to. And because anchoring itself is implemented for the SQLite
-backend only, a Postgres deployment with `SYSKNIFE_CHECKPOINT_DB` set is told so
-explicitly rather than being silently skipped.
+ever committed to. The anchor cross-check reads whichever store `[storage]`
+selects: both a SQLite chain and a Postgres chain are checked against the
+configured anchor.
 
 ```admonish warning title="Checkpoints require an external sink"
 The anti-truncation guarantee only holds if the checkpoint sink is actually
@@ -407,7 +407,7 @@ for how to configure `SYSKNIFE_CHECKPOINT_DB`.
 Verification only ever needs the **public** key. You do not need daemon
 access, the private signing key, or trust in the machine that produced the
 log — only the exported `<audit-key>.pub` file (or its hex contents) and
-read access to the transaction database.
+read access to the audit database or a complete audit export.
 
 Full chain, third-party path:
 
@@ -470,15 +470,20 @@ Machine-readable output for CI or a SIEM pipeline:
 ```sh
 sysknife audit verify --pubkey audit-key.pub --json
 sysknife audit export --since 2026-08-01T00:00:00Z --limit 500 > audit-rows.json
+sysknife audit export > audit.json
+sysknife audit verify --from audit.json --pubkey audit-key.pub --json
 ```
 
-`audit export` emits the stored transaction-chain rows as one JSON array in
-ascending `seq` order. It includes both `prev_chain_hash` and the Ed25519
-signature stored as `chain_hash`, so an offline consumer has the linkage and
-signature bytes without opening SQLite itself. It does not invent `argv`,
-`outcome`, or a separate `signature` field that the signed row never stored.
-Absent optional columns are JSON `null`, while a value actually recorded as an
-empty string remains an empty string.
+`audit export` emits a version-1 JSON object containing `chain` (transaction
+rows), `events` (event rows), and `partial`. Both arrays preserve the signed
+rows in ascending `seq` order, including `prev_chain_hash` and `chain_hash`.
+Consumers of the former top-level array should now read `.chain`.
+
+`--from` verifies both chains and their signed bindings offline. It uses only
+the file and public key, without opening a database or contacting an anchor.
+Exports made with `--since` or `--limit` set `partial: true` and are refused by
+`--from`; use an unfiltered export for verification. Row encodings and the
+checkpoint requirement for detecting a valid truncated tail stay the same.
 
 An export inherits the confidentiality class of the audit database and is not a
 redacted artifact. Since `chain_version = 4`, `request_hash` is an
@@ -496,9 +501,11 @@ Anchor and check signed checkpoints against an external database:
 SYSKNIFE_CHECKPOINT_DB="postgres://user@host/checkpoints" sysknife audit checkpoint
 ```
 
-Three checks run: the transaction chain, the approval-event chain, and the
-binding between them. All three are reported, and any one of them can fail the
-command — a clean transaction chain must never mask a tampered approval trail.
+Four checks run: the transaction chain, the approval-event chain, the binding
+between them, and the status cross-check (see `status_check` above, which can
+fail the command on its own). All four are reported, and any one of them can
+fail the command — a clean transaction chain must never mask a tampered
+approval trail.
 
 **A clean run looks like:**
 

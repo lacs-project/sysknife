@@ -85,6 +85,11 @@ pub struct Cli {
 /// by `Command::Intent` via clap's `external_subcommand` mechanism.
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Inspect an explicit inventory of pinned hosts.
+    Fleet {
+        #[command(subcommand)]
+        command: FleetCommand,
+    },
     /// Check daemon connectivity and print configuration.
     Doctor,
 
@@ -158,10 +163,20 @@ impl Command {
     }
 }
 
+/// Read-only fleet inventory commands.
+#[derive(Subcommand, Debug)]
+pub enum FleetCommand {
+    /// Validate and list every host without connecting to a daemon.
+    Hosts {
+        /// TOML inventory containing `[[host]]` entries.
+        inventory: std::path::PathBuf,
+    },
+}
+
 /// `sysknife audit <subcommand>` subcommands.
 #[derive(Subcommand, Debug, Clone)]
 pub enum AuditCommand {
-    /// Export the stored signed audit-chain rows as JSON.
+    /// Export both signed audit chains as a versioned JSON document.
     Export(AuditExportArgs),
 
     /// Verify the tamper-evident Ed25519-signed hash chain over the audit log.
@@ -193,6 +208,10 @@ pub struct AuditExportArgs {
 /// Arguments for `sysknife audit verify`.
 #[derive(Args, Debug, Clone)]
 pub struct AuditVerifyArgs {
+    /// Verify an exported JSON file offline; requires --pubkey.
+    #[arg(long, value_name = "FILE", requires = "pubkey")]
+    pub from: Option<std::path::PathBuf>,
+
     /// Emit a machine-readable JSON report instead of human-friendly text.
     #[arg(long)]
     pub json: bool,

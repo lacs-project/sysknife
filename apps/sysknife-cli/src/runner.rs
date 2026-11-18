@@ -14,8 +14,9 @@
 //! `--step-by-step`, only that prompt is skipped; [`ApprovalPolicy::decide_step`]
 //! still gates each step after its preview so the user can decide individually.
 //!
-//! `--dry-run` short-circuits before any execution: the plan is printed and
-//! the function returns `Ok(())`.
+//! `--dry-run` short-circuits before any execution: the plan is printed, the
+//! distro and risk-ceiling gates are still evaluated, and the function returns
+//! the same refusal the real run would (#561).
 
 use std::io::{self, IsTerminal, Write as _};
 use std::path::PathBuf;
@@ -1036,7 +1037,7 @@ pub async fn run_doctor(
     json_out: bool,
     log: &Logger,
 ) -> Result<(), CliError> {
-    let config = BrainConfig::from_env().map_err(|e| CliError::ConfigOrDaemon(e.to_string()))?;
+    let mut warnings: Vec<String> = Vec::new();
 
     // `{:?}` printed `Unix("/run/…")` at users; `label()` gives the URI form
     // they can put back into SYSKNIFE_SOCKET.
@@ -1062,6 +1063,31 @@ pub async fn run_doctor(
             log.print_stderr(&format!("warning: {warning}"));
         }
     }
+    if let Some(w) = target.warning() {
+        warnings.push(w.into());
+    }
+
+    // Brain provider/model — fall back to placeholders if config is missing
+    // (e.g. operator hasn't run `sysknife-setup` yet).
+    //
+    // `config_warning` tracks whether the brain config itself is broken —
+    // this is what governs the exit code.  Distro-fallback notes are
+    // informational and must not make the exit code non-zero on their own,
+    // because older daemons that answer but predate `host_distro` are still
+    // healthy setups.
+    let (provider, model, config_warning) = match BrainConfig::from_env() {
+        Ok(cfg) => (
+            cfg.provider_name().to_string(),
+            cfg.model_name().to_string(),
+            None,
+        ),
+        Err(e) => {
+            let msg = format!("brain config unreadable: {e}");
+            warnings.push(msg.clone());
+            ("unknown".to_string(), "unknown".to_string(), Some(msg))
+        }
+    };
+
     match state_result {
         Ok((state, _)) => {
             if json_out {
@@ -1069,34 +1095,50 @@ pub async fn run_doctor(
                     "ok": true,
                     "socket": socket_label,
                     "host": state.host_name(),
-                    "provider": config.provider_name(),
-                    "model": config.model_name(),
+                    "provider": provider,
+                    "model": model,
                     "distro": distro_label,
                     "distro_source": target.source,
-                    "warnings": target.warning().into_iter().collect::<Vec<_>>(),
+                    "warnings": warnings,
                 });
                 log.println(&serde_json::to_string(&out).expect("static JSON"));
             } else {
                 crate::render::print_doctor_ok(
                     &socket_label,
                     state.host_name(),
-                    config.provider_name(),
-                    config.model_name(),
+                    &provider,
+                    &model,
                     &distro_label,
                     log,
                 );
+                if let Some(w) = &config_warning {
+                    log.print_stderr(&format!("warning: {w}"));
+                }
             }
-            Ok(())
+            if config_warning.is_none() {
+                Ok(())
+            } else {
+                Err(CliError::Exit(4))
+            }
         }
         Err(e) => {
             if json_out {
-                // Scripts need to know which socket failed, not just that one did.
-                let out = json!({ "ok": false, "socket": socket_label, "error": e.to_string(),
-                    "distro": distro_label, "distro_source": target.source,
-                    "warnings": target.warning().into_iter().collect::<Vec<_>>() });
+                let out = json!({
+                    "ok": false,
+                    "socket": socket_label,
+                    "error": e.to_string(),
+                    "provider": provider,
+                    "model": model,
+                    "distro": distro_label,
+                    "distro_source": target.source,
+                    "warnings": warnings,
+                });
                 log.println(&serde_json::to_string(&out).expect("static JSON"));
             } else {
                 crate::render::print_doctor_fail(&socket_label, &e.to_string());
+                if let Some(w) = &config_warning {
+                    log.print_stderr(&format!("warning: {w}"));
+                }
             }
             // The report above is the user-facing output; `Exit` carries the
             // code (4, as for any config/daemon failure) without main
@@ -1191,7 +1233,16 @@ impl RunOpts {
 // run_audit_export / run_audit_verify
 // ---------------------------------------------------------------------------
 
-/// Export the signed transaction-chain rows from the configured audit store.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AuditExport {
+    version: u32,
+    chain: Vec<sysknife_daemon::audit_chain::ChainRow>,
+    events: Vec<sysknife_daemon::audit_chain::EventRow>,
+    #[serde(default)]
+    partial: bool,
+}
+
+/// Export both signed chains from the configured audit store.
 ///
 /// This is deliberately a local storage read, just like `audit verify`; it
 /// does not cross the daemon protocol or load the private audit key.
@@ -1209,11 +1260,11 @@ pub async fn run_audit_export(args: AuditExportArgs, log: &Logger) -> Result<(),
         log.print_stderr(&format!("note: {note}"));
     }
 
-    let rows = match lacs_config.storage.as_ref() {
+    let (rows, events) = match lacs_config.storage.as_ref() {
         Some(storage) if storage.backend.eq_ignore_ascii_case("postgres") => {
             let config = postgres_config(storage)
                 .map_err(|reason| CliError::ConfigOrDaemon(format!("audit export: {reason}")))?;
-            sysknife_daemon::store::postgres::PostgresStore::read_chain_rows(&config)
+            sysknife_daemon::store::postgres::PostgresStore::read_audit_rows(&config)
                 .await
                 .map_err(|e| {
                     CliError::ConfigOrDaemon(format!("postgres audit chain query failed: {e}"))
@@ -1252,15 +1303,25 @@ pub async fn run_audit_export(args: AuditExportArgs, log: &Logger) -> Result<(),
             let store = TransactionStore::open_read_only(db_path).map_err(|e| {
                 CliError::ConfigOrDaemon(format!("opening audit database failed: {e}"))
             })?;
-            store
+            let chain = store
                 .fetch_chain_rows()
-                .map_err(|e| CliError::ConfigOrDaemon(format!("audit chain query failed: {e}")))?
+                .map_err(|e| CliError::ConfigOrDaemon(format!("audit chain query failed: {e}")))?;
+            let events = store
+                .fetch_event_rows()
+                .map_err(|e| CliError::ConfigOrDaemon(format!("audit event query failed: {e}")))?;
+            (chain, events)
         }
     };
 
     let rows = select_chain_rows_for_export(rows, args.since.as_deref(), args.limit)
         .map_err(|e| CliError::ConfigOrDaemon(e.to_string()))?;
-    let json = serde_json::to_string(&rows)
+    let document = AuditExport {
+        version: 1,
+        chain: rows,
+        events,
+        partial: args.since.is_some() || args.limit.is_some(),
+    };
+    let json = serde_json::to_string(&document)
         .map_err(|e| CliError::ConfigOrDaemon(format!("serializing audit export failed: {e}")))?;
     log.println(&json);
     Ok(())
@@ -1284,9 +1345,50 @@ pub async fn run_audit_export(args: AuditExportArgs, log: &Logger) -> Result<(),
 /// tampered — the result is unknown until the operator resolves the
 /// underlying access problem.
 pub async fn run_audit_verify(args: AuditVerifyArgs, log: &Logger) -> Result<(), CliError> {
+    if let Some(path) = args.from.as_ref() {
+        let outcome = verify_export(path, args.pubkey.as_deref());
+        let exit_code = combined_verification_exit_code(&outcome, None);
+        emit_verification(&args, log, &outcome, &path.display().to_string(), None);
+        return if exit_code == 0 {
+            Ok(())
+        } else {
+            Err(CliError::Exit(exit_code))
+        };
+    }
     let lacs_config = sysknife_core::config::LacsConfig::load();
     let store = sysknife_core::resolve_audit_store();
     run_audit_verify_with_store(args, log, &lacs_config, &store).await
+}
+
+fn verify_export(path: &std::path::Path, pubkey: Option<&std::path::Path>) -> AuditVerification {
+    let read = || -> Result<AuditVerification, String> {
+        let key_path = pubkey.ok_or("offline verification requires --pubkey")?;
+        let key = std::fs::read_to_string(key_path).map_err(|e| {
+            format!(
+                "public key file {} could not be read: {e}",
+                key_path.display()
+            )
+        })?;
+        let file = std::fs::File::open(path)
+            .map_err(|e| format!("audit export {} could not be read: {e}", path.display()))?;
+        let document: AuditExport = serde_json::from_reader(std::io::BufReader::new(file))
+            .map_err(|e| format!("invalid audit export: {e}"))?;
+        if document.version != 1 {
+            return Err(format!(
+                "unsupported audit export version {}",
+                document.version
+            ));
+        }
+        if document.partial {
+            return Err("partial audit export cannot be verified from genesis; export again without --since or --limit".into());
+        }
+        Ok(sysknife_daemon::audit_chain::verify_all_with_pubkey(
+            key.trim(),
+            &document.chain,
+            &document.events,
+        ))
+    };
+    read().unwrap_or_else(cannot_verify_all)
 }
 
 /// Verify with a store selection supplied by the caller. Keeping this path
@@ -1434,6 +1536,12 @@ pub async fn run_audit_checkpoint(
         }
     };
 
+    let lacs_config = sysknife_core::config::LacsConfig::load();
+    let postgres_storage = lacs_config
+        .storage
+        .as_ref()
+        .filter(|s| s.backend.eq_ignore_ascii_case("postgres"));
+
     let resolved_store = sysknife_core::resolve_audit_store();
     if let Some(note) = resolved_store.note() {
         log.print_stderr(&format!("note: {note}"));
@@ -1441,7 +1549,9 @@ pub async fn run_audit_checkpoint(
     let db_path = resolved_store.path();
     let system_store = db_path == std::path::Path::new(sysknife_core::PRODUCTION_DATABASE_PATH);
 
-    // Load the private signing key (same location rules as `verify`).
+    // Load the signing key (same location rules as `verify`; the postgres
+    // deployment keeps it on local disk, resolved through the shared store
+    // choice — the CLI guard test forbids `default_database_path` here).
     let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(db_path);
     require_exists(&key_path, "audit key", system_store)?;
     let key = AuditKey::load_or_generate(&key_path).map_err(|e| {
@@ -1449,16 +1559,26 @@ pub async fn run_audit_checkpoint(
         CliError::Exit(2)
     })?;
 
-    // Read the current chain tip from the local sqlite store.
-    require_exists(db_path, "audit database", system_store)?;
-    let store = TransactionStore::open_read_only(db_path).map_err(|e| {
-        eprintln!("opening audit database failed: {e}");
-        CliError::Exit(2)
-    })?;
-    let rows = store.fetch_chain_rows().map_err(|e| {
-        eprintln!("reading audit chain failed: {e}");
-        CliError::Exit(2)
-    })?;
+    // Read the current chain tip from the store `[storage]` selects (#558).
+    let rows = if let Some(storage) = postgres_storage {
+        use sysknife_daemon::store::postgres::PostgresStore;
+
+        let cfg = postgres_config(storage).map_err(CliError::ConfigOrDaemon)?;
+        PostgresStore::read_chain_rows(&cfg).await.map_err(|e| {
+            eprintln!("reading audit chain failed: {e}");
+            CliError::Exit(2)
+        })?
+    } else {
+        require_exists(db_path, "audit database", system_store)?;
+        let store = TransactionStore::open_read_only(db_path).map_err(|e| {
+            eprintln!("opening audit database failed: {e}");
+            CliError::Exit(2)
+        })?;
+        store.fetch_chain_rows().map_err(|e| {
+            eprintln!("reading audit chain failed: {e}");
+            CliError::Exit(2)
+        })?
+    };
     // The anchoring rules — refuse a broken chain, read back after writing,
     // re-verify every anchored checkpoint — live in the daemon crate so this
     // command and the daemon's periodic anchor task cannot drift apart.
@@ -1516,9 +1636,10 @@ pub async fn run_audit_checkpoint(
 /// the check must actually run: an operator who set anchoring up and gets back
 /// only `configured: true` is worse informed than one who never bothered.
 ///
-/// Anchoring is SQLite-only today (`sysknife audit checkpoint` opens a
-/// `TransactionStore`), so a Postgres deployment gets an explicit "not
-/// supported" rather than a silent skip that would read as coverage.
+/// The chain rows come from whichever backend `[storage]` selects (#558): the
+/// daemon anchors through the `AuditStore` trait, so a Postgres deployment IS
+/// anchored and the reader must read the same store rather than declaring the
+/// anchor unverifiable.
 pub(crate) async fn verify_configured_anchor(
     lacs_config: &sysknife_core::config::LacsConfig,
     db_path: &std::path::Path,
@@ -1531,25 +1652,35 @@ pub(crate) async fn verify_configured_anchor(
         .ok()
         .filter(|v| !v.trim().is_empty())?;
 
-    if lacs_config
+    let postgres_storage = lacs_config
         .storage
         .as_ref()
-        .is_some_and(|s| s.backend.eq_ignore_ascii_case("postgres"))
-    {
-        return Some(CheckpointOutcome::CannotVerify {
-            reason: "checkpoint anchoring is implemented for the sqlite backend only; \
-                     `sysknife audit checkpoint` cannot anchor a postgres chain either, \
-                     so this chain has no anchor to check against"
-                .to_string(),
-        });
-    }
+        .filter(|s| s.backend.eq_ignore_ascii_case("postgres"));
 
-    let rows = match TransactionStore::open_read_only(db_path).and_then(|s| s.fetch_chain_rows()) {
-        Ok(rows) => rows,
-        Err(e) => {
-            return Some(CheckpointOutcome::CannotVerify {
-                reason: format!("reading the local chain for the anchor check failed: {e}"),
-            })
+    let rows = if let Some(storage) = postgres_storage {
+        use sysknife_daemon::store::postgres::PostgresStore;
+        let cfg = match postgres_config(storage) {
+            Ok(cfg) => cfg,
+            Err(reason) => {
+                return Some(CheckpointOutcome::CannotVerify { reason });
+            }
+        };
+        match PostgresStore::read_chain_rows(&cfg).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                return Some(CheckpointOutcome::CannotVerify {
+                    reason: format!("reading the postgres chain for the anchor check failed: {e}"),
+                })
+            }
+        }
+    } else {
+        match TransactionStore::open_read_only(db_path).and_then(|s| s.fetch_chain_rows()) {
+            Ok(rows) => rows,
+            Err(e) => {
+                return Some(CheckpointOutcome::CannotVerify {
+                    reason: format!("reading the local chain for the anchor check failed: {e}"),
+                })
+            }
         }
     };
 
@@ -2014,7 +2145,7 @@ fn emit_verification(
 
 /// An empty row-integrity check cannot establish whether an unanchored log
 /// is fresh or was erased. Keep that uncertainty separate from detected breaks.
-fn empty_unanchored_chain(
+pub(crate) fn empty_unanchored_chain(
     verification: &AuditVerification,
     anchor: Option<&CheckpointOutcome>,
 ) -> bool {
@@ -2122,6 +2253,25 @@ enum GateAction {
     AskOperator,
     /// Do not execute, and do not ask.
     Refuse(CliError),
+}
+
+/// Refuse any step whose action the target distro cannot run.
+///
+/// Shared by the pre-display guard in [`run_intent`] and the dry-run gate in
+/// [`execute_plan`], so both judge the plan the same way (#561).
+fn check_plan_distro<'a, I>(
+    actions: I,
+    distro: Option<&sysknife_core::distro::DistroId>,
+) -> Result<(), CliError>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    for action in actions {
+        if let Err(msg) = crate::distro_routing::check_action_distro(action, distro) {
+            return Err(CliError::ConfigOrDaemon(msg));
+        }
+    }
+    Ok(())
 }
 
 /// Map an approval decision onto the gate's behaviour.
@@ -2232,13 +2382,10 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     // then refused. A dry run still displays such a plan on purpose — inspecting
     // what the planner produced is the point of it.
     if !opts.dry_run {
-        for step in plan.steps() {
-            if let Err(msg) =
-                crate::distro_routing::check_action_distro(step.action_name(), distro.as_ref())
-            {
-                return Err(CliError::ConfigOrDaemon(msg));
-            }
-        }
+        check_plan_distro(
+            plan.steps().iter().map(|step| step.action_name()),
+            distro.as_ref(),
+        )?;
     }
 
     // Surface any step where the planner's proposed risk disagreed with the
@@ -2272,13 +2419,34 @@ pub async fn run_intent(intent: String, opts: &RunOpts, log: &Logger) -> Result<
     // prevented from reading the LLM's proposed risk.
     let plan = plan.into_authorized(authoritative_plan_risk);
 
-    execute_plan(
-        &plan,
-        opts,
-        log,
-        |msg| async move { prompt_confirm(&msg).await },
-    )
+    execute_plan(&plan, opts, log, distro.as_ref(), |msg| async move {
+        prompt_confirm(&msg).await
+    })
     .await
+}
+
+/// The `--json` view of a plan's preference changes.
+///
+/// A fact is model-authored. The terminal view neutralises it with
+/// `operator_safe`; the JSON view needs the same character rules but not the
+/// display caps, because `--json` is read by machines rather than scrollback.
+/// It also flattens the fact, as the terminal view does: keeping line breaks
+/// would carry a line's leading run — and with it the C1 controls and Unicode
+/// line separators `trim_start` treats as indentation — into the JSON string.
+fn preference_changes_json(plan: &AuthorizedPlan) -> Vec<Value> {
+    plan.pref_changes()
+        .iter()
+        .map(|c| {
+            let fact = crate::operator_text::operator_safe_unbounded(c.fact());
+            json!({
+                "kind": match c.kind() {
+                    PrefChangeKind::Remember => "remember",
+                    PrefChangeKind::Forget => "forget",
+                },
+                "fact": fact,
+            })
+        })
+        .collect()
 }
 
 /// Run an authorized plan with the same approval and daemon path used by
@@ -2288,6 +2456,7 @@ async fn execute_plan<F, Fut>(
     plan: &AuthorizedPlan,
     opts: &RunOpts,
     log: &Logger,
+    distro: Option<&sysknife_core::distro::DistroId>,
     mut confirm: F,
 ) -> Result<(), CliError>
 where
@@ -2308,19 +2477,7 @@ where
                 })
             })
             .collect();
-        let preference_changes: Vec<Value> = plan
-            .pref_changes()
-            .iter()
-            .map(|c| {
-                json!({
-                    "kind": match c.kind() {
-                        PrefChangeKind::Remember => "remember",
-                        PrefChangeKind::Forget => "forget",
-                    },
-                    "fact": c.fact(),
-                })
-            })
-            .collect();
+        let preference_changes = preference_changes_json(plan);
         log.println(
             &serde_json::to_string(&json!({
                 "plan": {
@@ -2346,6 +2503,16 @@ where
         }
         if !plan.pref_changes().is_empty() {
             log.print_stderr("Preference changes not saved: this is a dry run.");
+        }
+
+        // #561: the plan is printed, and a dry run has to predict the real
+        // run's exit code. Both gates are pure and cheap, and neither prompts,
+        // so a plan the real run would refuse exits the same way here.
+        check_plan_distro(plan.steps().map(|step| step.action_name()), distro)?;
+        let highest = plan.highest_risk().expect("plan has steps").clone();
+        match gate_action(opts.approval_policy().decide_plan(plan), &highest) {
+            GateAction::Proceed | GateAction::AskOperator => {}
+            GateAction::Refuse(err) => return Err(err),
         }
         return Ok(());
     }
@@ -2544,7 +2711,10 @@ where
                     first_line = false;
                 }
                 if opts.json {
-                    log.println(line);
+                    // #664: every line under --json has to parse, so a progress
+                    // frame becomes an object of its own instead of a bare text
+                    // line between the plan and the result.
+                    log.println(&json!({ "event": "progress", "line": line }).to_string());
                 } else {
                     crate::render::print_output_line(line, log);
                 }
@@ -2683,6 +2853,8 @@ pub async fn run_repl(opts: &RunOpts, log: &Logger) -> Result<(), CliError> {
         }
     }
 
+    let mut first_failure: Option<i32> = None;
+
     loop {
         // Block the worker thread only during the blocking readline call.
         // Other tokio threads continue executing tasks unaffected.
@@ -2701,6 +2873,10 @@ pub async fn run_repl(opts: &RunOpts, log: &Logger) -> Result<(), CliError> {
                 }
                 if let Err(e) = run_intent(intent, opts, log).await {
                     log.print_stderr(&format!("error: {e}"));
+                    // The first failure decides the process exit status; later
+                    // intents may depend on the earlier one, so their codes do
+                    // not replace it (#646).
+                    record_intent_failure(&mut first_failure, e.exit_code());
                 }
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
@@ -2717,7 +2893,22 @@ pub async fn run_repl(opts: &RunOpts, log: &Logger) -> Result<(), CliError> {
         }
     }
 
+    // An interactive session keeps exiting 0 at EOF: the operator saw each
+    // diagnostic as it happened. Piped intents and --non-interactive scripts
+    // only see the status, so a failed intent has to reach it (#646).
+    if let Some(code) = first_failure {
+        if opts.non_interactive || !io::stdin().is_terminal() {
+            return Err(CliError::Exit(code));
+        }
+    }
+
     Ok(())
+}
+
+/// Keep the first failed intent's exit code; a later failure must not replace
+/// it, because the later intents may depend on the earlier one (#646).
+fn record_intent_failure(first_failure: &mut Option<i32>, code: i32) {
+    first_failure.get_or_insert(code);
 }
 
 // ---------------------------------------------------------------------------
@@ -2907,6 +3098,16 @@ mod approval_view_tests {
 mod tests {
     use super::*;
 
+    /// The REPL reports the first failed intent's code (#646); a later failure
+    /// must not replace it.
+    #[test]
+    fn only_the_first_failed_intent_sets_the_exit_code() {
+        let mut first_failure = None;
+        record_intent_failure(&mut first_failure, 2);
+        record_intent_failure(&mut first_failure, 4);
+        assert_eq!(first_failure, Some(2));
+    }
+
     #[test]
     fn checkpoint_reports_when_the_system_store_needs_sudo() {
         let path = std::path::Path::new("/var/lib/sysknife/daemon.audit-key");
@@ -3020,7 +3221,7 @@ mod tests {
                 skip_approval: false,
             };
             let log = Logger::new(None).unwrap();
-            let err = execute_plan(&plan, &opts, &log, |_| async {
+            let err = execute_plan(&plan, &opts, &log, None, |_| async {
                 panic!("low-risk --yes plan must not ask for confirmation");
             })
             .await
@@ -3097,7 +3298,11 @@ mod tests {
                     status: status.clone(),
                 };
                 emit_verification(
-                    &AuditVerifyArgs { json, pubkey: None },
+                    &AuditVerifyArgs {
+                        from: None,
+                        json,
+                        pubkey: None,
+                    },
                     &log,
                     &verification,
                     "test.db",
@@ -3158,7 +3363,11 @@ mod tests {
             status: None,
         };
         emit_verification(
-            &crate::cli::AuditVerifyArgs { json, pubkey: None },
+            &crate::cli::AuditVerifyArgs {
+                from: None,
+                json,
+                pubkey: None,
+            },
             &log,
             &verification,
             "/tmp/test.db",
@@ -3394,6 +3603,7 @@ mod tests {
         let log = Logger::new(Some(&path)).expect("logger");
         emit_verification(
             &crate::cli::AuditVerifyArgs {
+                from: None,
                 json: true,
                 pubkey: None,
             },
@@ -4131,6 +4341,7 @@ mod tests {
             events: Events,
             execution_statuses: &[(&str, &str)],
             proposed_changes: &[(&str, Value)],
+            progress_lines: &'static [(&'static str, &'static str)],
         ) -> (
             tokio::sync::oneshot::Sender<()>,
             tokio::task::JoinHandle<()>,
@@ -4179,6 +4390,20 @@ mod tests {
                             "type": "approval_response", "approval_receipt": "mock-receipt",
                         }),
                         "execute" => {
+                            // A real daemon streams progress frames before the
+                            // terminal one; the CLI decides what to do with them.
+                            for (_, line) in
+                                progress_lines.iter().filter(|(name, _)| *name == action)
+                            {
+                                let frame = serde_json::json!({
+                                    "type": "job_progress",
+                                    "job_id": "job-1",
+                                    "line": line,
+                                });
+                                let bytes = serde_json::to_vec(&frame).unwrap();
+                                stream.write_u32_le(bytes.len() as u32).await.unwrap();
+                                stream.write_all(&bytes).await.unwrap();
+                            }
                             let status = statuses
                                 .get(action)
                                 .map(String::as_str)
@@ -4244,7 +4469,7 @@ mod tests {
             answers: &[bool],
             execution_statuses: &[(&str, &str)],
         ) -> (Result<(), CliError>, Vec<String>) {
-            run_against(plan, opts, answers, execution_statuses, &[]).await
+            run_against(plan, opts, answers, execution_statuses, &[], None).await
         }
 
         async fn run_against(
@@ -4253,6 +4478,7 @@ mod tests {
             answers: &[bool],
             execution_statuses: &[(&str, &str)],
             proposed_changes: &[(&str, Value)],
+            distro: Option<&sysknife_core::distro::DistroId>,
         ) -> (Result<(), CliError>, Vec<String>) {
             let dir = tempfile::tempdir().unwrap();
             let socket = dir.path().join("daemon.sock");
@@ -4263,11 +4489,12 @@ mod tests {
                 Arc::clone(&events),
                 execution_statuses,
                 proposed_changes,
+                &[],
             )
             .await;
             let log = Logger::new(None).unwrap();
             let mut answers = answers.iter();
-            let result = execute_plan(plan, &opts, &log, |_| {
+            let result = execute_plan(plan, &opts, &log, distro, |_| {
                 events.lock().unwrap().push("prompt".into());
                 std::future::ready(*answers.next().expect("unexpected operator prompt"))
             })
@@ -4284,6 +4511,62 @@ mod tests {
             answers: &[bool],
         ) -> (Result<(), CliError>, Vec<String>) {
             run_with_statuses(plan, opts, answers, &[]).await
+        }
+
+        /// #664: an executed run under `--json` has to stay one JSON object per
+        /// line. The daemon's progress frames are plain text, so handing them to
+        /// `log.println` raw breaks every `jq` pipeline. Reverting the JSON arm
+        /// to `log.println(line)` makes the parse loop below fail on
+        /// "Executing GetMemoryInfo...".
+        #[tokio::test]
+        async fn execute_plan_json_emits_progress_as_its_own_event() {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("daemon.sock");
+            let printed = dir.path().join("stdout.log");
+            let events: Events = Arc::new(Mutex::new(Vec::new()));
+            let (stop, task) = mock_execution_daemon(
+                &socket,
+                Arc::clone(&events),
+                &[],
+                &[],
+                &[
+                    ("GetMemoryInfo", "Authorization passed for GetMemoryInfo"),
+                    ("GetMemoryInfo", "Executing GetMemoryInfo..."),
+                ],
+            )
+            .await;
+
+            let log = Logger::new(Some(&printed)).unwrap();
+            let mut options = opts(socket);
+            options.json = true;
+            execute_plan(&plan(&["GetMemoryInfo"]), &options, &log, None, |_| {
+                std::future::ready(true)
+            })
+            .await
+            .unwrap();
+            stop.send(()).unwrap();
+            task.await.unwrap();
+
+            let emitted = std::fs::read_to_string(&printed).unwrap();
+            for line in emitted.lines() {
+                if let Err(e) = serde_json::from_str::<Value>(line) {
+                    panic!("--json printed a line that is not JSON ({e}): {line:?}");
+                }
+            }
+
+            let progress: Vec<String> = emitted
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|value| value["event"] == "progress")
+                .filter_map(|value| value["line"].as_str().map(str::to_owned))
+                .collect();
+
+            assert!(
+                progress
+                    .iter()
+                    .any(|line| line == "Executing GetMemoryInfo..."),
+                "the daemon's progress text is not in the output: {progress:?}"
+            );
         }
 
         /// #602: exercise the actual execute_plan loop, not a duplicate loop
@@ -4380,8 +4663,11 @@ mod tests {
             }
         }
 
+        /// #561: a refused plan used to exit 0 under `--dry-run`, so a
+        /// pre-flight check built on `--dry-run --json --max-risk` passed
+        /// plans the real run rejects.
         #[tokio::test]
-        async fn dry_run_still_displays_a_refused_plan_without_daemon_or_prompts() {
+        async fn dry_run_reports_a_refused_plan_without_touching_daemon_or_prompts() {
             for step_by_step in [false, true] {
                 let mut opts = opts(PathBuf::new());
                 opts.step_by_step = step_by_step;
@@ -4390,12 +4676,159 @@ mod tests {
                 opts.max_risk = Some(MaxRisk::Low);
                 let (result, events) =
                     run(&plan(&["GetDiskUsage", "RebootSystem"]), opts, &[]).await;
+                assert!(
+                    matches!(
+                        &result,
+                        Err(CliError::RiskCeilingExceeded {
+                            highest: PlanRiskLevel::High,
+                            ceiling: MaxRisk::Low,
+                        })
+                    ),
+                    "{result:?}"
+                );
+                assert!(
+                    events.is_empty(),
+                    "dry run touched daemon or operator: {events:?}"
+                );
+            }
+        }
+
+        /// The honest dry run must not refuse everything: with no ceiling set
+        /// a High step is still only inspected.
+        #[tokio::test]
+        async fn dry_run_without_a_ceiling_still_succeeds() {
+            for step_by_step in [false, true] {
+                let mut opts = opts(PathBuf::new());
+                opts.step_by_step = step_by_step;
+                opts.dry_run = true;
+                opts.non_interactive = true;
+                let (result, events) =
+                    run(&plan(&["GetDiskUsage", "RebootSystem"]), opts, &[]).await;
                 assert!(result.is_ok(), "{result:?}");
                 assert!(
                     events.is_empty(),
                     "dry run touched daemon or operator: {events:?}"
                 );
             }
+        }
+
+        /// The plan is printed before the refusal, so the operator still sees
+        /// what the planner produced.
+        #[tokio::test]
+        async fn dry_run_prints_the_plan_before_reporting_the_refusal() {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("daemon.sock");
+            let printed = dir.path().join("stdout.log");
+            let events: Events = Arc::new(Mutex::new(Vec::new()));
+            let (stop, task) =
+                mock_execution_daemon(&socket, Arc::clone(&events), &[], &[], &[]).await;
+
+            let log = Logger::new(Some(&printed)).unwrap();
+            let mut options = opts(socket);
+            options.json = true;
+            options.dry_run = true;
+            options.non_interactive = true;
+            options.max_risk = Some(MaxRisk::Low);
+            let result = execute_plan(
+                &plan(&["GetDiskUsage", "RebootSystem"]),
+                &options,
+                &log,
+                None,
+                |_| std::future::ready(true),
+            )
+            .await;
+            stop.send(()).unwrap();
+            task.await.unwrap();
+
+            let err = result.expect_err("a dry run of a refused plan must not exit 0");
+            assert_eq!(err.exit_code(), 1, "{err}");
+            let emitted = std::fs::read_to_string(&printed).unwrap();
+            let plan_line = emitted
+                .lines()
+                .find(|line| line.starts_with("{\"plan\""))
+                .unwrap_or_else(|| panic!("the plan was not printed: {emitted:?}"));
+            assert!(plan_line.contains("RebootSystem"), "{plan_line}");
+            assert!(
+                events.lock().unwrap().is_empty(),
+                "dry run touched daemon or operator"
+            );
+        }
+
+        /// #561: the distro guard is pure too, so the dry run applies it: a
+        /// plan this host cannot run exits 4, after the plan is printed.
+        #[tokio::test]
+        async fn dry_run_reports_a_distro_refusal_with_exit_4() {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("daemon.sock");
+            let printed = dir.path().join("stdout.log");
+            let events: Events = Arc::new(Mutex::new(Vec::new()));
+            let (stop, task) =
+                mock_execution_daemon(&socket, Arc::clone(&events), &[], &[], &[]).await;
+
+            let log = Logger::new(Some(&printed)).unwrap();
+            let mut options = opts(socket);
+            options.dry_run = true;
+            options.non_interactive = true;
+            let fedora = sysknife_core::distro::DistroId::Fedora { version: 41 };
+            let result = execute_plan(
+                &plan(&["AptInstall"]),
+                &options,
+                &log,
+                Some(&fedora),
+                |_| std::future::ready(true),
+            )
+            .await;
+            stop.send(()).unwrap();
+            task.await.unwrap();
+
+            let err = result.expect_err("a dry run on the wrong distro must not exit 0");
+            assert_eq!(err.exit_code(), 4, "{err}");
+            assert!(matches!(&err, CliError::ConfigOrDaemon(_)), "{err:?}");
+            let emitted = std::fs::read_to_string(&printed).unwrap();
+            let plan_line = emitted
+                .lines()
+                .find(|line| line.starts_with("{\"plan\""))
+                .unwrap_or_else(|| panic!("the plan was not printed: {emitted:?}"));
+            assert!(plan_line.contains("AptInstall"), "{plan_line}");
+            assert!(
+                events.lock().unwrap().is_empty(),
+                "dry run touched the daemon"
+            );
+        }
+
+        /// A supported host is not refused: the gate only reports a real one.
+        #[tokio::test]
+        async fn dry_run_on_a_distro_that_supports_the_plan_still_succeeds() {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("daemon.sock");
+            let events: Events = Arc::new(Mutex::new(Vec::new()));
+            let (stop, task) =
+                mock_execution_daemon(&socket, Arc::clone(&events), &[], &[], &[]).await;
+
+            let log = Logger::new(None).unwrap();
+            let mut options = opts(socket);
+            options.dry_run = true;
+            options.non_interactive = true;
+            let ubuntu = sysknife_core::distro::DistroId::Ubuntu {
+                major: 24,
+                minor: 4,
+            };
+            let result = execute_plan(
+                &plan(&["AptInstall"]),
+                &options,
+                &log,
+                Some(&ubuntu),
+                |_| std::future::ready(true),
+            )
+            .await;
+            stop.send(()).unwrap();
+            task.await.unwrap();
+
+            assert!(result.is_ok(), "{result:?}");
+            assert!(
+                events.lock().unwrap().is_empty(),
+                "dry run touched the daemon"
+            );
         }
 
         #[tokio::test]
@@ -4626,6 +5059,101 @@ mod tests {
             assert!(saved.contains("prefer nala over apt"), "{saved}");
         }
 
+        /// #757: the JSON view printed the model-authored fact verbatim, so
+        /// bidi overrides, zero-width characters and C1 controls reached a
+        /// machine-readable field the caller may render.
+        #[test]
+        fn plan_json_neutralises_a_hostile_preference_fact() {
+            let dir = tempfile::tempdir().unwrap();
+            let prefs = dir.path().join("prefs.md");
+            let hostile = "prefer \u{202e}apache\u{202c}\u{200b} over nginx\u{009b}31m";
+            let plan = plan_remembering(&prefs, hostile);
+
+            let fact = preference_changes_json(&plan)[0]["fact"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert!(!fact.contains('\u{202e}'), "{fact:?}");
+            assert!(!fact.contains('\u{200b}'), "{fact:?}");
+            assert!(
+                !fact.chars().any(|c| ('\u{80}'..='\u{9f}').contains(&c)),
+                "{fact:?}"
+            );
+            assert!(
+                fact.contains("apache") && fact.contains("nginx"),
+                "{fact:?}"
+            );
+        }
+
+        /// A fact with nothing to neutralise comes back exactly as written.
+        #[test]
+        fn plan_json_keeps_a_benign_preference_fact() {
+            let dir = tempfile::tempdir().unwrap();
+            let prefs = dir.path().join("prefs.md");
+            let plan = plan_remembering(&prefs, "prefer nala over apt");
+
+            let change = &preference_changes_json(&plan)[0];
+            assert_eq!(change["kind"], "remember");
+            assert_eq!(change["fact"], "prefer nala over apt");
+        }
+
+        /// #757, second round: the tests above call `preference_changes_json`
+        /// directly, so they cannot see what `execute_plan` actually prints.
+        /// This drives the call site with `--json --dry-run`, which prints the
+        /// plan and returns before the daemon is touched, and reads the fact
+        /// back out of the emitted line. Reverting the call site to `c.fact()`,
+        /// or back to `operator_safe_block_full`, makes it fail: the escaped
+        /// bytes appear in the first case, the newline and the U+0085 indent in
+        /// the second.
+        #[tokio::test]
+        async fn execute_plan_json_neutralises_a_hostile_preference_fact() {
+            let dir = tempfile::tempdir().unwrap();
+            let prefs = dir.path().join("prefs.md");
+            let printed = dir.path().join("stdout.log");
+            // The two characters #757 names, a bidi override, and a second line
+            // that starts with the whitespace `trim_start` does not classify as
+            // indentation.
+            let hostile = "prefer \u{1b}[8m\u{202e}apache\u{202c}\u{200d} over nginx\r\n\u{0085}\tsecond line\u{2028}third";
+            let plan = plan_remembering(&prefs, hostile);
+
+            let log = Logger::new(Some(&printed)).unwrap();
+            let mut options = text_opts();
+            options.json = true;
+            options.dry_run = true;
+            execute_plan(&plan, &options, &log, None, |_| std::future::ready(true))
+                .await
+                .unwrap();
+
+            let emitted = std::fs::read_to_string(&printed).unwrap();
+            let line = emitted
+                .lines()
+                .find(|l| l.starts_with("{\"plan\""))
+                .unwrap_or_else(|| panic!("no plan JSON printed: {emitted:?}"));
+            let value: Value = serde_json::from_str(line).unwrap();
+            let fact = value["plan"]["preference_changes"][0]["fact"]
+                .as_str()
+                .unwrap_or_else(|| panic!("no fact in {line}"));
+
+            assert!(!fact.contains('\u{1b}'), "{fact:?}");
+            assert!(!fact.contains('\u{202e}'), "{fact:?}");
+            assert!(!fact.contains('\u{200d}'), "{fact:?}");
+            assert!(
+                !fact.chars().any(|c| ('\u{80}'..='\u{9f}').contains(&c)),
+                "{fact:?}"
+            );
+            assert!(
+                !fact.chars().any(|c| c.is_whitespace() && c != ' '),
+                "line break or non-space whitespace survived: {fact:?}"
+            );
+            assert!(
+                fact.contains("apache")
+                    && fact.contains("nginx")
+                    && fact.contains("second line")
+                    && fact.contains("third"),
+                "{fact:?}"
+            );
+        }
+
         /// No operator answers under --dry-run, --yes or --non-interactive, so
         /// a preference change is shown and dropped, never written.
         #[tokio::test]
@@ -4659,6 +5187,7 @@ mod tests {
                 &[true, true],
                 &[],
                 &[("RestartService", tall_json())],
+                None,
             )
             .await;
             assert!(
