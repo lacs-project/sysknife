@@ -386,12 +386,12 @@ warns the unanchored case. The cross-check now runs, its result appears beside
 the chain verdict, and a `Truncated` or rewritten verdict fails the command
 (exit 1) rather than printing under an `OK`.
 
-Two boundary cases are deliberate. An anchor holding **no** checkpoints reports
+One boundary case is deliberate: an anchor holding **no** checkpoints reports
 `cannot_verify`, not `consistent` — zero checkpoints trivially satisfy "every
 checkpoint agrees", and calling that success would attest to a chain nothing has
-ever committed to. And because anchoring itself is implemented for the SQLite
-backend only, a Postgres deployment with `SYSKNIFE_CHECKPOINT_DB` set is told so
-explicitly rather than being silently skipped.
+ever committed to. The anchor cross-check reads whichever store `[storage]`
+selects: both a SQLite chain and a Postgres chain are checked against the
+configured anchor.
 
 ```admonish warning title="Checkpoints require an external sink"
 The anti-truncation guarantee only holds if the checkpoint sink is actually
@@ -501,9 +501,11 @@ Anchor and check signed checkpoints against an external database:
 SYSKNIFE_CHECKPOINT_DB="postgres://user@host/checkpoints" sysknife audit checkpoint
 ```
 
-Three checks run: the transaction chain, the approval-event chain, and the
-binding between them. All three are reported, and any one of them can fail the
-command — a clean transaction chain must never mask a tampered approval trail.
+Four checks run: the transaction chain, the approval-event chain, the binding
+between them, and the status cross-check (see `status_check` above, which can
+fail the command on its own). All four are reported, and any one of them can
+fail the command — a clean transaction chain must never mask a tampered
+approval trail.
 
 **A clean run looks like:**
 

@@ -112,7 +112,7 @@ file's section.field path.
 | `SYSKNIFE_BRAIN_MAX_TURNS` | `10` | Planning loop turn limit |
 | `SYSKNIFE_MAX_RPM` | `20` | Rate limit (requests / 60s sliding window) |
 | `SYSKNIFE_AUDIT_KEY_PATH` | `<db_dir>/audit-key` | Ed25519 signing key path for the audit chain (daemon, CLI/MCP: e.g. `audit verify`, `audit checkpoint`, `doctor`) |
-| `SYSKNIFE_CHECKPOINT_DB` | — | Postgres URL for `audit checkpoint` external anchoring (keeps DB credentials off the command line) |
+| `SYSKNIFE_CHECKPOINT_DB` | `[audit] checkpoint_db` in config.toml | Postgres URL of the external checkpoint-anchor database. Used by the daemon's periodic anchoring and by `audit checkpoint` / `audit verify`. Can also be set as `[audit] checkpoint_db` in config.toml; an explicit env var wins. Note that each process reads its own config.toml (resolved from `XDG_CONFIG_HOME`/`HOME`): the packaged daemon (`User=sysknife`) reads `/var/lib/sysknife/.config/sysknife/config.toml`, while a `sudo` CLI run under the default `env_reset` reads root's — set the key in both, or use the env var per process |
 | `SYSKNIFE_SOCKET` | falls back to the same default as `SYSKNIFE_LISTEN_URI` | CLI / MCP daemon address |
 | `SYSKNIFE_TOKEN` | — | Vsock auth token (when daemon runs in a VM) |
 | `SYSKNIFE_TOKEN_ROLE` | `Dev` | `CallerRole` granted to a vsock caller that presents `SYSKNIFE_TOKEN`. An unrecognised value fails closed to `Observer` (read-only) with a warning rather than granting the mutating tier on a typo |

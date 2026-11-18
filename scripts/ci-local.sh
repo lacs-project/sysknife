@@ -410,6 +410,10 @@ run_postgres_contract_group() {
             run_step "postgres-contract: cargo test -p sysknife-cli --test cli_smoke --locked audit_verify_exits_with_code_1_when_anchor_is_truncated -- --ignored --exact" \
             cargo test -p sysknife-cli --test cli_smoke --locked \
             audit_verify_exits_with_code_1_when_anchor_is_truncated -- --ignored --exact
+        SYSKNIFE_REQUIRE_POSTGRES=1 \
+            run_step "postgres-contract: cargo test -p sysknife-cli --test cli_smoke --locked postgres_backend_checkpoint_anchors_and_verify_reports_truncation -- --ignored --exact" \
+            cargo test -p sysknife-cli --test cli_smoke --locked \
+            postgres_backend_checkpoint_anchors_and_verify_reports_truncation -- --ignored --exact
         return
     fi
 
@@ -461,6 +465,11 @@ run_postgres_contract_group() {
         run_step "postgres-contract: cargo test -p sysknife-cli --test cli_smoke --locked audit_verify_exits_with_code_1_when_anchor_is_truncated -- --ignored --exact" \
         cargo test -p sysknife-cli --test cli_smoke --locked \
         audit_verify_exits_with_code_1_when_anchor_is_truncated -- --ignored --exact
+    SYSKNIFE_TEST_POSTGRES_URL="$container_url" \
+    SYSKNIFE_REQUIRE_POSTGRES=1 \
+        run_step "postgres-contract: cargo test -p sysknife-cli --test cli_smoke --locked postgres_backend_checkpoint_anchors_and_verify_reports_truncation -- --ignored --exact" \
+        cargo test -p sysknife-cli --test cli_smoke --locked \
+        postgres_backend_checkpoint_anchors_and_verify_reports_truncation -- --ignored --exact
 
     "$runtime" rm -f "$POSTGRES_CONTAINER_NAME" >/dev/null 2>&1 || true
 }

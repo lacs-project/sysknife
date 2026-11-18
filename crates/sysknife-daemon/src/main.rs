@@ -651,6 +651,7 @@ mod tests {
     async fn build_forwarder_refuses_a_zero_enterprise_number() {
         use sysknife_core::config::{AuditForwardSection, AuditSection, SyslogForwardSection};
         let audit = AuditSection {
+            checkpoint_db: None,
             forward: Some(AuditForwardSection {
                 syslog: Some(SyslogForwardSection {
                     host: "127.0.0.1:65000".to_string(),

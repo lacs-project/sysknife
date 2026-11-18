@@ -1536,6 +1536,12 @@ pub async fn run_audit_checkpoint(
         }
     };
 
+    let lacs_config = sysknife_core::config::LacsConfig::load();
+    let postgres_storage = lacs_config
+        .storage
+        .as_ref()
+        .filter(|s| s.backend.eq_ignore_ascii_case("postgres"));
+
     let resolved_store = sysknife_core::resolve_audit_store();
     if let Some(note) = resolved_store.note() {
         log.print_stderr(&format!("note: {note}"));
@@ -1543,7 +1549,9 @@ pub async fn run_audit_checkpoint(
     let db_path = resolved_store.path();
     let system_store = db_path == std::path::Path::new(sysknife_core::PRODUCTION_DATABASE_PATH);
 
-    // Load the private signing key (same location rules as `verify`).
+    // Load the signing key (same location rules as `verify`; the postgres
+    // deployment keeps it on local disk, resolved through the shared store
+    // choice — the CLI guard test forbids `default_database_path` here).
     let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(db_path);
     require_exists(&key_path, "audit key", system_store)?;
     let key = AuditKey::load_or_generate(&key_path).map_err(|e| {
@@ -1551,16 +1559,26 @@ pub async fn run_audit_checkpoint(
         CliError::Exit(2)
     })?;
 
-    // Read the current chain tip from the local sqlite store.
-    require_exists(db_path, "audit database", system_store)?;
-    let store = TransactionStore::open_read_only(db_path).map_err(|e| {
-        eprintln!("opening audit database failed: {e}");
-        CliError::Exit(2)
-    })?;
-    let rows = store.fetch_chain_rows().map_err(|e| {
-        eprintln!("reading audit chain failed: {e}");
-        CliError::Exit(2)
-    })?;
+    // Read the current chain tip from the store `[storage]` selects (#558).
+    let rows = if let Some(storage) = postgres_storage {
+        use sysknife_daemon::store::postgres::PostgresStore;
+
+        let cfg = postgres_config(storage).map_err(CliError::ConfigOrDaemon)?;
+        PostgresStore::read_chain_rows(&cfg).await.map_err(|e| {
+            eprintln!("reading audit chain failed: {e}");
+            CliError::Exit(2)
+        })?
+    } else {
+        require_exists(db_path, "audit database", system_store)?;
+        let store = TransactionStore::open_read_only(db_path).map_err(|e| {
+            eprintln!("opening audit database failed: {e}");
+            CliError::Exit(2)
+        })?;
+        store.fetch_chain_rows().map_err(|e| {
+            eprintln!("reading audit chain failed: {e}");
+            CliError::Exit(2)
+        })?
+    };
     // The anchoring rules — refuse a broken chain, read back after writing,
     // re-verify every anchored checkpoint — live in the daemon crate so this
     // command and the daemon's periodic anchor task cannot drift apart.
@@ -1618,9 +1636,10 @@ pub async fn run_audit_checkpoint(
 /// the check must actually run: an operator who set anchoring up and gets back
 /// only `configured: true` is worse informed than one who never bothered.
 ///
-/// Anchoring is SQLite-only today (`sysknife audit checkpoint` opens a
-/// `TransactionStore`), so a Postgres deployment gets an explicit "not
-/// supported" rather than a silent skip that would read as coverage.
+/// The chain rows come from whichever backend `[storage]` selects (#558): the
+/// daemon anchors through the `AuditStore` trait, so a Postgres deployment IS
+/// anchored and the reader must read the same store rather than declaring the
+/// anchor unverifiable.
 pub(crate) async fn verify_configured_anchor(
     lacs_config: &sysknife_core::config::LacsConfig,
     db_path: &std::path::Path,
@@ -1633,25 +1652,35 @@ pub(crate) async fn verify_configured_anchor(
         .ok()
         .filter(|v| !v.trim().is_empty())?;
 
-    if lacs_config
+    let postgres_storage = lacs_config
         .storage
         .as_ref()
-        .is_some_and(|s| s.backend.eq_ignore_ascii_case("postgres"))
-    {
-        return Some(CheckpointOutcome::CannotVerify {
-            reason: "checkpoint anchoring is implemented for the sqlite backend only; \
-                     `sysknife audit checkpoint` cannot anchor a postgres chain either, \
-                     so this chain has no anchor to check against"
-                .to_string(),
-        });
-    }
+        .filter(|s| s.backend.eq_ignore_ascii_case("postgres"));
 
-    let rows = match TransactionStore::open_read_only(db_path).and_then(|s| s.fetch_chain_rows()) {
-        Ok(rows) => rows,
-        Err(e) => {
-            return Some(CheckpointOutcome::CannotVerify {
-                reason: format!("reading the local chain for the anchor check failed: {e}"),
-            })
+    let rows = if let Some(storage) = postgres_storage {
+        use sysknife_daemon::store::postgres::PostgresStore;
+        let cfg = match postgres_config(storage) {
+            Ok(cfg) => cfg,
+            Err(reason) => {
+                return Some(CheckpointOutcome::CannotVerify { reason });
+            }
+        };
+        match PostgresStore::read_chain_rows(&cfg).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                return Some(CheckpointOutcome::CannotVerify {
+                    reason: format!("reading the postgres chain for the anchor check failed: {e}"),
+                })
+            }
+        }
+    } else {
+        match TransactionStore::open_read_only(db_path).and_then(|s| s.fetch_chain_rows()) {
+            Ok(rows) => rows,
+            Err(e) => {
+                return Some(CheckpointOutcome::CannotVerify {
+                    reason: format!("reading the local chain for the anchor check failed: {e}"),
+                })
+            }
         }
     };
 
