@@ -112,10 +112,17 @@ jobs:
           SERVER_VERSION: ${{ steps.manifest.outputs.version }}
         run: |
           set -euo pipefail
-          present="$(curl -fsS \
-            "https://registry.modelcontextprotocol.io/v0/servers?search=sysknife" \
-            | jq -r --arg n "$SERVER_NAME" --arg v "$SERVER_VERSION" \
-              '[.servers[] | select((.server.name // .name) == $n and (.server.version // .version) == $v)] | length')"
+          # One exact-version lookup. The search endpoint returns a single page
+          # of 30 entries and sysknife passed 30 versions, so a search no
+          # longer finds the newest one. 404 means absent; any other status is
+          # an error, never "absent".
+          code="$(curl -sS -o /dev/null -w '%{http_code}' \
+            "https://registry.modelcontextprotocol.io/v0/servers/${SERVER_NAME//\//%2F}/versions/${SERVER_VERSION}")"
+          case "$code" in
+            200) present=1 ;;
+            404) present=0 ;;
+            *) echo "::error::registry answered HTTP $code for $SERVER_NAME $SERVER_VERSION"; exit 1 ;;
+          esac
           if [ "$present" -gt 0 ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "::notice::registry already serves $SERVER_VERSION; nothing to do"
@@ -157,12 +164,8 @@ jobs:
           set -euo pipefail
           for attempt in 1 2 3 4 5; do
             latest="$(curl -fsS \
-              "https://registry.modelcontextprotocol.io/v0/servers?search=sysknife" \
-              | jq -r --arg n "$SERVER_NAME" \
-                '[.servers[]
-                  | select((.server.name // .name) == $n)
-                  | select(._meta["io.modelcontextprotocol.registry/official"].isLatest == true)
-                  | (.server.version // .version)] | first // "none"')"
+              "https://registry.modelcontextprotocol.io/v0/servers/${SERVER_NAME//\//%2F}/versions/latest" \
+              | jq -r '.server.version // .version // "none"' || echo none)"
             if [ "$latest" = "$SERVER_VERSION" ]; then
               printf 'registry latest is %s\n' "$latest"
               exit 0
