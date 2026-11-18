@@ -160,6 +160,40 @@ fn doctor_json_failure_goes_to_stdout_not_stderr() {
 }
 
 #[test]
+fn doctor_missing_provider_key_still_reports_json() {
+    // With the provider set but its key missing, `doctor` used to bail at
+    // BrainConfig::from_env() before ever contacting the daemon — stdout
+    // was empty and `--json` consumers got nothing to parse.
+    // After the fix the daemon is checked first, the config error goes into
+    // a `warnings` array, and provider/model read "unknown".
+    let dir = tempfile::tempdir().unwrap();
+    let out = cli()
+        .env("SYSKNIFE_SOCKET", fake_socket(&dir))
+        .env("SYSKNIFE_LLM_PROVIDER", "anthropic")
+        .env_remove("ANTHROPIC_API_KEY")
+        .args(["--json", "doctor"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&out).expect("stdout must be valid JSON");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["provider"], "unknown");
+    assert_eq!(json["model"], "unknown");
+    let warnings = json["warnings"]
+        .as_array()
+        .expect("warnings must be an array");
+    assert!(
+        warnings.iter().any(|w| {
+            let s = w.as_str().unwrap_or_default();
+            s.contains("brain config") || s.contains("API_KEY")
+        }),
+        "warnings should mention the config error: {warnings:?}",
+    );
+}
+
+#[test]
 fn history_rejects_unparseable_since_timestamp() {
     let dir = tempfile::tempdir().unwrap();
     cli()
@@ -1006,4 +1040,72 @@ async fn postgres_backend_checkpoint_anchors_and_verify_reports_truncation() {
         String::from_utf8_lossy(&verify.stdout)
     );
     assert_eq!(doc["status"], "broken");
+}
+
+// ---------------------------------------------------------------------------
+// REPL exit status for piped intents (#646)
+// ---------------------------------------------------------------------------
+
+/// A `sysknife` command wired to fail inside the planner before it reaches a
+/// daemon: the provider is named and its key is empty, so every intent stops at
+/// `BrainConfig` with exit code 4. The environment is cleared so an exported
+/// provider or turn-limit variable cannot change the failure, and `HOME`,
+/// `XDG_DATA_HOME` and `XDG_CONFIG_HOME` point at the temporary directory so
+/// neither the REPL history nor the configuration touches the real one.
+fn repl_cli(dir: &tempfile::TempDir) -> assert_cmd::Command {
+    let mut command = assert_cmd::Command::cargo_bin("sysknife").expect("sysknife binary builds");
+    command
+        .env_clear()
+        .env("SYSKNIFE_SOCKET", fake_socket(dir))
+        .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("HOME", dir.path())
+        .env("SYSKNIFE_LLM_PROVIDER", "anthropic")
+        .env("ANTHROPIC_API_KEY", "");
+    command
+}
+
+/// Piped input alone must reach the failure: this test deliberately omits
+/// `--non-interactive`, so only the non-terminal stdin branch applies.
+#[test]
+fn repl_piped_intent_failure_sets_the_exit_code() {
+    let dir = tempfile::tempdir().unwrap();
+    repl_cli(&dir)
+        .write_stdin("list services\n")
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("ANTHROPIC_API_KEY"));
+}
+
+/// `exit` after a failed intent must not clear the code recorded earlier.
+#[test]
+fn repl_piped_intent_failure_survives_exit() {
+    let dir = tempfile::tempdir().unwrap();
+    repl_cli(&dir)
+        .arg("--non-interactive")
+        .write_stdin("list services\nexit\n")
+        .assert()
+        .code(4);
+}
+
+/// An immediately empty input is a clean session, not a failure.
+#[test]
+fn repl_piped_empty_input_exits_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    repl_cli(&dir)
+        .arg("--non-interactive")
+        .write_stdin("")
+        .assert()
+        .code(0);
+}
+
+/// A session without a failed intent keeps the ordinary success exit code.
+#[test]
+fn repl_piped_clean_session_exits_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    repl_cli(&dir)
+        .arg("--non-interactive")
+        .write_stdin("exit\n")
+        .assert()
+        .code(0);
 }

@@ -12,6 +12,67 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Added
+
+- **`sysknife fleet hosts <inventory.toml>` lists a pinned fleet inventory.**
+  ([#784](https://github.com/lacs-project/sysknife/pull/784)) The command validates the file and lists its hosts
+  without contacting a daemon. Text output shows a 12-character key prefix and
+  `--json` returns every entry with its full key in file order. The parser
+  rejects empty inventories, duplicate names, sockets and keys, missing or
+  malformed keys, unknown fields, invalid names and relative Unix socket paths,
+  and an invalid entry exits 4 and names the host (closes
+  [#654](https://github.com/lacs-project/sysknife/issues/654)). Thanks to [@QinXi-ai](https://github.com/QinXi-ai).
+- **Fleet previews group by approval content.**
+  ([#785](https://github.com/lacs-project/sysknife/pull/785)) `group_previews` puts hosts in one group when the
+  seven approval fields match, comparing warnings and expected side effects in
+  sorted order. Host IDs, request hashes and current state do not affect the
+  grouping, and groups keep first-seen order (closes
+  [#678](https://github.com/lacs-project/sysknife/issues/678)). Thanks to
+  [@QinXi-ai](https://github.com/QinXi-ai).
+
+### Fixed
+
+- **`npx sysknife-setup --uninstall` keeps unrelated Claude MCP config.**
+  ([#781](https://github.com/lacs-project/sysknife/pull/781)) Uninstall removes only the SysKnife entries from the
+  project `.mcp.json`, keeps other servers and settings, deletes the file only
+  when nothing remains and reports how many other servers stay. Claude rule
+  files are removed only while their contents still match the templates setup
+  wrote (closes [#480](https://github.com/lacs-project/sysknife/issues/480)). Thanks to
+  [@dannyward630](https://github.com/dannyward630).
+- **The developer story runner follows Cargo's target directory.**
+  ([#796](https://github.com/lacs-project/sysknife/pull/796)) `tests/e2e/dev-stories.sh` reads the directory from
+  `cargo metadata`, uses it for the daemon, puts its CLI ahead of any older
+  `sysknife` on `PATH` and fails when the built CLI is not the one selected
+  (closes [#659](https://github.com/lacs-project/sysknife/issues/659)). Thanks to
+  [@dannyward630](https://github.com/dannyward630).
+- **Planner queries that need a user receive the caller's identity.**
+  ([#787](https://github.com/lacs-project/sysknife/pull/787)) The five read-only Flatpak and Podman queries whose
+  daemon specs require a username now get the planner's current user after the
+  model's tool call is mapped, so the name never appears in a model-facing
+  schema. When the user cannot be determined the planner returns a query error
+  instead of dispatching (closes [#671](https://github.com/lacs-project/sysknife/issues/671)). Thanks to
+  [@dannyward630](https://github.com/dannyward630).
+- **`sysknife_doctor` over MCP agrees with `sysknife audit verify`.**
+  ([#791](https://github.com/lacs-project/sysknife/pull/791)) The quick check mapped the verifier's exit code
+  directly, so an empty unanchored chain read `intact` where the CLI answers
+  CANNOT VERIFY. It now folds in the checkpoint anchor, reports
+  `cannot_verify` (the word the CLI uses, replacing `unknown`) and adds a
+  warning that names why an anchor could not be confirmed (closes
+  [#556](https://github.com/lacs-project/sysknife/issues/556)). Thanks to [@yuee3](https://github.com/yuee3).
+- **`sysknife doctor` continues past a missing provider key.**
+  ([#762](https://github.com/lacs-project/sysknife/pull/762)) The command stopped at the missing key before it
+  contacted the daemon, and `--json` printed nothing. It now checks the daemon
+  first, reports `provider` and `model` as `unknown`, and lists the error under
+  `warnings` in text and JSON output. Exit code 4 stays for a broken config
+  (closes [#647](https://github.com/lacs-project/sysknife/issues/647)). Thanks to
+  [@sharmis-tp](https://github.com/sharmis-tp).
+- **Piped REPL intents report the first failure.**
+  ([#790](https://github.com/lacs-project/sysknife/pull/790)) A session whose input is not a terminal, or that runs
+  with `--non-interactive`, now exits with the first failed intent's code
+  instead of 0. Later failures do not replace it, and an interactive terminal
+  session still exits 0 (closes [#646](https://github.com/lacs-project/sysknife/issues/646)). Thanks to
+  [@Omair-Asdaq](https://github.com/Omair-Asdaq).
+
 ## [0.30.2] — 2026-11-09
 
 ### Changed
