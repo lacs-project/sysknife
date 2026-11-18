@@ -36,6 +36,7 @@ const os   = require('os');
 const path = require('path');
 const { execFileSync, spawnSync } = require('child_process');
 const readline = require('readline');
+const { Writable } = require('stream');
 const crypto   = require('crypto');
 
 const { installBinaryIfMissing } = require('./install-binary.js');
@@ -76,15 +77,39 @@ function findBinary(name) {
 }
 
 /**
+ * Output stream for the readline interface that can be switched dark. readline
+ * draws every keystroke through its output, so muting it for one question hides
+ * the answer while readline keeps handling paste, editing and Ctrl+C.
+ * Everything else forwards to stdout unchanged.
+ */
+function createSwitchableOutput(target) {
+  const out = new Writable({
+    decodeStrings: false,
+    write(chunk, _encoding, callback) {
+      if (!out.muted) target.write(chunk);
+      callback();
+    },
+  });
+  out.muted = false;
+  // readline wraps long lines by the terminal width and redraws on resize.
+  Object.defineProperty(out, 'columns', { get: () => target.columns });
+  target.on('resize', () => out.emit('resize'));
+  return out;
+}
+
+/**
  * ask() works in two modes:
  *
  * TTY (interactive):  delegates to rl.question() which echoes and prompts.
+ *                     With { secret: true } the interface's output is muted for
+ *                     that question (see createSwitchableOutput), so the answer
+ *                     is read by readline but never drawn.
  * Non-TTY (piped):    rl.question() is broken for multiple calls in Node ≥18
  *                     when terminal=false, so we drain a shared line queue
  *                     instead.  The prompt is still printed to stdout so
  *                     log output remains comprehensible.
  */
-function ask(rl, lineQueue, question, defaultVal) {
+function ask(rl, lineQueue, question, defaultVal, { secret = false } = {}) {
   if (NO_PROMPTS) {
     if (defaultVal === undefined) {
       return Promise.reject(new Error(`--no-prompts requires a default for: ${question}`));
@@ -93,26 +118,84 @@ function ask(rl, lineQueue, question, defaultVal) {
   }
 
   return new Promise((resolve) => {
-    const suffix = defaultVal ? ` ${D}[${defaultVal}]${X}` : '';
+    const suffix = defaultVal && !secret ? ` ${D}[${defaultVal}]${X}` : '';
     const prompt  = `  ${question}${suffix}: `;
 
     if (process.stdin.isTTY) {
-      rl.question(prompt, (answer) => {
+      if (!secret) {
+        rl.question(prompt, (answer) => {
+          resolve(answer.trim() || defaultVal || '');
+        });
+        return;
+      }
+
+      // Secret answer: readline stays in charge of the keystrokes (paste, editing,
+      // Ctrl+C) but its output goes dark for this one question, so nothing the
+      // person types is drawn back. The prompt is written straight to stdout.
+      process.stdout.write(prompt);
+      lineQueue.output.muted = true;
+      rl.question('', (answer) => {
+        lineQueue.output.muted = false;
+        process.stdout.write('\n');
         resolve(answer.trim() || defaultVal || '');
       });
     } else {
       process.stdout.write(prompt);
-      if (lineQueue.lines.length > 0) {
-        const answer = lineQueue.lines.shift();
-        process.stdout.write(answer + '\n');
+      const finish = (answer) => {
+        if (!secret) process.stdout.write(answer + '\n');
+        else process.stdout.write('\n');
         resolve(answer.trim() || defaultVal || '');
+      };
+      if (lineQueue.lines.length > 0) {
+        finish(lineQueue.lines.shift());
       } else {
-        lineQueue.waiters.push((answer) => {
-          resolve(answer.trim() || defaultVal || '');
-        });
+        lineQueue.waiters.push(finish);
       }
     }
   });
+}
+
+function isInsideGitWorkTree(cwd = process.cwd()) {
+  try {
+    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** True when `git check-ignore` reports the path as ignored (exit 0). */
+function isGitIgnored(relPath, cwd = process.cwd()) {
+  try {
+    execFileSync('git', ['check-ignore', '-q', '--', relPath], {
+      cwd,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Append a .gitignore entry when `git check-ignore` says the path is not ignored.
+ * Returns true when an entry was appended.
+ */
+function ensureGitignored(relPath, cwd = process.cwd()) {
+  if (!isInsideGitWorkTree(cwd)) return false;
+  if (isGitIgnored(relPath, cwd)) return false;
+
+  const gitignorePath = path.join(cwd, '.gitignore');
+  let existing = '';
+  if (fs.existsSync(gitignorePath)) {
+    existing = fs.readFileSync(gitignorePath, 'utf8');
+  }
+  const prefix = existing.length === 0 || existing.endsWith('\n') ? '' : '\n';
+  fs.appendFileSync(gitignorePath, `${prefix}${relPath}\n`);
+  return true;
 }
 
 async function askIntegration(rl, lineQueue) {
@@ -483,19 +566,21 @@ async function main() {
   // lineQueue buffers stdin lines for non-TTY (piped) mode.
   // readline.question() is broken for multiple calls when terminal=false
   // in Node ≥18, so we drain a shared queue in that case.
-  const lineQueue = { lines: [], waiters: [] };
+  const lineQueue = { lines: [], waiters: [], output: createSwitchableOutput(process.stdout) };
 
   const rl = readline.createInterface({
     input:    process.stdin,
-    output:   process.stdout,
+    output:   lineQueue.output,
     terminal: process.stdin.isTTY,
   });
+  // A closed interface (Ctrl+C at the key prompt) must not leave output muted.
+  rl.on('close', () => { lineQueue.output.muted = false; });
 
   if (!process.stdin.isTTY) {
     rl.on('line', (line) => {
       if (lineQueue.waiters.length > 0) {
         const waiter = lineQueue.waiters.shift();
-        process.stdout.write(line + '\n');
+        // ask() writes the echo (or a blank line for secrets); do not double-print here.
         waiter(line);
       } else {
         lineQueue.lines.push(line);
@@ -553,7 +638,7 @@ async function main() {
       console.log();
       console.log(`  ${Y}Note:${X} The key will be stored in plain text in the generated config files.`);
       console.log(`  Leave blank to set ${envVar} in your shell profile instead.`);
-      apiKey = await ask(rl, lineQueue, envVar, '');
+      apiKey = await ask(rl, lineQueue, envVar, '', { secret: true });
     }
   }
 
@@ -791,22 +876,46 @@ async function main() {
     }
   }
 
-  // ── Gitignore advice ─────────────────────────────────────────────────────
+  // ── Gitignore: ask git, do not substring-match .gitignore ────────────────
+  //
+  // A comment or negation that merely mentions `.mcp.json` used to suppress the
+  // warning while leaving the file tracked (#562). When a key is embedded,
+  // append missing ignore entries. Otherwise advise with check-ignore.
 
-  const gitignore = fs.existsSync('.gitignore')
-    ? fs.readFileSync('.gitignore', 'utf8')
-    : '';
+  const keyEmbedded = Boolean(envVar && apiKey);
+  const secretPaths = [];
+  if (doClaude) secretPaths.push('.mcp.json');
+  if (doCursor) secretPaths.push('.cursor/mcp.json');
+  const advicePaths = [];
+  if (doClaude) advicePaths.push('.claude/*.local.md');
 
-  const noMcpEntry     = doClaude && !gitignore.includes('.mcp.json');
-  const noHookEntry    = doClaude && !gitignore.includes('*.local.md');
-  const noCursorEntry  = doCursor && !gitignore.includes('.cursor/mcp.json');
+  if (isInsideGitWorkTree()) {
+    const missingSecrets = secretPaths.filter((entry) => !isGitIgnored(entry));
+    const missingAdvice = advicePaths.filter((entry) => {
+      const probe = entry.replace(
+        '*.local.md',
+        'hookify.require-sysknife-approval.local.md',
+      );
+      return !isGitIgnored(probe);
+    });
 
-  if (noMcpEntry || noHookEntry || noCursorEntry) {
-    console.log();
-    warn('Consider adding these to .gitignore to avoid committing secrets:');
-    if (noMcpEntry)    step('.mcp.json');
-    if (noHookEntry)   step('.claude/*.local.md');
-    if (noCursorEntry) step('.cursor/mcp.json');
+    if (keyEmbedded && missingSecrets.length > 0) {
+      console.log();
+      for (const entry of missingSecrets) {
+        if (ensureGitignored(entry)) {
+          ok(`Appended ${entry} to .gitignore (API key is embedded in config)`);
+        }
+      }
+    }
+
+    // Secret files were just appended when a key is embedded; the hook files
+    // are only ever advised, so their line prints in both cases.
+    const adviceEntries = keyEmbedded ? missingAdvice : [...missingSecrets, ...missingAdvice];
+    if (adviceEntries.length > 0) {
+      console.log();
+      warn('Consider adding these to .gitignore to avoid committing secrets:');
+      for (const entry of adviceEntries) step(entry);
+    }
   }
 
   // ── Daemon service install ────────────────────────────────────────────────
