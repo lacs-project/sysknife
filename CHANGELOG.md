@@ -12,6 +12,8 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.30.3] — 2026-11-18
+
 ### Added
 
 - **`sysknife fleet hosts <inventory.toml>` lists a pinned fleet inventory.**
