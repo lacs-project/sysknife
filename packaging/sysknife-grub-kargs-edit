@@ -212,15 +212,34 @@ def edit_grub_cmdline(lines: list[str], append: list[str], delete: list[str]) ->
     return out
 
 
-def check_grub_overrides() -> None:
-    """Refuse an assignment sourced after /etc/default/grub."""
+# A snippet line that only extends the variable, e.g. kdump-tools.cfg:
+#   GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT crashkernel=2G-4G:320M"
+# Its words cannot be expanded or quoted into anything else, so the value only grows.
+SNIPPET_EXTEND = re.compile(
+    r'^\s*(?:export\s+)?GRUB_CMDLINE_LINUX_DEFAULT="'
+    r'\$(?:\{GRUB_CMDLINE_LINUX_DEFAULT\}|GRUB_CMDLINE_LINUX_DEFAULT)'
+    r'((?:\s+[A-Za-z0-9_.+@:/=,-]+)*)\s*"\s*$'
+)
+
+
+def check_grub_overrides(delete: list[str]) -> None:
+    """Refuse a snippet that reassigns GRUB_CMDLINE_LINUX_DEFAULT.
+
+    A self-extending assignment is allowed unless it re-adds a --delete karg.
+    """
     directory = Path(GRUB_D)
     if not directory.exists():
         return
+    wanted = {normalized(d) for d in delete}
     for path in sorted(directory.iterdir()):
         if path.suffix != ".cfg":
             continue
         for line in path.read_text().splitlines():
+            extend = SNIPPET_EXTEND.match(line)
+            if extend:
+                if wanted.intersection(normalized(w) for w in extend.group(1).split()):
+                    raise ValueError(f"{path} re-adds a karg the edit deletes; edit the overriding configuration first")
+                continue
             if re.match(r"^\s*(?:export\s+)?GRUB_CMDLINE_LINUX_DEFAULT\s*=", line):
                 raise ValueError(f"{path} reassigns GRUB_CMDLINE_LINUX_DEFAULT; edit the overriding configuration first")
 
@@ -270,7 +289,7 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        check_grub_overrides()
+        check_grub_overrides(delete_tokens)
         new_lines = edit_grub_cmdline(original_lines, append_tokens, delete_tokens)
     except (OSError, ValueError) as exc:
         print(f"sysknife-grub-kargs-edit: {exc}", file=sys.stderr)
