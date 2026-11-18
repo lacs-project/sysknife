@@ -31,6 +31,20 @@ const USERNAME: &str = "testuser";
 // record showed a routine single-key removal.
 const WILDCARD_KEY: &str = "ssh-ed25519 .*";
 
+#[test]
+fn get_authorized_keys_uses_the_fixed_user_helper() {
+    let spec = ssh::get_authorized_keys(USERNAME);
+    let ActionMechanism::Command { program, args } = &spec.mechanism else {
+        panic!("get_authorized_keys must use a Command mechanism");
+    };
+
+    assert_eq!(*program, "sudo");
+    assert_eq!(
+        args,
+        &["/usr/lib/sysknife/action-steps", "ssh-list", USERNAME]
+    );
+}
+
 /// Build an ActionSpec for `add_authorized_key` or `remove_authorized_key` that
 /// operates on `temp_path` instead of the real `/home/{USERNAME}/.ssh/authorized_keys`.
 ///

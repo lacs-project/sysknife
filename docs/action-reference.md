@@ -221,7 +221,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `GetAuthorizedKeys` | `cat /home/alice/.ssh/authorized_keys` | Low | All | – | – | list SSH authorized_keys for a user — param: username\* |
+| `GetAuthorizedKeys` | `sudo /usr/lib/sysknife/action-steps ssh-list alice` | Low | All | – | – | list SSH authorized_keys for a user — param: username\* |
 | `AddAuthorizedKey` | `sudo /usr/lib/sysknife/action-steps ssh-add alice "ssh-ed25519 AAAA..."` | High | All | – | – | append an SSH public key to a user's authorized_keys — params: username\*, public_key\* (full key string) |
 | `RemoveAuthorizedKey` | `sudo /usr/lib/sysknife/action-steps ssh-remove alice "ssh-ed25519 AAAA..."` | High | All | – | – | remove an SSH public key from a user's authorized_keys — params: username\*, public_key\* (full key string) |
 | `SetSshdOption` | `sudo /usr/lib/sysknife/sshd-option-edit --option PermitRootLogin --value prohibit-password` | High | All | – | – | harden sshd by setting an allowlisted option via a validated drop-in — params: option\* (one of PermitRootLogin, PasswordAuthentication, PubkeyAuthentication, X11Forwarding, PermitEmptyPasswords), value\* (per-option: yes/no, or prohibit-password/forced-commands-only for PermitRootLogin) |

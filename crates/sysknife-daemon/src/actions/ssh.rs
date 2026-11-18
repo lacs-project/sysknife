@@ -30,7 +30,10 @@ pub fn set_sshd_option(option: &str, value: &str) -> ActionSpec {
 pub fn get_authorized_keys(username: &str) -> ActionSpec {
     ActionSpec {
         action_name: "GetAuthorizedKeys",
-        mechanism: command_mechanism("cat", [&format!("/home/{username}/.ssh/authorized_keys")]),
+        mechanism: command_mechanism(
+            "sudo",
+            ["/usr/lib/sysknife/action-steps", "ssh-list", username],
+        ),
         risk_level: RiskLevel::Low,
         reboot_required: false,
         rollback_available: false,

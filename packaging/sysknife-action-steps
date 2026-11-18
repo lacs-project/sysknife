@@ -39,6 +39,7 @@ APT_WITH_PACKAGE = ("install", "remove", "purge", "hold", "unhold")
 APT_EXACT_NAMES = ["-o", "APT::Cmd::Pattern-Only=1"]
 APT_CACHE = "/usr/bin/apt-cache"
 DPKG_QUERY = "/usr/bin/dpkg-query"
+MAX_AUTHORIZED_KEYS_BYTES = 16 * 1024 * 1024
 
 # The rpm-ostree verbs, and the only ones. The daemon sends
 # `action-steps rpm-ostree <verb> <operand>...` for every rpm-ostree call that
@@ -525,18 +526,63 @@ def drop_to_user(name):
     return account
 
 
+def open_ssh_directory(path, create):
+    if create:
+        previous_umask = os.umask(0o077)
+        try:
+            try:
+                os.mkdir(path, 0o700)
+            except FileExistsError:
+                pass
+        finally:
+            os.umask(previous_umask)
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(path, flags)
+    except NotADirectoryError as error:
+        raise ValueError(".ssh is not a directory") from error
+    if not stat.S_ISDIR(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise ValueError(".ssh is not a directory")
+    return fd
+
+
+def read_keys(path):
+    import fcntl
+    directory_fd = open_ssh_directory(os.path.dirname(path), create=False)
+    try:
+        fd = os.open(os.path.basename(path),
+                     os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0),
+                     dir_fd=directory_fd)
+    finally:
+        os.close(directory_fd)
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("authorized_keys is not a regular file")
+        fcntl.flock(stream, fcntl.LOCK_SH)
+        content = stream.read(MAX_AUTHORIZED_KEYS_BYTES + 1)
+        if len(content) > MAX_AUTHORIZED_KEYS_BYTES:
+            raise ValueError("authorized_keys exceeds size limit")
+        return content
+
+
 def edit_key(path, key, add):
     import fcntl
     flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
     if add:
         flags |= os.O_CREAT
-    fd = os.open(path, flags, 0o600)
+    directory_fd = open_ssh_directory(os.path.dirname(path), create=add)
+    try:
+        fd = os.open(os.path.basename(path), flags, 0o600, dir_fd=directory_fd)
+    finally:
+        os.close(directory_fd)
     with os.fdopen(fd, "r+b") as stream:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise ValueError("authorized_keys is not a regular file")
         fcntl.flock(stream, fcntl.LOCK_EX)
-        original = stream.read(16 * 1024 * 1024 + 1)
-        if len(original) > 16 * 1024 * 1024:
+        original = stream.read(MAX_AUTHORIZED_KEYS_BYTES + 1)
+        if len(original) > MAX_AUTHORIZED_KEYS_BYTES:
             raise ValueError("authorized_keys exceeds size limit")
         encoded = public_key(key).encode("ascii")
         # Whole lines, never regex: a key comment like .* is literal text.
@@ -698,6 +744,10 @@ def main(args):
             run(["/usr/sbin/usermod", "--append", "--groups", group, name])
         else:
             run(["/usr/bin/gpasswd", "--delete", name, group])
+    elif op == "ssh-list" and len(values) == 1:
+        account = drop_to_user(values[0])
+        path = os.path.join(account.pw_dir, ".ssh", "authorized_keys")
+        sys.stdout.buffer.write(read_keys(path))
     elif op in ("ssh-add", "ssh-remove") and len(values) == 2:
         name, key = values
         public_key(key)
