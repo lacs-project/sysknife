@@ -438,7 +438,8 @@ spec = importlib.util.spec_from_loader(loader.name, loader)
 helper = importlib.util.module_from_spec(spec)
 loader.exec_module(helper)
 
-def run_case(original, snippet=None, update_status=0, name="50-cloudimg-settings.cfg", make_dir=True):
+def run_case(original, snippet=None, update_status=0, name="50-cloudimg-settings.cfg", make_dir=True,
+             extra_snippets=None):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         config = root / "grub"
@@ -449,6 +450,8 @@ def run_case(original, snippet=None, update_status=0, name="50-cloudimg-settings
         config.write_text(original)
         if snippet is not None:
             (snippets / name).write_text(snippet)
+        for extra_name, extra_snippet in extra_snippets or ():
+            (snippets / extra_name).write_text(extra_snippet)
         log = root / "update.log"
         update = root / "update-grub"
         update.write_text(f"#!/bin/sh\necho called >> '{log}'\nexit {update_status}\n")
@@ -499,6 +502,14 @@ for snippet in [KDUMP,
     assert status == 0, error
     assert result == 'GRUB_CMDLINE_LINUX_DEFAULT="quiet nomodeset"\n', result
     assert backed_up and updated
+
+# Keep scanning after a self-extending kdump snippet: a later file can still
+# replace the variable, which would discard the requested edit at boot.
+status, result, backed_up, updated, error = run_case(
+    original, KDUMP, name="kdump-tools.cfg",
+    extra_snippets=[("zz-local.cfg", 'GRUB_CMDLINE_LINUX_DEFAULT="console=tty1"\n')])
+assert status != 0 and result == original and not backed_up and not updated, error
+assert "zz-local.cfg" in error, error
 
 for snippet in ['GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT splash"\n',
                 'GRUB_CMDLINE_LINUX_DEFAULT="quiet $GRUB_CMDLINE_LINUX_DEFAULT"\n',
