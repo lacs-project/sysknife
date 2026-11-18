@@ -324,6 +324,8 @@ this is runtime status, NOT the saved configuration; on Ubuntu the saved config 
      "list packages with available upgrades — no params; read-only. Use for 'are there pending updates?' or 'what updates are available?'"),
     ("AptHistoryList",
      "show recent apt transaction history — no params; read-only"),
+    ("UnattendedUpgradesStatus",
+     "report apt automatic-upgrade settings, apt-daily timer schedules, and the newest unattended-upgrades log entry — no params; read-only; Ubuntu only"),
     ("ConfigureUnattendedUpgrades",
      "enable or disable automatic security updates (unattended-upgrades) — param: enabled* (bool); High risk"),
     // ── Ubuntu / ppa — Launchpad PPAs ─────────────────────────────────────────

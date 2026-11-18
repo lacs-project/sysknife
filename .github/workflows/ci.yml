@@ -462,6 +462,11 @@ jobs:
           cargo test -p sysknife-cli --test cli_smoke --locked
           audit_verify_exits_with_code_1_when_anchor_is_truncated -- --ignored --exact
 
+      - name: Run live CLI postgres-backend anchor contract
+        run: >-
+          cargo test -p sysknife-cli --test cli_smoke --locked
+          postgres_backend_checkpoint_anchors_and_verify_reports_truncation -- --ignored --exact
+
   security-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -342,6 +342,12 @@ const UBUNTU_TOOLS: &[&str] = &[
 ];
 const UBUNTU_PATHS: &[&str] = &["/var/run/reboot-required"];
 
+/// Ubuntu-only actions whose mechanism uses shared apt-family interfaces.
+/// `UnattendedUpgradesStatus` deliberately targets Ubuntu per #680, although
+/// its config, timers and logs are also used by Debian. Its more-specific
+/// Ubuntu fence subsumes the Debian-family mechanism requirement.
+const UBUNTU_ONLY_SHARED_DEBIAN_ACTIONS: &[&str] = &["UnattendedUpgradesStatus"];
+
 /// The full command line (or file path) an action drives, as one searchable
 /// string. `sudo sh -c "…"` wrappers hide the real tool inside an argument, so
 /// the whole argv is joined rather than reading `program` alone.
@@ -383,6 +389,7 @@ fn family_fence_agrees_with_each_action_s_mechanism() {
         .iter()
         .chain(DEBIAN_ONLY_ACTIONS)
         .chain(UBUNTU_ONLY_ACTIONS)
+        .chain(UBUNTU_ONLY_SHARED_DEBIAN_ACTIONS)
     {
         if !specs.iter().any(|spec| spec.action_name == *name) {
             wrong.push(format!(
@@ -401,6 +408,17 @@ fn family_fence_agrees_with_each_action_s_mechanism() {
             || DEBIAN_PATHS.iter().any(|p| text.contains(p));
         let ubuntu_shaped = UBUNTU_TOOLS.iter().any(|t| mentions_tool(&text, t))
             || UBUNTU_PATHS.iter().any(|p| text.contains(p));
+        let ubuntu_only_shared_debian = UBUNTU_ONLY_SHARED_DEBIAN_ACTIONS.contains(&name);
+
+        if ubuntu_only_shared_debian
+            && (!debian_shaped
+                || !UBUNTU_ONLY_ACTIONS.contains(&name)
+                || DEBIAN_ONLY_ACTIONS.contains(&name))
+        {
+            wrong.push(format!(
+                "{name}: shared Debian mechanism exception must be Debian-shaped with only the Ubuntu fence ({text})"
+            ));
+        }
 
         // An action cannot be shaped by both families' tooling; if one ever is,
         // the token lists need splitting rather than the fence.
@@ -423,12 +441,12 @@ fn family_fence_agrees_with_each_action_s_mechanism() {
                 "{name}: drives Fedora-only tooling but is not in FEDORA_ONLY_ACTIONS ({text})"
             ));
         }
-        if debian_shaped && !DEBIAN_ONLY_ACTIONS.contains(&name) {
+        if debian_shaped && !DEBIAN_ONLY_ACTIONS.contains(&name) && !ubuntu_only_shared_debian {
             wrong.push(format!(
                 "{name}: drives Debian-only tooling but is not in DEBIAN_ONLY_ACTIONS ({text})"
             ));
         }
-        if ubuntu_shaped != UBUNTU_ONLY_ACTIONS.contains(&name) {
+        if (ubuntu_shaped || ubuntu_only_shared_debian) != UBUNTU_ONLY_ACTIONS.contains(&name) {
             wrong.push(format!(
                 "{name}: Ubuntu fence disagrees with mechanism ({text})"
             ));

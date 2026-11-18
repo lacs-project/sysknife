@@ -173,6 +173,13 @@ impl ActionExecutor for RealActionExecutor {
         spec: &ActionSpec,
         progress: UnboundedSender<String>,
     ) -> Result<ExecutionOutput, ExecutorError> {
+        if spec.action_name == "UnattendedUpgradesStatus" {
+            let output = execute_spec(spec).await?;
+            for line in output.stdout.lines().filter(|line| !line.is_empty()) {
+                let _ = progress.send(line.to_string());
+            }
+            return Ok(output);
+        }
         match &spec.mechanism {
             ActionMechanism::Command { program, args } => {
                 execute_command_with_progress(program, args, progress).await
@@ -650,6 +657,7 @@ fn allowed_action_params(action_name: &str) -> Option<&'static [&'static str]> {
         | "AptListInstalled"
         | "AptListUpgradable"
         | "AptHistoryList"
+        | "UnattendedUpgradesStatus"
         | "SnapList"
         | "GrubGetKargs"
         | "CheckPendingReboot"
@@ -1645,6 +1653,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         }
         "AptListUpgradable" => Ok(apt::apt_list_upgradable()),
         "AptHistoryList" => Ok(apt::apt_history_list()),
+        "UnattendedUpgradesStatus" => Ok(apt::unattended_upgrades_status()),
         "ConfigureUnattendedUpgrades" => Ok(apt::configure_unattended_upgrades(require_bool(
             params, "enabled",
         )?)),
@@ -2062,11 +2071,15 @@ pub async fn execute_spec(spec: &ActionSpec) -> Result<ExecutionOutput, Executor
             let stdout = stdout_task.await.map_err(join)??;
             let stderr = stderr_task.await.map_err(join)??;
 
-            Ok(ExecutionOutput {
+            let mut output = ExecutionOutput {
                 stdout: String::from_utf8_lossy(&stdout).into_owned(),
                 stderr: String::from_utf8_lossy(&stderr).into_owned(),
                 exit_code: status.code().unwrap_or(-1),
-            })
+            };
+            if output.is_success() && spec.action_name == "UnattendedUpgradesStatus" {
+                output.stdout = apt::parse_unattended_upgrades_status(&output.stdout);
+            }
+            Ok(output)
         }
         ActionMechanism::FileScan { path } => {
             let mut entries = tokio::fs::read_dir(path).await?;
@@ -3582,6 +3595,29 @@ mod tests {
         let out = execute_spec(&spec).await.unwrap();
         assert_eq!(out.stdout.trim(), "hello");
         assert_eq!(out.exit_code, 0);
+    }
+
+    /// `execute_spec` must run the `UnattendedUpgradesStatus` parse hook: without
+    /// it the operator reads the raw `__SYSKNIFE_*` section markers.
+    #[tokio::test]
+    async fn execute_spec_parses_unattended_upgrades_status_output() {
+        let raw = "__SYSKNIFE_CONFIG_BEGIN__\n__MISSING_CONFIG__\n__SYSKNIFE_CONFIG_END__\n";
+        let spec = ActionSpec {
+            action_name: "UnattendedUpgradesStatus",
+            mechanism: ActionMechanism::Command {
+                program: "printf",
+                args: vec!["%s".to_string(), raw.to_string()],
+            },
+            risk_level: RiskLevel::Low,
+            reboot_required: false,
+            rollback_available: false,
+        };
+        let out = execute_spec(&spec).await.unwrap();
+        assert_eq!(out.exit_code, 0);
+        assert!(!out.stdout.contains("__SYSKNIFE_"), "raw: {}", out.stdout);
+        assert!(out.stdout.contains(
+            "APT::Periodic::Unattended-Upgrade: unknown (/etc/apt/apt.conf.d/20auto-upgrades: file missing or unreadable)"
+        ));
     }
 
     /// Regression guard for the live subprocess stdout relay. This coverage

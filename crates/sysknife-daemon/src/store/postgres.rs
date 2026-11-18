@@ -40,7 +40,7 @@ use crate::audit_chain::{
     ChainIdentity, ChainRow, EventContent, EventIdentity, EventRow, StatusEvidence, StatusOutcome,
     VerifyOutcome, CURRENT_KEY_ID,
 };
-use crate::audit_watermark::emit_chain_tip_watermark;
+use crate::audit_watermark::emit_chain_tip_watermark_async;
 use crate::auth::CallerPrincipal;
 use crate::store::AuditStore;
 use crate::transactions::{
@@ -528,7 +528,7 @@ impl AuditStore for PostgresStore {
         let inserted =
             insert_transaction(&mut tx, &self.audit_key, &transaction_id, transaction).await?;
         tx.commit().await.map_err(map_sqlx_err)?;
-        emit_chain_tip_watermark(inserted.seq, &inserted.chain_hash);
+        emit_chain_tip_watermark_async(inserted.seq, inserted.chain_hash).await;
         Ok(inserted.record)
     }
 
@@ -552,7 +552,7 @@ impl AuditStore for PostgresStore {
         .map_err(map_sqlx_err)?;
 
         tx.commit().await.map_err(map_sqlx_err)?;
-        emit_chain_tip_watermark(inserted.seq, &inserted.chain_hash);
+        emit_chain_tip_watermark_async(inserted.seq, inserted.chain_hash).await;
         Ok(RecordedPreviewedTransaction {
             transaction: inserted.record,
             preview,

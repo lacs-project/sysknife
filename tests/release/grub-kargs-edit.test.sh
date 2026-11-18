@@ -438,16 +438,20 @@ spec = importlib.util.spec_from_loader(loader.name, loader)
 helper = importlib.util.module_from_spec(spec)
 loader.exec_module(helper)
 
-def run_case(original, snippet=None, update_status=0):
+def run_case(original, snippet=None, update_status=0, name="50-cloudimg-settings.cfg", make_dir=True,
+             extra_snippets=None):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         config = root / "grub"
         backup = root / "grub.bak"
         snippets = root / "grub.d"
-        snippets.mkdir()
+        if make_dir:
+            snippets.mkdir()
         config.write_text(original)
         if snippet is not None:
-            (snippets / "50-cloudimg-settings.cfg").write_text(snippet)
+            (snippets / name).write_text(snippet)
+        for extra_name, extra_snippet in extra_snippets or ():
+            (snippets / extra_name).write_text(extra_snippet)
         log = root / "update.log"
         update = root / "update-grub"
         update.write_text(f"#!/bin/sh\necho called >> '{log}'\nexit {update_status}\n")
@@ -488,7 +492,62 @@ for snippet in [None, '# GRUB_CMDLINE_LINUX_DEFAULT="quiet"\nGRUB_TIMEOUT=0\n']:
     assert result == 'GRUB_CMDLINE_LINUX_DEFAULT="quiet nomodeset"\n', result
     assert backed_up and updated
 
+# A snippet that only extends the variable (kdump-tools.cfg) is not an override:
+# the edit must go through, and a snippet that re-adds a deleted karg must not.
+KDUMP = ('GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT '
+         'crashkernel=2G-4G:320M,4G-32G:512M"\n')
+for snippet in [KDUMP,
+                KDUMP.replace("$GRUB_CMDLINE_LINUX_DEFAULT", "${GRUB_CMDLINE_LINUX_DEFAULT}")]:
+    status, result, backed_up, updated, error = run_case(original, snippet)
+    assert status == 0, error
+    assert result == 'GRUB_CMDLINE_LINUX_DEFAULT="quiet nomodeset"\n', result
+    assert backed_up and updated
+
+# Keep scanning after a self-extending kdump snippet: a later file can still
+# replace the variable, which would discard the requested edit at boot.
+status, result, backed_up, updated, error = run_case(
+    original, KDUMP, name="kdump-tools.cfg",
+    extra_snippets=[("zz-local.cfg", 'GRUB_CMDLINE_LINUX_DEFAULT="console=tty1"\n')])
+assert status != 0 and result == original and not backed_up and not updated, error
+assert "zz-local.cfg" in error, error
+
+# The same override as the second line of the kdump snippet's own file: the scan
+# must not stop at the self-extending line.
+status, result, backed_up, updated, error = run_case(
+    original, KDUMP + 'GRUB_CMDLINE_LINUX_DEFAULT="console=tty1"\n', name="kdump-tools.cfg")
+assert status != 0 and result == original and not backed_up and not updated, error
+assert "kdump-tools.cfg" in error, error
+
+for snippet in ['GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT splash"\n',
+                'GRUB_CMDLINE_LINUX_DEFAULT="quiet $GRUB_CMDLINE_LINUX_DEFAULT"\n',
+                'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT $(id)"\n',
+                "GRUB_CMDLINE_LINUX_DEFAULT='$GRUB_CMDLINE_LINUX_DEFAULT crashkernel=1G'\n"]:
+    status, result, backed_up, updated, error = run_case(original, snippet)
+    assert status != 0 and result == original and not backed_up and not updated, snippet
+    assert "50-cloudimg-settings.cfg" in error, error
+
+# --delete guard: a self-extending snippet that re-adds a karg the edit deletes
+# is refused with the re-add diagnostic, not the generic reassignment one.
+status, result, backed_up, updated, error = run_case(
+    original, 'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT Splash"\n')
+assert status != 0 and result == original and not backed_up and not updated, error
+assert "re-adds a karg the edit deletes" in error, error
+
+# grub-mkconfig only sources *.cfg, so a *.cfg.dpkg-old override must be ignored.
+status, result, backed_up, updated, error = run_case(
+    original, 'GRUB_CMDLINE_LINUX_DEFAULT="console=tty1"\n', name="50-cloudimg-settings.cfg.dpkg-old")
+assert status == 0, error
+assert result == 'GRUB_CMDLINE_LINUX_DEFAULT="quiet nomodeset"\n', result
+assert backed_up and updated
+
+# A host without /etc/default/grub.d must not refuse the edit.
+status, result, backed_up, updated, error = run_case(original, make_dir=False)
+assert status == 0, error
+assert result == 'GRUB_CMDLINE_LINUX_DEFAULT="quiet nomodeset"\n', result
+assert backed_up and updated
+
 status, result, backed_up, updated, error = run_case(original, update_status=7)
 assert status == 7 and result == original and backed_up and updated, error
 print("ok: GRUB edits refuse unmatched assignments and overriding snippets before writing")
+print("ok: self-extending GRUB_CMDLINE_LINUX_DEFAULT snippets are accepted, overrides refused")
 PY

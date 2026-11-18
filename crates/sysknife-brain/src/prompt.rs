@@ -1026,6 +1026,13 @@ ProStatus, ProDetach, LivepatchStatus, MultipassList, UbuntuReleaseUpgrade.
 - `Fail2banUnbanIp`: `{"jail":"sshd","ip":"203.0.113.42"}`
 "#;
 
+const UBUNTU_UNATTENDED_UPGRADES_STATUS: &str = r#"
+### Ubuntu automatic-upgrade status
+
+- `UnattendedUpgradesStatus` reports both `APT::Periodic` values, both apt-daily timer schedules, and the newest unattended-upgrades log entry — LOW, read-only.
+- No params: use `{}`.
+"#;
+
 // ---------------------------------------------------------------------------
 // Generic (no DistroHint) constants
 // ---------------------------------------------------------------------------
@@ -1221,6 +1228,7 @@ fn render_debian_prompt(prefs: Option<&str>, hint: &sysknife_types::DistroHint) 
     push_shared(&mut s, CROSS_DISTRO_DISAMBIGUATION, &DEBIAN_STATE_ACTION);
     push_shared(&mut s, CROSS_DISTRO_PARAMS, &DEBIAN_STATE_ACTION);
     s.push_str(DEBIAN_PARAMS);
+    s.push_str(UBUNTU_UNATTENDED_UPGRADES_STATUS);
     s.push_str(CONSTRAINTS);
     push_shared(&mut s, PREFERENCE_TOOLS, &DEBIAN_STATE_ACTION);
     append_prefs(&mut s, prefs);
@@ -1423,6 +1431,7 @@ mod tests {
             "AptUpdate",
             "AptListUpgradable",
             "AptHistoryList",
+            "UnattendedUpgradesStatus",
             "AddPpa",
             "RemovePpa",
             "SnapInstall",
