@@ -12,6 +12,133 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Added
+
+- **`sysknife fleet hosts <inventory.toml>` lists a pinned fleet inventory.**
+  ([#784](https://github.com/lacs-project/sysknife/pull/784)) The command validates the file and lists its hosts
+  without contacting a daemon. Text output shows a 12-character key prefix and
+  `--json` returns every entry with its full key in file order. The parser
+  rejects empty inventories, duplicate names, sockets and keys, missing or
+  malformed keys, unknown fields, invalid names and relative Unix socket paths,
+  and an invalid entry exits 4 and names the host (closes
+  [#654](https://github.com/lacs-project/sysknife/issues/654)). Thanks to [@QinXi-ai](https://github.com/QinXi-ai).
+- **Fleet previews group by approval content.**
+  ([#785](https://github.com/lacs-project/sysknife/pull/785)) `group_previews` puts hosts in one group when the
+  seven approval fields match, comparing warnings and expected side effects in
+  sorted order. Host IDs, request hashes and current state do not affect the
+  grouping, and groups keep first-seen order (closes
+  [#678](https://github.com/lacs-project/sysknife/issues/678)). Thanks to
+  [@QinXi-ai](https://github.com/QinXi-ai).
+
+### Fixed
+
+- **`npx sysknife-setup --uninstall` keeps unrelated Claude MCP config.**
+  ([#781](https://github.com/lacs-project/sysknife/pull/781)) Uninstall removes only the SysKnife entries from the
+  project `.mcp.json`, keeps other servers and settings, deletes the file only
+  when nothing remains and reports how many other servers stay. Claude rule
+  files are removed only while their contents still match the templates setup
+  wrote (closes [#480](https://github.com/lacs-project/sysknife/issues/480)). Thanks to
+  [@dannyward630](https://github.com/dannyward630).
+- **The developer story runner follows Cargo's target directory.**
+  ([#796](https://github.com/lacs-project/sysknife/pull/796)) `tests/e2e/dev-stories.sh` reads the directory from
+  `cargo metadata`, uses it for the daemon, puts its CLI ahead of any older
+  `sysknife` on `PATH` and fails when the built CLI is not the one selected
+  (closes [#659](https://github.com/lacs-project/sysknife/issues/659)). Thanks to
+  [@dannyward630](https://github.com/dannyward630).
+- **Planner queries that need a user receive the caller's identity.**
+  ([#787](https://github.com/lacs-project/sysknife/pull/787)) The five read-only Flatpak and Podman queries whose
+  daemon specs require a username now get the planner's current user after the
+  model's tool call is mapped, so the name never appears in a model-facing
+  schema. When the user cannot be determined the planner returns a query error
+  instead of dispatching (closes [#671](https://github.com/lacs-project/sysknife/issues/671)). Thanks to
+  [@dannyward630](https://github.com/dannyward630).
+- **`sysknife_doctor` over MCP agrees with `sysknife audit verify`.**
+  ([#791](https://github.com/lacs-project/sysknife/pull/791)) The quick check mapped the verifier's exit code
+  directly, so an empty unanchored chain read `intact` where the CLI answers
+  CANNOT VERIFY. It now folds in the checkpoint anchor, reports
+  `cannot_verify` (the word the CLI uses, replacing `unknown`) and adds a
+  warning that names why an anchor could not be confirmed (closes
+  [#556](https://github.com/lacs-project/sysknife/issues/556)). Thanks to [@yuee3](https://github.com/yuee3).
+- **`sysknife doctor` continues past a missing provider key.**
+  ([#762](https://github.com/lacs-project/sysknife/pull/762)) The command stopped at the missing key before it
+  contacted the daemon, and `--json` printed nothing. It now checks the daemon
+  first, reports `provider` and `model` as `unknown`, and lists the error under
+  `warnings` in text and JSON output. Exit code 4 stays for a broken config
+  (closes [#647](https://github.com/lacs-project/sysknife/issues/647)). Thanks to
+  [@sharmis-tp](https://github.com/sharmis-tp).
+- **Piped REPL intents report the first failure.**
+  ([#790](https://github.com/lacs-project/sysknife/pull/790)) A session whose input is not a terminal, or that runs
+  with `--non-interactive`, now exits with the first failed intent's code
+  instead of 0. Later failures do not replace it, and an interactive terminal
+  session still exits 0 (closes [#646](https://github.com/lacs-project/sysknife/issues/646)). Thanks to
+  [@Omair-Asdaq](https://github.com/Omair-Asdaq).
+
+## [0.30.2] — 2026-11-09
+
+### Changed
+
+- **`rmcp` moves from 3.8.0 to 3.9.0.**
+  ([#768](https://github.com/lacs-project/sysknife/pull/768)) RUSTSEC-2026-0462
+  (unbounded response body buffering in Streamable HTTP clients) failed
+  `cargo audit` on `main`, and the required `security-audit` check with it.
+  `sysknife-cli` builds `rmcp` with the `server`, `macros` and `transport-io`
+  features only, so the Streamable HTTP client code is not compiled into
+  SysKnife. The bump is a lockfile change.
+
+### Fixed
+
+- **`sysknife plan --json` neutralises model-authored preference facts.**
+  ([#764](https://github.com/lacs-project/sysknife/pull/764)) The JSON view of a
+  pending preference change printed each fact as the model wrote it, so bidi
+  overrides, zero-width characters and C1 controls reached a field a caller may
+  render. The fact now goes through the character rules the terminal view uses,
+  flattened to one line and without the display cap, so a Unicode line break at
+  the start of a line cannot carry an indent into the string (closes
+  [#757](https://github.com/lacs-project/sysknife/issues/757)). Thanks to
+  [@yuee3](https://github.com/yuee3).
+
+## [0.30.1] — 2026-11-09
+
+### Changed
+
+- **Dependency updates.**
+  ([#759](https://github.com/lacs-project/sysknife/pull/759),
+  [#760](https://github.com/lacs-project/sysknife/pull/760)) `rusqlite` moves
+  from 0.40.2 to 0.41.0, and the minor and patch group brings `async-openai`
+  0.42.3 with updates to `uuid` and `rmcp`.
+
+### Fixed
+
+- **`RemoveMount` keeps the `/etc/fstab` entry when the unmount fails.**
+  ([#763](https://github.com/lacs-project/sysknife/pull/763)) When `umount`
+  failed, for example with `target is busy`, `sysknife-mount-edit` still
+  dropped the entry and reported success while the filesystem stayed mounted.
+  It now stops with `umount`'s error and leaves the entry in place. A target
+  that is already unmounted (exit 32 and a single `not mounted` line, read
+  under `LC_ALL=C`) still has its entry removed (closes
+  [#651](https://github.com/lacs-project/sysknife/issues/651)). Thanks to
+  [@QinXi-ai](https://github.com/QinXi-ai).
+- **Plan text the model writes is normalised when the plan is parsed.**
+  ([#751](https://github.com/lacs-project/sysknife/pull/751))
+  `parse_proposed_plan` stored `summary`, `explanation` and every step summary
+  as the model wrote them, so bidi overrides, zero-width characters and ANSI
+  sequences reached the `--json` output. All three now pass through
+  `normalise_operator_text`, the same normalisation `parse_refusal` already
+  applied (closes [#474](https://github.com/lacs-project/sysknife/issues/474)).
+  Thanks to [@yuee3](https://github.com/yuee3).
+- **The VM test harness no longer lets a login password age into a lockout.**
+  ([#758](https://github.com/lacs-project/sysknife/pull/758)) An aging test
+  could leave the VM login account usable for weeks and then lock out SSH key
+  authentication. The harness now resets risky aging fields before a clean
+  shutdown, recognises the PAM expiry failure and points to overlay recovery.
+  Thanks to [@QinXi-ai](https://github.com/QinXi-ai).
+- **The test-reachability check flags disabled tests.**
+  ([#761](https://github.com/lacs-project/sysknife/pull/761)) A release or E2E
+  test step switched off with `if: false`, `${{ false }}` or
+  `continue-on-error: true` now fails `docs-and-hygiene` (closes
+  [#652](https://github.com/lacs-project/sysknife/issues/652)). Thanks to
+  [@QinXi-ai](https://github.com/QinXi-ai).
+
 ## [0.30.0] — 2026-11-02
 
 ### Changed

@@ -1213,8 +1213,19 @@ impl LlmPlanner {
 
                     let mut tool_results: Vec<ToolResultBlock> =
                         Vec::with_capacity(tool_calls.len());
+                    let mut proposed_plan = None;
+                    let mut current_user: Option<Result<String, String>> = None;
 
                     for (id, call_id, name, input) in &tool_calls {
+                        // A valid plan ends the model turn. Continue only for
+                        // same-turn preference calls so they travel with the
+                        // plan; ignore any other calls that followed it.
+                        if proposed_plan.is_some()
+                            && !matches!(name.as_str(), "remember" | "forget")
+                        {
+                            continue;
+                        }
+
                         // Emit a progress event before dispatching each tool.
                         self.emit(progress_event(name, &tools));
 
@@ -1236,14 +1247,14 @@ impl LlmPlanner {
                                 );
                             }
                             "propose_plan" => {
-                                // Parse and validate before returning.
+                                // Parse and validate before accepting the plan.
                                 // If validation fails, log the rejection (safety fence
                                 // activations are security-relevant events) and feed the
                                 // error back as a tool result so the LLM can self-correct
                                 // within the remaining turns. Symmetric with the
                                 // unknown-tool retry path below.
                                 match parse_proposed_plan(intent, input) {
-                                    Ok(plan) => return Ok(plan.with_pref_changes(pref_changes)),
+                                    Ok(plan) => proposed_plan = Some(plan),
                                     Err(e) => {
                                         let reason = e.to_string();
                                         let raw_plan = input.to_string();
@@ -1392,7 +1403,37 @@ impl LlmPlanner {
                                 match crate::planning_tools::query_tools::query_tool_to_action(
                                     other_name, input,
                                 ) {
-                                    Ok(Some((action_name, params))) => {
+                                    Ok(Some((action_name, mut params))) => {
+                                        if crate::planning_tools::query_tools::
+                                            query_tool_needs_current_user(other_name)
+                                        {
+                                            let username = current_user.get_or_insert_with(|| {
+                                                self.state_client
+                                                    .current_user()
+                                                    .map_err(|error| error.to_string())
+                                            });
+                                            match username {
+                                                Ok(username) => {
+                                                    params["username"] = username.clone().into();
+                                                }
+                                                Err(reason) => {
+                                                    let result = sanitize_tool_output(
+                                                        other_name,
+                                                        &format!(
+                                                            "Query failed: cannot determine current user: {reason}"
+                                                        ),
+                                                    );
+                                                    tool_results.push(
+                                                        result.into_error_tool_result(
+                                                            id.clone(),
+                                                            call_id.clone(),
+                                                        ),
+                                                    );
+                                                    continue;
+                                                }
+                                            }
+                                        }
+
                                         match self.state_client.query_action(action_name, &params) {
                                             Ok(output) => {
                                                 tool_results.push(
@@ -1467,6 +1508,10 @@ impl LlmPlanner {
                                 }
                             }
                         }
+                    }
+
+                    if let Some(plan) = proposed_plan {
+                        return Ok(plan.with_pref_changes(pref_changes));
                     }
 
                     // Local feedback/preferences can reflect free text too.

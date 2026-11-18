@@ -82,7 +82,7 @@ test('rerunning setup preserves existing hookify guards and reports what it did'
     fs.writeFileSync(schemaPath, 'project-specific schema reminder\n');
 
     const result = runWizard({ cwd });
-    const output = `${result.stdout}${result.stderr}`;
+    const output = `${result.stdout}${result.stderr}`.replaceAll('\\', '/');
 
     assert.equal(result.status, 3, output);
     assert.equal(fs.readFileSync(approvalPath, 'utf8'), 'project-specific approval guard\n');
@@ -91,6 +91,21 @@ test('rerunning setup preserves existing hookify guards and reports what it did'
     assert.match(output, /Skipped \.claude\/hookify\.sysknife-schema-fetch\.local\.md.*already exists/);
     assert.match(output, /Created \.claude\/hookify\.sysknife-bash-guard\.local\.md/);
     assert.ok(fs.readFileSync(bashPath, 'utf8').length > 0);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a non-EEXIST hookify write error still fails setup', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-setup-enotdir-'));
+  try {
+    fs.writeFileSync(path.join(cwd, '.claude'), 'not a directory\n');
+    const result = runWizard({ cwd });
+    const output = `${result.stdout}${result.stderr}`;
+    assert.match(output, /ENOTDIR/);
+    assert.doesNotMatch(output, /Skipped \.claude/);
+    assert.notEqual(result.status, 0);
+    assert.notEqual(result.status, 3);
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }
@@ -195,6 +210,7 @@ test('a daemon that was not installed is reported as outstanding, whatever the r
     /Start manually:/,
     `the outstanding block must carry the steps, not just the warning:\n${output}`,
   );
+  assert.match(output, /Daemon socket not reachable after 6s:/);
   assert.match(output, /Setup incomplete: 1 step left/);
   assert.doesNotMatch(output, /Setup complete/);
   assert.equal(result.status, 3, `incomplete setup must exit 3:\n${output}`);
@@ -225,13 +241,15 @@ test('the final setup status pluralizes outstanding steps and preserves complete
 });
 
 test(
-  'a reachable externally managed daemon makes a skipped install complete',
-  { skip: process.platform === 'win32' ? 'Unix-domain netcat probe is exercised by Ubuntu CI' : false },
+  'a reachable externally managed daemon makes a skipped install complete without nc',
+  { skip: process.platform === 'win32' ? 'Unix-domain socket probe is exercised by Ubuntu CI' : false },
   async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sysknife-setup-reachable-'));
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-sock-'));
     const socketDir = path.join(cwd, 'sysknife');
     const socketPath = path.join(socketDir, 'daemon.sock');
     fs.mkdirSync(socketDir, { recursive: true });
+    const binDir = path.join(cwd, 'bin');
+    fs.mkdirSync(binDir);
 
     const server = net.createServer(socket => socket.end());
     try {
@@ -242,7 +260,7 @@ test(
 
       const result = runWizard({
         cwd,
-        env: { XDG_RUNTIME_DIR: cwd },
+        env: { PATH: binDir, XDG_RUNTIME_DIR: cwd },
         daemonInstall: {
           mode: 'skip',
           daemonInstalled: false,
@@ -253,6 +271,7 @@ test(
 
       assert.match(output, new RegExp(`Daemon socket reachable: ${socketPath.replaceAll('\\', '\\\\')}`));
       assert.doesNotMatch(output, /nothing will execute until these steps are done/);
+      assert.doesNotMatch(output, /Daemon socket not reachable/);
       assert.match(output, /Setup complete/);
       assert.doesNotMatch(output, /Setup incomplete/);
       assert.equal(result.status, 0, `reachable daemon must make setup complete:\n${output}`);

@@ -199,6 +199,8 @@ jobs:
 
       - name: Check the install knows every directory it writes into
         run: bash tests/release/install-paths.test.sh
+      - name: Check dev stories use Cargo's target directory
+        run: bash tests/release/dev-stories-target-dir.test.sh
 
       - name: Check a DESTDIR install stages every file and leaves the host alone
         run: bash tests/release/destdir-install.test.sh
@@ -405,7 +407,7 @@ jobs:
         run: cargo doc --no-deps --workspace --locked
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91  # v2.87.31
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39  # v2.90.3
         with:
           tool: cargo-nextest
 
@@ -460,6 +462,11 @@ jobs:
           cargo test -p sysknife-cli --test cli_smoke --locked
           audit_verify_exits_with_code_1_when_anchor_is_truncated -- --ignored --exact
 
+      - name: Run live CLI postgres-backend anchor contract
+        run: >-
+          cargo test -p sysknife-cli --test cli_smoke --locked
+          postgres_backend_checkpoint_anchors_and_verify_reports_truncation -- --ignored --exact
+
   security-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -468,7 +475,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91  # v2.87.31
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39  # v2.90.3
         with:
           tool: cargo-audit
 

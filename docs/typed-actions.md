@@ -6,6 +6,14 @@ allowlist or a regex over a shell command string. SysKnife answers it
 differently — the model is never given a channel to produce a shell string
 in the first place.
 
+## Editing GRUB kernel arguments
+
+`GrubSetKargs` requires a double-quoted `GRUB_CMDLINE_LINUX_DEFAULT`
+assignment in `/etc/default/grub`. Missing, single-quoted and unquoted
+assignments are refused before the file is changed or `update-grub` is run.
+If a `/etc/default/grub.d/*.cfg` file reassigns that variable, the error names
+the overriding file so the operator can resolve it first.
+
 ## Reading ufw rule numbers
 
 For ufw rule deletion, read current indices with `UfwStatus` and
@@ -108,6 +116,13 @@ net that would undo it. That fact isn't something the model asserts and the
 daemon has to believe; it's a property of the fixed `ActionSpec` the daemon
 already owns. The risk level and the missing rollback both surface in the
 approval prompt before anything executes.
+
+## Removing a mount
+
+`RemoveMount` unmounts the filesystem before removing its `/etc/fstab` entry.
+If unmounting fails, for example because the target is busy, the action reports
+the error and leaves the entry intact. If the target is already unmounted,
+the action removes its entry successfully.
 
 ## Composing with approval and rollback
 

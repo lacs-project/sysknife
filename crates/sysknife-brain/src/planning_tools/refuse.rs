@@ -86,8 +86,8 @@ pub fn parse_refusal(input: &serde_json::Value) -> Result<Refusal, String> {
     // The same normalisation every other model-authored string gets: this text
     // is printed to the operator's terminal.
     Ok(Refusal {
-        reason: crate::sanitize::normalise_free_text(reason),
-        suggestion: suggestion.map(|s| crate::sanitize::normalise_free_text(&s)),
+        reason: super::normalise_operator_text(reason),
+        suggestion: suggestion.map(|s| super::normalise_operator_text(&s)),
     })
 }
 
@@ -145,6 +145,23 @@ mod tests {
             !r.reason.contains("\n\n\n"),
             "run of newlines survived: {:?}",
             r.reason
+        );
+    }
+
+    /// Control-character carriers that `serde_json` passes through — ANSI
+    /// conceal, bidi override, zero-width joiner — must not survive into the
+    /// text the operator reads, here or on the plan side (#474).
+    #[test]
+    fn refusal_text_carries_no_control_characters() {
+        let r = parse_refusal(&json!({
+            "reason": "Port \u{1b}[8m0\u{1b}[0m is invalid \u{202e}here",
+            "suggestion": "Pick \u{200d}a port between 1 and 65535."
+        }))
+        .expect("valid refusal");
+        assert_eq!(r.reason, "Port 0 is invalid here");
+        assert_eq!(
+            r.suggestion.as_deref(),
+            Some("Pick a port between 1 and 65535.")
         );
     }
 }
