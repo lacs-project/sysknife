@@ -511,6 +511,13 @@ status, result, backed_up, updated, error = run_case(
 assert status != 0 and result == original and not backed_up and not updated, error
 assert "zz-local.cfg" in error, error
 
+# The same override as the second line of the kdump snippet's own file: the scan
+# must not stop at the self-extending line.
+status, result, backed_up, updated, error = run_case(
+    original, KDUMP + 'GRUB_CMDLINE_LINUX_DEFAULT="console=tty1"\n', name="kdump-tools.cfg")
+assert status != 0 and result == original and not backed_up and not updated, error
+assert "kdump-tools.cfg" in error, error
+
 for snippet in ['GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT splash"\n',
                 'GRUB_CMDLINE_LINUX_DEFAULT="quiet $GRUB_CMDLINE_LINUX_DEFAULT"\n',
                 'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT $(id)"\n',
