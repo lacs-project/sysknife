@@ -1,19 +1,10 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
-
-const here = path.dirname(fileURLToPath(import.meta.url));
-const setupDir = path.resolve(here, '..');
-
-function initGitRepo(cwd) {
-  execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'Test'], { cwd, stdio: 'ignore' });
-}
+import { initGitRepo, wizardEnv, writeBootstrap } from './wizard-harness.mjs';
 
 function runWizardWithKey(cwd, gitignoreBody) {
   if (gitignoreBody !== null) {
@@ -21,40 +12,17 @@ function runWizardWithKey(cwd, gitignoreBody) {
   }
   initGitRepo(cwd);
 
-  const entry = path.join(setupDir, 'index.js');
-  const setupArgs = ['--claude', '--no-binary', '--daemon-mode=skip'];
-  const childEnv = { ...process.env, HOME: cwd, XDG_RUNTIME_DIR: cwd };
-  for (const name of [
-    'SYSKNIFE_LLM_PROVIDER',
-    'ANTHROPIC_API_KEY',
-    'OPENAI_API_KEY',
-    'GEMINI_API_KEY',
-    'GROQ_API_KEY',
-    'DEEPSEEK_API_KEY',
-    'MISTRAL_API_KEY',
-    'XAI_API_KEY',
-  ]) {
-    delete childEnv[name];
-  }
-
-  const bootstrap = [
-    "if (typeof process.getuid !== 'function') process.getuid = () => 1000;",
-    `const daemonInstaller = require(${JSON.stringify(path.join(setupDir, 'install-daemon.js'))});`,
-    "daemonInstaller.installDaemonService = async () => "
-      + "({ mode: 'skip', daemonInstalled: false, manualSteps: ['Start manually: fixture'] });",
-    `process.argv = [process.execPath, ${JSON.stringify(entry)}, ...${JSON.stringify(setupArgs)}];`,
-    `require(${JSON.stringify(entry)});`,
-  ];
+  const bootstrap = writeBootstrap(cwd, ['--claude', '--no-binary', '--daemon-mode=skip']);
 
   // provider, secret key, model (default), daemon socket (default), add another VM? n
   const input = 'anthropic\nsynthetic-key-for-gitignore-test\n\n\nn\n';
 
-  return spawnSync(process.execPath, ['-e', bootstrap.join(' ')], {
+  return spawnSync(process.execPath, [bootstrap], {
     cwd,
     encoding: 'utf8',
     input,
     timeout: 30_000,
-    env: childEnv,
+    env: wizardEnv(cwd),
   });
 }
 
@@ -91,6 +59,8 @@ for (const { label, gitignore } of [
       assert.ok(result.status === 0 || result.status === 3, output);
       assert.match(output, /Appended \.mcp\.json to \.gitignore/, output);
       assert.doesNotMatch(output, /synthetic-key-for-gitignore-test/, output);
+      // The append branch must not swallow the advice about the hook files.
+      assert.match(output, /\.claude\/\*\.local\.md/, output);
       assertMcpIgnored(cwd);
       const mcp = fs.readFileSync(path.join(cwd, '.mcp.json'), 'utf8');
       assert.match(mcp, /synthetic-key-for-gitignore-test/);
@@ -99,10 +69,3 @@ for (const { label, gitignore } of [
     }
   });
 }
-
-test('substring match alone no longer treats a comment as coverage', () => {
-  const source = fs.readFileSync(path.join(setupDir, 'index.js'), 'utf8');
-  assert.doesNotMatch(source, /gitignore\.includes\('\.mcp\.json'\)/);
-  assert.match(source, /check-ignore/);
-  assert.match(source, /secret:\s*true/);
-});

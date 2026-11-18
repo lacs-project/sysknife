@@ -36,6 +36,7 @@ const os   = require('os');
 const path = require('path');
 const { execFileSync, spawnSync } = require('child_process');
 const readline = require('readline');
+const { Writable } = require('stream');
 const crypto   = require('crypto');
 
 const { installBinaryIfMissing } = require('./install-binary.js');
@@ -76,9 +77,33 @@ function findBinary(name) {
 }
 
 /**
+ * Output stream for the readline interface that can be switched dark. readline
+ * draws every keystroke through its output, so muting it for one question hides
+ * the answer while readline keeps handling paste, editing and Ctrl+C.
+ * Everything else forwards to stdout unchanged.
+ */
+function createSwitchableOutput(target) {
+  const out = new Writable({
+    decodeStrings: false,
+    write(chunk, _encoding, callback) {
+      if (!out.muted) target.write(chunk);
+      callback();
+    },
+  });
+  out.muted = false;
+  // readline wraps long lines by the terminal width and redraws on resize.
+  Object.defineProperty(out, 'columns', { get: () => target.columns });
+  target.on('resize', () => out.emit('resize'));
+  return out;
+}
+
+/**
  * ask() works in two modes:
  *
  * TTY (interactive):  delegates to rl.question() which echoes and prompts.
+ *                     With { secret: true } the interface's output is muted for
+ *                     that question (see createSwitchableOutput), so the answer
+ *                     is read by readline but never drawn.
  * Non-TTY (piped):    rl.question() is broken for multiple calls in Node ≥18
  *                     when terminal=false, so we drain a shared line queue
  *                     instead.  The prompt is still printed to stdout so
@@ -104,32 +129,16 @@ function ask(rl, lineQueue, question, defaultVal, { secret = false } = {}) {
         return;
       }
 
-      // Echo-off read for API keys. Pause readline so it does not also consume input.
-      rl.pause();
+      // Secret answer: readline stays in charge of the keystrokes (paste, editing,
+      // Ctrl+C) but its output goes dark for this one question, so nothing the
+      // person types is drawn back. The prompt is written straight to stdout.
       process.stdout.write(prompt);
-      const stdin = process.stdin;
-      stdin.setRawMode(true);
-      stdin.resume();
-      stdin.setEncoding('utf8');
-      let buf = '';
-      const onData = (ch) => {
-        if (ch === '\n' || ch === '\r' || ch === '\u0004') {
-          stdin.removeListener('data', onData);
-          stdin.setRawMode(false);
-          process.stdout.write('\n');
-          rl.resume();
-          resolve(buf.trim() || defaultVal || '');
-        } else if (ch === '\u0003') {
-          process.exit(130);
-        } else if (ch === '\u007f' || ch === '\b') {
-          buf = buf.slice(0, -1);
-        } else if (ch === '\u0015') {
-          buf = '';
-        } else {
-          buf += ch;
-        }
-      };
-      stdin.on('data', onData);
+      lineQueue.output.muted = true;
+      rl.question('', (answer) => {
+        lineQueue.output.muted = false;
+        process.stdout.write('\n');
+        resolve(answer.trim() || defaultVal || '');
+      });
     } else {
       process.stdout.write(prompt);
       const finish = (answer) => {
@@ -140,11 +149,7 @@ function ask(rl, lineQueue, question, defaultVal, { secret = false } = {}) {
       if (lineQueue.lines.length > 0) {
         finish(lineQueue.lines.shift());
       } else {
-        lineQueue.secret = secret;
-        lineQueue.waiters.push((answer) => {
-          lineQueue.secret = false;
-          finish(answer);
-        });
+        lineQueue.waiters.push(finish);
       }
     }
   });
@@ -561,13 +566,15 @@ async function main() {
   // lineQueue buffers stdin lines for non-TTY (piped) mode.
   // readline.question() is broken for multiple calls when terminal=false
   // in Node ≥18, so we drain a shared queue in that case.
-  const lineQueue = { lines: [], waiters: [] };
+  const lineQueue = { lines: [], waiters: [], output: createSwitchableOutput(process.stdout) };
 
   const rl = readline.createInterface({
     input:    process.stdin,
-    output:   process.stdout,
+    output:   lineQueue.output,
     terminal: process.stdin.isTTY,
   });
+  // A closed interface (Ctrl+C at the key prompt) must not leave output muted.
+  rl.on('close', () => { lineQueue.output.muted = false; });
 
   if (!process.stdin.isTTY) {
     rl.on('line', (line) => {
@@ -899,14 +906,15 @@ async function main() {
           ok(`Appended ${entry} to .gitignore (API key is embedded in config)`);
         }
       }
-    } else if (!keyEmbedded && (missingSecrets.length > 0 || missingAdvice.length > 0)) {
+    }
+
+    // Secret files were just appended when a key is embedded; the hook files
+    // are only ever advised, so their line prints in both cases.
+    const adviceEntries = keyEmbedded ? missingAdvice : [...missingSecrets, ...missingAdvice];
+    if (adviceEntries.length > 0) {
       console.log();
       warn('Consider adding these to .gitignore to avoid committing secrets:');
-      for (const entry of [...missingSecrets, ...missingAdvice]) step(entry);
-    } else if (keyEmbedded && missingAdvice.length > 0) {
-      console.log();
-      warn('Consider adding these to .gitignore to avoid committing secrets:');
-      for (const entry of missingAdvice) step(entry);
+      for (const entry of adviceEntries) step(entry);
     }
   }
 
