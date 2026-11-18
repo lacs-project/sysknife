@@ -29,6 +29,14 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   grouping, and groups keep first-seen order (closes
   [#678](https://github.com/lacs-project/sysknife/issues/678)). Thanks to
   [@QinXi-ai](https://github.com/QinXi-ai).
+- **`UnattendedUpgradesStatus` reports the apt unattended-upgrades state.**
+  ([#807](https://github.com/lacs-project/sysknife/pull/807)) The read-only
+  action shows whether `APT::Periodic` updates and unattended upgrades are
+  enabled, the `apt-daily` timer states and last and next runs, and the latest
+  log entry. A missing config, a missing log directory and a log directory the
+  daemon user cannot read each report `unknown` with the reason (closes
+  [#680](https://github.com/lacs-project/sysknife/issues/680)). Thanks to
+  [@dannyward630](https://github.com/dannyward630).
 
 ### Fixed
 
@@ -72,6 +80,43 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   instead of 0. Later failures do not replace it, and an interactive terminal
   session still exits 0 (closes [#646](https://github.com/lacs-project/sysknife/issues/646)). Thanks to
   [@Omair-Asdaq](https://github.com/Omair-Asdaq).
+- **`sysknife audit` reads the Postgres chain the `[storage]` section selects.**
+  ([#797](https://github.com/lacs-project/sysknife/pull/797)) On Postgres the
+  daemon anchored the chain but every reader reported the anchor unsupported
+  and exited 2. `audit verify` and `audit checkpoint` now read and anchor the
+  Postgres chain, a deleted tail is reported as `truncated`, and a live
+  contract test runs in `postgres-contract` (closes
+  [#558](https://github.com/lacs-project/sysknife/issues/558)). Thanks to
+  [@Georgefifth](https://github.com/Georgefifth).
+- **`GrubSetKargs` no longer refuses every edit on Ubuntu desktops that ship
+  `kdump-tools.cfg`.** ([#806](https://github.com/lacs-project/sysknife/pull/806))
+  The helper accepts a snippet that extends `GRUB_CMDLINE_LINUX_DEFAULT` itself
+  and still refuses when a later snippet reassigns the line the request edits,
+  including one in the same file (closes
+  [#795](https://github.com/lacs-project/sysknife/issues/795)). Thanks to
+  [@jay23606](https://github.com/jay23606).
+- **A stalled `systemd-cat` can no longer park the daemon.**
+  ([#750](https://github.com/lacs-project/sysknife/pull/750)) Postgres audit
+  writes emit the chain-tip watermark on the blocking pool, and the child gets
+  a two-second deadline: a stalled child is killed and reaped and the skipped
+  watermark is logged, without failing the committed write (closes
+  [#645](https://github.com/lacs-project/sysknife/issues/645)). Thanks to
+  [@xianjianlf2](https://github.com/xianjianlf2).
+- **`npx sysknife-setup` asks git whether secret files are ignored and hides the
+  API key.** ([#748](https://github.com/lacs-project/sysknife/pull/748)) The
+  wizard uses `git check-ignore` instead of matching `.gitignore` text, appends
+  missing entries when a key is embedded, and no longer draws the key on a
+  terminal or stalls on a pasted key (closes
+  [#562](https://github.com/lacs-project/sysknife/issues/562)). Thanks to
+  [@ShahadatTest](https://github.com/ShahadatTest).
+- **SSH authorized-keys actions use the account's home directory.**
+  ([#788](https://github.com/lacs-project/sysknife/pull/788), landed as
+  [#808](https://github.com/lacs-project/sysknife/pull/808)) `GetAuthorizedKeys`
+  and `AddAuthorizedKey` resolve the home from the account, open `.ssh` with
+  `O_DIRECTORY | O_NOFOLLOW` and open `authorized_keys` relative to that
+  descriptor, so reads and writes apply the same home and symlink rules (closes
+  [#670](https://github.com/lacs-project/sysknife/issues/670)). Thanks to
+  [@dannyward630](https://github.com/dannyward630).
 
 ## [0.30.2] — 2026-11-09
 
