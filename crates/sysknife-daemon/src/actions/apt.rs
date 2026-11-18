@@ -323,7 +323,7 @@ pub fn apt_history_list() -> ActionSpec {
     }
 }
 
-const UNATTENDED_UPGRADES_STATUS_SCRIPT: &str = r#"export LC_ALL=C; config=/etc/apt/apt.conf.d/20auto-upgrades; log_dir=/var/log/unattended-upgrades; printf '%s\n' '__SYSKNIFE_CONFIG_BEGIN__'; if [ -r "$config" ]; then cat -- "$config"; else printf '%s\n' '__MISSING_CONFIG__'; fi; printf '%s\n' '__SYSKNIFE_CONFIG_END__'; printf '%s\n' '__SYSKNIFE_TIMERS_BEGIN__'; systemctl list-timers --all --no-pager apt-daily.timer apt-daily-upgrade.timer 2>&1 || true; printf '%s\n' '__SYSKNIFE_TIMERS_END__'; printf '%s\n' '__SYSKNIFE_TIMER_STATES_BEGIN__'; for unit in apt-daily.timer apt-daily-upgrade.timer; do state=$(systemctl is-enabled "$unit" 2>/dev/null || true); [ -n "$state" ] || state=unknown; printf '%s: %s\n' "$unit" "$state"; done; printf '%s\n' '__SYSKNIFE_TIMER_STATES_END__'; printf '%s\n' '__SYSKNIFE_LOG_BEGIN__'; if [ ! -d "$log_dir" ]; then printf '%s\n' '__MISSING_LOG_DIR__'; else zcat -f -- "$log_dir"/*.log* 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} ' | sort | tail -n 1; fi; printf '%s\n' '__SYSKNIFE_LOG_END__'"#;
+const UNATTENDED_UPGRADES_STATUS_SCRIPT: &str = r#"export LC_ALL=C; config=/etc/apt/apt.conf.d/20auto-upgrades; log_dir=/var/log/unattended-upgrades; printf '%s\n' '__SYSKNIFE_CONFIG_BEGIN__'; if [ -r "$config" ]; then cat -- "$config"; else printf '%s\n' '__MISSING_CONFIG__'; fi; printf '%s\n' '__SYSKNIFE_CONFIG_END__'; printf '%s\n' '__SYSKNIFE_TIMERS_BEGIN__'; systemctl list-timers --all --no-pager apt-daily.timer apt-daily-upgrade.timer 2>&1 || true; printf '%s\n' '__SYSKNIFE_TIMERS_END__'; printf '%s\n' '__SYSKNIFE_TIMER_STATES_BEGIN__'; for unit in apt-daily.timer apt-daily-upgrade.timer; do state=$(systemctl is-enabled "$unit" 2>/dev/null || true); [ -n "$state" ] || state=unknown; printf '%s: %s\n' "$unit" "$state"; done; printf '%s\n' '__SYSKNIFE_TIMER_STATES_END__'; printf '%s\n' '__SYSKNIFE_LOG_BEGIN__'; if [ ! -d "$log_dir" ]; then printf '%s\n' '__MISSING_LOG_DIR__'; elif [ -r "$log_dir" ] && [ -x "$log_dir" ]; then zcat -f -- "$log_dir"/*.log* 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} ' | sort | tail -n 1; else printf '%s\n' '__UNREADABLE_LOG_DIR__'; fi; printf '%s\n' '__SYSKNIFE_LOG_END__'"#;
 
 /// Read the automatic-upgrade schedule and most recent unattended-upgrades log
 /// entry without taking the apt lock or changing host state.
@@ -408,8 +408,8 @@ pub fn parse_unattended_upgrades_status(output: &str) -> String {
         Some("__MISSING_LOG_DIR__") => summary.push(format!(
             "Latest unattended-upgrades log entry: unknown ({LOG_DIR}: directory missing)"
         )),
-        Some("__NO_LOG_FILES__") => summary.push(format!(
-            "Latest unattended-upgrades log entry: unknown ({LOG_DIR}: no log files)"
+        Some("__UNREADABLE_LOG_DIR__") => summary.push(format!(
+            "Latest unattended-upgrades log entry: unknown ({LOG_DIR}: directory not readable by the daemon user)"
         )),
         Some(entry) if !entry.is_empty() => summary.push(format!(
             "Latest unattended-upgrades log entry: {}",
@@ -936,6 +936,64 @@ __SYSKNIFE_LOG_END__"#;
         let output = parse_unattended_upgrades_status(&fixture);
         assert!(output.contains("Latest unattended-upgrades log entry: unknown (/var/log/unattended-upgrades: directory missing)"));
         assert!(!output.contains("Latest unattended-upgrades log entry: ok"));
+    }
+
+    #[test]
+    fn unattended_upgrades_parser_reports_unreadable_log_directory_as_unknown() {
+        let fixture = UNATTENDED_UPGRADES_FIXTURE.replace(
+            "2026-10-25 06:05:00,123 INFO Initial blacklisted packages:",
+            "__UNREADABLE_LOG_DIR__",
+        );
+        let output = parse_unattended_upgrades_status(&fixture);
+        assert!(output.contains("Latest unattended-upgrades log entry: unknown (/var/log/unattended-upgrades: directory not readable by the daemon user)"));
+        assert!(!output.contains("no timestamped log entry"));
+    }
+
+    #[test]
+    fn unattended_upgrades_script_checks_log_directory_access_before_reading_it() {
+        let spec = unattended_upgrades_status();
+        let (_, args) = extract_args(&spec);
+        let script = args.last().expect("bash -c script");
+        assert!(script.contains(r#"[ -r "$log_dir" ] && [ -x "$log_dir" ]"#));
+        assert!(script.contains("__UNREADABLE_LOG_DIR__"));
+    }
+
+    #[test]
+    fn unattended_upgrades_parser_reports_missing_config_as_unknown_for_both_keys() {
+        let fixture = UNATTENDED_UPGRADES_FIXTURE.replace(
+            "APT::Periodic::Update-Package-Lists \"1\";\nAPT::Periodic::Unattended-Upgrade \"1\";",
+            "__MISSING_CONFIG__",
+        );
+        assert!(fixture.contains("__MISSING_CONFIG__"));
+        let output = parse_unattended_upgrades_status(&fixture);
+        for key in [
+            "APT::Periodic::Update-Package-Lists",
+            "APT::Periodic::Unattended-Upgrade",
+        ] {
+            assert!(
+                output.contains(&format!(
+                    "{key}: unknown (/etc/apt/apt.conf.d/20auto-upgrades: file missing or unreadable)"
+                )),
+                "{key} not reported unknown: {output}"
+            );
+        }
+        assert!(!output.contains("(enabled)"));
+    }
+
+    #[test]
+    fn unattended_upgrades_parser_reports_disabled_timer_without_a_list_timers_row() {
+        let fixture = UNATTENDED_UPGRADES_FIXTURE
+            .replace(
+                "Mon 2026-10-26 06:08:07 CST 8h            Sun 2026-10-25 06:05:00 CST 15h ago      apt-daily-upgrade.timer apt-daily-upgrade.service\n",
+                "",
+            )
+            .replace(
+                "apt-daily-upgrade.timer: enabled",
+                "apt-daily-upgrade.timer: disabled",
+            );
+        assert!(!fixture.contains("apt-daily-upgrade.service"));
+        let output = parse_unattended_upgrades_status(&fixture);
+        assert!(output.contains("apt-daily-upgrade.timer: disabled; last run: n/a; next run: n/a"));
     }
 
     #[test]

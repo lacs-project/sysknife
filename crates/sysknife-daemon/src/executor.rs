@@ -3597,6 +3597,29 @@ mod tests {
         assert_eq!(out.exit_code, 0);
     }
 
+    /// `execute_spec` must run the `UnattendedUpgradesStatus` parse hook: without
+    /// it the operator reads the raw `__SYSKNIFE_*` section markers.
+    #[tokio::test]
+    async fn execute_spec_parses_unattended_upgrades_status_output() {
+        let raw = "__SYSKNIFE_CONFIG_BEGIN__\n__MISSING_CONFIG__\n__SYSKNIFE_CONFIG_END__\n";
+        let spec = ActionSpec {
+            action_name: "UnattendedUpgradesStatus",
+            mechanism: ActionMechanism::Command {
+                program: "printf",
+                args: vec!["%s".to_string(), raw.to_string()],
+            },
+            risk_level: RiskLevel::Low,
+            reboot_required: false,
+            rollback_available: false,
+        };
+        let out = execute_spec(&spec).await.unwrap();
+        assert_eq!(out.exit_code, 0);
+        assert!(!out.stdout.contains("__SYSKNIFE_"), "raw: {}", out.stdout);
+        assert!(out.stdout.contains(
+            "APT::Periodic::Unattended-Upgrade: unknown (/etc/apt/apt.conf.d/20auto-upgrades: file missing or unreadable)"
+        ));
+    }
+
     /// Regression guard for the live subprocess stdout relay. This coverage
     /// previously lived in the dispatcher (`stream_command_sends_job_progress_
     /// lines_during_execution`) and was lost when the streaming code moved here;
