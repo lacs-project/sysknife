@@ -140,6 +140,7 @@ pub const DEBIAN_ONLY_ACTIONS: &[&str] = &[
 /// Debian producer is validated, do not interpret a missing sentinel there as
 /// evidence that no reboot is needed. Debian eligibility is unchanged.
 pub const UBUNTU_ONLY_ACTIONS: &[&str] = &[
+    "UnattendedUpgradesStatus",
     "AddPpa",
     "RemovePpa",
     "CheckPendingReboot",

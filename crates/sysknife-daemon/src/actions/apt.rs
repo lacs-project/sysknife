@@ -78,6 +78,7 @@ pub fn specs() -> Vec<ActionSpec> {
         apt_show("curl"),
         apt_list_upgradable(),
         apt_history_list(),
+        unattended_upgrades_status(),
         configure_unattended_upgrades(true),
     ]
 }
@@ -320,6 +321,182 @@ pub fn apt_history_list() -> ActionSpec {
         reboot_required: false,
         rollback_available: false,
     }
+}
+
+const UNATTENDED_UPGRADES_STATUS_SCRIPT: &str = r#"export LC_ALL=C; config=/etc/apt/apt.conf.d/20auto-upgrades; log_dir=/var/log/unattended-upgrades; printf '%s\n' '__SYSKNIFE_CONFIG_BEGIN__'; if [ -r "$config" ]; then cat -- "$config"; else printf '%s\n' '__MISSING_CONFIG__'; fi; printf '%s\n' '__SYSKNIFE_CONFIG_END__'; printf '%s\n' '__SYSKNIFE_TIMERS_BEGIN__'; systemctl list-timers --all --no-pager apt-daily.timer apt-daily-upgrade.timer 2>&1 || true; printf '%s\n' '__SYSKNIFE_TIMERS_END__'; printf '%s\n' '__SYSKNIFE_TIMER_STATES_BEGIN__'; for unit in apt-daily.timer apt-daily-upgrade.timer; do state=$(systemctl is-enabled "$unit" 2>/dev/null || true); [ -n "$state" ] || state=unknown; printf '%s: %s\n' "$unit" "$state"; done; printf '%s\n' '__SYSKNIFE_TIMER_STATES_END__'; printf '%s\n' '__SYSKNIFE_LOG_BEGIN__'; if [ ! -d "$log_dir" ]; then printf '%s\n' '__MISSING_LOG_DIR__'; elif [ -r "$log_dir" ] && [ -x "$log_dir" ]; then zcat -f -- "$log_dir"/*.log* 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} ' | sort | tail -n 1; else printf '%s\n' '__UNREADABLE_LOG_DIR__'; fi; printf '%s\n' '__SYSKNIFE_LOG_END__'"#;
+
+/// Read the automatic-upgrade schedule and most recent unattended-upgrades log
+/// entry without taking the apt lock or changing host state.
+pub fn unattended_upgrades_status() -> ActionSpec {
+    ActionSpec {
+        action_name: "UnattendedUpgradesStatus",
+        mechanism: command_mechanism("bash", ["-c", UNATTENDED_UPGRADES_STATUS_SCRIPT]),
+        risk_level: RiskLevel::Low,
+        reboot_required: false,
+        rollback_available: false,
+    }
+}
+
+/// Convert the fixed-section output from `UNATTENDED_UPGRADES_STATUS_SCRIPT`
+/// into an operator-facing summary. Missing inputs remain unknown and identify
+/// their source path or systemd unit instead of implying the feature is off.
+pub fn parse_unattended_upgrades_status(output: &str) -> String {
+    const CONFIG_PATH: &str = "/etc/apt/apt.conf.d/20auto-upgrades";
+    const LOG_DIR: &str = "/var/log/unattended-upgrades";
+    const UNITS: [&str; 2] = ["apt-daily.timer", "apt-daily-upgrade.timer"];
+
+    let config = section(output, "CONFIG");
+    let timers = section(output, "TIMERS");
+    let states = section(output, "TIMER_STATES");
+    let log = section(output, "LOG");
+    let mut summary = Vec::new();
+
+    for (key, label) in [
+        (
+            "Update-Package-Lists",
+            "APT::Periodic::Update-Package-Lists",
+        ),
+        ("Unattended-Upgrade", "APT::Periodic::Unattended-Upgrade"),
+    ] {
+        let value = config.and_then(|text| parse_apt_periodic_value(text, key));
+        match value.as_deref().and_then(|value| value.parse::<u64>().ok()) {
+            Some(0) => summary.push(format!("{label}: 0 (off)")),
+            Some(value) => summary.push(format!("{label}: {value} (enabled)")),
+            None if value.is_some() => summary.push(format!(
+                "{label}: {} (status unknown: unrecognized value)",
+                value.as_deref().unwrap_or_default()
+            )),
+            None => {
+                let reason = if config.is_none_or(|text| text.contains("__MISSING_CONFIG__")) {
+                    "file missing or unreadable"
+                } else {
+                    "value not configured"
+                };
+                summary.push(format!("{label}: unknown ({CONFIG_PATH}: {reason})"));
+            }
+        }
+    }
+
+    for unit in UNITS {
+        let state = states.and_then(|text| parse_timer_state(text, unit));
+        let run_times = timers.and_then(|text| parse_timer_runs(text, unit));
+        if state.as_deref() == Some("disabled") {
+            let (next, last) = run_times.unwrap_or_else(|| ("n/a".into(), "n/a".into()));
+            summary.push(format!(
+                "{unit}: disabled; last run: {last}; next run: {next}"
+            ));
+        } else {
+            match (state.as_deref(), run_times) {
+                (Some("masked"), _) => summary.push(format!("{unit}: masked; last run: n/a; next run: n/a")),
+                (None, Some((next, last))) => summary.push(format!(
+                    "{unit}: unknown (systemctl is-enabled did not report {unit}); last run: {last}; next run: {next}"
+                )),
+                (Some(state), Some((next, last))) => summary.push(format!(
+                    "{unit}: {state}; last run: {last}; next run: {next}"
+                )),
+                (Some(state), None) if state != "unknown" && state != "not-found" => summary.push(
+                    format!("{unit}: {state}; last run: unknown; next run: unknown (systemctl list-timers did not report {unit})"),
+                ),
+                _ => summary.push(format!(
+                    "{unit}: unknown (systemd did not report {unit}; last and next run unavailable)"
+                )),
+            }
+        }
+    }
+
+    match log.map(str::trim) {
+        Some("__MISSING_LOG_DIR__") => summary.push(format!(
+            "Latest unattended-upgrades log entry: unknown ({LOG_DIR}: directory missing)"
+        )),
+        Some("__UNREADABLE_LOG_DIR__") => summary.push(format!(
+            "Latest unattended-upgrades log entry: unknown ({LOG_DIR}: directory not readable by the daemon user)"
+        )),
+        Some(entry) if !entry.is_empty() => summary.push(format!(
+            "Latest unattended-upgrades log entry: {}",
+            entry.chars().take(512).collect::<String>()
+        )),
+        _ => summary.push(format!(
+            "Latest unattended-upgrades log entry: unknown ({LOG_DIR}: no timestamped log entry)"
+        )),
+    }
+
+    summary.join("\n")
+}
+
+fn section<'a>(output: &'a str, name: &str) -> Option<&'a str> {
+    let start = format!("__SYSKNIFE_{name}_BEGIN__");
+    let end = format!("__SYSKNIFE_{name}_END__");
+    output
+        .split_once(&start)?
+        .1
+        .split_once(&end)
+        .map(|(body, _)| body)
+}
+
+fn parse_apt_periodic_value(config: &str, suffix: &str) -> Option<String> {
+    let key = format!("APT::Periodic::{suffix}");
+    config.lines().find_map(|line| {
+        let value = line.trim().strip_prefix(&key)?.trim();
+        if value.is_empty() || value.starts_with('#') {
+            return None;
+        }
+        Some(
+            value
+                .trim_end_matches(';')
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_string(),
+        )
+    })
+}
+
+fn parse_timer_state(states: &str, unit: &str) -> Option<String> {
+    states.lines().find_map(|line| {
+        let (candidate, state) = line.split_once(':')?;
+        (candidate.trim() == unit).then(|| state.trim().to_string())
+    })
+}
+
+fn parse_timer_runs(timers: &str, unit: &str) -> Option<(String, String)> {
+    timers.lines().find_map(|line| {
+        let tokens: Vec<_> = line.split_whitespace().collect();
+        let unit_index = tokens.iter().position(|token| *token == unit)?;
+        let before_unit = &tokens[..unit_index];
+        if before_unit.is_empty() {
+            return None;
+        }
+        let dates: Vec<usize> = before_unit
+            .iter()
+            .enumerate()
+            .filter_map(|(index, token)| is_iso_date(token).then_some(index))
+            .collect();
+        let (next, last) = match dates.as_slice() {
+            [next_date, last_date] => (
+                timestamp_at(before_unit, *next_date),
+                timestamp_at(before_unit, *last_date),
+            ),
+            [only_date] if before_unit.first() == Some(&"n/a") => {
+                ("n/a".into(), timestamp_at(before_unit, *only_date))
+            }
+            [only_date] => (timestamp_at(before_unit, *only_date), "n/a".into()),
+            [] => ("n/a".into(), "n/a".into()),
+            _ => return None,
+        };
+        Some((next, last))
+    })
+}
+
+fn is_iso_date(value: &str) -> bool {
+    value.len() == 10
+        && value.as_bytes().get(4) == Some(&b'-')
+        && value.as_bytes().get(7) == Some(&b'-')
+}
+
+fn timestamp_at(tokens: &[&str], date_index: usize) -> String {
+    let start = date_index.saturating_sub(1);
+    let end = (date_index + 3).min(tokens.len());
+    tokens[start..end].join(" ")
 }
 
 /// The set of packages `apt-get -s autoremove` would remove, parsed from its
@@ -694,6 +871,142 @@ mod tests {
         assert_eq!(apt_history_list().risk_level, RiskLevel::Low);
     }
 
+    // ── unattended_upgrades_status ──────────────────────────────────────────
+
+    const UNATTENDED_UPGRADES_FIXTURE: &str = r#"__SYSKNIFE_CONFIG_BEGIN__
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+__SYSKNIFE_CONFIG_END__
+__SYSKNIFE_TIMERS_BEGIN__
+NEXT                        LEFT          LAST                         PASSED       UNIT                    ACTIVATES
+Mon 2026-10-26 04:36:12 CST 6h            Sun 2026-10-25 13:22:57 CST  8h ago       apt-daily.timer         apt-daily.service
+Mon 2026-10-26 06:08:07 CST 8h            Sun 2026-10-25 06:05:00 CST 15h ago      apt-daily-upgrade.timer apt-daily-upgrade.service
+__SYSKNIFE_TIMERS_END__
+__SYSKNIFE_TIMER_STATES_BEGIN__
+apt-daily.timer: enabled
+apt-daily-upgrade.timer: enabled
+__SYSKNIFE_TIMER_STATES_END__
+__SYSKNIFE_LOG_BEGIN__
+2026-10-25 06:05:00,123 INFO Initial blacklisted packages:
+__SYSKNIFE_LOG_END__"#;
+
+    #[test]
+    fn unattended_upgrades_parser_reports_values_schedules_and_newest_log_entry() {
+        let output = parse_unattended_upgrades_status(UNATTENDED_UPGRADES_FIXTURE);
+        assert!(output.contains("APT::Periodic::Update-Package-Lists: 1 (enabled)"));
+        assert!(output.contains("APT::Periodic::Unattended-Upgrade: 1 (enabled)"));
+        assert!(output.contains("apt-daily.timer: enabled; last run: Sun 2026-10-25 13:22:57 CST; next run: Mon 2026-10-26 04:36:12 CST"));
+        assert!(output.contains("apt-daily-upgrade.timer: enabled; last run: Sun 2026-10-25 06:05:00 CST; next run: Mon 2026-10-26 06:08:07 CST"));
+        assert!(
+            output.contains("Latest unattended-upgrades log entry: 2026-10-25 06:05:00,123 INFO")
+        );
+    }
+
+    #[test]
+    fn unattended_upgrades_parser_reports_zero_as_off() {
+        let fixture = UNATTENDED_UPGRADES_FIXTURE.replace(
+            r#"APT::Periodic::Update-Package-Lists "1";"#,
+            r#"APT::Periodic::Update-Package-Lists "0";"#,
+        );
+        let output = parse_unattended_upgrades_status(&fixture);
+        assert!(output.contains("APT::Periodic::Update-Package-Lists: 0 (off)"));
+    }
+
+    #[test]
+    fn unattended_upgrades_parser_reports_disabled_timer() {
+        let fixture = UNATTENDED_UPGRADES_FIXTURE
+            .replace(
+                "Mon 2026-10-26 06:08:07 CST 8h            Sun 2026-10-25 06:05:00 CST 15h ago      apt-daily-upgrade.timer apt-daily-upgrade.service",
+                "n/a                         n/a           n/a                         n/a          apt-daily-upgrade.timer apt-daily-upgrade.service",
+            )
+            .replace(
+            "apt-daily-upgrade.timer: enabled",
+            "apt-daily-upgrade.timer: disabled",
+            );
+        let output = parse_unattended_upgrades_status(&fixture);
+        assert!(output.contains("apt-daily-upgrade.timer: disabled; last run: n/a; next run: n/a"));
+    }
+
+    #[test]
+    fn unattended_upgrades_parser_reports_missing_log_directory_as_unknown() {
+        let fixture = UNATTENDED_UPGRADES_FIXTURE.replace(
+            "2026-10-25 06:05:00,123 INFO Initial blacklisted packages:",
+            "__MISSING_LOG_DIR__",
+        );
+        let output = parse_unattended_upgrades_status(&fixture);
+        assert!(output.contains("Latest unattended-upgrades log entry: unknown (/var/log/unattended-upgrades: directory missing)"));
+        assert!(!output.contains("Latest unattended-upgrades log entry: ok"));
+    }
+
+    #[test]
+    fn unattended_upgrades_parser_reports_unreadable_log_directory_as_unknown() {
+        let fixture = UNATTENDED_UPGRADES_FIXTURE.replace(
+            "2026-10-25 06:05:00,123 INFO Initial blacklisted packages:",
+            "__UNREADABLE_LOG_DIR__",
+        );
+        let output = parse_unattended_upgrades_status(&fixture);
+        assert!(output.contains("Latest unattended-upgrades log entry: unknown (/var/log/unattended-upgrades: directory not readable by the daemon user)"));
+        assert!(!output.contains("no timestamped log entry"));
+    }
+
+    #[test]
+    fn unattended_upgrades_script_checks_log_directory_access_before_reading_it() {
+        let spec = unattended_upgrades_status();
+        let (_, args) = extract_args(&spec);
+        let script = args.last().expect("bash -c script");
+        assert!(script.contains(r#"[ -r "$log_dir" ] && [ -x "$log_dir" ]"#));
+        assert!(script.contains("__UNREADABLE_LOG_DIR__"));
+    }
+
+    #[test]
+    fn unattended_upgrades_parser_reports_missing_config_as_unknown_for_both_keys() {
+        let fixture = UNATTENDED_UPGRADES_FIXTURE.replace(
+            "APT::Periodic::Update-Package-Lists \"1\";\nAPT::Periodic::Unattended-Upgrade \"1\";",
+            "__MISSING_CONFIG__",
+        );
+        assert!(fixture.contains("__MISSING_CONFIG__"));
+        let output = parse_unattended_upgrades_status(&fixture);
+        for key in [
+            "APT::Periodic::Update-Package-Lists",
+            "APT::Periodic::Unattended-Upgrade",
+        ] {
+            assert!(
+                output.contains(&format!(
+                    "{key}: unknown (/etc/apt/apt.conf.d/20auto-upgrades: file missing or unreadable)"
+                )),
+                "{key} not reported unknown: {output}"
+            );
+        }
+        assert!(!output.contains("(enabled)"));
+    }
+
+    #[test]
+    fn unattended_upgrades_parser_reports_disabled_timer_without_a_list_timers_row() {
+        let fixture = UNATTENDED_UPGRADES_FIXTURE
+            .replace(
+                "Mon 2026-10-26 06:08:07 CST 8h            Sun 2026-10-25 06:05:00 CST 15h ago      apt-daily-upgrade.timer apt-daily-upgrade.service\n",
+                "",
+            )
+            .replace(
+                "apt-daily-upgrade.timer: enabled",
+                "apt-daily-upgrade.timer: disabled",
+            );
+        assert!(!fixture.contains("apt-daily-upgrade.service"));
+        let output = parse_unattended_upgrades_status(&fixture);
+        assert!(output.contains("apt-daily-upgrade.timer: disabled; last run: n/a; next run: n/a"));
+    }
+
+    #[test]
+    fn unattended_upgrades_status_is_a_low_risk_read_only_query() {
+        let spec = unattended_upgrades_status();
+        assert_eq!(spec.risk_level, RiskLevel::Low);
+        let (program, args) = extract_args(&spec);
+        assert_eq!(program, "bash");
+        assert!(args.iter().any(|arg| arg.contains("systemctl list-timers")));
+        assert!(args.iter().any(|arg| arg.contains("20auto-upgrades")));
+        assert!(args.iter().all(|arg| !arg.contains("--dry-run")));
+    }
+
     // ── specs() completeness ─────────────────────────────────────────────────
 
     #[test]
@@ -712,6 +1025,7 @@ mod tests {
             "AptShow",
             "AptListUpgradable",
             "AptHistoryList",
+            "UnattendedUpgradesStatus",
         ];
         let spec_names: Vec<&str> = specs().iter().map(|s| s.action_name).collect();
         for name in &expected_names {

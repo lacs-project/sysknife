@@ -106,7 +106,7 @@ SysKnife, not an afterthought.
 
 > **ℹ️ Distro support**
 >
-> The current suite is <!-- fig:stories_ubuntu floor=10 -->90+<!-- /fig --> Ubuntu stories. All three Ubuntu LTS releases have a
+> The current suite is <!-- fig:stories_ubuntu floor=10 -->100+<!-- /fig --> Ubuntu stories. All three Ubuntu LTS releases have a
 > committed live-VM run covering <!-- fig:lts_story_total -->79<!-- /fig --> of those Ubuntu stories, in
 > `tests/evidence/story-runs/`:
 > 22.04, 24.04 and 26.04 all at <!-- fig:lts_story_rate -->79/79<!-- /fig -->. The <!-- fig:stories_ubuntu_unrecorded floor=10 -->20+<!-- /fig --> additional stories are not yet

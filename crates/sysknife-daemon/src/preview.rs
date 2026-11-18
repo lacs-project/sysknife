@@ -217,6 +217,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         // Cross-distro + Ubuntu read-only queries
         | "AptListUpgradable"
         | "AptHistoryList"
+        | "UnattendedUpgradesStatus"
         | "GrubGetKargs"
         | "CheckPendingReboot"
         | "ResolvectlStatus"

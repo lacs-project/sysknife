@@ -631,7 +631,7 @@ chained to the previous one.
   short reference version of this file.
 - [`docs/testing/user-stories.md`](docs/testing/user-stories.md) — the
   20 worked Atomic scenarios and their pass criteria (the atomic family itself
-  is <!-- fig:stories_atomic floor=10 -->50+<!-- /fig --> stories; the Ubuntu family is a further <!-- fig:stories_ubuntu floor=10 -->90+<!-- /fig -->).
+  is <!-- fig:stories_atomic floor=10 -->50+<!-- /fig --> stories; the Ubuntu family is a further <!-- fig:stories_ubuntu floor=10 -->100+<!-- /fig -->).
 - [`tests/e2e/atomic-vm.sh help`](tests/e2e/atomic-vm.sh) — the
   subcommand reference, kept in sync with the script itself.
 

@@ -233,6 +233,7 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     "AptShow",
     "AptListUpgradable",
     "AptHistoryList",
+    "UnattendedUpgradesStatus",
     "ConfigureUnattendedUpgrades",
     "GetAptPins",
     "SetAptPin",
