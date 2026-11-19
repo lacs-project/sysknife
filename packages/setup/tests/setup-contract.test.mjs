@@ -186,6 +186,33 @@ test('--help remains a non-interactive smoke test', () => {
   assert.match(output, /3\s+setup finished with outstanding steps/);
 });
 
+function optionFlags(block) {
+  return new Set([...block.matchAll(/^\s*(--[a-z][a-z-]*)/gm)].map((match) => match[1]));
+}
+
+test('the README Options block names the same flags as --help', () => {
+  const readme = fs.readFileSync(path.join(setupDir, 'README.md'), 'utf8');
+  const readmeOptions = readme.match(/^## Options\n+```\n([\s\S]*?)\n```/m);
+  assert.ok(readmeOptions, 'README.md has an Options code block');
+
+  const help = execFileSync(process.execPath, ['index.js', '--help'], {
+    cwd: setupDir,
+    encoding: 'utf8',
+  }).replace(/\x1b\[[0-9;]*m/g, '');
+  const helpOptions = help.match(/^OPTIONS\n([\s\S]*?)\n(?=\S)/m);
+  assert.ok(helpOptions, '--help has an OPTIONS section');
+
+  const readmeFlags = optionFlags(readmeOptions[1]);
+  const helpFlags = optionFlags(helpOptions[1]);
+  assert.deepEqual(
+    {
+      missingFromReadme: [...helpFlags].filter((flag) => !readmeFlags.has(flag)),
+      missingFromHelp: [...readmeFlags].filter((flag) => !helpFlags.has(flag)),
+    },
+    { missingFromReadme: [], missingFromHelp: [] },
+  );
+});
+
 test('a daemon that was not installed is reported as outstanding, whatever the reason', () => {
   // The wizard used to print this block only for --daemon-mode=system. A skip,
   // and a host with no systemd at all, ended on "Setup complete" with MCP
