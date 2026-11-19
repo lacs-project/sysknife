@@ -706,6 +706,108 @@ pub struct LlmPlanner {
     distro_hint: Option<DistroHint>,
 }
 
+/// Build a provider around the planner's HTTP client.
+///
+/// Every arm must pass `http` through, so the connect/request timeouts apply
+/// to the provider that actually gets used (#674).
+fn build_provider(
+    provider_config: ProviderConfig,
+    http: reqwest::Client,
+) -> Result<Box<dyn LlmProvider>, String> {
+    let provider: Box<dyn LlmProvider> = match provider_config {
+        ProviderConfig::Anthropic {
+            api_key,
+            model,
+            base_url,
+        } => {
+            let client = rig::providers::anthropic::Client::builder()
+                .api_key(api_key)
+                .base_url(base_url)
+                .http_client(http.clone())
+                .build()
+                .map_err(|e| format!("failed to initialize anthropic provider: {e}"))?;
+            let completion_model = client.completion_model(&model);
+            Box::new(RigCompletionAdapter::new(completion_model))
+        }
+        ProviderConfig::Ollama { base_url, model } => {
+            let client = rig::providers::ollama::Client::builder()
+                .api_key(rig::client::Nothing)
+                .base_url(base_url)
+                .http_client(http.clone())
+                .build()
+                .map_err(|e| format!("failed to initialize ollama provider: {e}"))?;
+            let completion_model = client.completion_model(&model);
+            // See `OLLAMA_NUM_PREDICT` and `THINKING_MODEL_PREFIXES`
+            // at the top of this module for the rationale behind each
+            // key sent through `additional_params`.
+            let think = resolve_ollama_think(&model);
+            let mut params = serde_json::json!({ "num_predict": OLLAMA_NUM_PREDICT });
+            if think {
+                params["think"] = serde_json::Value::Bool(true);
+            }
+            Box::new(RigCompletionAdapter::new(completion_model).with_additional_params(params))
+        }
+        ProviderConfig::OpenAI { api_key, model } => {
+            // Use async-openai directly with the Chat Completions API.
+            // rig's OpenAI backend defaults to the Responses API, which:
+            //   - emits reasoning-only items on some model variants → parse errors
+            //   - places the system prompt in a user message (rig issue #1599)
+            // async-openai targets /v1/chat/completions, has none of these issues.
+            Box::new(AsyncOpenAiAdapter::with_http_client(
+                api_key,
+                model,
+                http.clone(),
+            ))
+        }
+        ProviderConfig::Gemini { api_key, model } => {
+            let client = rig::providers::gemini::Client::builder()
+                .api_key(api_key)
+                .http_client(http.clone())
+                .build()
+                .map_err(|e| format!("failed to initialize gemini provider: {e}"))?;
+            let completion_model = client.completion_model(&model);
+            Box::new(RigCompletionAdapter::new(completion_model))
+        }
+        ProviderConfig::Groq { api_key, model } => {
+            let client = rig::providers::groq::Client::builder()
+                .api_key(api_key)
+                .http_client(http.clone())
+                .build()
+                .map_err(|e| format!("failed to initialize groq provider: {e}"))?;
+            let completion_model = client.completion_model(&model);
+            Box::new(RigCompletionAdapter::new(completion_model))
+        }
+        ProviderConfig::DeepSeek { api_key, model } => {
+            let client = rig::providers::deepseek::Client::builder()
+                .api_key(api_key)
+                .http_client(http.clone())
+                .build()
+                .map_err(|e| format!("failed to initialize deepseek provider: {e}"))?;
+            let completion_model = client.completion_model(&model);
+            Box::new(RigCompletionAdapter::new(completion_model))
+        }
+        ProviderConfig::Mistral { api_key, model } => {
+            let client = rig::providers::mistral::Client::builder()
+                .api_key(api_key)
+                .http_client(http.clone())
+                .build()
+                .map_err(|e| format!("failed to initialize mistral provider: {e}"))?;
+            let completion_model = client.completion_model(&model);
+            Box::new(RigCompletionAdapter::new(completion_model))
+        }
+        ProviderConfig::XAI { api_key, model } => {
+            let client = rig::providers::xai::Client::builder()
+                .api_key(api_key)
+                .http_client(http.clone())
+                .build()
+                .map_err(|e| format!("failed to initialize xai provider: {e}"))?;
+            let completion_model = client.completion_model(&model);
+            Box::new(RigCompletionAdapter::new(completion_model))
+        }
+    };
+    Ok(provider)
+}
+
 impl LlmPlanner {
     /// Construct a planner directly.
     ///
@@ -873,97 +975,7 @@ impl LlmPlanner {
         // turn instead of hanging it (#674).
         let http = provider_http_client()?;
 
-        let provider: Box<dyn LlmProvider> = match config.provider {
-            ProviderConfig::Anthropic {
-                api_key,
-                model,
-                base_url,
-            } => {
-                let client = rig::providers::anthropic::Client::builder()
-                    .api_key(api_key)
-                    .base_url(base_url)
-                    .http_client(http.clone())
-                    .build()
-                    .map_err(|e| format!("failed to initialize anthropic provider: {e}"))?;
-                let completion_model = client.completion_model(&model);
-                Box::new(RigCompletionAdapter::new(completion_model))
-            }
-            ProviderConfig::Ollama { base_url, model } => {
-                let client = rig::providers::ollama::Client::builder()
-                    .api_key(rig::client::Nothing)
-                    .base_url(base_url)
-                    .http_client(http.clone())
-                    .build()
-                    .map_err(|e| format!("failed to initialize ollama provider: {e}"))?;
-                let completion_model = client.completion_model(&model);
-                // See `OLLAMA_NUM_PREDICT` and `THINKING_MODEL_PREFIXES`
-                // at the top of this module for the rationale behind each
-                // key sent through `additional_params`.
-                let think = resolve_ollama_think(&model);
-                let mut params = serde_json::json!({ "num_predict": OLLAMA_NUM_PREDICT });
-                if think {
-                    params["think"] = serde_json::Value::Bool(true);
-                }
-                Box::new(RigCompletionAdapter::new(completion_model).with_additional_params(params))
-            }
-            ProviderConfig::OpenAI { api_key, model } => {
-                // Use async-openai directly with the Chat Completions API.
-                // rig's OpenAI backend defaults to the Responses API, which:
-                //   - emits reasoning-only items on some model variants → parse errors
-                //   - places the system prompt in a user message (rig issue #1599)
-                // async-openai targets /v1/chat/completions, has none of these issues.
-                Box::new(AsyncOpenAiAdapter::with_http_client(
-                    api_key,
-                    model,
-                    http.clone(),
-                ))
-            }
-            ProviderConfig::Gemini { api_key, model } => {
-                let client = rig::providers::gemini::Client::builder()
-                    .api_key(api_key)
-                    .http_client(http.clone())
-                    .build()
-                    .map_err(|e| format!("failed to initialize gemini provider: {e}"))?;
-                let completion_model = client.completion_model(&model);
-                Box::new(RigCompletionAdapter::new(completion_model))
-            }
-            ProviderConfig::Groq { api_key, model } => {
-                let client = rig::providers::groq::Client::builder()
-                    .api_key(api_key)
-                    .http_client(http.clone())
-                    .build()
-                    .map_err(|e| format!("failed to initialize groq provider: {e}"))?;
-                let completion_model = client.completion_model(&model);
-                Box::new(RigCompletionAdapter::new(completion_model))
-            }
-            ProviderConfig::DeepSeek { api_key, model } => {
-                let client = rig::providers::deepseek::Client::builder()
-                    .api_key(api_key)
-                    .http_client(http.clone())
-                    .build()
-                    .map_err(|e| format!("failed to initialize deepseek provider: {e}"))?;
-                let completion_model = client.completion_model(&model);
-                Box::new(RigCompletionAdapter::new(completion_model))
-            }
-            ProviderConfig::Mistral { api_key, model } => {
-                let client = rig::providers::mistral::Client::builder()
-                    .api_key(api_key)
-                    .http_client(http.clone())
-                    .build()
-                    .map_err(|e| format!("failed to initialize mistral provider: {e}"))?;
-                let completion_model = client.completion_model(&model);
-                Box::new(RigCompletionAdapter::new(completion_model))
-            }
-            ProviderConfig::XAI { api_key, model } => {
-                let client = rig::providers::xai::Client::builder()
-                    .api_key(api_key)
-                    .http_client(http.clone())
-                    .build()
-                    .map_err(|e| format!("failed to initialize xai provider: {e}"))?;
-                let completion_model = client.completion_model(&model);
-                Box::new(RigCompletionAdapter::new(completion_model))
-            }
-        };
+        let provider = build_provider(config.provider, http)?;
         let replaying = matches!(
             cassette.as_ref().map(crate::cassette::Cassette::mode),
             Some(crate::cassette::CassetteMode::Replay)
@@ -1699,9 +1711,9 @@ mod tests {
     }
 
     /// #674: an endpoint that accepts the connection and then never answers
-    /// must fail the request within the configured bound — on both HTTP stacks
-    /// the providers use, since rig and async-openai pin different reqwest
-    /// majors.
+    /// must fail the request within the configured bound. This pins the client
+    /// builder; `the_built_ollama_provider_uses_the_bounded_client` pins that
+    /// the planner's provider actually receives it.
     #[tokio::test]
     async fn provider_http_clients_end_a_silent_response() {
         use tokio::net::TcpListener;
@@ -1746,6 +1758,46 @@ mod tests {
         );
 
         server.abort();
+    }
+
+    /// #674, the part the other tests cannot see: the provider the planner
+    /// actually builds must use the bounded client. Delete the Ollama arm's
+    /// `.http_client(http.clone())` and this test trips its own timeout instead
+    /// of returning an error.
+    #[tokio::test]
+    async fn the_built_ollama_provider_uses_the_bounded_client() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+            drop(socket);
+        });
+
+        let http =
+            build_provider_http_client(Duration::from_millis(100), Duration::from_millis(250))
+                .expect("provider HTTP client builds");
+        let provider = build_provider(
+            ProviderConfig::Ollama {
+                base_url: format!("http://{addr}"),
+                model: "test-model".to_string(),
+            },
+            http,
+        )
+        .expect("the ollama provider builds");
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            provider.complete("system", &[], &[], 16),
+        )
+        .await;
+
+        server.abort();
+        let result = outcome.expect("the provider call never returned");
+        let err = result.expect_err("a silent provider must not succeed");
+        assert!(err.is_retryable(), "a timeout should be retryable: {err}");
     }
 
     /// A model-chosen string carrying every class that rewrites a terminal: an
