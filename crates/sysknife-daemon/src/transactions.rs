@@ -314,7 +314,11 @@ pub struct TransactionStore {
     /// True when opened via [`open_read_only`](Self::open_read_only). Read
     /// paths then open the SQLite connection `SQLITE_OPEN_READ_ONLY` and skip
     /// the `journal_mode=WAL` pragma, so reading a forensic copy never writes
-    /// to it (#267). The daemon's write path leaves this `false`.
+    /// to it (#267). Immutable mode is NOT unconditional: a `-wal` sidecar next
+    /// to the database holds committed rows `immutable=1` would silently skip,
+    /// so such a store is opened as a normal WAL reader instead (see
+    /// [`connection`](Self::connection)). The daemon's write path leaves this
+    /// `false`.
     read_only: bool,
 }
 
@@ -375,6 +379,12 @@ impl TransactionStore {
     /// neither writes to it nor creates `-wal`/`-shm` sidecars (#267). A schema
     /// newer than this binary supports is refused with the same invariant error
     /// the write path raises, without attempting to migrate.
+    ///
+    /// A `-wal` sidecar next to the database changes the open mode: it can hold
+    /// committed rows the main file has not absorbed yet, and `immutable=1`
+    /// would silently skip them. Such a store is read as a normal WAL reader
+    /// (which needs write access to the sidecars); if that is impossible the
+    /// open is refused with instructions rather than returning a short chain.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, TransactionStoreError> {
         let path = path.as_ref().to_path_buf();
         // No `ensure_private_dir` here: creating (or re-permissioning) the
@@ -387,6 +397,30 @@ impl TransactionStore {
             read_only: true,
         };
         store.check_schema_read_only()?;
+        // Fail closed on a WAL we cannot replay. A non-empty `-wal` beside the
+        // database may hold committed rows that are not in the main file yet
+        // (the daemon only checkpoints on a clean close). `immutable=1` ignores
+        // the WAL entirely, so reading such a store immutably could return a
+        // truncated chain and call it verified. If the artifact is writable we
+        // read it as a normal WAL reader instead (see `connection()`); if it is
+        // not — a 0400 file, a read-only mount — refuse rather than under-read.
+        let wal = with_suffix(&store.path, "-wal");
+        if wal.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+            let writable = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&store.path)
+                .is_ok();
+            if !writable {
+                return Err(TransactionStoreError::DatabaseInvariant(format!(
+                    "store has a non-empty -wal sidecar ({}) that a read-only artifact \
+                     cannot replay; immutable reads would silently miss committed rows. \
+                     Copy the -wal (and -shm, if present) beside the artifact with write \
+                     permission, or checkpoint the live store first \
+                     (PRAGMA wal_checkpoint(TRUNCATE)) and copy the database alone",
+                    wal.display()
+                )));
+            }
+        }
         Ok(store)
     }
 
@@ -1117,11 +1151,35 @@ impl TransactionStore {
             // WAL mode, and SQLite recreates the `-wal`/`-shm` sidecars even on
             // a read-only open of a WAL database (and `PRAGMA journal_mode=WAL`
             // is itself a write that fails on a 0400 file or a read-only mount).
-            // Open with the `immutable=1` URI flag instead: SQLite then treats
-            // the file as fixed media — no sidecars, no journal change, no write
-            // of any kind — which is exactly the offline-auditor artifact
-            // `docs/the-audit-chain.md` describes (a copied `daemon.sqlite`).
-            // The write-path concurrency tuning below is meaningless here.
+            //
+            // But `immutable=1` is only correct when the main file is the whole
+            // story: it tells SQLite to ignore any `-wal` beside the database.
+            // A non-empty WAL can hold committed rows the main file has not
+            // absorbed yet (the daemon checkpoints on clean close, not after a
+            // crash), and an immutable read would silently return a truncated
+            // chain. `open_read_only` already refused the case where such a WAL
+            // exists and the artifact cannot be written; if it exists and the
+            // artifact IS writable, read as a normal WAL reader so the WAL is
+            // replayed. That open needs write access to the sidecars, which is
+            // exactly what a live store has.
+            let wal_present = with_suffix(&self.path, "-wal")
+                .metadata()
+                .map(|m| m.len() > 0)
+                .unwrap_or(false);
+            if wal_present {
+                let conn = Connection::open_with_flags(
+                    &self.path,
+                    OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )?;
+                conn.pragma_update(None, "foreign_keys", "ON")?;
+                conn.busy_timeout(std::time::Duration::from_secs(5))?;
+                return Ok(conn);
+            }
+            // No WAL beside the file: treat it as fixed media — no sidecars,
+            // no journal change, no write of any kind — which is exactly the
+            // offline-auditor artifact `docs/the-audit-chain.md` describes (a
+            // copied `daemon.sqlite`). The write-path concurrency tuning below
+            // is meaningless here.
             let uri = format!("file:{}?immutable=1", sqlite_uri_path(&self.path));
             let conn = Connection::open_with_flags(
                 uri,
@@ -3065,6 +3123,120 @@ mod tests {
         let rows = read_only.fetch_chain_rows().unwrap();
         assert_eq!(rows.len(), 1, "the encoded URI must target the real file");
         assert_eq!(rows[0].transaction_id, tx.transaction_id);
+    }
+
+    /// A `-wal` beside a writable store must be replayed, not ignored.
+    ///
+    /// The daemon opens a fresh connection per operation, so each clean close
+    /// checkpoints its own WAL. But after a crash (or while a writer is live)
+    /// committed rows can sit only in the `-wal`. An `immutable=1` open ignores
+    /// the WAL entirely and would silently return a truncated chain — the exact
+    /// under-read this issue's fail-closed framing forbids. Simulate the crash
+    /// state: hold a writer connection open with autocheckpoint disabled, commit
+    /// rows into the WAL, copy main file + WAL, then read the pair back.
+    #[test]
+    fn open_read_only_replays_a_wal_holding_committed_rows() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("tx.db");
+        let store = test_store(&db_path);
+        let tx1 = store.record(queued_transaction()).unwrap();
+        let tx2 = store.record(queued_transaction()).unwrap();
+
+        // A live writer whose WAL has not been checkpointed: disable
+        // autocheckpoint on a held-open connection and commit one more row, so
+        // the newest committed data exists ONLY in the -wal.
+        let mut writer = Connection::open(&db_path).unwrap();
+        writer.pragma_update(None, "journal_mode", "WAL").unwrap();
+        writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        let tx3 = {
+            let tx = writer
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            let inserted = TransactionStore::insert_transaction(
+                &tx,
+                &AuditKey::from_bytes(vec![0x42; 32]),
+                &Uuid::new_v4().to_string(),
+                queued_transaction(),
+            )
+            .unwrap();
+            tx.commit().unwrap();
+            inserted.record
+        };
+
+        let snap_dir = dir.path().join("crash-copy");
+        std::fs::create_dir(&snap_dir).unwrap();
+        let snap_db = snap_dir.join("tx.db");
+        std::fs::copy(&db_path, &snap_db).unwrap();
+        let wal = with_suffix(&db_path, "-wal");
+        assert!(
+            wal.metadata().map(|m| m.len() > 0).unwrap_or(false),
+            "the held-open writer must leave a non-empty WAL for this test to mean anything"
+        );
+        std::fs::copy(&wal, with_suffix(&snap_db, "-wal")).unwrap();
+        drop(writer); // checkpoints the ORIGINAL; the copy keeps the WAL
+        drop(store);
+
+        let read_only = TransactionStore::open_read_only(&snap_db).unwrap();
+        let rows = read_only.fetch_chain_rows().unwrap();
+        assert_eq!(
+            rows.len(),
+            3,
+            "the row committed only in the -wal must be visible, not silently dropped"
+        );
+        assert_eq!(rows[0].transaction_id, tx1.transaction_id);
+        assert_eq!(rows[1].transaction_id, tx2.transaction_id);
+        assert_eq!(rows[2].transaction_id, tx3.transaction_id);
+    }
+
+    /// A non-empty `-wal` beside a NON-writable artifact must be refused, not
+    /// read immutably. The auditor gets a clear error naming the WAL instead of
+    /// a short chain that verifies clean.
+    #[test]
+    fn open_read_only_refuses_an_unreplayable_wal_on_a_read_only_artifact() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("tx.db");
+        let store = test_store(&db_path);
+        let _tx = store.record(queued_transaction()).unwrap();
+
+        // Same crash-state construction: a held-open writer with a WAL that
+        // has not been checkpointed.
+        let mut writer = Connection::open(&db_path).unwrap();
+        writer.pragma_update(None, "journal_mode", "WAL").unwrap();
+        writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        {
+            let tx = writer
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            TransactionStore::insert_transaction(
+                &tx,
+                &AuditKey::from_bytes(vec![0x42; 32]),
+                &Uuid::new_v4().to_string(),
+                queued_transaction(),
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+
+        let snap_dir = dir.path().join("forensic");
+        std::fs::create_dir(&snap_dir).unwrap();
+        let snap_db = snap_dir.join("tx.db");
+        std::fs::copy(&db_path, &snap_db).unwrap();
+        std::fs::copy(with_suffix(&db_path, "-wal"), with_suffix(&snap_db, "-wal")).unwrap();
+        drop(writer);
+        drop(store);
+        std::fs::set_permissions(&snap_db, std::fs::Permissions::from_mode(0o400)).unwrap();
+
+        let err = TransactionStore::open_read_only(&snap_db)
+            .expect_err("a WAL the artifact cannot replay must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("-wal"),
+            "the error must name the WAL sidecar, got: {msg}"
+        );
+        assert!(
+            msg.contains("wal_checkpoint"),
+            "the error must tell the operator how to produce a complete artifact, got: {msg}"
+        );
     }
 
     #[test]
