@@ -450,6 +450,8 @@ reports live interface state"),
     // ── Ubuntu / Tier 3 — Ubuntu Pro ─────────────────────────────────────────
     ("ProStatus",
      "show Ubuntu Pro subscription status — no params; Ubuntu only; read-only"),
+    ("ProSecurityStatus",
+     "report pending security-update coverage from the Ubuntu Pro API — counts of installed packages by origin and of pending updates, including security updates; no params; Ubuntu only; read-only"),
     ("ProAttach",
      "attach machine to an Ubuntu Pro subscription — param: token* (credential, never log); Ubuntu only; High risk"),
     ("ProDetach",
@@ -1662,6 +1664,7 @@ mod tests {
         let offered = offered_actions(&propose_plan_tool_def(Some(&ubuntu)));
         for action in [
             "ProStatus",
+            "ProSecurityStatus",
             "ProDetach",
             "EnableProService",
             "DisableProService",

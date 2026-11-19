@@ -858,7 +858,7 @@ DistroboxList,
 AppArmorStatus, CloudInitStatus,
 UbuntuListFlatpaks,
 Fail2banStatus,
-ProStatus, LivepatchStatus, MultipassList
+ProStatus, ProSecurityStatus, LivepatchStatus, MultipassList
 
 ### Medium risk (Debian-specific)
 
@@ -915,6 +915,7 @@ const DEBIAN_SELECTION_RULES: &str = r#"
 - "the network config" on Ubuntu means the netplan YAML, so the read is `NetplanGetConfig`. `GetNetworkStatus` reports live interface state and is NOT a configuration. The pairing decides it: what `NetplanApply` applies is exactly what `NetplanGetConfig` reads, so "show me the network config and then apply it" is `NetplanGetConfig` + `NetplanApply`. Reach for `GetNetworkStatus` only when the request asks about the live state — "network status", addresses, whether an interface is up.
 - `DistroboxCreate` creates an isolated container that can be cleanly removed — MEDIUM.
 - `ProStatus` shows Ubuntu Pro subscription state — LOW, read-only. Use for "is Ubuntu Pro active?", "what Pro services are enabled?".
+- `ProSecurityStatus` reads the Ubuntu Pro API for security-update coverage — LOW, read-only. Use for "how exposed is this host?", "are security updates pending?", "how many security updates are waiting?". Works on an unattached host, and an endpoint that times out or is not supported by this Pro client is reported as such — never as zero counts.
 - `ProDetach` removes the active Ubuntu Pro subscription — HIGH. No params.
 - `EnableProService` / `DisableProService` toggle a single Pro service — HIGH. Param `service` must be one of the fixed allowlist (esm-apps, esm-infra, livepatch, usg, fips, …). Use for "enable ESM", "turn on livepatch". Requires an attached subscription.
 - `LivepatchStatus` shows Canonical Livepatch kernel-patch state — LOW, read-only. Requires `canonical-livepatch` installed and Ubuntu Pro; surfaces "command not found" if binary is absent.
@@ -966,7 +967,7 @@ AptListUpgradable, AptHistoryList, CheckPendingReboot,
 GrubGetKargs,
 UfwEnable, UfwDisable, UfwReset, DistroboxList, NetplanGetConfig,
 NetplanApply, NetplanGenerate,
-ProStatus, ProDetach, LivepatchStatus, MultipassList, UbuntuReleaseUpgrade.
+ProStatus, ProSecurityStatus, ProDetach, LivepatchStatus, MultipassList, UbuntuReleaseUpgrade.
 
 **Apt**:
 - `AptInstall` / `AptRemove` / `AptPurge`: `{"package":"vim"}`
@@ -1002,6 +1003,7 @@ ProStatus, ProDetach, LivepatchStatus, MultipassList, UbuntuReleaseUpgrade.
 
 **Ubuntu Pro**:
 - `ProStatus`: `{}`
+- `ProSecurityStatus`: `{}` (security-update coverage from the Pro API)
 - `ProDetach`: `{}`
 - `EnableProService` / `DisableProService`: `{"service":"esm-apps"}` (service ∈ the fixed allowlist)
 
@@ -1416,6 +1418,7 @@ mod tests {
         let debian = build_system_prompt(None, Some(&debian_hint()));
         for action in [
             "ProStatus",
+            "ProSecurityStatus",
             "ProDetach",
             "EnableProService",
             "DisableProService",
@@ -1467,6 +1470,7 @@ mod tests {
             // Tier 3 Ubuntu-only actions
             "UbuntuReleaseUpgrade",
             "ProStatus",
+            "ProSecurityStatus",
             "ProAttach",
             "ProDetach",
             "LivepatchStatus",

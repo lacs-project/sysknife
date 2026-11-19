@@ -384,6 +384,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `ProDetach` | `sudo pro detach --assume-yes` | High | Ubuntu | – | – | detach from Ubuntu Pro subscription — no params; Ubuntu only; High risk |
 | `EnableProService` | `sudo pro enable esm-apps --assume-yes` | High | Ubuntu | – | – | enable one Ubuntu Pro service (pro enable &lt;service&gt;) — param: service\* (one of esm-apps, esm-infra, livepatch, usg, fips, fips-updates, cis, ros, ros-updates, cc-eal, realtime-kernel, landscape, anbox-cloud); Ubuntu only; High risk; needs an attached subscription |
 | `DisableProService` | `sudo pro disable esm-apps --assume-yes` | High | Ubuntu | – | – | disable one Ubuntu Pro service (pro disable &lt;service&gt;) — param: service\* (same allowlist as EnableProService); Ubuntu only; High risk |
+| `ProSecurityStatus` | `bash -c "export LC_ALL=C; printf '%s\\n' '__SYSKNIFE_SUMMARY_BEGIN__'; timeout 30 pro api u.pro.packages.summary.v1 2>&1; s=$?; printf '%s\\n' \\"__SYSKNIFE_SUMMARY_EXIT_${s}__\\"; printf '%s\\n' '__SYSKNIFE_SUMMARY_END__'; printf '%s\\n' '__SYSKNIFE_UPDATES_BEGIN__'; timeout 120 pro api u.pro.packages.updates.v1 2>&1; s=$?; printf '%s\\n' \\"__SYSKNIFE_UPDATES_EXIT_${s}__\\"; printf '%s\\n' '__SYSKNIFE_UPDATES_END__'"` | Low | Ubuntu | – | – | report pending security-update coverage from the Ubuntu Pro API — counts of installed packages by origin and of pending updates, including security updates; no params; Ubuntu only; read-only |
 
 ## Livepatch
 
@@ -399,4 +400,4 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 ---
 
-_192 actions have an `ActionSpec` and are tabled above. The full catalogue (`KNOWN_ACTION_NAMES`) also includes `ListJobHistory`, which the dispatcher handles before the executor, for **193** total._
+_193 actions have an `ActionSpec` and are tabled above. The full catalogue (`KNOWN_ACTION_NAMES`) also includes `ListJobHistory`, which the dispatcher handles before the executor, for **194** total._

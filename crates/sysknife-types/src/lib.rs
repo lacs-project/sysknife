@@ -295,6 +295,7 @@ pub const KNOWN_ACTION_NAMES: &[&str] = &[
     "UbuntuReleaseUpgrade",
     // Ubuntu / Ubuntu Pro (Tier 3)
     "ProStatus",
+    "ProSecurityStatus",
     "ProAttach",
     "ProDetach",
     "EnableProService",

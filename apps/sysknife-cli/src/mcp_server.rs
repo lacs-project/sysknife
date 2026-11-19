@@ -636,6 +636,7 @@ const MCP_READ_ONLY_ACTIONS: &[&str] = &[
     "DistroboxList",
     "GrubGetKargs",
     "ProStatus",
+    "ProSecurityStatus",
     "LivepatchStatus",
     "MultipassList",
     // Dispatcher-internal, with no ActionSpec of its own.
@@ -2750,8 +2751,8 @@ mod tests {
             classified, observer_actions,
             "every Observer-callable action must be explicitly classified as read-only or mutating"
         );
-        assert_eq!(observer_actions.len(), 66);
-        assert_eq!(read_only.len(), 65);
+        assert_eq!(observer_actions.len(), 67);
+        assert_eq!(read_only.len(), 66);
         assert_eq!(mutating, BTreeSet::from(["AptUpdate"]));
     }
 
