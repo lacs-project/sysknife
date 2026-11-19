@@ -577,7 +577,6 @@ Use `"username"` as the key — NOT `"user"`.
 **Users and groups**:
 - `CreateUser`: `{"username":"alice"}` (optional: `"shell"`, `"home"`)
 - `DeleteUser`: `{"username":"alice"}`
-- `AddUserToGroup` / `RemoveUserFromGroup`: `{"username":"alice","group":"wheel"}`
 
 **SSH keys** — all require `"username"`:
 - `GetAuthorizedKeys`: `{"username":"alice"}`
@@ -829,6 +828,9 @@ Flatpak installation to target). Use `"username"` — NOT `"user"`.
 
 **Firewall**:
 - `ConfigureFirewall`: `{"zone":"public","service":"ssh","enabled":true}`
+
+**Users and groups**:
+- `AddUserToGroup` / `RemoveUserFromGroup`: `{"username":"alice","group":"wheel"}`
 "#;
 
 // ---------------------------------------------------------------------------
@@ -923,6 +925,7 @@ const DEBIAN_SELECTION_RULES: &str = r#"
 - `CloudInitStatus` shows the cloud-init provisioning result — LOW, read-only. Use for "did cloud-init run correctly?" or "were there provisioning errors?". Ubuntu/Debian only — Fedora Atomic uses Ignition instead.
 - `UbuntuListFlatpaks` lists installed Flatpak apps — LOW, read-only. `UbuntuInstallFlatpak`, `UbuntuRemoveFlatpak`, `UbuntuUpdateFlatpak` manage Flatpak apps on Ubuntu — MEDIUM.
 - `Fail2banStatus` shows jail status — LOW, read-only. `Fail2banUnbanIp` removes a ban — MEDIUM. `Fail2banBanIp` immediately bans an IP address — HIGH (banning the admin's own IP will lock out SSH access).
+- The administrator group on Debian and Ubuntu is `sudo`: "make alice an admin" is `AddUserToGroup` with `{"username":"alice","group":"sudo"}` — there is no `wheel` group on these distros, and a step naming it fails after approval.
 "#;
 
 const DEBIAN_COUNTERINTUITIVE: &str = r#"
@@ -1024,6 +1027,9 @@ ProStatus, ProDetach, LivepatchStatus, MultipassList, UbuntuReleaseUpgrade.
 - `Fail2banStatus`: `{}` (all jails) or `{"jail":"sshd"}` (specific jail)
 - `Fail2banBanIp`: `{"jail":"sshd","ip":"203.0.113.42"}`
 - `Fail2banUnbanIp`: `{"jail":"sshd","ip":"203.0.113.42"}`
+
+**Users and groups**:
+- `AddUserToGroup` / `RemoveUserFromGroup`: `{"username":"alice","group":"sudo"}` (the admin group — Debian and Ubuntu have no `wheel`)
 "#;
 
 const UBUNTU_UNATTENDED_UPGRADES_STATUS: &str = r#"
@@ -1511,6 +1517,38 @@ mod tests {
         assert!(
             leaked.is_empty(),
             "the Debian prompt names Fedora-only actions: {leaked:?}"
+        );
+    }
+
+    /// The only group example the shared parameter block carried was `wheel`,
+    /// a group Debian and Ubuntu do not have: a model copying the example for
+    /// "make alice an admin" proposed a group the action-steps helper cannot
+    /// resolve, and execution failed after approval. The example is
+    /// family-specific now — `wheel` on Fedora, `sudo` on Debian/Ubuntu —
+    /// and the shared block carries none at all.
+    #[test]
+    fn admin_group_example_matches_each_family() {
+        let fedora = build_system_prompt(None, Some(&fedora_hint()));
+        let debian = build_system_prompt(None, Some(&debian_hint()));
+        assert!(
+            fedora.contains(r#""group":"wheel""#),
+            "Fedora prompt lost the wheel group example"
+        );
+        assert!(
+            !fedora.contains(r#""group":"sudo""#),
+            "Fedora prompt carries the Debian admin group"
+        );
+        assert!(
+            debian.contains(r#""group":"sudo""#),
+            "Debian/Ubuntu prompt missing the sudo group example"
+        );
+        assert!(
+            !debian.contains(r#""group":"wheel""#),
+            "Debian/Ubuntu prompt still carries the wheel example"
+        );
+        assert!(
+            debian.contains("The administrator group on Debian and Ubuntu is `sudo`"),
+            "Debian/Ubuntu selection rules do not name the admin group"
         );
     }
 

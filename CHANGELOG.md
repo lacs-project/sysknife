@@ -12,6 +12,18 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Debian and Ubuntu planner names `sudo` as the administrator group.**
+  ([#817](https://github.com/lacs-project/sysknife/pull/817)) The only group example in the shared parameter block was
+  `wheel`, which Debian and Ubuntu do not have, so "make alice an admin" planned
+  a step that failed after the operator approved it. The example now lives in
+  the family blocks (`wheel` on Fedora, `sudo` on Debian and Ubuntu), the Debian
+  and Ubuntu selection rules name the administrator group, and the `propose_plan`
+  parameter description follows the same split (closes
+  [#650](https://github.com/lacs-project/sysknife/issues/650)). Thanks to
+  [@laurentvv](https://github.com/laurentvv).
+
 ## [0.30.3] — 2026-11-18
 
 ### Added
