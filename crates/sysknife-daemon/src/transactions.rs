@@ -1160,16 +1160,23 @@ impl TransactionStore {
             // chain. `open_read_only` already refused the case where such a WAL
             // exists and the artifact cannot be written; if it exists and the
             // artifact IS writable, read as a normal WAL reader so the WAL is
-            // replayed. That open needs write access to the sidecars, which is
-            // exactly what a live store has.
+            // replayed. The open stays READ_ONLY: SQLite replays the WAL for a
+            // read-only connection but does not checkpoint it on close, so the
+            // artifact's bytes and sidecars are left exactly as found.
             let wal_present = with_suffix(&self.path, "-wal")
                 .metadata()
                 .map(|m| m.len() > 0)
                 .unwrap_or(false);
             if wal_present {
+                // Read as a normal WAL reader so committed rows still in the
+                // WAL are replayed — but READ_ONLY: a read-only connection
+                // replays the WAL without checkpointing it into the main file
+                // on close, so the crash copy's bytes and its -wal survive the
+                // audit untouched (review probe on #816). READ_WRITE here
+                // would checkpoint on close and rewrite the artifact.
                 let conn = Connection::open_with_flags(
                     &self.path,
-                    OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
                 )?;
                 conn.pragma_update(None, "foreign_keys", "ON")?;
                 conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -3186,6 +3193,55 @@ mod tests {
         assert_eq!(rows[0].transaction_id, tx1.transaction_id);
         assert_eq!(rows[1].transaction_id, tx2.transaction_id);
         assert_eq!(rows[2].transaction_id, tx3.transaction_id);
+    }
+
+    /// Review probe from #816, kept as a regression test: reading a WRITABLE
+    /// crash copy (main file + non-empty `-wal`) must leave the main file's
+    /// bytes and the `-wal` itself untouched. A `READ_WRITE` open replays the
+    /// WAL but checkpoints it into the main file on close — rewriting the
+    /// artifact and deleting the sidecar. The read-only open replays without
+    /// checkpointing.
+    #[test]
+    fn open_read_only_wal_read_leaves_the_artifact_untouched() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("tx.db");
+        let store = test_store(&db_path);
+        store.record(queued_transaction()).unwrap();
+        let mut writer = Connection::open(&db_path).unwrap();
+        writer.pragma_update(None, "journal_mode", "WAL").unwrap();
+        writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        {
+            let tx = writer
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            TransactionStore::insert_transaction(
+                &tx,
+                &AuditKey::from_bytes(vec![0x42; 32]),
+                &Uuid::new_v4().to_string(),
+                queued_transaction(),
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        let snap_dir = dir.path().join("copy");
+        std::fs::create_dir(&snap_dir).unwrap();
+        let snap_db = snap_dir.join("tx.db");
+        std::fs::copy(&db_path, &snap_db).unwrap();
+        std::fs::copy(with_suffix(&db_path, "-wal"), with_suffix(&snap_db, "-wal")).unwrap();
+        drop(writer);
+        drop(store);
+
+        let before = std::fs::read(&snap_db).unwrap();
+        let read_only = TransactionStore::open_read_only(&snap_db).unwrap();
+        assert_eq!(read_only.fetch_chain_rows().unwrap().len(), 2);
+        drop(read_only);
+
+        let wal_left = with_suffix(&snap_db, "-wal").exists();
+        let unchanged = std::fs::read(&snap_db).unwrap() == before;
+        assert!(
+            unchanged && wal_left,
+            "read-only open rewrote the artifact: unchanged={unchanged} wal_left={wal_left}"
+        );
     }
 
     /// A non-empty `-wal` beside a NON-writable artifact must be refused, not
