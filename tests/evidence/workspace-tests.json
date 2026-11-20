@@ -4,6 +4,6 @@
     "tests": "cargo nextest run --workspace --locked"
   },
   "frontend_tests": 72,
-  "tests": 2162,
+  "tests": 2163,
   "version": 2
 }
