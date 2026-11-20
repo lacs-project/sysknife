@@ -121,8 +121,8 @@ approval prompt before anything executes.
 
 `RemoveMount` unmounts the filesystem before removing its `/etc/fstab` entry.
 If unmounting fails, for example because the target is busy, the action reports
-the error and leaves the entry intact. If the target is already unmounted,
-the action removes its entry successfully.
+the error and leaves the entry intact. If the target is already unmounted
+or its directory no longer exists, the action removes its entry successfully.
 
 ## Composing with approval and rollback
 

@@ -309,8 +309,7 @@ def op_unmount(args) -> None:
         die(f"mountpoint {args.mountpoint!r} is a symlink; refusing to unmount through it")
     if os.path.realpath(args.mountpoint) in CRITICAL_MOUNTPOINTS:
         die(f"mountpoint {args.mountpoint!r} resolves to a critical path; refusing")
-    # Only an already-unmounted target is harmless. Pin the diagnostic's locale
-    # so a busy filesystem or any other failure cannot silently drop its entry.
+    # Pin the diagnostic's locale so we can recognize util-linux's messages.
     result = subprocess.run(
         [UMOUNT, args.mountpoint],
         check=False,
@@ -321,7 +320,11 @@ def op_unmount(args) -> None:
         detail = result.stderr.decode(errors="replace").strip()
         # umount may print a canonical path (for example without a trailing slash).
         not_mounted = re.fullmatch(r"umount: .+: not mounted\.", detail)
-        if result.returncode != 32 or not not_mounted:
+        missing_mountpoint = (
+            re.fullmatch(r"umount: .+: no mount point specified\.", detail)
+            and not os.path.lexists(args.mountpoint)
+        )
+        if result.returncode != 32 or not (not_mounted or missing_mountpoint):
             message = f"umount failed for {args.mountpoint!r}; leaving fstab entry intact"
             if detail:
                 message += f": {detail}"
