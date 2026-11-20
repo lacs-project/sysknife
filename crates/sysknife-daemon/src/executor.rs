@@ -221,8 +221,15 @@ pub async fn execute_spec_with_options(
 const DEFAULT_ACTION_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 
 fn action_timeout() -> Duration {
-    match std::env::var("SYSKNIFE_ACTION_TIMEOUT_SECS") {
-        Ok(raw) => match raw.trim().parse::<u64>() {
+    let raw = std::env::var("SYSKNIFE_ACTION_TIMEOUT_SECS").ok();
+    parse_action_timeout(raw.as_deref())
+}
+
+/// The override's parsing, apart from the environment read, so a test can cover
+/// it without writing to process-wide state.
+fn parse_action_timeout(raw: Option<&str>) -> Duration {
+    match raw {
+        Some(raw) => match raw.trim().parse::<u64>() {
             Ok(secs) if secs > 0 => Duration::from_secs(secs),
             _ => {
                 eprintln!(
@@ -232,7 +239,7 @@ fn action_timeout() -> Duration {
                 DEFAULT_ACTION_TIMEOUT
             }
         },
-        Err(_) => DEFAULT_ACTION_TIMEOUT,
+        None => DEFAULT_ACTION_TIMEOUT,
     }
 }
 
@@ -2692,6 +2699,20 @@ mod tests {
     use serde_json::json;
     use sysknife_types::RiskLevel;
     use tempfile::tempdir;
+
+    /// `SYSKNIFE_ACTION_TIMEOUT_SECS` is the documented way to give a slow
+    /// action more time. The timeout tests in `tests/execute_spec.rs` pass their
+    /// deadline explicitly, so this is what keeps the override itself covered.
+    #[test]
+    fn action_timeout_override_is_parsed_and_junk_falls_back_to_the_default() {
+        assert_eq!(parse_action_timeout(None), DEFAULT_ACTION_TIMEOUT);
+        assert_eq!(parse_action_timeout(Some("90")), Duration::from_secs(90));
+        assert_eq!(parse_action_timeout(Some(" 90 ")), Duration::from_secs(90));
+        // Zero would end every action at once, so it is refused like junk.
+        assert_eq!(parse_action_timeout(Some("0")), DEFAULT_ACTION_TIMEOUT);
+        assert_eq!(parse_action_timeout(Some("soon")), DEFAULT_ACTION_TIMEOUT);
+        assert_eq!(parse_action_timeout(Some("")), DEFAULT_ACTION_TIMEOUT);
+    }
 
     // ── build_action_spec ─────────────────────────────────────────────────
 
