@@ -124,6 +124,81 @@ for scope in step job; do
     grep -Fq 'success()' "$fixture/conditions.log"
 done
 
+# A test can be switched off without an if on its own step or job.
+# continue-on-error expressions, custom shells, and skipped dependencies all
+# need to be excluded from both ordinary and privileged discovery.
+expect_excluded() {
+    local label="$1" output
+    if output="$(bash "$fixture/scripts/check_test_reachability.sh" 2>&1)"; then
+        printf 'test-reachability test: %s unexpectedly passed\n' "$label" >&2
+        exit 1
+    fi
+    grep -Fq 'test is not invoked by a gate: tests/release/not-executed.test.sh' <<< "$output" || {
+        printf 'test-reachability test: %s diagnostic omitted its path: %s\n' "$label" "$output" >&2
+        exit 1
+    }
+    if bash "$fixture/scripts/check_test_reachability.sh" --list-privileged >/dev/null 2>&1; then
+        printf 'test-reachability test: %s counted as privileged\n' "$label" >&2
+        exit 1
+    fi
+}
+
+for scope in step job; do
+    for setting in 'continue-on-error: ${{ !false }}' \
+        "continue-on-error: \${{ github.event_name == 'push' }}" \
+        'shell: "true {0}"' 'defaults: {run: {shell: "true {0}"}}'; do
+        if [[ "$scope" == step && "$setting" == defaults:* ]]; then
+            continue
+        fi
+        if [[ "$scope" == job && "$setting" == shell:* ]]; then
+            continue
+        fi
+        guarded_invocation "$scope" "$setting"
+        expect_excluded "$scope $setting"
+    done
+done
+
+guarded_invocation step 'shell: bash'
+bash "$fixture/scripts/check_test_reachability.sh" >/dev/null
+guarded_invocation job 'defaults: {run: {shell: bash}}'
+bash "$fixture/scripts/check_test_reachability.sh" >/dev/null
+
+{ printf 'defaults:\n  run:\n    shell: "true {0}"\n'; cat "$fixture/base-ci.yml"
+  printf '      - run: sudo -n bash tests/release/not-executed.test.sh\n'; } \
+    > "$fixture/.github/workflows/ci.yml"
+expect_excluded 'workflow defaults.run.shell'
+
+needs_chain() {
+    cp "$fixture/base-ci.yml" "$fixture/.github/workflows/ci.yml"
+    printf '%s\n' \
+        '  upstream:' "    $1" '    steps:' "      - run: 'true'" \
+        '  middle:' '    needs: upstream' '    steps:' "      - run: 'true'" \
+        '  guarded:' "    needs: $2" '    steps:' \
+        '      - run: sudo -n bash tests/release/not-executed.test.sh' \
+        >> "$fixture/.github/workflows/ci.yml"
+}
+needs_chain 'if: false' upstream
+expect_excluded 'needs a job with if: false'
+needs_chain 'if: ${{ false }}' '[middle]'
+expect_excluded 'needs a job that needs a job with if: false'
+needs_chain 'runs-on: ubuntu-latest' '[middle]'
+bash "$fixture/scripts/check_test_reachability.sh" >/dev/null
+needs_chain "if: github.event_name == 'push'" middle
+output="$(bash "$fixture/scripts/check_test_reachability.sh" 2>&1)"
+grep -Fq "depends on needed job 'upstream' if: github.event_name == 'push'" <<< "$output" || {
+    printf 'test-reachability test: needed-job condition not disclosed: %s\n' "$output" >&2
+    exit 1
+}
+needs_chain 'runs-on: ubuntu-latest' missing
+if output="$(bash "$fixture/scripts/check_test_reachability.sh" 2>&1)"; then
+    printf 'test-reachability test: needs on a missing job unexpectedly passed\n' >&2
+    exit 1
+fi
+grep -Fq "cannot read workflow" <<< "$output" || {
+    printf 'test-reachability test: missing needed job not reported: %s\n' "$output" >&2
+    exit 1
+}
+
 # Scalar text can look like a step while only being data passed to an action.
 for scalar in '|' '>' '"'; do
     cp "$fixture/base-ci.yml" "$fixture/.github/workflows/ci.yml"
