@@ -175,31 +175,36 @@ with tempfile.TemporaryDirectory() as d4:
 # A failed unmount must leave fstab untouched (#651). Use a real subprocess
 # stub and a staged fstab; no test invokes the host's umount or edits /etc/fstab.
 with tempfile.TemporaryDirectory() as unmount_dir:
-    mountpoint = os.path.join(unmount_dir, "mnt")
-    os.mkdir(mountpoint)
+    present = os.path.join(unmount_dir, "mnt")
+    missing = os.path.join(unmount_dir, "gone")
+    os.mkdir(present)
     staged_fstab = os.path.join(unmount_dir, "fstab")
     stub_umount = os.path.join(unmount_dir, "umount")
     observed_locale = os.path.join(unmount_dir, "locale")
     other_entry = "/dev/other\t/mnt/other\text4\tdefaults,nofail\t0\t0\n"
-    original = (
-        "# keep this comment\n"
-        f"/dev/test\t{mountpoint}\text4\tdefaults,nofail\t0\t0\n"
-        + other_entry
-    ).encode()
     expected_kept = ("# keep this comment\n" + other_entry).encode()
     real_fstab, real_umount = mod.FSTAB, mod.UMOUNT
     mod.FSTAB, mod.UMOUNT = staged_fstab, stub_umount
     try:
-        for label, returncode, detail, expected_exit in (
-            ("busy", 32, "umount: target is busy", 1),
-            ("permission denied", 1, "umount: permission denied", 1),
-            ("silent failure", 32, "", 1),
-            ("not mounted with another error", 1, f"umount: {mountpoint}: not mounted.", 1),
-            ("multiple errors", 32, f"umount: target is busy\numount: {mountpoint}: not mounted.", 1),
-            ("not mounted", 32, f"umount: {mountpoint}: not mounted.", 0),
-            ("not mounted with canonical path", 32, "umount: /mnt/canonical: not mounted.", 0),
-            ("success", 0, "", 0),
+        for label, mountpoint, returncode, detail, expected_exit in (
+            ("busy", present, 32, "umount: target is busy", 1),
+            ("permission denied", present, 1, "umount: permission denied", 1),
+            ("silent failure", present, 32, "", 1),
+            ("not mounted with another error", present, 1, f"umount: {present}: not mounted.", 1),
+            ("multiple errors", present, 32, f"umount: target is busy\numount: {present}: not mounted.", 1),
+            ("not mounted", present, 32, f"umount: {present}: not mounted.", 0),
+            ("not mounted with canonical path", present, 32, "umount: /mnt/canonical: not mounted.", 0),
+            ("success", present, 0, "", 0),
+            ("missing directory", missing, 32, f"umount: {missing}: no mount point specified.", 0),
+            ("missing directory with another exit", missing, 1, f"umount: {missing}: no mount point specified.", 1),
+            ("missing directory with another error", missing, 32, f"umount: {missing}: target is busy.", 1),
+            ("existing directory", present, 32, f"umount: {present}: no mount point specified.", 1),
         ):
+            original = (
+                "# keep this comment\n"
+                f"/dev/test\t{mountpoint}\text4\tdefaults,nofail\t0\t0\n"
+                + other_entry
+            ).encode()
             with open(staged_fstab, "wb") as fh:
                 fh.write(original)
             with open(stub_umount, "w") as fh:
@@ -429,7 +434,7 @@ if failures:
     sys.exit(1)
 print("ok: sysknife-mount-edit refuses symlinked and critical-resolving mountpoints")
 print("ok: op_mount and op_unmount invoke the guard before any (u)mount")
-print("ok: unmount failures preserve fstab; successful or already-unmounted targets remove only their entry")
+print("ok: unmount failures preserve fstab; unmounted and missing targets remove only their entry")
 print("ok: the swap operations refuse a symlinked ancestor before running anything")
 print("ok: the helper refuses every mount option the daemon denies, and hardens the rest")
 PY
