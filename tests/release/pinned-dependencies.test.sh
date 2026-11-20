@@ -18,6 +18,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from scripts.github_yaml import discover
 
 try:
     import yaml
@@ -52,9 +53,10 @@ def run_blocks(rel):
     for job_name, job in (workflow or {}).get("jobs", {}).items():
         for index, step in enumerate(job.get("steps", []) if isinstance(job, dict) else []):
             if isinstance(step, dict) and isinstance(step.get("run"), str):
-                blocks[f"{job_name}/{step.get('name', index)}"] = step["run"]
-    if not blocks:
-        fail(f"{rel} has no run steps; the scan would be vacuous")
+                key = f"{job_name}/{step.get('name', index)}"
+                if key in blocks:
+                    fail(f"{rel}: duplicate run step {key!r} would hide the earlier step")
+                blocks[key] = step["run"]
     return blocks
 
 
@@ -62,13 +64,16 @@ def run_blocks(rel):
 # separator. That keeps a hint inside a quoted message ("install: npm install
 # ...") out of the scan, which is what Scorecard's shell parser does too.
 COMMAND = r"(?:^\s*|[;&|(]\s*|\bthen\s+|\bdo\s+)(?:sudo\s+(?:-\S+\s+)*)?"
-NPM_UNPINNED = re.compile(COMMAND + r"npm\s+(?:install|i|add)\b", re.M)
-PIP_INSTALL = re.compile(COMMAND + r"(?:python3?\s+-m\s+)?pip3?\s+install\b([^\n]*)", re.M)
+NPM_UNPINNED = re.compile(COMMAND + r"npm(?:[ \t]+-[^\s;&|]+(?:[ \t]+[^-\s;&|][^\s;&|]*)?)*"
+                          r"[ \t]+(?:install|i|add)\b", re.M)
+PIP_INSTALL = re.compile(COMMAND + r"(?:python[\d.]*\s+-m\s+)?pip[\d.]*\s+install\b([^\n]*)", re.M)
 # No command-position anchor here: `su - user -c 'curl ... | sh'` hides the pipe inside
 # quotes, and Scorecard's parser recurses into it.
 FETCH_PIPE_SHELL = re.compile(
-    r"\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:ba|da|z)?sh\b"
+    r"\b(?:curl|wget)\b[^\n|;&]*(?:\|(?!\|)[^\n|;&]*)*?\|(?!\|)[ \t]*"
+    r"(?:sudo[ \t]+(?:-\S+[ \t]+)*)?(?:/(?:[^/\s]+/)*)?(?:ba|da|z)?sh\b"
 )
+LATEST_DOWNLOAD = re.compile(r"/releases/latest/download\b")
 
 
 def code_lines(text):
@@ -86,6 +91,8 @@ def scan_unpinned(label, text):
             fail(f"{label}: `pip install` without --require-hashes: {match.group(0).strip()}")
     for match in FETCH_PIPE_SHELL.finditer(code):
         fail(f"{label}: downloads and pipes straight into a shell; fetch, verify the sha256, then run: {match.group(0)[:70]}")
+    if LATEST_DOWNLOAD.search(code):
+        fail(f"{label}: downloads from releases/latest; pin the release version and verify the archive's sha256")
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +165,13 @@ yamllint_row = re.search(r"^\|\s*`yamllint`\s*\|\s*([0-9.]+)\s*\|", guide, re.M)
 if yamllint_pin and yamllint_row and yamllint_pin.group(1) != yamllint_row.group(1):
     fail(f"docs/developer-guide.md says yamllint {yamllint_row.group(1)} but {req_rel} pins {yamllint_pin.group(1)}")
 
-ci = run_blocks(".github/workflows/ci.yml")
+workflows = {path.name: run_blocks(path.relative_to(root).as_posix())
+             for path in discover(root / ".github/workflows")}
+for required in ("ci.yml", "e2e.yml", "release.yml"):
+    if not workflows.get(required):
+        fail(f".github/workflows/{required} is missing or has no run steps; the scan would be vacuous")
+
+ci = workflows.get("ci.yml", {})
 lint = ci.get("docs-and-hygiene/Install lint tools", "")
 if not lint:
     fail("ci.yml has no 'Install lint tools' step in docs-and-hygiene")
@@ -200,7 +213,7 @@ for rel, functions in helper_use.items():
         if forbidden in text:
             fail(f"{rel} still references {forbidden} outside the pinned helper")
 
-e2e = run_blocks(".github/workflows/e2e.yml")
+e2e = workflows.get("e2e.yml", {})
 ollama_step = next((script for name, script in e2e.items() if name.endswith("/Install Ollama")), "")
 if not ollama_step:
     fail("e2e.yml has no 'Install Ollama' step")
@@ -210,17 +223,16 @@ else:
     if "ollama.com/install.sh" in ollama_step:
         fail("e2e.yml 'Install Ollama' still references ollama.com/install.sh")
 
-ci_steps = run_blocks(".github/workflows/ci.yml")
-if not any(script.strip() == "bash tests/e2e/pinned-installers.test.sh" for script in ci_steps.values()):
+if not any(script.strip() == "bash tests/e2e/pinned-installers.test.sh" for script in ci.values()):
     fail("ci.yml does not run tests/e2e/pinned-installers.test.sh")
 
 # ---------------------------------------------------------------------------
 # The scan itself, over every file Scorecard reads for these shapes
 # ---------------------------------------------------------------------------
 
-for rel in (".github/workflows/ci.yml", ".github/workflows/e2e.yml", ".github/workflows/release.yml"):
-    for step, script in run_blocks(rel).items():
-        scan_unpinned(f"{rel} [{step}]", script)
+for workflow, steps in workflows.items():
+    for step, script in steps.items():
+        scan_unpinned(f".github/workflows/{workflow} [{step}]", script)
 for rel in ("scripts/ci-local.sh", "tests/e2e/provision.sh", "tests/e2e/ubuntu-provision.sh",
             "tests/e2e/pinned-installers.sh"):
     scan_unpinned(rel, read(rel))
@@ -230,11 +242,21 @@ probes = {
     "npm install --global x@1": True,
     "  sudo npm i left-pad": True,
     "npm ci --prefix tools/ci-node": False,
+    "npm --global install x": True,
+    "npm --prefix tools/ci-node i x": True,
+    "npm --prefix tools/ci-node ci": False,
     "pip install yamllint==1.38.0": True,
     "python -m pip install --upgrade pip": True,
+    "python3.12 -m pip install x": True,
     "pip install --require-hashes -r r.txt": False,
     "curl -fsSL https://example.test/i.sh | sh": True,
     "curl --proto '=https' -sSf https://example.test/i.sh | sudo sh -s -- -y": True,
+    "curl -fsS https://example.test/i.sh | tee i.sh | sh": True,
+    "curl -fsS https://example.test/i.sh | /bin/bash": True,
+    "curl -fsS https://example.test/data | sha256sum": False,
+    "curl -fsS https://example.test/data || sh fallback.sh": False,
+    'base="https://github.com/o/r/releases/latest/download"': True,
+    'base="https://github.com/o/r/releases/download/v1.2.3"': False,
     "printf 'install: npm install --global x' >&2": False,
     "# npm install --global x": False,
 }
