@@ -16,8 +16,9 @@
 //!
 //! No daemon socket, LLM, VM, or root privileges required — all deterministic.
 
+use std::time::Duration;
 use sysknife_daemon::actions::{ActionMechanism, ActionSpec};
-use sysknife_daemon::executor::{execute_spec, ActionExecutor, ExecutorError, RealActionExecutor};
+use sysknife_daemon::executor::{execute_spec, execute_spec_with_options, ExecutorError};
 use sysknife_types::RiskLevel;
 use tempfile::tempdir;
 
@@ -386,12 +387,9 @@ async fn command_unknown_program_returns_io_error() {
 /// Without a deadline a hung process (`apt-get` on a dead mirror, a helper
 /// blocked on a prompt) wedges its connection permanently AND never releases
 /// the exclusion lock it holds, so every later action contending for that
-/// resource is refused from then on. Nextest runs each test in its own
-/// process, so setting the override env var here cannot leak into another test.
+/// resource is refused from then on.
 #[tokio::test]
 async fn execute_spec_kills_a_child_that_outruns_the_action_timeout() {
-    std::env::set_var("SYSKNIFE_ACTION_TIMEOUT_SECS", "1");
-
     let spec = ActionSpec {
         action_name: "TimeoutProbe",
         mechanism: ActionMechanism::Command {
@@ -404,7 +402,7 @@ async fn execute_spec_kills_a_child_that_outruns_the_action_timeout() {
     };
 
     let started = std::time::Instant::now();
-    let err = execute_spec(&spec)
+    let err = execute_spec_with_options(&spec, Some(Duration::from_secs(1)), None)
         .await
         .expect_err("a child that outruns the timeout must fail, not hang");
     let elapsed = started.elapsed();
@@ -415,8 +413,8 @@ async fn execute_spec_kills_a_child_that_outruns_the_action_timeout() {
     );
     let msg = err.to_string();
     assert!(
-        msg.contains("timeout"),
-        "error must say the action timed out, got: {msg}"
+        msg.contains("1s action timeout"),
+        "error must report the action's one-second timeout, got: {msg}"
     );
 }
 
@@ -527,7 +525,6 @@ async fn execute_spec_stops_the_work_not_just_the_direct_child() {
         "a previous run leaked the marker; the assertion below would be meaningless"
     );
 
-    std::env::set_var("SYSKNIFE_ACTION_TIMEOUT_SECS", "1");
     let spec = ActionSpec {
         action_name: "TimeoutGrandchildProbe",
         mechanism: ActionMechanism::Command {
@@ -539,7 +536,7 @@ async fn execute_spec_stops_the_work_not_just_the_direct_child() {
         rollback_available: false,
     };
 
-    let result = execute_spec(&spec).await;
+    let result = execute_spec_with_options(&spec, Some(Duration::from_secs(1)), None).await;
     // Reap before asserting, so a failure cannot leak the marker.
     let survivors = reap_markers(MARKER);
 
@@ -576,7 +573,6 @@ async fn execute_with_progress_stops_the_work_not_just_the_direct_child() {
         "a previous run leaked the marker; the assertion below would be meaningless"
     );
 
-    std::env::set_var("SYSKNIFE_ACTION_TIMEOUT_SECS", "1");
     let spec = ActionSpec {
         action_name: "TimeoutGrandchildProbeProgress",
         mechanism: ActionMechanism::Command {
@@ -589,7 +585,7 @@ async fn execute_with_progress_stops_the_work_not_just_the_direct_child() {
     };
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let result = RealActionExecutor.execute_with_progress(&spec, tx).await;
+    let result = execute_spec_with_options(&spec, Some(Duration::from_secs(1)), Some(tx)).await;
     let survivors = reap_markers(MARKER);
 
     assert!(
@@ -616,7 +612,6 @@ async fn a_sigterm_ignoring_child_is_escalated_to_sigkill_within_the_grace() {
         "a previous run leaked the marker; the assertion below would be meaningless"
     );
 
-    std::env::set_var("SYSKNIFE_ACTION_TIMEOUT_SECS", "1");
     let spec = ActionSpec {
         action_name: "SigtermIgnoringProbe",
         mechanism: ActionMechanism::Command {
@@ -634,7 +629,7 @@ async fn a_sigterm_ignoring_child_is_escalated_to_sigkill_within_the_grace() {
     };
 
     let started = std::time::Instant::now();
-    let result = execute_spec(&spec).await;
+    let result = execute_spec_with_options(&spec, Some(Duration::from_secs(1)), None).await;
     let elapsed = started.elapsed();
     let survivors = reap_markers(MARKER);
 
