@@ -30,6 +30,10 @@ rig = { package = "rig-core", version = "0.40.0" }
 # transitively via async-openai/rig-core/reqwest; declared directly here
 # because we match on its constants in our own code.
 http = "1"
+# Provider HTTP clients. rig-core 0.40 and async-openai 0.43 are both built
+# against reqwest 0.13 (the workspace pins 0.12 for the daemon), so one client
+# built here serves every provider in `planner.rs`.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2"] }
 # Content-addressed cassette keys (record/replay of LLM calls). Same pins as
 # sysknife-daemon so the workspace resolves one version of each.
 sha2 = "0.11"
@@ -46,4 +50,4 @@ regex = "1"
 [dev-dependencies]
 # `test-util` provides the paused clock, so the provider-retry tests assert the
 # backoff schedule without actually sleeping through it.
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "test-util"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "test-util", "net"] }

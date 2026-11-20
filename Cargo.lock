@@ -4808,6 +4808,7 @@ dependencies = [
  "hex",
  "http",
  "regex",
+ "reqwest 0.13.2",
  "rig-core",
  "serde",
  "serde_json",
