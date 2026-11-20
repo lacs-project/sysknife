@@ -117,22 +117,22 @@ ssh_opts() {
 log() { printf '[atomic-vm] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
-write_guest_env_file() {
-    local assignment value var
-    local assignments=()
+guest_env_assignments() {
+    local value var
     for var in "$@"; do
-        eval "value=\${$var-}"
+        value="${!var-}"
         if [ -n "$value" ]; then
-            printf -v assignment '%s=%q' "$var" "$value"
-            assignments+=("$assignment")
+            printf '%s=%q\n' "$var" "$value"
         fi
     done
+}
 
+write_guest_env_file() {
     # `rm -f` first, because `cat >` truncates and reuses an existing inode:
     # umask governs the mode only when the redirection creates the file. A
     # leftover from a killed run, or a symlink planted at that path, would
     # otherwise receive the secrets at whatever mode it already had.
-    printf '%s\n' "${assignments[@]}" \
+    guest_env_assignments "$@" \
         | cmd_ssh "sudo sh -c 'rm -f ${GUEST_ENV_FILE} && umask 077 && cat > ${GUEST_ENV_FILE}'"
 }
 
@@ -506,24 +506,21 @@ cmd_test_exec() {
     # Run as VM_USER (not root) so sysknife connects to the daemon socket with
     # the user's group membership (sysknife/sysknife-dev/sysknife-admin) and
     # gets the correct CallerRole. Root has no sysknife groups and gets Observer.
-    local env_prefix=""
-    for var in SYSKNIFE_ALLOW_DESTRUCTIVE SYSKNIFE_LLM_PROVIDER SYSKNIFE_LLM_MODEL \
-               SYSKNIFE_TEST_MODEL SYSKNIFE_OLLAMA_URL SYSKNIFE_SOCKET SYSKNIFE_LISTEN_URI \
-               SYSKNIFE_STORY_TIMEOUT SYSKNIFE_MAX_RPM \
-               SYSKNIFE_CASSETTE SYSKNIFE_CASSETTE_MODE \
-               OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY \
-               GROQ_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY XAI_API_KEY; do
-        eval "val=\${$var:-}"
-        if [ -n "$val" ]; then
-            env_prefix+=" $var='$val'"
-        fi
-    done
-
-    local story_args=""
-    if [ $# -gt 0 ]; then
-        story_args=" $*"
-    fi
-    cmd_ssh "cd /home/${VM_USER}/sysknife &&${env_prefix} bash tests/e2e/exec/run-exec-stories.sh${story_args}"
+    # Stream directly to this user's Bash. Provision and run keep their
+    # root-owned environment file; test-exec needs no guest file or sudo.
+    {
+        printf 'set -ea\n'
+        guest_env_assignments \
+            SYSKNIFE_ALLOW_DESTRUCTIVE SYSKNIFE_LLM_PROVIDER SYSKNIFE_LLM_MODEL \
+            SYSKNIFE_TEST_MODEL SYSKNIFE_OLLAMA_URL SYSKNIFE_SOCKET SYSKNIFE_LISTEN_URI \
+            SYSKNIFE_STORY_TIMEOUT SYSKNIFE_MAX_RPM \
+            SYSKNIFE_CASSETTE SYSKNIFE_CASSETTE_MODE \
+            OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY \
+            GROQ_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY XAI_API_KEY
+        printf 'set +a\n'
+        printf '%q ' exec bash tests/e2e/exec/run-exec-stories.sh "$@"
+        printf '\n'
+    } | cmd_ssh 'cd ~/sysknife && exec bash -s'
 }
 
 cmd_snapshot() {
