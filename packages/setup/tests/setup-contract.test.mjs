@@ -204,6 +204,10 @@ test('the README Options block names the same flags as --help', () => {
 
   const readmeFlags = optionFlags(readmeOptions[1]);
   const helpFlags = optionFlags(helpOptions[1]);
+  // Two empty sets are equal, so a pattern that stops matching the flag lines
+  // would pass this test while comparing nothing.
+  assert.ok(readmeFlags.size > 0, 'no flags found in the README Options block');
+  assert.ok(helpFlags.size > 0, 'no flags found in the --help OPTIONS section');
   assert.deepEqual(
     {
       missingFromReadme: [...helpFlags].filter((flag) => !readmeFlags.has(flag)),
