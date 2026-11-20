@@ -173,20 +173,36 @@ impl ActionExecutor for RealActionExecutor {
         spec: &ActionSpec,
         progress: UnboundedSender<String>,
     ) -> Result<ExecutionOutput, ExecutorError> {
+        execute_spec_with_options(spec, None, Some(progress)).await
+    }
+}
+
+/// Execute an action with an optional command timeout and progress channel.
+/// Commands without an explicit timeout use `SYSKNIFE_ACTION_TIMEOUT_SECS`.
+pub async fn execute_spec_with_options(
+    spec: &ActionSpec,
+    timeout: Option<Duration>,
+    progress: Option<UnboundedSender<String>>,
+) -> Result<ExecutionOutput, ExecutorError> {
+    if let Some(progress) = progress {
         if spec.action_name == "UnattendedUpgradesStatus" {
-            let output = execute_spec(spec).await?;
+            let output = execute_buffered_spec(spec, timeout).await?;
             for line in output.stdout.lines().filter(|line| !line.is_empty()) {
                 let _ = progress.send(line.to_string());
             }
             return Ok(output);
         }
-        match &spec.mechanism {
-            ActionMechanism::Command { program, args } => {
-                execute_command_with_progress(program, args, progress).await
-            }
-            _ => execute_spec(spec).await,
+        if let ActionMechanism::Command { program, args } = &spec.mechanism {
+            return execute_command_with_progress(
+                program,
+                args,
+                progress,
+                timeout.unwrap_or_else(action_timeout),
+            )
+            .await;
         }
     }
+    execute_buffered_spec(spec, timeout).await
 }
 
 /// Wall-clock ceiling on a single privileged action.
@@ -412,8 +428,9 @@ async fn kill_and_reap(
     program: &str,
     args: &[String],
     cause: StopCause,
+    timeout: Duration,
 ) -> ExecutorError {
-    let secs = action_timeout().as_secs();
+    let secs = timeout.as_secs();
     let why = cause.describe(secs);
     let Some(pgid) = child.id().map(|pid| pid as i32) else {
         // Already reaped: the child exited between the deadline and here, so the
@@ -535,6 +552,7 @@ async fn execute_command_with_progress(
     program: &'static str,
     args: &[String],
     progress: UnboundedSender<String>,
+    timeout: Duration,
 ) -> Result<ExecutionOutput, ExecutorError> {
     let mut child = tokio::process::Command::new(program)
         .args(args)
@@ -563,7 +581,7 @@ async fn execute_command_with_progress(
             .map(|_| buf)
     });
 
-    let deadline = tokio::time::Instant::now() + action_timeout();
+    let deadline = tokio::time::Instant::now() + timeout;
 
     let mut lines = BufReader::new(stdout).lines();
     let mut stdout_buf = String::new();
@@ -577,12 +595,19 @@ async fn execute_command_with_progress(
             // this is reachable from any action whose stdout carries a byte
             // sequence outside UTF-8 — one oddly-encoded filename is enough.
             Ok(Err(err)) => {
-                return Err(
-                    kill_and_reap(&mut child, program, args, StopCause::Unreadable(err)).await,
+                return Err(kill_and_reap(
+                    &mut child,
+                    program,
+                    args,
+                    StopCause::Unreadable(err),
+                    timeout,
                 )
+                .await)
             }
             Err(_) => {
-                return Err(kill_and_reap(&mut child, program, args, StopCause::Timeout).await)
+                return Err(
+                    kill_and_reap(&mut child, program, args, StopCause::Timeout, timeout).await,
+                )
             }
         };
         let Some(line) = next else { break };
@@ -598,9 +623,18 @@ async fn execute_command_with_progress(
         // A failed `wait` leaves the child's fate unknown, which is the one state
         // the dispatcher must never treat as "stopped".
         Ok(Err(err)) => {
-            return Err(kill_and_reap(&mut child, program, args, StopCause::Unreadable(err)).await)
+            return Err(kill_and_reap(
+                &mut child,
+                program,
+                args,
+                StopCause::Unreadable(err),
+                timeout,
+            )
+            .await)
         }
-        Err(_) => return Err(kill_and_reap(&mut child, program, args, StopCause::Timeout).await),
+        Err(_) => {
+            return Err(kill_and_reap(&mut child, program, args, StopCause::Timeout, timeout).await)
+        }
     };
     let stderr_bytes = stderr_task
         .await
@@ -2012,6 +2046,13 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
 /// are captured. For file mechanisms, the operation is performed directly
 /// on the filesystem and an empty stdout is returned.
 pub async fn execute_spec(spec: &ActionSpec) -> Result<ExecutionOutput, ExecutorError> {
+    execute_buffered_spec(spec, None).await
+}
+
+async fn execute_buffered_spec(
+    spec: &ActionSpec,
+    timeout: Option<Duration>,
+) -> Result<ExecutionOutput, ExecutorError> {
     match &spec.mechanism {
         ActionMechanism::Command { program, args } => {
             // Spawned rather than `.output()`ed so the child can be killed on
@@ -2048,7 +2089,8 @@ pub async fn execute_spec(spec: &ActionSpec) -> Result<ExecutionOutput, Executor
                     .map(|_| buf)
             });
 
-            let status = match tokio::time::timeout(action_timeout(), child.wait()).await {
+            let timeout = timeout.unwrap_or_else(action_timeout);
+            let status = match tokio::time::timeout(timeout, child.wait()).await {
                 Ok(Ok(status)) => status,
                 // Same rule as the streaming path: a `wait` that fails leaves a
                 // privileged child in an unknown state, so stop the group before
@@ -2059,11 +2101,19 @@ pub async fn execute_spec(spec: &ActionSpec) -> Result<ExecutionOutput, Executor
                         program,
                         args,
                         StopCause::Unreadable(err),
+                        timeout,
                     )
                     .await)
                 }
                 Err(_) => {
-                    return Err(kill_and_reap(&mut child, program, args, StopCause::Timeout).await)
+                    return Err(kill_and_reap(
+                        &mut child,
+                        program,
+                        args,
+                        StopCause::Timeout,
+                        timeout,
+                    )
+                    .await)
                 }
             };
             let join =
@@ -3663,7 +3713,14 @@ mod tests {
             .expect("spawn");
         SUDO_INVOCATIONS.store(0, std::sync::atomic::Ordering::SeqCst);
         let started = tokio::time::Instant::now();
-        let err = kill_and_reap(&mut child, "sh", &[], StopCause::Timeout).await;
+        let err = kill_and_reap(
+            &mut child,
+            "sh",
+            &[],
+            StopCause::Timeout,
+            DEFAULT_ACTION_TIMEOUT,
+        )
+        .await;
         let elapsed = started.elapsed();
 
         assert!(
@@ -3703,9 +3760,14 @@ mod tests {
             pgid_file.display()
         );
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let err = execute_command_with_progress("sh", &["-c".to_string(), script], tx)
-            .await
-            .expect_err("non-UTF-8 stdout must fail the action");
+        let err = execute_command_with_progress(
+            "sh",
+            &["-c".to_string(), script],
+            tx,
+            DEFAULT_ACTION_TIMEOUT,
+        )
+        .await
+        .expect_err("non-UTF-8 stdout must fail the action");
         assert!(
             matches!(&err, ExecutorError::Io(e) if e.kind() == io::ErrorKind::InvalidData),
             "the read failure itself must be surfaced, got: {err:?}"
