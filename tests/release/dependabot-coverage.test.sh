@@ -39,7 +39,7 @@ RULES = [
     (re.compile(r"(^|/)Cargo\.lock$"), "cargo"),
     (re.compile(r"(^|/)package-lock\.json$"), "npm"),
     (re.compile(r"(^|/)requirements[^/]*\.txt$"), "pip"),
-    (re.compile(r"(^|/)(Docker|Container)file[^/]*$"), "docker"),
+    (re.compile(r"(^|/|\.)(Docker|Container)file[^/]*$"), "docker"),
     (re.compile(r"^\.github/workflows/[^/]+\.ya?ml$"), "github-actions"),
 ]
 
@@ -107,6 +107,12 @@ for want in 'cargo entry for /$' 'npm entry for /web' 'pip entry for /py' 'docke
     'github-actions entry for /$'; do
     grep -q "no $want" <<<"$out" || note "the rule behind 'no $want' did not fire: $out"
 done
+
+# A suffixed Containerfile (e.g. audit-tamper.Containerfile) is still a
+# container file and must be covered, not silently skipped.
+printf 'demo/x.Containerfile\n' >"$work/suffixed"
+out="$(check "$work/empty.yml" "$work/suffixed" 2>&1)" && note "a suffixed Containerfile with no entry passed: $out"
+grep -q 'no docker entry for /demo' <<<"$out" || note "missing /demo docker entry not named: $out"
 
 rc=0
 printf 'README.md\n' >"$work/no-locks"
