@@ -23,6 +23,81 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   parameter description follows the same split (closes
   [#650](https://github.com/lacs-project/sysknife/issues/650)). Thanks to
   [@laurentvv](https://github.com/laurentvv).
+- **`audit verify`, `audit export` and `audit checkpoint` no longer write to the
+  store they read.** ([#816](https://github.com/lacs-project/sysknife/pull/816))
+  `TransactionStore::open_read_only` called `initialize()`, which creates
+  tables, applies pending migrations and sets `journal_mode=WAL`, so sidecar
+  files appeared beside a read-only artifact, a newer CLI migrated an older
+  store, and a `0400` copy failed with "attempt to write a readonly database".
+  The read paths now open read-only, replay a WAL read-only without
+  checkpointing it, and refuse a WAL they cannot replay on a read-only artifact
+  (closes [#267](https://github.com/lacs-project/sysknife/issues/267)). Thanks to
+  [@Georgefifth](https://github.com/Georgefifth).
+- **Every provider HTTP client has a connect and a request timeout.**
+  ([#815](https://github.com/lacs-project/sysknife/pull/815)) The planner built
+  each provider on reqwest's defaults, which never time out, so an endpoint that
+  accepted the connection and stayed silent hung the planning call, including
+  `sysknife_plan` over MCP. The connect timeout is 10 s and the request timeout
+  600 s, overridable with `SYSKNIFE_PROVIDER_CONNECT_TIMEOUT_SECS` and
+  `SYSKNIFE_PROVIDER_TIMEOUT_SECS` (zero and unparseable values are ignored).
+  A timeout is a retryable provider error (closes
+  [#674](https://github.com/lacs-project/sysknife/issues/674)). Thanks to
+  [@Omair-Asdaq](https://github.com/Omair-Asdaq).
+- **`RemoveMount` drops the fstab entry of a mountpoint whose directory is gone.**
+  ([#826](https://github.com/lacs-project/sysknife/pull/826)) `umount` reports
+  `no mount point specified` for a path that no longer exists, and the helper
+  read that as a failure, so the entry could never be removed. The helper now
+  accepts that exit only when the mountpoint is absent on disk, and still
+  refuses it for a directory that exists (closes
+  [#789](https://github.com/lacs-project/sysknife/issues/789)). Thanks to
+  [@QinXi-ai](https://github.com/QinXi-ai).
+- **Four executor timeout tests no longer set a timeout the other twenty-one
+  inherit.** ([#829](https://github.com/lacs-project/sysknife/pull/829)) The
+  tests set `SYSKNIFE_ACTION_TIMEOUT_SECS` for the whole test process, so every
+  other `execute_spec` test ran under it. They now pass their own one-second
+  deadline to `execute_spec_with_options`, and process cleanup reports the
+  deadline that fired. The environment override moved to `parse_action_timeout`,
+  which has its own test (closes
+  [#473](https://github.com/lacs-project/sysknife/issues/473)). Thanks to
+  [@QinXi-ai](https://github.com/QinXi-ai).
+- **`check_test_reachability.sh` no longer counts a test that cannot run.**
+  ([#813](https://github.com/lacs-project/sysknife/pull/813)) A workflow step
+  switched off by an expression `continue-on-error`, a custom shell, or a
+  skipped upstream `needs` job still satisfied the gate. The checker now
+  resolves the effective shell across step, job and workflow defaults, walks
+  direct and transitive `needs`, and fails on a reference to a job that does not
+  exist. The npm-audit guard applies the same fail-closed `continue-on-error`
+  rule (closes [#765](https://github.com/lacs-project/sysknife/issues/765)).
+  Thanks to [@Aaqibhafeezkhan](https://github.com/Aaqibhafeezkhan).
+- **The Dependabot coverage guard sees suffixed container files.**
+  ([#822](https://github.com/lacs-project/sysknife/pull/822))
+  `dependabot-coverage.test.sh` only matched names that start with `Dockerfile`
+  or `Containerfile`, so `assets/demo/audit-tamper.Containerfile` had no
+  Dependabot entry and the guard stayed green. The rule now matches a
+  dot-separated prefix, and `dependabot.yml` gains the `/assets/demo` docker
+  entry the wider rule demands (closes
+  [#819](https://github.com/lacs-project/sysknife/issues/819)). Thanks to
+  [@bfs2021](https://github.com/bfs2021).
+- **The VM test harness sends provider keys over SSH stdin.**
+  ([#827](https://github.com/lacs-project/sysknife/pull/827)) `atomic-vm.sh
+  test-exec` interpolated every selected provider key into the remote command,
+  where the process list shows it. The harness now streams the environment and
+  the story arguments to `bash -s` over SSH stdin, so the remote command is a
+  constant, and `vm-env-secrets.test.sh` discovers every SSH harness, checks its
+  remote commands and runs `test-exec` against separate host and guest
+  environments for all seven provider variables (closes
+  [#428](https://github.com/lacs-project/sysknife/issues/428)). Thanks to
+  [@QinXi-ai](https://github.com/QinXi-ai).
+- **The MCP Registry publisher is pinned and its checksum verified.**
+  ([#828](https://github.com/lacs-project/sysknife/pull/828)) `publish-mcp.yml`
+  downloaded `mcp-publisher` from `releases/latest` in a job that holds
+  `id-token: write`. It now fetches v1.8.6 and checks the archive's SHA-256
+  before extracting it. `pinned-dependencies.test.sh` scans every workflow file
+  instead of three, refuses a `releases/latest/download` URL, reports a
+  duplicate run-step name that would hide an earlier step, and catches more npm,
+  pip and pipe-to-shell forms (closes
+  [#702](https://github.com/lacs-project/sysknife/issues/702)). Thanks to
+  [@QinXi-ai](https://github.com/QinXi-ai).
 
 ## [0.30.3] — 2026-11-18
 
