@@ -1525,7 +1525,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-core"
-version = "0.30.3"
+version = "0.30.4"
 dependencies = [
  "serde",
  "toml",
@@ -1533,7 +1533,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-daemon"
-version = "0.30.3"
+version = "0.30.4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1571,7 +1571,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-proto"
-version = "0.30.3"
+version = "0.30.4"
 dependencies = [
  "prost",
  "prost-build",
@@ -1580,7 +1580,7 @@ dependencies = [
 
 [[package]]
 name = "sysknife-types"
-version = "0.30.3"
+version = "0.30.4"
 dependencies = [
  "serde",
  "serde_json",
