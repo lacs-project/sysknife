@@ -76,6 +76,11 @@ def is_boolean(value, expected):
     return value is expected
 
 
+def may_continue_on_error(owner):
+    # Only literal false guarantees that the step or job remains blocking.
+    return "continue-on-error" in owner and not is_boolean(owner["continue-on-error"], False)
+
+
 for path in paths:
     name = path.relative_to(root).as_posix()
     try:
@@ -104,8 +109,7 @@ for path in paths:
             invocations += 1
             label = f"{name} job '{job_id}' step {index} ('{step.get('name', 'unnamed')}')"
             enabled = not any(is_boolean(owner.get("if"), False) for owner in (job, step))
-            enforced = enabled and not any(is_boolean(owner.get("continue-on-error"), True)
-                                           for owner in (job, step))
+            enforced = enabled and not any(may_continue_on_error(owner) for owner in (job, step))
             if not enforced:
                 print(f"npm-audit guard: {label} is disabled or non-blocking", file=sys.stderr)
             for scope, owner in (("job", job), ("step", step)):
@@ -264,7 +268,8 @@ PYTHON
 
 for scope in step job; do
     for setting in 'if: false' 'if: ${{ false }}' 'if: "false"' \
-        'continue-on-error: true' 'continue-on-error: ${{ true }}' 'continue-on-error: "true"'; do
+        'continue-on-error: true' 'continue-on-error: ${{ true }}' 'continue-on-error: "true"' \
+        'continue-on-error: ${{ !false }}' 'continue-on-error: ${{ 1 == 1 }}'; do
         reset_fixture
         set_audit_condition "$scope" "$setting"
         expect_failure "scheduled audit $scope $setting" "npm-audit.yml job 'npm-audit'"
