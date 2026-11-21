@@ -245,9 +245,11 @@ comments alone, artifact paths, shell compound commands,
 heredoc text, and mentions in `ci-local.sh` do not count. Keep these test steps
 in that explicit form and add the invocation in the same change as a new test;
 a test without one makes both local and remote CI fail. This is a static
-invocation check. Literal-false `if` conditions and literal-true
-`continue-on-error` settings on a step or its job exclude that invocation,
-including their `${{ false }}` and `${{ true }}` expression forms. Other `if`
+invocation check. A literal-false `if` on the step, its job, or any job its
+job needs (directly or through other jobs) excludes that invocation, including
+the `${{ false }}` form. So does any `continue-on-error` on the step or its job
+other than literal `false`, and any `shell` other than `bash` set on the step,
+in the job's `defaults.run`, or in the workflow's `defaults.run`. Other `if`
 expressions remain eligible, and the checker reports each dependency on stderr.
 A YAML block scalar containing just that command is supported. Multi-line shell
 scripts, including a command with a separate comment line, are not; give each

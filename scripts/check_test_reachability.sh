@@ -42,11 +42,42 @@ def is_boolean(value, expected):
     return value is expected
 
 
+def may_continue_on_error(owner):
+    # Any value that is not literal false may evaluate to true at run time.
+    return "continue-on-error" in owner and not is_boolean(owner["continue-on-error"], False)
+
+
+def run_shell(workflow, job, step):
+    if "shell" in step:
+        return step["shell"]
+    for owner in (job, workflow):
+        run_defaults = (owner.get("defaults") or {}).get("run") or {}
+        if "shell" in run_defaults:
+            return run_defaults["shell"]
+    return None
+
+
+def needed_jobs(jobs, job_id):
+    # A job is skipped when any job it needs, directly or transitively, is skipped.
+    seen, pending = [], [job_id]
+    while pending:
+        needs = jobs[pending.pop()].get("needs") or []
+        for name in [needs] if isinstance(needs, str) else needs:
+            if name not in jobs:
+                raise KeyError(f"job needs unknown job '{name}'")
+            if name not in seen:
+                seen.append(name)
+                pending.append(name)
+    return seen
+
+
 for path in sys.argv[2:]:
     try:
         with open(path, encoding="utf-8") as stream:
             workflow = yaml.safe_load(stream)
-        for job_id, job in (workflow or {}).get("jobs", {}).items():
+        jobs = (workflow or {}).get("jobs", {})
+        for job_id, job in jobs.items():
+            upstream = [(f"needed job '{name}'", jobs[name]) for name in needed_jobs(jobs, job_id)]
             for step in job.get("steps", []):
                 if not isinstance(step, dict):
                     continue
@@ -54,16 +85,17 @@ for path in sys.argv[2:]:
                 if isinstance(run, str):
                     match = command.fullmatch(run.strip())
                     if match and (mode != "list-privileged" or match.group(1)):
-                        if any(is_boolean(owner.get("if"), False) or
-                               is_boolean(owner.get("continue-on-error"), True)
-                               for owner in (job, step)):
+                        if (any(is_boolean(owner.get("if"), False)
+                                for _, owner in [("job", job), ("step", step)] + upstream) or
+                                any(may_continue_on_error(owner) for owner in (job, step)) or
+                                run_shell(workflow, job, step) not in (None, "bash")):
                             continue
-                        for scope, owner in (("job", job), ("step", step)):
+                        for scope, owner in [("job", job), ("step", step)] + upstream:
                             if "if" in owner and not is_boolean(owner["if"], True):
                                 print(f"test-reachability: {path} job '{job_id}' test '{match.group(2)}' "
                                       f"depends on {scope} if: {owner['if']}", file=sys.stderr)
                         print(match.group(2))
-    except (OSError, yaml.YAMLError, AttributeError, TypeError) as error:
+    except (OSError, yaml.YAMLError, AttributeError, TypeError, KeyError) as error:
         sys.exit(f"test-reachability: cannot read workflow {path}: {error}")
 PYTHON
 )"
@@ -80,11 +112,15 @@ fi
 check_suite() {
     local suite="$1"
     local test_file relative_path
+    local missing=0
     local tests=()
 
+    # Sorted, because find returns directory order and that differs between
+    # file systems: a diagnostic that names the first uninvoked test it meets
+    # names a different test on a different runner.
     while IFS= read -r -d '' test_file; do
         tests+=("$test_file")
-    done < <(find "$repo_root/tests/$suite" -maxdepth 1 -type f -name '*.test.sh' -print0)
+    done < <(find "$repo_root/tests/$suite" -maxdepth 1 -type f -name '*.test.sh' -print0 | sort -z)
 
     if (( ${#tests[@]} == 0 )); then
         printf 'test-reachability: no tests discovered in tests/%s/*.test.sh\n' "$suite" >&2
@@ -96,11 +132,11 @@ check_suite() {
         if ! grep -Fxq -- "$relative_path" <<< "$invoked_tests"; then
             printf 'test-reachability: test is not invoked by a gate: %s\n' \
                 "$relative_path" >&2
-            return 1
+            missing=1
         fi
     done
 
-    return 0
+    return "$missing"
 }
 
 check_suite release
