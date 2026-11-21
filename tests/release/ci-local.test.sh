@@ -7,6 +7,7 @@ python3 - <<'PY'
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -192,6 +193,74 @@ validation_succeeded
         self.assertIn('hygiene: could not derive privileged CI shell tests',
                       result.stdout)
         self.assertNotIn('ci-local: PASS', result.stdout)
+
+    def test_entrypoint_reports_missing_required_check_in_exit_status(self):
+        # Exercise the real CLI without running real build tools or probing the host PATH.
+        with tempfile.TemporaryDirectory() as directory:
+            bin_dir = Path(directory)
+            stubs = {
+                'cargo': 'exit 0\n',
+                'node': 'exit 0\n',
+                'dirname': 'printf "%s\\n" "${1%/*}"\n',
+            }
+            for name, body in stubs.items():
+                executable = bin_dir / name
+                executable.write_bytes(('#!/bin/sh\n' + body).encode('utf-8'))
+                executable.chmod(0o755)
+
+            bash_exe = shutil.which(os.environ.get('BASH_EXE', 'bash'))
+            self.assertIsNotNone(bash_exe, 'Bash is required')
+            env = {'HOME': str(bin_dir), 'PATH': str(bin_dir)}
+            if 'SystemRoot' in os.environ:
+                env['SystemRoot'] = os.environ['SystemRoot']
+
+            def run(*flags):
+                return subprocess.run(
+                    [bash_exe, (ROOT / 'scripts/ci-local.sh').as_posix(), '--fast', *flags],
+                    env=env, text=True, capture_output=True, timeout=15,
+                )
+
+            strict = run()
+            opt_out = run('--allow-missing-tools')
+
+        self.assertIn('missing-tool:cargo-nextest', strict.stdout, strict.stderr)
+        self.assertIn('ci-local: INCOMPLETE', strict.stdout)
+        self.assertNotIn('ci-local: PASS', strict.stdout)
+        self.assertEqual(strict.returncode, 1, strict.stdout + strict.stderr)
+        self.assertIn('ci-local: PASS', opt_out.stdout, opt_out.stderr)
+        self.assertNotIn('ci-local: INCOMPLETE', opt_out.stdout)
+        self.assertEqual(opt_out.returncode, 0, opt_out.stdout + opt_out.stderr)
+
+    def test_missing_hygiene_and_audit_tools_are_required_skips(self):
+        code = functions('record', 'mark_required_skip', 'record_missing_ci_tool',
+                         'run_step', 'run_hygiene_group', 'run_security_group') + '''
+RESULTS=(); hard_failures=0; required_skips=(); allow_missing_tools=false
+have() { return 1; }
+python3() { :; }
+npm() { :; }
+bash() { :; }
+run_shell_tests() { :; }
+run_hygiene_group
+run_security_group
+printf 'required-skip:%s\\n' "${required_skips[@]}"
+'''
+        result = bash(code)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        skips = [line.removeprefix('required-skip:') for line in result.stdout.splitlines()
+                 if line.startswith('required-skip:')]
+        self.assertCountEqual(skips, [
+            'missing-tool:markdownlint-cli2', 'missing-tool:markdown-link-check',
+            'missing-tool:yamllint', 'missing-tool:shellcheck', 'missing-tool:cargo-audit',
+        ])
+
+    def test_privileged_discovery_returns_workflow_test_paths(self):
+        result = bash(functions('privileged_ci_shell_tests') + '\nprivileged_ci_shell_tests\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        paths = result.stdout.splitlines()
+        self.assertTrue(paths, 'privileged test discovery must return at least one path')
+        for path in paths:
+            self.assertRegex(path, r'^tests/(release|e2e)/[\w.-]+\.test\.sh$')
+            self.assertTrue((ROOT / path).is_file(), path)
 
     def test_podman_precedes_docker(self):
         code = functions('record', 'run_postgres_contract_group') + '''
