@@ -12,6 +12,8 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.30.4] — 2026-11-20
+
 ### Fixed
 
 - **The Debian and Ubuntu planner names `sudo` as the administrator group.**
