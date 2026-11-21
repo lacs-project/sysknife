@@ -104,6 +104,16 @@ entry (`sysknife-web`, `sysknife-db`, …) across all written config files.
 --codex       Configure Codex CLI only
 --all         Configure Claude Code, Cursor, and Codex CLI
 --no-binary   Skip prebuilt binary download (build from source instead)
---no-prompts  Accept all defaults non-interactively (useful for scripts/tests)
+--no-prompts  Accept all defaults non-interactively (useful for scripts/tests);
+              requires --daemon-mode
+--daemon-mode=system|user|skip
+              system  privileged service; required for mutating actions
+              user    runs as you, no sudo; read-only actions only
+              skip    install no service
+--uninstall   Remove the user service, binaries in ~/.local/bin, and SysKnife
+              entries from MCP and agent config in this directory
+--purge       With --uninstall, also delete the audit database, the safety
+              audit log and ~/.config/sysknife
+--dry-run     With --uninstall, show planned changes and change nothing
 --help, -h    Show help and exit
 ```
