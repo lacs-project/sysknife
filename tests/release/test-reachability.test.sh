@@ -32,6 +32,25 @@ grep -Fq 'test is not invoked by a gate: tests/release/orphan.test.sh' <<< "$out
     exit 1
 }
 
+# Every uninvoked test is named, in sorted order. find returns directory order,
+# which differs between file systems, so a checker that stops at the first
+# uninvoked test it meets names a different one on a different runner. The two
+# new names sort opposite to the order they are created in.
+touch "$fixture/tests/release/zz-orphan.test.sh" "$fixture/tests/release/aa-orphan.test.sh"
+if output="$(bash "$fixture/scripts/check_test_reachability.sh" 2>&1)"; then
+    printf 'test-reachability test: three orphans unexpectedly passed\n' >&2
+    exit 1
+fi
+mapfile -t named <<< "$(grep -F 'test is not invoked by a gate' <<< "$output")"
+if (( ${#named[@]} != 3 )) \
+    || [[ "${named[0]}" != *'tests/release/aa-orphan.test.sh' ]] \
+    || [[ "${named[1]}" != *'tests/release/orphan.test.sh' ]] \
+    || [[ "${named[2]}" != *'tests/release/zz-orphan.test.sh' ]]; then
+    printf 'test-reachability test: expected the three orphans named in sorted order, got: %s\n' "$output" >&2
+    exit 1
+fi
+rm "$fixture/tests/release/zz-orphan.test.sh" "$fixture/tests/release/aa-orphan.test.sh"
+
 rm "$fixture/tests/release/orphan.test.sh" "$fixture/tests/e2e/reachable.test.sh"
 if output="$(bash "$fixture/scripts/check_test_reachability.sh" 2>&1)"; then
     printf 'test-reachability test: empty suite unexpectedly passed\n' >&2

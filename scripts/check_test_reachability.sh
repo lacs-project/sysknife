@@ -112,11 +112,15 @@ fi
 check_suite() {
     local suite="$1"
     local test_file relative_path
+    local missing=0
     local tests=()
 
+    # Sorted, because find returns directory order and that differs between
+    # file systems: a diagnostic that names the first uninvoked test it meets
+    # names a different test on a different runner.
     while IFS= read -r -d '' test_file; do
         tests+=("$test_file")
-    done < <(find "$repo_root/tests/$suite" -maxdepth 1 -type f -name '*.test.sh' -print0)
+    done < <(find "$repo_root/tests/$suite" -maxdepth 1 -type f -name '*.test.sh' -print0 | sort -z)
 
     if (( ${#tests[@]} == 0 )); then
         printf 'test-reachability: no tests discovered in tests/%s/*.test.sh\n' "$suite" >&2
@@ -128,11 +132,11 @@ check_suite() {
         if ! grep -Fxq -- "$relative_path" <<< "$invoked_tests"; then
             printf 'test-reachability: test is not invoked by a gate: %s\n' \
                 "$relative_path" >&2
-            return 1
+            missing=1
         fi
     done
 
-    return 0
+    return "$missing"
 }
 
 check_suite release
