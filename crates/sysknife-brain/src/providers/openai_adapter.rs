@@ -54,6 +54,39 @@ impl AsyncOpenAiAdapter {
             model: model.into(),
         }
     }
+
+    /// Same as [`Self::new`], but reuses a caller-supplied HTTP client so the
+    /// planner's connect/request timeouts apply to this provider too
+    /// (async-openai and rig are both built against reqwest 0.13).
+    pub fn with_http_client(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        http_client: reqwest::Client,
+    ) -> Self {
+        let config = OpenAIConfig::new().with_api_key(api_key.into());
+        Self {
+            client: Client::with_config(config).with_http_client(http_client),
+            model: model.into(),
+        }
+    }
+
+    /// Test-only variant of [`Self::with_http_client`] with an explicit API
+    /// base, so a test can point the adapter at a local listener.
+    #[cfg(test)]
+    pub(crate) fn with_http_client_and_base(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        api_base: impl Into<String>,
+        http_client: reqwest::Client,
+    ) -> Self {
+        let config = OpenAIConfig::new()
+            .with_api_key(api_key.into())
+            .with_api_base(api_base.into());
+        Self {
+            client: Client::with_config(config).with_http_client(http_client),
+            model: model.into(),
+        }
+    }
 }
 
 #[async_trait]
@@ -488,6 +521,46 @@ fn map_openai_error(err: async_openai::error::OpenAIError) -> ProviderError {
 mod tests {
     use super::*;
     use crate::provider::{Message, ToolDefinition, ToolResultBlock};
+
+    /// #674: a provider that accepts the connection and then never answers must
+    /// fail the turn within the configured bound instead of hanging it. Remove
+    /// the client timeout (or stop passing the client to async-openai) and this
+    /// test trips its own outer timeout rather than returning an error.
+    #[tokio::test]
+    async fn a_silent_provider_fails_within_the_configured_timeout() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+            drop(socket);
+        });
+
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_millis(100))
+            .timeout(std::time::Duration::from_millis(250))
+            .build()
+            .unwrap();
+        let adapter = AsyncOpenAiAdapter::with_http_client_and_base(
+            "test-key",
+            "gpt-4.1",
+            format!("http://{addr}/v1"),
+            http,
+        );
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            adapter.complete("system", &[], &[], 16),
+        )
+        .await;
+
+        server.abort();
+        let result = outcome.expect("the provider call never returned");
+        let err = result.expect_err("a silent provider must not succeed");
+        assert!(err.is_retryable(), "a timeout should be retryable: {err}");
+    }
     use async_openai::types::chat::{
         ChatChoice, ChatCompletionRequestSystemMessageContent,
         ChatCompletionRequestToolMessageContent, ChatCompletionResponseMessage, Role as OaiRole,
