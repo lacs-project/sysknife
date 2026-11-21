@@ -546,6 +546,12 @@ struct ParameterExample {
     action_separator: &'static str,
     template: &'static str,
     params: &'static str,
+    /// Some parameter values are only correct on one distro family — the admin
+    /// group example is `wheel` on Fedora, `sudo` on Debian/Ubuntu. An example
+    /// with a family here is offered only when the rendered family matches;
+    /// `None` renders everywhere. On hosts with no family (or `other`) a
+    /// family-gated example is withheld rather than guessed.
+    only_family: Option<&'static str>,
 }
 
 struct ParameterLine {
@@ -571,6 +577,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     actions: &[("InstallFlatpak", "InstallFlatpak")],
                     action_separator: "",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"username":"alice","app_id":"org.mozilla.firefox","remote":"flathub"}"#,
                 }],
                 separator: "",
@@ -583,6 +590,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     ],
                     action_separator: " / ",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"username":"alice","app_id":"org.mozilla.firefox"}"#,
                 }],
                 separator: "",
@@ -592,6 +600,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     actions: &[("UpdateFlatpak", "UpdateFlatpak")],
                     action_separator: "",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"username":"alice"} or {"username":"alice","app_id":"org.mozilla.firefox"}"#,
                 }],
                 separator: "",
@@ -604,6 +613,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     ],
                     action_separator: " / ",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"username":"alice"}"#,
                 }],
                 separator: "",
@@ -613,6 +623,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     actions: &[("SearchFlatpakApps", "SearchFlatpakApps")],
                     action_separator: "",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"term":"firefox"}"#,
                 }],
                 separator: "",
@@ -622,6 +633,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     actions: &[("AddFlatpakRemote", "AddFlatpakRemote")],
                     action_separator: "",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"username":"alice","remote":"flathub","url":"https://..."}"#,
                 }],
                 separator: "",
@@ -631,6 +643,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     actions: &[("RemoveFlatpakRemote", "RemoveFlatpakRemote")],
                     action_separator: "",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"username":"alice","remote":"flathub"}"#,
                 }],
                 separator: "",
@@ -650,6 +663,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     ],
                     action_separator: " / ",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"username":"alice"}"#,
                 }],
                 separator: "",
@@ -659,6 +673,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     actions: &[("CreateContainer", "CreateContainer")],
                     action_separator: "",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"username":"alice","name":"mybox","image":"ubuntu:22.04"}"#,
                 }],
                 separator: "",
@@ -673,6 +688,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     ],
                     action_separator: "/",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"username":"alice","name":"mybox"}"#,
                 }],
                 separator: "",
@@ -682,6 +698,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     actions: &[("CreateToolbox", "CreateToolbox")],
                     action_separator: "",
                     template: "{actions}: {params} (image/release optional)",
+                    only_family: None,
                     params: r#"{"username":"alice","name":"mybox"}"#,
                 }],
                 separator: "",
@@ -691,6 +708,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     actions: &[("RemoveToolbox", "RemoveToolbox")],
                     action_separator: "",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"username":"alice","name":"mybox"}"#,
                 }],
                 separator: "",
@@ -716,6 +734,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     ],
                     action_separator: "/",
                     template: "{params} for {actions}",
+                    only_family: None,
                     params: r#"{"unit":"sshd.service"}"#,
                 }],
                 separator: "",
@@ -725,6 +744,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     actions: &[("SetServiceEnabled", "SetServiceEnabled")],
                     action_separator: "",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"unit":"sshd.service","enabled":true}"#,
                 }],
                 separator: "",
@@ -741,6 +761,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     actions: &[("GetAuthorizedKeys", "GetAuthorizedKeys")],
                     action_separator: "",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"username":"alice"}"#,
                 }],
                 separator: "",
@@ -753,6 +774,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     ],
                     action_separator: "/",
                     template: "{actions}AuthorizedKey: {params}",
+                    only_family: None,
                     params: r#"{"username":"alice","public_key":"ssh-ed25519 AAAA... comment"}"#,
                 }],
                 separator: "",
@@ -770,27 +792,42 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                         actions: &[("CreateUser", "CreateUser")],
                         action_separator: "",
                         template: "{actions}: {params} (shell/home optional)",
+                        only_family: None,
                         params: r#"{"username":"alice"}"#,
                     },
                     ParameterExample {
                         actions: &[("DeleteUser", "DeleteUser")],
                         action_separator: "",
                         template: "{actions}: {params}",
+                        only_family: None,
                         params: r#"{"username":"alice"}"#,
                     },
                 ],
                 separator: "; ",
             },
             ParameterLine {
-                examples: &[ParameterExample {
-                    actions: &[
-                        ("AddUserToGroup", "AddUserToGroup"),
-                        ("RemoveUserFromGroup", "RemoveUserFromGroup"),
-                    ],
-                    action_separator: "/",
-                    template: "{actions}: {params}",
-                    params: r#"{"username":"alice","group":"wheel"}"#,
-                }],
+                examples: &[
+                    ParameterExample {
+                        actions: &[
+                            ("AddUserToGroup", "AddUserToGroup"),
+                            ("RemoveUserFromGroup", "RemoveUserFromGroup"),
+                        ],
+                        action_separator: "/",
+                        template: "{actions}: {params}",
+                        params: r#"{"username":"alice","group":"wheel"}"#,
+                        only_family: Some(DISTRO_FAMILY_FEDORA),
+                    },
+                    ParameterExample {
+                        actions: &[
+                            ("AddUserToGroup", "AddUserToGroup"),
+                            ("RemoveUserFromGroup", "RemoveUserFromGroup"),
+                        ],
+                        action_separator: "/",
+                        template: "{actions}: {params}",
+                        params: r#"{"username":"alice","group":"sudo"}"#,
+                        only_family: Some(DISTRO_FAMILY_DEBIAN),
+                    },
+                ],
                 separator: "",
             },
         ],
@@ -806,12 +843,14 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                         actions: &[("SetHostname", "SetHostname")],
                         action_separator: "",
                         template: "{actions}: {params}",
+                        only_family: None,
                         params: r#"{"hostname":"myhost"}"#,
                     },
                     ParameterExample {
                         actions: &[("SetTimezone", "SetTimezone")],
                         action_separator: "",
                         template: "{actions}: {params}",
+                        only_family: None,
                         params: r#"{"timezone":"America/Chicago"}"#,
                     },
                 ],
@@ -823,12 +862,14 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                         actions: &[("SetLocale", "SetLocale")],
                         action_separator: "",
                         template: "{actions}: {params}",
+                        only_family: None,
                         params: r#"{"locale":"en_US.UTF-8"}"#,
                     },
                     ParameterExample {
                         actions: &[("SetNtp", "SetNtp")],
                         action_separator: "",
                         template: "{actions}: {params}",
+                        only_family: None,
                         params: r#"{"enabled":true}"#,
                     },
                 ],
@@ -850,6 +891,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     ],
                     action_separator: "/",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"package":"vim"}"#,
                 }],
                 separator: "",
@@ -862,6 +904,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     ],
                     action_separator: "/",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"packages":["vim","git"]}"#,
                 }],
                 separator: "",
@@ -871,6 +914,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     actions: &[("ReplaceLayeredPackage", "ReplaceLayeredPackage")],
                     action_separator: "",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"old":"vim","new":"vim-enhanced"}"#,
                 }],
                 separator: "",
@@ -883,6 +927,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     ],
                     action_separator: "/",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"index":0}"#,
                 }],
                 separator: "",
@@ -892,6 +937,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     actions: &[("RebaseSystem", "RebaseSystem")],
                     action_separator: "",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"target_ref":"fedora/40/x86_64/silverblue"}"#,
                 }],
                 separator: "",
@@ -901,6 +947,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     actions: &[("SetKernelArguments", "SetKernelArguments")],
                     action_separator: "",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"add":["quiet"],"remove":["rhgb"]}"#,
                 }],
                 separator: "",
@@ -917,6 +964,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     actions: &[("AddPackageRepository", "AddPackageRepository")],
                     action_separator: "",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"repo_id":"epel","repo_url":"https://..."}"#,
                 }],
                 separator: "",
@@ -930,6 +978,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     ],
                     action_separator: "/",
                     template: "{actions}PackageRepository: {params}",
+                    only_family: None,
                     params: r#"{"repo_id":"epel"}"#,
                 }],
                 separator: "",
@@ -946,6 +995,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                     actions: &[("ConfigureFirewall", "ConfigureFirewall")],
                     action_separator: "",
                     template: "{actions}: {params}",
+                    only_family: None,
                     params: r#"{"zone":"public","service":"ssh","enabled":true}"#,
                 }],
                 separator: "",
@@ -959,12 +1009,14 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
                         )],
                         action_separator: "",
                         template: "{actions}: {params}",
+                        only_family: None,
                         params: r#"{"ssid":"CafeGuest"}"#,
                     },
                     ParameterExample {
                         actions: &[("SetDnsServers", "SetDnsServers")],
                         action_separator: "",
                         template: "{actions}: {params}",
+                        only_family: None,
                         params: r#"{"interface":"wlp1s0","servers":["1.1.1.1"]}"#,
                     },
                 ],
@@ -974,7 +1026,7 @@ const PARAMETER_SECTIONS: &[ParameterSection] = &[
     },
 ];
 
-fn parameter_description(offered_actions: &HashSet<&str>) -> String {
+fn parameter_description(offered_actions: &HashSet<&str>, family: Option<&'static str>) -> String {
     let mut description = String::from(
         "Action parameters as a JSON string. Use \"{}\" only for no-param actions (see action description). For all others include EXACT key names — the daemon rejects unknown keys.",
     );
@@ -985,6 +1037,11 @@ fn parameter_description(offered_actions: &HashSet<&str>) -> String {
                 .examples
                 .iter()
                 .filter_map(|example| {
+                    if let Some(only) = example.only_family {
+                        if Some(only) != family {
+                            return None;
+                        }
+                    }
                     let actions = example
                         .actions
                         .iter()
@@ -1064,7 +1121,7 @@ pub fn propose_plan_tool_def(hint: Option<&sysknife_types::DistroHint>) -> ToolD
          Catalogue (name — what it does):\n{action_catalogue}"
     );
     let offered_action_names: HashSet<&str> = offered.iter().map(|(name, _)| *name).collect();
-    let params_description = parameter_description(&offered_action_names);
+    let params_description = parameter_description(&offered_action_names, hint.map(|h| h.family));
 
     ToolDefinition {
         name: "propose_plan".into(),
@@ -1882,8 +1939,12 @@ mod tests {
             r#"ConfigureWifi (open networks only, never a password): {"ssid":"CafeGuest"}; SetDnsServers: {"interface":"wlp1s0","servers":["1.1.1.1"]}"#
         ));
         assert!(description.contains(
-            r#"AddUserToGroup/RemoveUserFromGroup: {"username":"alice","group":"wheel"}"#
+            r#"AddUserToGroup/RemoveUserFromGroup: {"username":"alice","group":"sudo"}"#
         ));
+        assert!(
+            !description.contains(r#""group":"wheel""#),
+            "Debian params description kept the wheel example"
+        );
         assert!(description.contains("• Containers (all require username):"));
         assert!(!description.contains("Toolbox"));
         // A section whose actions are all withheld must vanish with its
@@ -1918,6 +1979,13 @@ mod tests {
         }
         assert!(description.contains("• Containers/Toolbox (all require username):"));
         assert!(description.contains(r#"ListContainers / ListToolboxes: {"username":"alice"}"#));
+        assert!(description.contains(
+            r#"AddUserToGroup/RemoveUserFromGroup: {"username":"alice","group":"wheel"}"#
+        ));
+        assert!(
+            !description.contains(r#""group":"sudo""#),
+            "Fedora params description carries the Debian admin group"
+        );
         assert!(
             description.contains(r#"RebaseSystem: {"target_ref":"fedora/40/x86_64/silverblue"}"#)
         );

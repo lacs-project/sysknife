@@ -110,6 +110,8 @@ file's section.field path.
 | `SYSKNIFE_OLLAMA_THINK` | auto-detect | `true` / `false` thinking-mode override |
 | `SYSKNIFE_ANTHROPIC_URL` | `https://api.anthropic.com` | Anthropic base URL |
 | `SYSKNIFE_BRAIN_MAX_TURNS` | `10` | Planning loop turn limit |
+| `SYSKNIFE_PROVIDER_CONNECT_TIMEOUT_SECS` | `10` | Connect timeout for every provider HTTP client (all 8 providers). A non-numeric or zero value is ignored with a warning |
+| `SYSKNIFE_PROVIDER_TIMEOUT_SECS` | `600` (10 minutes) | Whole-request timeout for every provider call. A timeout is retryable, so it is re-attempted up to the planning retry limit and then reported as a failure naming it, instead of holding the turn open forever. A non-numeric or zero value is ignored with a warning. Deliberately generous: local Ollama on a CPU host can legitimately spend minutes on one turn |
 | `SYSKNIFE_MAX_RPM` | `20` | Rate limit (requests / 60s sliding window) |
 | `SYSKNIFE_AUDIT_KEY_PATH` | `<db_dir>/audit-key` | Ed25519 signing key path for the audit chain (daemon, CLI/MCP: e.g. `audit verify`, `audit checkpoint`, `doctor`) |
 | `SYSKNIFE_CHECKPOINT_DB` | `[audit] checkpoint_db` in config.toml | Postgres URL of the external checkpoint-anchor database. Used by the daemon's periodic anchoring and by `audit checkpoint` / `audit verify`. Can also be set as `[audit] checkpoint_db` in config.toml; an explicit env var wins. Note that each process reads its own config.toml (resolved from `XDG_CONFIG_HOME`/`HOME`): the packaged daemon (`User=sysknife`) reads `/var/lib/sysknife/.config/sysknife/config.toml`, while a `sudo` CLI run under the default `env_reset` reads root's — set the key in both, or use the env var per process |

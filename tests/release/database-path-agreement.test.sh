@@ -58,6 +58,29 @@ if [ "$js_path" != "$rs_path" ]; then
     exit 1
 fi
 
+# The other branch: with XDG_STATE_HOME set, both sides must put the database
+# under it. The daemon's suffix is read out of the source too (the join in
+# default_database_path()), not computed with the installer's own path.join,
+# or this would compare the installer with itself.
+js_xdg_path="$(XDG_STATE_HOME=/xdg/state HOME=/home/testuser node -e "
+  console.log(require('$installer').databasePath());
+")"
+
+rs_xdg_suffix="$(grep -oE 'PathBuf::from\(state\)\.join\("[^"]+"\)' "$core_rs" | head -1 | sed -E 's/.*join\("([^"]+)"\)/\1/' || true)"
+if [ -z "$rs_xdg_suffix" ]; then
+    printf 'FAIL: could not find the XDG_STATE_HOME database path in %s.\n' "$core_rs" >&2
+    printf '      default_database_path() changed shape; update this guard rather than deleting it.\n' >&2
+    exit 1
+fi
+rs_xdg_path="/xdg/state/$rs_xdg_suffix"
+
+if [ "$js_xdg_path" != "$rs_xdg_path" ]; then
+    printf 'FAIL: with XDG_STATE_HOME set, the installer and the daemon disagree about the audit database.\n' >&2
+    printf '  installer (install-daemon.js): %s\n' "$js_xdg_path" >&2
+    printf '  daemon    (default_database_path): %s\n' "$rs_xdg_path" >&2
+    exit 1
+fi
+
 # The docs are the third opinion, and were right when the code was not.
 for doc in docs/configuration.md docs/developer-guide.md; do
     if ! grep -q "$rs_suffix" "$repo_root/$doc"; then
