@@ -80,6 +80,11 @@ def _segments_match(path_segs, pattern_segs):
         return not path_segs
     head = pattern_segs[0]
     if head == "**":
+        if len(pattern_segs) == 1:
+            # A trailing `/**` matches everything inside, never the
+            # directory itself: gitignore reads `LICENSE/**` as the
+            # contents of a LICENSE directory, not a file named LICENSE.
+            return bool(path_segs)
         # `**` spans zero or more whole path segments.
         return any(_segments_match(path_segs[k:], pattern_segs[1:]) for k in range(len(path_segs) + 1))
     if not path_segs or not re.fullmatch(_segment_regex(head), path_segs[0]):
@@ -98,10 +103,14 @@ def gitignore_match(path, pattern):
     # like git, on every platform.
     if pattern.startswith("!") or pattern.endswith("/"):
         return False
+    # Any `/` in the pattern anchors it to the package root — including a
+    # leading one — so compute the anchor before stripping that marker
+    # away; the matcher is only ever called with the root-level `LICENSE`,
+    # but nested paths must not silently match an anchored pattern.
+    anchored = "/" in pattern
     pattern = pattern.lstrip("/")
     if not pattern:
         return False
-    anchored = "/" in pattern
     path_segs = path.split("/")
     pattern_segs = pattern.split("/")
     starts = [0] if anchored else range(len(path_segs))
@@ -116,6 +125,7 @@ matcher_cases = [
     ("/*", True),
     ("/**", True),
     ("/src/**", False),
+    ("LICENSE/**", False),
     ("*.md", False),
     ("LICENSE*/", False),
     ("li?ense", False),
@@ -125,6 +135,22 @@ for matcher_pattern, matcher_expected in matcher_cases:
         failures.append(
             f"package-license matcher: {matcher_pattern!r} -> "
             f"{gitignore_match('LICENSE', matcher_pattern)}, expected {matcher_expected}"
+        )
+
+# The checker only ever matches the root-level `LICENSE`, but pin the
+# anchoring rules for nested paths too, so the next reader cannot reuse
+# the matcher on them under wrong assumptions: a pattern holding a `/`
+# anchors to the package root, a bare one matches at any depth.
+nested_cases = [
+    ("sub/LICENSE", "LICENSE", True),
+    ("sub/LICENSE", "/LICENSE", False),
+    ("sub/LICENSE", "**/LICENSE", True),
+]
+for nested_path, nested_pattern, nested_expected in nested_cases:
+    if gitignore_match(nested_path, nested_pattern) is not nested_expected:
+        failures.append(
+            f"package-license nested matcher: {nested_pattern!r} on {nested_path!r} -> "
+            f"{gitignore_match(nested_path, nested_pattern)}, expected {nested_expected}"
         )
 
 def check_copy(label, directory):
