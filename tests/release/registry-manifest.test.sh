@@ -87,9 +87,24 @@ process.exit(visible.includes('$marker') ? 1 : 0);
 fi
 
 # A marker in a README that the packaged crate does not ship is a marker the
-# validator cannot fetch.
-grep -Eq '^readme = ' "$crate_manifest" || grep -Fq 'README.md' "$crate_manifest" \
-    || fail "apps/sysknife-cli/Cargo.toml does not reference README.md, so the packaged crate may omit it"
+# validator cannot fetch, and crates.io renders the file the `readme` field
+# names. Cargo resolves that field (`true`, a path, or absent with a README.md
+# beside the manifest), so ask it rather than reading the TOML.
+crate_readme_field="$(cargo metadata --no-deps --format-version 1 --manifest-path "$crate_manifest" \
+    | node -e "
+const meta = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const pkg = meta.packages.find((p) => p.name === '$crate_name');
+process.stdout.write(pkg && pkg.readme ? pkg.readme : '');
+")"
+[[ -n "$crate_readme_field" ]] \
+    || fail "apps/sysknife-cli/Cargo.toml names no readme, so crates.io shows no README and the registry could not verify ownership"
+node -e "
+const fs = require('fs');
+const path = require('path');
+const named = path.resolve(path.dirname(process.argv[1]), process.argv[2]);
+process.exit(fs.existsSync(named) && fs.realpathSync(named) === fs.realpathSync(process.argv[3]) ? 0 : 1);
+" "$crate_manifest" "$crate_readme_field" "$crate_readme" \
+    || fail "apps/sysknife-cli/Cargo.toml readme is '$crate_readme_field', not apps/sysknife-cli/README.md, so crates.io renders a README without '$marker'"
 
 printf 'registry-manifest: server.json -> cargo %s@%s (%s) with a rendered ownership marker.\n' \
     "$identifier" "$version" "$subcommand"
