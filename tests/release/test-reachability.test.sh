@@ -51,6 +51,22 @@ if (( ${#named[@]} != 3 )) \
 fi
 rm "$fixture/tests/release/zz-orphan.test.sh" "$fixture/tests/release/aa-orphan.test.sh"
 
+# An orphan in tests/release must not hide one in tests/e2e. Both suites are
+# checked before the script exits, so one run names every uninvoked test.
+touch "$fixture/tests/e2e/e2e-orphan.test.sh"
+if output="$(bash "$fixture/scripts/check_test_reachability.sh" 2>&1)"; then
+    printf 'test-reachability test: orphans in both suites unexpectedly passed\n' >&2
+    exit 1
+fi
+for orphan in tests/release/orphan.test.sh tests/e2e/e2e-orphan.test.sh; do
+    grep -Fq "test is not invoked by a gate: $orphan" <<< "$output" || {
+        printf 'test-reachability test: %s not named when both suites have an orphan: %s\n' \
+            "$orphan" "$output" >&2
+        exit 1
+    }
+done
+rm "$fixture/tests/e2e/e2e-orphan.test.sh"
+
 rm "$fixture/tests/release/orphan.test.sh" "$fixture/tests/e2e/reachable.test.sh"
 if output="$(bash "$fixture/scripts/check_test_reachability.sh" 2>&1)"; then
     printf 'test-reachability test: empty suite unexpectedly passed\n' >&2
