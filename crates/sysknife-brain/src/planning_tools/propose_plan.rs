@@ -450,6 +450,8 @@ reports live interface state"),
     // ── Ubuntu / Tier 3 — Ubuntu Pro ─────────────────────────────────────────
     ("ProStatus",
      "show Ubuntu Pro subscription status — no params; Ubuntu only; read-only"),
+    ("ProSecurityStatus",
+     "report installed packages by origin and pending security updates from the Ubuntu Pro API — no params; Ubuntu only; read-only; both calls are bounded and a failure is never reported as zero counts"),
     ("ProAttach",
      "attach machine to an Ubuntu Pro subscription — param: token* (credential, never log); Ubuntu only; High risk"),
     ("ProDetach",

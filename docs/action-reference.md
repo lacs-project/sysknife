@@ -380,6 +380,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `ProStatus` | `pro status --all` | Low | Ubuntu | – | – | show Ubuntu Pro subscription status — no params; Ubuntu only; read-only |
+| `ProSecurityStatus` | `bash -c "export LC_ALL=C; printf '%s\\n' '__SYSKNIFE_PRO_SUMMARY_BEGIN__'; timeout 30 pro api u.pro.packages.summary.v1 2>&1; rc=$?; printf '\\n__SYSKNIFE_PRO_SUMMARY_RC__=%s\\n' \\"$rc\\"; printf '%s\\n' '__SYSKNIFE_PRO_SUMMARY_END__'; printf '%s\\n' '__SYSKNIFE_PRO_UPDATES_BEGIN__'; timeout 60 pro api u.pro.packages.updates.v1 2>&1; rc=$?; printf '\\n__SYSKNIFE_PRO_UPDATES_RC__=%s\\n' \\"$rc\\"; printf '%s\\n' '__SYSKNIFE_PRO_UPDATES_END__'; exit 0"` | Low | Ubuntu | – | – | report installed packages by origin and pending security updates from the Ubuntu Pro API — no params; Ubuntu only; read-only; both calls are bounded and a failure is never reported as zero counts |
 | `ProAttach` | `sudo pro attach <REDACTED>` | High | Ubuntu | – | – | attach machine to an Ubuntu Pro subscription — param: token\* (credential, never log); Ubuntu only; High risk |
 | `ProDetach` | `sudo pro detach --assume-yes` | High | Ubuntu | – | – | detach from Ubuntu Pro subscription — no params; Ubuntu only; High risk |
 | `EnableProService` | `sudo pro enable esm-apps --assume-yes` | High | Ubuntu | – | – | enable one Ubuntu Pro service (pro enable &lt;service&gt;) — param: service\* (one of esm-apps, esm-infra, livepatch, usg, fips, fips-updates, cis, ros, ros-updates, cc-eal, realtime-kernel, landscape, anbox-cloud); Ubuntu only; High risk; needs an attached subscription |
@@ -399,4 +400,4 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 ---
 
-_192 actions have an `ActionSpec` and are tabled above. The full catalogue (`KNOWN_ACTION_NAMES`) also includes `ListJobHistory`, which the dispatcher handles before the executor, for **193** total._
+_193 actions have an `ActionSpec` and are tabled above. The full catalogue (`KNOWN_ACTION_NAMES`) also includes `ListJobHistory`, which the dispatcher handles before the executor, for **194** total._

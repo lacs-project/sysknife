@@ -858,7 +858,7 @@ DistroboxList,
 AppArmorStatus, CloudInitStatus,
 UbuntuListFlatpaks,
 Fail2banStatus,
-ProStatus, LivepatchStatus, MultipassList
+ProStatus, ProSecurityStatus, LivepatchStatus, MultipassList
 
 ### Medium risk (Debian-specific)
 
@@ -1002,6 +1002,7 @@ ProStatus, ProDetach, LivepatchStatus, MultipassList, UbuntuReleaseUpgrade.
 
 **Ubuntu Pro**:
 - `ProStatus`: `{}`
+- `ProSecurityStatus`: `{}`
 - `ProDetach`: `{}`
 - `EnableProService` / `DisableProService`: `{"service":"esm-apps"}` (service ∈ the fixed allowlist)
 
@@ -1036,6 +1037,15 @@ const UBUNTU_UNATTENDED_UPGRADES_STATUS: &str = r#"
 ### Ubuntu automatic-upgrade status
 
 - `UnattendedUpgradesStatus` reports both `APT::Periodic` values, both apt-daily timer schedules, and the newest unattended-upgrades log entry — LOW, read-only.
+- No params: use `{}`.
+"#;
+
+const UBUNTU_PRO_SECURITY_STATUS: &str = r#"
+### Ubuntu Pro exposure status
+
+- `ProSecurityStatus` reports installed packages by origin and the pending updates by origin, naming the security ones, from `pro api u.pro.packages.summary.v1` and `u.pro.packages.updates.v1` — LOW, read-only.
+- Use it for "how exposed is this host?", "how many security updates are pending?", "which packages are waiting for a security update?" on Ubuntu hosts with the Pro client.
+- Both API calls are bounded (30s for the summary, 60s for the updates). A failure, an error document or a timeout is reported as a failure, never as zero counts.
 - No params: use `{}`.
 "#;
 
@@ -1235,6 +1245,7 @@ fn render_debian_prompt(prefs: Option<&str>, hint: &sysknife_types::DistroHint) 
     push_shared(&mut s, CROSS_DISTRO_PARAMS, &DEBIAN_STATE_ACTION);
     s.push_str(DEBIAN_PARAMS);
     s.push_str(UBUNTU_UNATTENDED_UPGRADES_STATUS);
+    s.push_str(UBUNTU_PRO_SECURITY_STATUS);
     s.push_str(CONSTRAINTS);
     push_shared(&mut s, PREFERENCE_TOOLS, &DEBIAN_STATE_ACTION);
     append_prefs(&mut s, prefs);
@@ -1467,6 +1478,7 @@ mod tests {
             // Tier 3 Ubuntu-only actions
             "UbuntuReleaseUpgrade",
             "ProStatus",
+            "ProSecurityStatus",
             "ProAttach",
             "ProDetach",
             "LivepatchStatus",

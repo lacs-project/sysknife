@@ -185,7 +185,8 @@ pub async fn execute_spec_with_options(
     progress: Option<UnboundedSender<String>>,
 ) -> Result<ExecutionOutput, ExecutorError> {
     if let Some(progress) = progress {
-        if spec.action_name == "UnattendedUpgradesStatus" {
+        if spec.action_name == "UnattendedUpgradesStatus" || spec.action_name == "ProSecurityStatus"
+        {
             let output = execute_buffered_spec(spec, timeout).await?;
             for line in output.stdout.lines().filter(|line| !line.is_empty()) {
                 let _ = progress.send(line.to_string());
@@ -710,6 +711,7 @@ fn allowed_action_params(action_name: &str) -> Option<&'static [&'static str]> {
         | "NetplanApply"
         | "NetplanGenerate"
         | "ProStatus"
+        | "ProSecurityStatus"
         | "ProDetach"
         | "LivepatchStatus"
         | "MultipassList"
@@ -1851,6 +1853,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
 
         // ── Ubuntu Pro ────────────────────────────────────────────────────
         "ProStatus" => Ok(ubuntu_pro::pro_status()),
+        "ProSecurityStatus" => Ok(ubuntu_pro::pro_security_status()),
         "ProAttach" => {
             // token is a credential: read it from params but do NOT log it.
             let token = require_str(params, "token")?;
@@ -2135,6 +2138,9 @@ async fn execute_buffered_spec(
             };
             if output.is_success() && spec.action_name == "UnattendedUpgradesStatus" {
                 output.stdout = apt::parse_unattended_upgrades_status(&output.stdout);
+            }
+            if output.is_success() && spec.action_name == "ProSecurityStatus" {
+                output.stdout = ubuntu_pro::parse_pro_security_status(&output.stdout);
             }
             Ok(output)
         }
