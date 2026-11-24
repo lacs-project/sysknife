@@ -306,18 +306,17 @@ fn format_pro_summary(document: &str) -> Result<String, String> {
     Ok(format!("{installed} installed ({})", origins.join(", ")))
 }
 
-/// An update is a security update when ESM provides it or its archive is a
-/// `-security` pocket. The summary counts come from the client; this predicate
-/// only decides which rows to name.
+/// An update is a security update when the Pro client says so. `provided_by` is
+/// the service name (`esm-apps`, `esm-infra`, `standard-security`,
+/// `standard-updates`); `origin` is apt's `origin.site`, i.e. the mirror the
+/// package downloads from, so a `standard-security` update from a local mirror
+/// has an origin with no "security" in it.
 fn update_is_security(update: &serde_json::Value) -> bool {
-    let field = |key: &str| {
-        update
-            .get(key)
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-    };
-    matches!(field("provided_by"), "esm-apps" | "esm-infra")
-        || field("origin").to_ascii_lowercase().contains("security")
+    let provided_by = update
+        .get("provided_by")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    matches!(provided_by, "esm-apps" | "esm-infra" | "standard-security")
 }
 
 fn format_pro_updates(document: &str) -> Result<String, String> {
@@ -690,7 +689,7 @@ mod tests {
     /// Captured from a 24.04.4 host, `pro` 37.2 (#679).
     const SUMMARY_OK: &str = r#"{"_schema_version": "v1", "data": {"attributes": {"summary": {"num_esm_apps_packages": 0, "num_esm_infra_packages": 0, "num_installed_packages": 2922, "num_main_packages": 2108, "num_multiverse_packages": 45, "num_restricted_packages": 45, "num_third_party_packages": 6, "num_universe_packages": 697, "num_unknown_packages": 21}}, "type": "PackageSummary"}, "errors": [], "result": "success", "version": "37.2ubuntu~24.04.1", "warnings": [{"code": "new-version-available"}]}"#;
 
-    const UPDATES_OK: &str = r#"{"_schema_version": "v1", "data": {"attributes": {"summary": {"num_updates": 3, "num_esm_apps_updates": 1, "num_esm_infra_updates": 1, "num_standard_security_updates": 1, "num_standard_updates": 0}, "updates": [{"download_size": 1, "origin": "esm-apps", "package": "liba", "provided_by": "esm-apps", "status": "pending", "version": "1.1"}, {"download_size": 2, "origin": "esm-infra", "package": "libb", "provided_by": "esm-infra", "status": "pending", "version": "2.2"}, {"download_size": 3, "origin": "noble-security", "package": "libc", "provided_by": "standard", "status": "pending", "version": "3.3"}, {"download_size": 4, "origin": "noble-updates", "package": "libd", "provided_by": "standard", "status": "pending", "version": "4.4"}]}, "type": "PackageUpdates"}, "errors": [], "result": "success", "version": "37.2ubuntu~24.04.1", "warnings": []}"#;
+    const UPDATES_OK: &str = r#"{"_schema_version": "v1", "data": {"attributes": {"summary": {"num_updates": 3, "num_esm_apps_updates": 1, "num_esm_infra_updates": 1, "num_standard_security_updates": 1, "num_standard_updates": 0}, "updates": [{"download_size": 1, "origin": "esm-apps", "package": "liba", "provided_by": "esm-apps", "status": "pending", "version": "1.1"}, {"download_size": 2, "origin": "esm-infra", "package": "libb", "provided_by": "esm-infra", "status": "pending", "version": "2.2"}, {"download_size": 3, "origin": "mirror.example.org", "package": "libc", "provided_by": "standard-security", "status": "pending", "version": "3.3"}, {"download_size": 4, "origin": "noble-updates", "package": "libd", "provided_by": "standard-updates", "status": "pending", "version": "4.4"}]}, "type": "PackageUpdates"}, "errors": [], "result": "success", "version": "37.2ubuntu~24.04.1", "warnings": []}"#;
 
     fn script_output(summary: &str, summary_rc: &str, updates: &str, updates_rc: &str) -> String {
         format!(
@@ -724,10 +723,12 @@ mod tests {
             ),
             "{rendered}"
         );
+        // libc is a standard-security update served from a plain mirror: the
+        // hostname carries no "security", so only `provided_by` can classify it.
         for security in [
             "liba 1.1 (esm-apps)",
             "libb 2.2 (esm-infra)",
-            "libc 3.3 (noble-security)",
+            "libc 3.3 (mirror.example.org)",
         ] {
             assert!(
                 rendered.contains(security),
