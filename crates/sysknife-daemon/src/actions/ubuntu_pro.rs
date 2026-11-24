@@ -28,6 +28,8 @@
 //! ## Risk classification
 //!
 //! - `ProStatus` — Low / Observer: read-only query.
+//! - `ProSecurityStatus` — Low / Observer: read-only query; both API calls are
+//!   bounded and every failure is reported as a failure, never as zero counts.
 //! - `ProAttach` — High / Admin: binds the machine to a subscription contract.
 //! - `ProDetach` — High / Admin: removes the subscription contract.
 
@@ -69,14 +71,15 @@ pub fn pro_status() -> ActionSpec {
 }
 
 /// Both API calls are bounded: `u.pro.packages.updates.v1` ran for more than
-/// 60 seconds on a 24.04 host (#679), so a single shared deadline would lose the
-/// summary result with it. Each call carries its own `timeout`, and the script
-/// always exits 0 so the parse hook sees both exit codes and can report a
+/// 60 seconds on a 24.04 host (#679), so it gets a longer ceiling than the
+/// summary, and `-k` makes the bound real even if the Python client ignores
+/// SIGTERM: without it `timeout` waits for the child and the action hangs. The
+/// script always exits 0 so the parse hook sees both exit codes and can report a
 /// timeout as a result instead of as a bare non-zero action.
-const PRO_SECURITY_STATUS_SCRIPT: &str = r#"export LC_ALL=C; printf '%s\n' '__SYSKNIFE_PRO_SUMMARY_BEGIN__'; timeout 30 pro api u.pro.packages.summary.v1 2>&1; rc=$?; printf '\n__SYSKNIFE_PRO_SUMMARY_RC__=%s\n' "$rc"; printf '%s\n' '__SYSKNIFE_PRO_SUMMARY_END__'; printf '%s\n' '__SYSKNIFE_PRO_UPDATES_BEGIN__'; timeout 60 pro api u.pro.packages.updates.v1 2>&1; rc=$?; printf '\n__SYSKNIFE_PRO_UPDATES_RC__=%s\n' "$rc"; printf '%s\n' '__SYSKNIFE_PRO_UPDATES_END__'; exit 0"#;
+const PRO_SECURITY_STATUS_SCRIPT: &str = r#"export LC_ALL=C; printf '%s\n' '__SYSKNIFE_PRO_SUMMARY_BEGIN__'; timeout -k 10 30 pro api u.pro.packages.summary.v1 2>&1; rc=$?; printf '\n__SYSKNIFE_PRO_SUMMARY_RC__=%s\n' "$rc"; printf '%s\n' '__SYSKNIFE_PRO_SUMMARY_END__'; printf '%s\n' '__SYSKNIFE_PRO_UPDATES_BEGIN__'; timeout -k 10 120 pro api u.pro.packages.updates.v1 2>&1; rc=$?; printf '\n__SYSKNIFE_PRO_UPDATES_RC__=%s\n' "$rc"; printf '%s\n' '__SYSKNIFE_PRO_UPDATES_END__'; exit 0"#;
 
 const PRO_SUMMARY_TIMEOUT_SECS: u64 = 30;
-const PRO_UPDATES_TIMEOUT_SECS: u64 = 60;
+const PRO_UPDATES_TIMEOUT_SECS: u64 = 120;
 const PRO_SECURITY_PACKAGE_LIMIT: usize = 50;
 
 /// Report how exposed this host is: installed packages by origin from
@@ -141,18 +144,22 @@ fn non_empty_or<'a>(text: &'a str, fallback: &'a str) -> &'a str {
 
 /// `pro api` prints the outer document on stdout. Stderr is merged into the same
 /// section so a failure that never reaches JSON still carries its message, so
-/// look for the outermost JSON object rather than requiring the whole slice.
+/// take the first complete JSON value rather than requiring the whole slice or
+/// slicing between the first `{` and the last `}` (a trailing stderr line that
+/// contains a brace would swallow the document).
 fn parse_pro_document(text: &str) -> Result<serde_json::Value, String> {
     let trimmed = text.trim();
     if let Ok(value) = serde_json::from_str(trimmed) {
         return Ok(value);
     }
-    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
-        if start < end {
-            if let Ok(value) = serde_json::from_str(&trimmed[start..=end]) {
-                return Ok(value);
-            }
-        }
+    // Leading stderr noise is skipped by starting at the first `{`; the stream
+    // stops after the first complete value, so trailing noise cannot swallow it.
+    let candidate = &trimmed[trimmed.find('{').unwrap_or(trimmed.len())..];
+    if let Some(Ok(value)) = serde_json::Deserializer::from_str(candidate)
+        .into_iter::<serde_json::Value>()
+        .next()
+    {
+        return Ok(value);
     }
     Err(format!(
         "the response is not JSON: {}",
@@ -177,6 +184,34 @@ fn pro_api_error_text(error: &serde_json::Value) -> String {
     }
 }
 
+/// An endpoint this Pro client does not know looks different on each release:
+/// a JSON `api-invalid-endpoint` error document, or a plain-text failure that
+/// never reached JSON (an older client fails while resolving the endpoint and
+/// exits non-zero). Both must read as "not supported", not as an empty result.
+fn looks_like_unsupported_endpoint(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("api-invalid-endpoint")
+        || (lower.contains("endpoint")
+            && [
+                "invalid",
+                "unknown",
+                "not found",
+                "no such",
+                "does not exist",
+                "not supported",
+            ]
+            .iter()
+            .any(|marker| lower.contains(marker)))
+}
+
+fn unsupported_endpoint_or(message: String) -> String {
+    if looks_like_unsupported_endpoint(&message) {
+        format!("not supported by this pro version ({message})")
+    } else {
+        message
+    }
+}
+
 /// Why this API call cannot be trusted as a result, or `None` when it can.
 ///
 /// The Pro client exits 0 for a `result: failure` document, so the exit code
@@ -185,19 +220,23 @@ fn pro_api_error_text(error: &serde_json::Value) -> String {
 fn pro_api_failure(section: &ProApiSection<'_>, timeout_secs: u64) -> Option<String> {
     match section.exit_code {
         None => return Some("the action did not report an exit status".to_string()),
+        // 124 is `timeout`'s own status; 137 is what `-k` produces when the
+        // client ignored SIGTERM and had to be killed.
         Some(124) | Some(137) => return Some(format!("timed out after {timeout_secs}s")),
         Some(127) => {
             return Some(
-                "the pro client is not installed (`timeout` could not run `pro`)".to_string(),
+                "the pro client could not be run (not installed, or not on the daemon's PATH)"
+                    .to_string(),
             )
         }
         Some(code) if code != 0 => {
-            let detail = first_line(section.document);
-            return Some(if detail.is_empty() {
+            let detail: String = first_line(section.document).chars().take(200).collect();
+            let message = if detail.is_empty() {
                 format!("`pro api` exited with status {code}")
             } else {
                 format!("`pro api` exited with status {code}: {detail}")
-            });
+            };
+            return Some(unsupported_endpoint_or(message));
         }
         Some(_) => {}
     }
@@ -206,11 +245,10 @@ fn pro_api_failure(section: &ProApiSection<'_>, timeout_secs: u64) -> Option<Str
         Ok(document) => document,
         Err(error) => return Some(error),
     };
-    let errors = document
+    let errors: &[serde_json::Value] = document
         .get("errors")
         .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
+        .map_or(&[], Vec::as_slice);
     let result = document.get("result").and_then(|value| value.as_str());
 
     if result == Some("success") && errors.is_empty() {
@@ -224,13 +262,7 @@ fn pro_api_failure(section: &ProApiSection<'_>, timeout_secs: u64) -> Option<Str
             None => "the response has no result field".to_string(),
         });
     }
-    let joined = messages.join("; ");
-    if joined.contains("api-invalid-endpoint")
-        || joined.to_ascii_lowercase().contains("invalid endpoint")
-    {
-        return Some(format!("not supported by this pro version ({joined})"));
-    }
-    Some(joined)
+    Some(unsupported_endpoint_or(messages.join("; ")))
 }
 
 fn pro_count(
@@ -284,7 +316,8 @@ fn update_is_security(update: &serde_json::Value) -> bool {
             .and_then(|value| value.as_str())
             .unwrap_or("")
     };
-    matches!(field("provided_by"), "esm-apps" | "esm-infra") || field("origin").contains("security")
+    matches!(field("provided_by"), "esm-apps" | "esm-infra")
+        || field("origin").to_ascii_lowercase().contains("security")
 }
 
 fn format_pro_updates(document: &str) -> Result<String, String> {
@@ -299,7 +332,9 @@ fn format_pro_updates(document: &str) -> Result<String, String> {
     let esm_infra = pro_count(summary, "num_esm_infra_updates")?;
     let standard_security = pro_count(summary, "num_standard_security_updates")?;
     let standard = pro_count(summary, "num_standard_updates")?;
-    let security = esm_apps + esm_infra + standard_security;
+    let security = esm_apps
+        .saturating_add(esm_infra)
+        .saturating_add(standard_security);
 
     let mut line = format!(
         "{security} pending (esm-apps: {esm_apps}, esm-infra: {esm_infra}, \
@@ -514,13 +549,14 @@ mod tests {
         assert_eq!(prog, "bash");
         let script = args.last().expect("script is the -c argument");
         for expected in [
-            "u.pro.packages.summary.v1",
-            "u.pro.packages.updates.v1",
-            "timeout 30",
-            "timeout 60",
-            "exit 0",
+            "u.pro.packages.summary.v1".to_string(),
+            "u.pro.packages.updates.v1".to_string(),
+            // The shell bound and the reported bound must be the same number.
+            format!("timeout -k 10 {PRO_SUMMARY_TIMEOUT_SECS}"),
+            format!("timeout -k 10 {PRO_UPDATES_TIMEOUT_SECS}"),
+            "exit 0".to_string(),
         ] {
-            assert!(script.contains(expected), "script is missing {expected}");
+            assert!(script.contains(&expected), "script is missing {expected}");
         }
     }
 
@@ -718,6 +754,15 @@ mod tests {
             rendered.contains("Ubuntu Pro security updates: 3 pending"),
             "a failed summary must not hide the updates result: {rendered}"
         );
+
+        // A failure document that does carry the counts must not be rendered as
+        // a result — the `data.attributes.summary` exists and parses here.
+        let failure_with_counts =
+            SUMMARY_OK.replace(r#""result": "success""#, r#""result": "failure""#);
+        let rendered =
+            parse_pro_security_status(&script_output(&failure_with_counts, "0", UPDATES_OK, "0"));
+        assert!(rendered.contains("result is \"failure\""), "{rendered}");
+        assert!(!rendered.contains("2922 installed"), "{rendered}");
     }
 
     #[test]
@@ -734,10 +779,28 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_text_missing_endpoint_is_also_not_supported() {
+        // An older client fails while resolving the endpoint and never reaches
+        // JSON; this is the shape laurentvv saw on jammy.
+        let rendered = parse_pro_security_status(&script_output(
+            "Error: unknown endpoint: u.pro.packages.summary.v1",
+            "1",
+            UPDATES_OK,
+            "0",
+        ));
+        assert!(
+            rendered
+                .contains("Ubuntu Pro package origins: failed — not supported by this pro version"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("0 installed"), "{rendered}");
+    }
+
+    #[test]
     fn timeout_is_reported_for_the_call_that_timed_out() {
         let rendered = parse_pro_security_status(&script_output(SUMMARY_OK, "0", "", "124"));
         assert!(
-            rendered.contains("Ubuntu Pro security updates: failed — timed out after 60s"),
+            rendered.contains("Ubuntu Pro security updates: failed — timed out after 120s"),
             "{rendered}"
         );
         assert!(
@@ -756,7 +819,7 @@ mod tests {
             "0",
         ));
         assert!(
-            rendered.contains("the pro client is not installed"),
+            rendered.contains("the pro client could not be run"),
             "{rendered}"
         );
 

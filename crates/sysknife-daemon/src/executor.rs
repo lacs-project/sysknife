@@ -2139,7 +2139,10 @@ async fn execute_buffered_spec(
             if output.is_success() && spec.action_name == "UnattendedUpgradesStatus" {
                 output.stdout = apt::parse_unattended_upgrades_status(&output.stdout);
             }
-            if output.is_success() && spec.action_name == "ProSecurityStatus" {
+            // Not gated on `is_success`: the script always exits 0, so a non-zero
+            // status means bash itself was killed and the raw section markers
+            // must still never reach the operator.
+            if spec.action_name == "ProSecurityStatus" {
                 output.stdout = ubuntu_pro::parse_pro_security_status(&output.stdout);
             }
             Ok(output)
@@ -3695,6 +3698,68 @@ mod tests {
         assert!(out.stdout.contains(
             "APT::Periodic::Unattended-Upgrade: unknown (/etc/apt/apt.conf.d/20auto-upgrades: file missing or unreadable)"
         ));
+    }
+
+    /// `execute_spec` must run the `ProSecurityStatus` parse hook: without it the
+    /// operator reads the raw `__SYSKNIFE_PRO_*` section markers.
+    #[tokio::test]
+    async fn execute_spec_parses_pro_security_status_output() {
+        let raw = "__SYSKNIFE_PRO_SUMMARY_BEGIN__\n__bad json__\n__SYSKNIFE_PRO_SUMMARY_RC__=0\n__SYSKNIFE_PRO_SUMMARY_END__\n__SYSKNIFE_PRO_UPDATES_BEGIN__\n\n__SYSKNIFE_PRO_UPDATES_RC__=124\n__SYSKNIFE_PRO_UPDATES_END__\n";
+        let spec = ActionSpec {
+            action_name: "ProSecurityStatus",
+            mechanism: ActionMechanism::Command {
+                program: "printf",
+                args: vec!["%s".to_string(), raw.to_string()],
+            },
+            risk_level: RiskLevel::Low,
+            reboot_required: false,
+            rollback_available: false,
+        };
+        let out = execute_spec(&spec).await.unwrap();
+        assert_eq!(out.exit_code, 0);
+        assert!(!out.stdout.contains("__SYSKNIFE_"), "raw: {}", out.stdout);
+        assert!(
+            out.stdout.contains("Ubuntu Pro package origins: failed"),
+            "{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains("timed out after 120s"),
+            "{}",
+            out.stdout
+        );
+    }
+
+    /// The progress path takes the buffered branch for this action, so what is
+    /// streamed is the parsed report and never the section protocol.
+    #[tokio::test]
+    async fn execute_with_progress_streams_parsed_pro_security_status() {
+        let raw = "__SYSKNIFE_PRO_SUMMARY_BEGIN__\nnot json\n__SYSKNIFE_PRO_SUMMARY_RC__=0\n__SYSKNIFE_PRO_SUMMARY_END__\n__SYSKNIFE_PRO_UPDATES_BEGIN__\nnot json\n__SYSKNIFE_PRO_UPDATES_RC__=0\n__SYSKNIFE_PRO_UPDATES_END__\n";
+        let spec = ActionSpec {
+            action_name: "ProSecurityStatus",
+            mechanism: ActionMechanism::Command {
+                program: "printf",
+                args: vec!["%s".to_string(), raw.to_string()],
+            },
+            risk_level: RiskLevel::Low,
+            reboot_required: false,
+            rollback_available: false,
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let out = execute_spec_with_options(&spec, None, Some(tx))
+            .await
+            .unwrap();
+
+        let mut lines = Vec::new();
+        while let Ok(line) = rx.try_recv() {
+            lines.push(line);
+        }
+        assert!(!lines.is_empty(), "the parsed report must be streamed");
+        assert!(
+            lines.iter().all(|line| !line.contains("__SYSKNIFE_")),
+            "{lines:?}"
+        );
+        assert!(out.stdout.contains("Ubuntu Pro package origins: failed"));
     }
 
     /// Regression guard for the live subprocess stdout relay. This coverage

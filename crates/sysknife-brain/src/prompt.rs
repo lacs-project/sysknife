@@ -966,7 +966,7 @@ AptListUpgradable, AptHistoryList, CheckPendingReboot,
 GrubGetKargs,
 UfwEnable, UfwDisable, UfwReset, DistroboxList, NetplanGetConfig,
 NetplanApply, NetplanGenerate,
-ProStatus, ProDetach, LivepatchStatus, MultipassList, UbuntuReleaseUpgrade.
+ProStatus, ProSecurityStatus, ProDetach, LivepatchStatus, MultipassList, UbuntuReleaseUpgrade.
 
 **Apt**:
 - `AptInstall` / `AptRemove` / `AptPurge`: `{"package":"vim"}`
@@ -1045,7 +1045,7 @@ const UBUNTU_PRO_SECURITY_STATUS: &str = r#"
 
 - `ProSecurityStatus` reports installed packages by origin and the pending updates by origin, naming the security ones, from `pro api u.pro.packages.summary.v1` and `u.pro.packages.updates.v1` — LOW, read-only.
 - Use it for "how exposed is this host?", "how many security updates are pending?", "which packages are waiting for a security update?" on Ubuntu hosts with the Pro client.
-- Both API calls are bounded (30s for the summary, 60s for the updates). A failure, an error document or a timeout is reported as a failure, never as zero counts.
+- Both API calls are bounded (30s for the summary, 120s for the updates). A failure, an error document or a timeout is reported as a failure, never as zero counts.
 - No params: use `{}`.
 "#;
 
