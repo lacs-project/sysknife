@@ -476,7 +476,10 @@ fn parse_timer_runs(timers: &str, unit: &str) -> Option<(String, String)> {
                 timestamp_at(before_unit, *next_date),
                 timestamp_at(before_unit, *last_date),
             ),
-            [only_date] if before_unit.first() == Some(&"n/a") => {
+            // systemd prints `n/a` for an empty NEXT column, and newer releases (259 on
+            // Ubuntu 26.04) print `-`. `-` also fills LEFT and PASSED, so only the first
+            // token tells whether the single date is the last run.
+            [only_date] if matches!(before_unit.first(), Some(&"n/a" | &"-")) => {
                 ("n/a".into(), timestamp_at(before_unit, *only_date))
             }
             [only_date] => (timestamp_at(before_unit, *only_date), "n/a".into()),
@@ -925,6 +928,32 @@ __SYSKNIFE_LOG_END__"#;
             );
         let output = parse_unattended_upgrades_status(&fixture);
         assert!(output.contains("apt-daily-upgrade.timer: disabled; last run: n/a; next run: n/a"));
+    }
+
+    #[test]
+    fn a_timer_with_a_dash_for_next_has_no_next_run() {
+        let fixture = UNATTENDED_UPGRADES_FIXTURE.replace(
+            "Mon 2026-10-26 06:08:07 CST 8h            Sun 2026-10-25 06:05:00 CST 15h ago      apt-daily-upgrade.timer apt-daily-upgrade.service",
+            "-                              - Sun 2026-10-25 06:05:00 CST      15h ago apt-daily-upgrade.timer apt-daily-upgrade.service",
+        );
+        let output = parse_unattended_upgrades_status(&fixture);
+        assert!(
+            output.contains("apt-daily-upgrade.timer: enabled; last run: Sun 2026-10-25 06:05:00 CST; next run: n/a"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn a_timer_with_dashes_in_every_column_has_no_runs() {
+        let fixture = UNATTENDED_UPGRADES_FIXTURE.replace(
+            "Mon 2026-10-26 06:08:07 CST 8h            Sun 2026-10-25 06:05:00 CST 15h ago      apt-daily-upgrade.timer apt-daily-upgrade.service",
+            "-                              -                           -       - apt-daily-upgrade.timer apt-daily-upgrade.service",
+        );
+        let output = parse_unattended_upgrades_status(&fixture);
+        assert!(
+            output.contains("apt-daily-upgrade.timer: enabled; last run: n/a; next run: n/a"),
+            "{output}"
+        );
     }
 
     #[test]
