@@ -35,6 +35,31 @@ pub(super) fn classify_status(status: http::StatusCode) -> StatusClass {
     }
 }
 
+/// Classifies an error message that carries no structured HTTP status.
+///
+/// Only the reason phrase counts, matched as whole words. A bare `401` or `429`
+/// is not read as a status, because those digits turn up inside numbers: the
+/// `created` timestamp of a response body that failed to decode, or a serde
+/// position such as `column 401`.
+pub(super) fn classify_status_words(msg: &str) -> Option<StatusClass> {
+    let lower = msg.to_lowercase();
+    if contains_words(&lower, "unauthorized") {
+        Some(StatusClass::Auth)
+    } else if contains_words(&lower, "too many requests") {
+        Some(StatusClass::RateLimit)
+    } else {
+        None
+    }
+}
+
+fn contains_words(haystack: &str, phrase: &str) -> bool {
+    haystack.match_indices(phrase).any(|(start, _)| {
+        let before = haystack[..start].chars().next_back();
+        let after = haystack[start + phrase.len()..].chars().next();
+        !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+    })
+}
+
 /// Redact credential-bearing substrings from error messages before they are
 /// logged or propagated to a caller, to prevent API key leakage.
 ///

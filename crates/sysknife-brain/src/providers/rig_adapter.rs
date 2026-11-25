@@ -433,14 +433,13 @@ pub(crate) fn map_rig_error(err: rig::completion::CompletionError) -> ProviderEr
     // "author"/"authorize", and `"rate"` false-positives on
     // "generate"/"moderate" — e.g. "failed to generate response" would be
     // misclassified as a rate-limit error. Mirrors `openai_adapter`'s
-    // substring-fallback phrasing.
+    // substring-fallback phrasing. Status digits alone do not count either,
+    // see `classify_status_words`.
     let lower = msg.to_lowercase();
-    if msg.contains("401") || lower.contains("authentication") {
+    let status_words = super::classify_status_words(&msg);
+    if status_words == Some(super::StatusClass::Auth) || lower.contains("authentication") {
         ProviderError::Auth(AUTH_FAILURE_MSG.to_string())
-    } else if msg.contains("429")
-        || lower.contains("too many requests")
-        || lower.contains("rate limit")
-    {
+    } else if status_words == Some(super::StatusClass::RateLimit) || lower.contains("rate limit") {
         ProviderError::RateLimit(msg)
     } else {
         ProviderError::Request(msg)
@@ -762,6 +761,32 @@ mod tests {
         assert!(
             matches!(mapped, ProviderError::Auth(_)),
             "expected Auth via substring fallback, got {mapped:?}"
+        );
+    }
+
+    /// serde reports where it stopped, so the message carries `column <n>`.
+    fn map_json_error_at_column(column: usize) -> ProviderError {
+        let input = " ".repeat(column - 1) + "x";
+        let json_err = serde_json::from_str::<serde_json::Value>(&input).unwrap_err();
+        assert!(json_err.to_string().contains(&format!("column {column}")));
+        map_rig_error(rig::completion::CompletionError::JsonError(json_err))
+    }
+
+    #[test]
+    fn map_rig_error_does_not_read_column_401_as_auth() {
+        let mapped = map_json_error_at_column(401);
+        assert!(
+            matches!(mapped, ProviderError::Request(_)),
+            "expected Request, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_rig_error_does_not_read_column_429_as_rate_limit() {
+        let mapped = map_json_error_at_column(429);
+        assert!(
+            matches!(mapped, ProviderError::Request(_)),
+            "expected Request, got {mapped:?}"
         );
     }
 
