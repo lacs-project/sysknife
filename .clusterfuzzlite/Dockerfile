@@ -4,7 +4,7 @@
 #
 # Pinned by digest like the root Dockerfile: the tag alone can move. The base
 # image carries `cargo fuzz` and a nightly Rust toolchain.
-FROM gcr.io/oss-fuzz-base/base-builder-rust:v1@sha256:3428d0a90b1e7efbe2ba947bd1d0c9a70594986b4b6553804547f1fb24cfc92f
+FROM gcr.io/oss-fuzz-base/base-builder-rust:v1@sha256:2216f0ac0a289a0e8974917779c3f744c354067dd81e0c8f2fc53bc1a9a573db
 
 # The base image's nightly (2025-09-05, rustc 1.91) is older than sqlx 0.9
 # accepts (rustc 1.94). Install a dated nightly and select it. Raise the date when
