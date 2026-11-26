@@ -636,9 +636,9 @@ the daemon.
 2. Otherwise → `ollama` (must be running locally)
 
 The other providers (`openai`, `gemini`, `groq`, `deepseek`, `mistral`, `xai`)
-are **not** auto-detected from their API-key variables. To use one, set
-`SYSKNIFE_LLM_PROVIDER` to its name and provide the matching key from the table
-above.
+require explicit selection. For example, set `SYSKNIFE_LLM_PROVIDER=openai`
+with `OPENAI_API_KEY`, or `SYSKNIFE_LLM_PROVIDER=gemini` with `GEMINI_API_KEY`.
+The same pattern applies to the other providers in the table.
 
 ### Daemon socket
 
