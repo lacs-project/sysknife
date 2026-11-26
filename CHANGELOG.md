@@ -12,6 +12,69 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+## [0.30.5] — 2026-11-25
+
+### Changed
+
+- **Dependency bumps: `rusqlite` 0.43.0, `clap` 4.6.9, `rmcp` 3.11.0, `url` 2.5.9 and
+  `cookie` 0.18.3.** ([#855](https://github.com/lacs-project/sysknife/pull/855),
+  [#853](https://github.com/lacs-project/sysknife/pull/853),
+  [#864](https://github.com/lacs-project/sysknife/pull/864)) `cargo audit` had failed on
+  `main` since 2026-11-24 with RUSTSEC-2026-0592 (`url` 2.5.8, stack overflow in
+  `Url::origin()` on nested `blob:` URLs) and RUSTSEC-2026-0594 (`cookie` 0.18.1, private
+  cookie nonces can repeat in processes that fork), which turned the required
+  `security-audit` check red on every pull request. Both lockfile bumps are in. `rusqlite`
+  0.43.0 keeps the bundled SQLite at 3.54.1, and the root and fuzz lockfiles now move
+  together. `rmcp` 3.11.0 answers `prompts/list` and `completion/complete` with
+  method-not-found; the SysKnife MCP server never advertised either. GitHub Actions pins,
+  the markdownlint toolchain and the `oss-fuzz` base image digest moved with the same
+  batch.
+
+### Fixed
+
+- **The no-provider notice says how a provider gets selected.**
+  ([#860](https://github.com/lacs-project/sysknife/pull/860)) The notice printed before a
+  planning run told users to set `OPENAI_API_KEY` or `GEMINI_API_KEY`, and neither selects
+  a provider: auto-detection reads only `ANTHROPIC_API_KEY`, so a user who followed the
+  notice stayed on Ollama. The notice now says that `ANTHROPIC_API_KEY` selects Anthropic
+  and that any other provider needs `SYSKNIFE_LLM_PROVIDER` together with its key, with
+  OpenAI and Gemini examples, and `docs/cli.md` gives the same examples (closes
+  [#859](https://github.com/lacs-project/sysknife/issues/859)). Thanks to
+  [@Daytonrad](https://github.com/Daytonrad).
+- **`UnattendedUpgradesStatus` no longer reports a stopped timer's last run as its next
+  run.** ([#861](https://github.com/lacs-project/sysknife/pull/861)) systemd 259 (Ubuntu
+  26.04) prints `-` in the NEXT column of `systemctl list-timers` for a timer with no next
+  run, where earlier releases print `n/a`. The parser read only the `n/a` form, so a paused
+  `apt-daily-upgrade.timer` showed its past run as the next run and read as scheduled. A
+  leading `-` now means no next run. The check stays on the first token because `-` also
+  fills the LEFT and PASSED columns (closes
+  [#857](https://github.com/lacs-project/sysknife/issues/857)). Thanks to
+  [@mateuscmtropical](https://github.com/mateuscmtropical).
+- **Provider errors are classified by status words, not by bare `401` and `429` digits.**
+  ([#862](https://github.com/lacs-project/sysknife/pull/862)) The error fallback in the
+  OpenAI and rig adapters searched the message for the digits `401` and `429`, so a port
+  such as `:4290` or the `column 401` of a JSON parse error was read as an authentication
+  failure or a rate limit. It now matches the whole words `unauthorized` and
+  `too many requests`, which also lets a body such as vLLM's `{"error":"Unauthorized"}`
+  read as an authentication failure. A status that arrives with no reason phrase, such as
+  an nginx `401 Authorization Required` page behind `OPENAI_BASE_URL`, now falls through to
+  a request error, which the planner retries twice before it shows the body (closes
+  [#858](https://github.com/lacs-project/sysknife/issues/858)). Thanks to
+  [@mateuscmtropical](https://github.com/mateuscmtropical).
+- **The package-license check reads `include` and `exclude` the way Cargo does.**
+  ([#843](https://github.com/lacs-project/sysknife/pull/843)) `package-license.test.sh`
+  decided with Python's `fnmatch` whether a crate's `include` or `exclude` list drops the
+  LICENSE, and `fnmatch` disagrees with Cargo's gitignore-style patterns on the common
+  spellings: `exclude = ["/LICENSE"]` passed the check while the crate shipped without the
+  licence, and a correct `include = ["/LICENSE", ...]` failed it. Thanks to
+  [@bfs2021](https://github.com/bfs2021).
+- **The test-reachability check names uninvoked tests in both suites in one run.**
+  ([#846](https://github.com/lacs-project/sysknife/pull/846)) `set -e` ended
+  `scripts/check_test_reachability.sh` at the first failing suite, so when `tests/release`
+  and `tests/e2e` each held an unwired test, the second appeared only on the next CI run.
+  Thanks to [@MaxonT](https://github.com/MaxonT).
+
+
 ## [0.30.4] — 2026-11-20
 
 ### Fixed
