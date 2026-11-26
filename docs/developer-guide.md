@@ -32,7 +32,7 @@ environment and covers everything you need to contribute confidently.
 | PyYAML | 6.x | `python3 -m pip install PyYAML` (installed explicitly in CI) |
 | `yamllint` | 1.38.0 | `python3 -m pip install --require-hashes -r tools/ci-python/requirements.txt` (the hash list CI installs from; it also pins PyYAML and `pathspec`) |
 | `cargo-audit` | latest | `cargo install cargo-audit --locked` (the `security-audit` job) |
-| `markdownlint-cli2` | 0.24.1 | `npm ci --prefix tools/ci-node`, then put `tools/ci-node/node_modules/.bin` on `PATH` (the lockfile CI installs from) |
+| `markdownlint-cli2` | 0.24.2 | `npm ci --prefix tools/ci-node`, then put `tools/ci-node/node_modules/.bin` on `PATH` (the lockfile CI installs from) |
 | `markdown-link-check` | 3.15.0 | same `npm ci --prefix tools/ci-node` |
 
 **Required only for the jobs that name them:**
