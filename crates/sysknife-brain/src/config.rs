@@ -324,9 +324,10 @@ impl BrainConfig {
         }
         Some(format!(
             "no LLM provider configured, so falling back to {} at {}. \
-             Install Ollama (https://ollama.com) and `ollama pull {}`, or set one of \
-             ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY, or pick one \
-             explicitly with SYSKNIFE_LLM_PROVIDER.",
+             Install Ollama (https://ollama.com) and run `ollama pull {}`, or set ANTHROPIC_API_KEY \
+             to select Anthropic automatically. To use another provider, set SYSKNIFE_LLM_PROVIDER \
+             and its API key. For example, set SYSKNIFE_LLM_PROVIDER=openai with OPENAI_API_KEY \
+             or SYSKNIFE_LLM_PROVIDER=gemini with GEMINI_API_KEY.",
             self.provider_name(),
             self.base_url_label(),
             self.model_name(),
@@ -512,8 +513,10 @@ mod tests {
         let notice = cfg.provider_guess_notice().expect("a notice is available");
         assert!(notice.contains("ollama"), "names what was picked: {notice}");
         assert!(
-            notice.contains("ANTHROPIC_API_KEY") || notice.contains("OPENAI_API_KEY"),
-            "names at least one key the user could set instead: {notice}"
+            notice.contains("set ANTHROPIC_API_KEY")
+                && notice.contains("SYSKNIFE_LLM_PROVIDER=openai with OPENAI_API_KEY")
+                && notice.contains("SYSKNIFE_LLM_PROVIDER=gemini with GEMINI_API_KEY"),
+            "names the auto-detected key and pairs other keys with explicit selection: {notice}"
         );
     }
 
