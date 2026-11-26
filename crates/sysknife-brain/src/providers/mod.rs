@@ -276,4 +276,35 @@ mod tests {
             StatusClass::Other
         );
     }
+
+    #[test]
+    fn a_status_phrase_inside_a_longer_word_is_not_a_status() {
+        let cases: &[(&str, Option<StatusClass>)] = &[
+            // The phrase as whole words, at every position and in any case.
+            ("401 Unauthorized", Some(StatusClass::Auth)),
+            ("Unauthorized", Some(StatusClass::Auth)),
+            ("request was unauthorized", Some(StatusClass::Auth)),
+            ("UNAUTHORIZED", Some(StatusClass::Auth)),
+            ("unauthorized_access", Some(StatusClass::Auth)),
+            ("429 Too Many Requests", Some(StatusClass::RateLimit)),
+            ("too many requests", Some(StatusClass::RateLimit)),
+            ("rejected: TOO MANY REQUESTS", Some(StatusClass::RateLimit)),
+            // The phrase glued to a longer word on either side is not a status.
+            ("unauthorizedly", None),
+            ("reauthorized", None),
+            ("401Unauthorized", None),
+            ("too many requestsfoo", None),
+            ("footoo many requests", None),
+            // Bare digits never count.
+            ("status: 401", None),
+            ("column 429", None),
+        ];
+        for (input, want) in cases {
+            assert_eq!(
+                super::classify_status_words(input),
+                *want,
+                "input: {input:?}"
+            );
+        }
+    }
 }
