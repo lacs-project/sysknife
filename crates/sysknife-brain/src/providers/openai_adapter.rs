@@ -484,10 +484,12 @@ fn map_openai_error(err: async_openai::error::OpenAIError) -> ProviderError {
 
     // Fall back to string matching for non-`ApiError` variants (e.g.
     // `Reqwest`, `JSONDeserialize`), which carry no structured HTTP status.
-    if msg.contains("401")
-        || msg.to_lowercase().contains("authentication")
-        || msg.to_lowercase().contains("api key")
-        || msg.to_lowercase().contains("incorrect api key")
+    let lower = msg.to_lowercase();
+    let status_words = super::classify_status_words(&msg);
+    if status_words == Some(super::StatusClass::Auth)
+        || lower.contains("authentication")
+        || lower.contains("api key")
+        || lower.contains("incorrect api key")
     {
         tracing::error!(
             target: "sysknife_brain::openai_adapter",
@@ -495,7 +497,7 @@ fn map_openai_error(err: async_openai::error::OpenAIError) -> ProviderError {
             msg
         );
         ProviderError::Auth("OpenAI authentication failed — check OPENAI_API_KEY".to_string())
-    } else if msg.contains("429") || msg.to_lowercase().contains("rate limit") {
+    } else if status_words == Some(super::StatusClass::RateLimit) || lower.contains("rate limit") {
         tracing::warn!(
             target: "sysknife_brain::openai_adapter",
             "OpenAI rate limit hit: {}",
@@ -1170,6 +1172,34 @@ mod tests {
         assert!(
             matches!(mapped, ProviderError::Request(_)),
             "expected Request via fallback, got {mapped:?}"
+        );
+    }
+
+    /// A response body that fails to decode lands in the message whole, so its
+    /// `created` timestamp can hold the digits of a status.
+    fn map_undecodable_body_with_created(created: u64) -> ProviderError {
+        let body = format!(r#"{{"id":"chatcmpl-1","created":{created},"choices":"#);
+        let json_err = serde_json::from_str::<serde_json::Value>(&body).unwrap_err();
+        map_openai_error(async_openai::error::OpenAIError::JSONDeserialize(
+            json_err, body,
+        ))
+    }
+
+    #[test]
+    fn map_openai_error_does_not_read_401_in_a_timestamp_as_auth() {
+        let mapped = map_undecodable_body_with_created(1764014012);
+        assert!(
+            matches!(mapped, ProviderError::Request(_)),
+            "expected Request, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_openai_error_does_not_read_429_in_a_timestamp_as_rate_limit() {
+        let mapped = map_undecodable_body_with_created(1764291234);
+        assert!(
+            matches!(mapped, ProviderError::Request(_)),
+            "expected Request, got {mapped:?}"
         );
     }
 
