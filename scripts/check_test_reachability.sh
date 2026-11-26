@@ -139,7 +139,13 @@ check_suite() {
     return "$missing"
 }
 
-check_suite release
-check_suite e2e
+# Check both suites before exiting, so an orphan in one does not hide an
+# orphan in the other.
+status=0
+check_suite release || status=1
+check_suite e2e || status=1
+if ((status)); then
+    exit 1
+fi
 
 printf 'test-reachability: every release and E2E test is invoked by a gate.\n'
