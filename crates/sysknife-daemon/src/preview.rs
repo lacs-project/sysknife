@@ -212,6 +212,7 @@ fn preview_profile(action_name: &str) -> PreviewProfile {
         | "NetplanGetConfig"
         // Ubuntu Pro / Livepatch / Multipass read-only (Tier 3)
         | "ProStatus"
+        | "ProSecurityStatus"
         | "LivepatchStatus"
         | "MultipassList"
         // Cross-distro + Ubuntu read-only queries

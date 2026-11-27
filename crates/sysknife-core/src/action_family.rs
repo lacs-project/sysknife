@@ -146,6 +146,7 @@ pub const UBUNTU_ONLY_ACTIONS: &[&str] = &[
     "CheckPendingReboot",
     "UbuntuReleaseUpgrade",
     "ProStatus",
+    "ProSecurityStatus",
     "ProAttach",
     "ProDetach",
     "EnableProService",
