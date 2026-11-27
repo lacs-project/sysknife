@@ -12,6 +12,16 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Added
+
+- **`ProSecurityStatus` reports how exposed an Ubuntu Pro host is to security updates.**
+  ([#849](https://github.com/lacs-project/sysknife/pull/849)) A read-only daemon action
+  answers both halves of the question from one Pro API call: which package origins the
+  host draws from, and which security updates are pending, classified by service. The
+  Debian-family planner prompt routes "how exposed is this Ubuntu Pro host to security
+  updates?" to it, and story 155 pins the plan to one low-risk step with no parameters
+  and neither `AptUpgrade` nor `ProDetach`. Issue #679.
+
 ## [0.30.5] — 2026-11-25
 
 ### Changed
