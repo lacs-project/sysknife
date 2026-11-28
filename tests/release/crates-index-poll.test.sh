@@ -20,6 +20,10 @@ trap 'rm -rf "$tmp"' EXIT
 count_file="${tmp}/count"
 printf '0\n' > "$count_file"
 
+url_log="${tmp}/urls"
+: > "$url_log"
+expected_url='https://crates.io/api/v1/crates/sysknife-daemon/0.15.0'
+
 stub="${tmp}/curl-stub"
 cat > "$stub" <<'EOF'
 #!/usr/bin/env bash
@@ -27,15 +31,21 @@ set -euo pipefail
 count="$(cat "$CRATES_IO_TEST_COUNT_FILE")"
 count=$((count + 1))
 printf '%s\n' "$count" > "$CRATES_IO_TEST_COUNT_FILE"
-case "$count" in
-    1|2|3) printf '404' ;;
-    *) printf '200' ;;
-esac
+printf '%s\n' "${@: -1}" >> "$CRATES_IO_URL_LOG"
+if [[ "${@: -1}" != "$CRATES_IO_TEST_EXPECTED_URL" ]]; then
+    printf '404'
+elif ((count <= 3)); then
+    printf '404'
+else
+    printf '200'
+fi
 EOF
 chmod +x "$stub"
 
 CRATES_IO_CURL="$stub" \
 CRATES_IO_TEST_COUNT_FILE="$count_file" \
+CRATES_IO_URL_LOG="$url_log" \
+CRATES_IO_TEST_EXPECTED_URL="$expected_url" \
 CRATES_IO_POLL_TIMEOUT=3 \
 CRATES_IO_POLL_INTERVAL=1 \
 CRATES_IO_SLEEP=true \
@@ -45,6 +55,13 @@ wait_for_crate_version sysknife-daemon 0.15.0
     printf 'FAIL: expected 4 poll requests, got %s\n' "$(cat "$count_file")" >&2
     exit 1
 }
+
+while IFS= read -r called_url; do
+    [[ "$called_url" == "$expected_url" ]] || {
+        printf 'FAIL: poll requested %s instead of %s\n' "$called_url" "$expected_url" >&2
+        exit 1
+    }
+done < "$url_log"
 
 printf '0\n' > "$count_file"
 
@@ -115,7 +132,12 @@ grep -Fq 'source scripts/crates-index-poll.sh' "$workflow" || {
     exit 1
 }
 
-grep -Fq 'wait_for_crate_version "$crate" "$VERSION"' "$workflow" || {
+wait_line="$(
+    grep 'wait_for_crate_version "\$crate" "\$VERSION"' "$workflow" \
+        | head -n 1 \
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+)"
+[[ "$wait_line" == 'wait_for_crate_version "$crate" "$VERSION"' ]] || {
     printf 'FAIL: release workflow does not wait for the index after publishing\n' >&2
     exit 1
 }
